@@ -3,10 +3,12 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $gui = Join-Path $root "ytdl-manager-gui.ps1"
 $engine = Join-Path $root "ytdl-manager-v8.ps1"
+$core = Join-Path $root "lib\VideoDownloader.Core.psm1"
+$xaml = Join-Path $root "ui\MainWindow.xaml"
 $icon = Join-Path $root "assets\app.ico"
 $launcher = Join-Path $root "launcher\VideoDownloader.csproj"
 
-foreach ($file in @($gui,$engine)) {
+foreach ($file in @($gui,$engine,$core)) {
     $tokens = $null
     $errors = $null
     [void][System.Management.Automation.Language.Parser]::ParseFile($file,[ref]$tokens,[ref]$errors)
@@ -16,6 +18,9 @@ foreach ($file in @($gui,$engine)) {
     }
 }
 
+[xml]$xamlDoc = Get-Content $xaml -Raw -Encoding UTF8
+if ($xamlDoc.DocumentElement.LocalName -ne "Window") { throw "MainWindow.xaml root is not Window" }
+
 Add-Type -AssemblyName System.Drawing
 $ico = [System.Drawing.Icon]::new($icon)
 $ico.Dispose()
@@ -24,30 +29,53 @@ if (-not (Test-Path $launcher)) { throw "Missing launcher project" }
 
 $guiText = Get-Content $gui -Raw
 $engineText = Get-Content $engine -Raw
+$xamlText = Get-Content $xaml -Raw
 
 $guiMarkers = @(
-    "NotifyIcon",
-    "Show-Notification",
-    "failedUrls",
-    "queueGrid",
-    "Friendly-Error",
+    "PresentationFramework",
+    "ObservableCollection",
+    "DoDragDrop",
+    "Suspend-ProcessTree",
+    "Resume-ProcessTree",
+    "WatchClipboardCheck",
+    "Start-DependencyJob",
+    "Register-Protocol",
+    "videodownloader://",
+    "Apply-Profile",
+    "SessionStats",
     "Start-Preview",
-    "thumbnail",
-    "rateLimit",
-    "clipboardTimer",
-    "Start-YtDlpUpdate",
-    "Open-SelectedFile"
+    "DynamicRange",
+    "ContextMenu"
 )
 foreach ($marker in $guiMarkers) {
     if (-not $guiText.Contains($marker)) { throw "Missing GUI feature marker: $marker" }
 }
 
+$xamlMarkers = @(
+    'x:Name="QueueGrid"',
+    'x:Name="PauseButton"',
+    'x:Name="CodecCombo"',
+    'x:Name="ContainerCombo"',
+    'x:Name="WriteSubsCheck"',
+    'x:Name="FilenameTemplateBox"',
+    'x:Name="DependencyStatus"'
+)
+foreach ($marker in $xamlMarkers) {
+    if (-not $xamlText.Contains($marker)) { throw "Missing XAML control marker: $marker" }
+}
+
 $engineMarkers = @(
-    'ValidateSet("Best","2160","1440","1080","720")',
-    "RateLimit",
-    "ResultDir",
-    "EventFile",
-    "after_move:__VD_FILE__"
+    'ValidateSet("Auto","MP4","MKV","WebM")',
+    'ValidateSet("Auto","H264","VP9","AV1")',
+    "WriteSubtitles",
+    "EmbedThumbnail",
+    "EmbedMetadata",
+    "EmbedChapters",
+    "FilenameTemplate",
+    "Retries",
+    "--progress-template",
+    "__VD_PROGRESS__",
+    "Test-TransientDownloadError"
 )
 foreach ($marker in $engineMarkers) {
     if (-not $engineText.Contains($marker)) { throw "Missing engine feature marker: $marker" }
@@ -58,11 +86,12 @@ New-Item -ItemType Directory -Path $temp -Force | Out-Null
 try {
     $queue = Join-Path $temp "queue.txt"
     Set-Content -Path $queue -Value "https://example.com/video" -Encoding UTF8
-    & $engine -In $queue -Out $temp -DryRun -Quality 1080 -RateLimit 5M -ResultDir $temp -NoProgress
+
+    & $engine -In $queue -Out $temp -DryRun -Quality 1080 -RateLimit 5M -ResultDir $temp -Container MP4 -VideoCodec H264 -WriteSubtitles -SubtitleLangs "ru.*,en.*" -EmbedMetadata -EmbedChapters -FilenameTemplate "%(uploader)s - %(title)s.%(ext)s" -NoProgress
     if ($LASTEXITCODE -ne 0) { throw "Engine dry-run failed with exit code $LASTEXITCODE" }
 }
 finally {
     Remove-Item $temp -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-Write-Host "Smoke checks passed."
+Write-Host "WPF/engine smoke checks passed."
