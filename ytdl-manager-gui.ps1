@@ -291,6 +291,7 @@ function TailEvents {
             if ([bool]$event.Success) {
                 $script:success++
                 $fp = [string]$event.FilePath
+                if (-not $fp) { $fp = [string]$event.Path }
                 if (-not $fp -and $script:lastFiles.ContainsKey($slot)) { $fp = [string]$script:lastFiles[$slot] }
                 Set-DownloadRow $slot "Готово" "" $ok $fp
             } else {
