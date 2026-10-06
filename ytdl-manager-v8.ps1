@@ -38,7 +38,9 @@ param(
     [switch]$DryRun,
     [string]$Log,
     [string]$EventFile,
-    [string]$ResultDir
+    [string]$ResultDir,
+    [ValidateSet("Best","2160","1440","1080","720")][string]$Quality = "Best",
+    [string]$RateLimit
 )
 
 $ListFile = $In
@@ -81,7 +83,13 @@ if ($WatchInterval -lt 1) {
 $FragmentsWasSpecified = $PSBoundParameters.ContainsKey("Fragments")
 
 $MaxParallel = $Threads
-$Qualities   = @(2160, 1440, 1080, 720)
+$Qualities = switch ($Quality) {
+    "2160" { @(2160, 1440, 1080, 720) }
+    "1440" { @(1440, 1080, 720) }
+    "1080" { @(1080, 720) }
+    "720"  { @(720) }
+    default { @("best") }
+}
 
 try {
     [Console]::InputEncoding  = [System.Text.Encoding]::UTF8
@@ -404,6 +412,8 @@ if ($urls.Count -eq 0 -and -not $Watch) {
 
 Write-Log "Started. Total URLs: $($urls.Count). Parallel: $MaxParallel. Qualities: $($Qualities -join ' -> ')" Cyan
 Write-Log "Fragments: $Fragments" Cyan
+Write-Log "Quality: $Quality" Cyan
+if ($RateLimit) { Write-Log "Rate limit: $RateLimit" Cyan }
 
 if ($AutoFragments) {
     if ($FragmentsWasSpecified) {
@@ -534,7 +544,8 @@ while ($pendingQueue.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
             [bool]$SponsorBlock,
             [bool]$AudioOnly,
             $Fragments,
-            [bool]($AutoFragments -and -not $FragmentsWasSpecified)
+            [bool]($AutoFragments -and -not $FragmentsWasSpecified),
+            $RateLimit
         )
 
         $jobs += Start-ThreadJob -Name "$slot" -ArgumentList $jobArgs -ScriptBlock {
@@ -549,7 +560,8 @@ while ($pendingQueue.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
                 [bool]$sponsorBlock,
                 [bool]$audioOnly,
                 [int]$fragments,
-                [bool]$autoFragments
+                [bool]$autoFragments,
+                [string]$rateLimit
             )
 
             function ShortenInner {
@@ -727,6 +739,7 @@ while ($pendingQueue.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
                 $finalHeight = ""
                 $success = $false
                 $effectiveFragments = $fragments
+                $finalPath = ""
 
                 if ($autoFragments) {
                     $auto = Get-AutoFragments -Url $url -Cookies $cookies
@@ -747,9 +760,14 @@ while ($pendingQueue.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
                         "--impersonate", "chrome",
                         "-N", "$effectiveFragments",
                         "-o", $outputTemplate,
+                        "--print", "after_move:__FILE__:%(filepath)s",
                         "-x",
                         "--audio-format", "mp3"
                     )
+
+                    if ($rateLimit) {
+                        $args += @("--limit-rate", $rateLimit)
+                    }
 
                     if ($cookies) {
                         $args += @("--cookies", $cookies)
@@ -768,7 +786,1613 @@ while ($pendingQueue.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
                         $line = $_.ToString()
                         [void]$allLines.Add($line)
 
-                        if ($line -match 'Destination:\s+(.+)$') {
+                        if ($line -match '^__FILE__:(.+)
+                            Emit-Event -EventType "Title" -Text "" -Title $title -Height "audio"
+                        }
+                        elseif ($line -match '\[download\]\s+([0-9.]+)%\s+of\s+(.+?)\s+at\s+(.+?)\s+ETA\s+(.+)$') {
+                            $pct = [double]$matches[1]
+                            $size = $matches[2].Trim()
+                            $speed = $matches[3].Trim()
+                            $eta = $matches[4].Trim()
+
+                            Emit-Event `
+                                -EventType "Progress" `
+                                -Text "" `
+                                -Percent $pct `
+                                -Speed $speed `
+                                -Size $size `
+                                -ETA $eta `
+                                -Height "audio"
+                        }
+                        elseif ($line -match 'ExtractAudio|Deleting original file|Destination') {
+                            Emit-Event -EventType "Merge" -Text "" -Height "audio"
+                        }
+                        elseif ($line -match '^ERROR:\s*(.+)$') {
+                            $lastError = $matches[1].Trim()
+                        }
+                    }
+
+                    $exit = $LASTEXITCODE
+
+                    if ($exit -eq 0) {
+                        $success = $true
+                    }
+                    elseif (-not $lastError) {
+                        $lastError = "yt-dlp exit code $exit"
+                    }
+                }
+                else {
+                    foreach ($height in $qualities) {
+                        $finalHeight = "$height"
+                        $fmt = if ($height -eq "best") {
+                            "bv*+ba/b"
+                        } else {
+                            "bv*[height<=$height]+ba/b[height<=$height]"
+                        }
+                        $allLines = [System.Collections.Generic.List[string]]::new()
+
+                        $args = @(
+                            "--encoding", "utf-8",
+                            "--newline",
+                            "--impersonate", "chrome",
+                            "-N", "$effectiveFragments",
+                            "-o", $outputTemplate,
+                            "--print", "after_move:__FILE__:%(filepath)s",
+                            "-f", $fmt
+                        )
+
+                        if ($rateLimit) {
+                            $args += @("--limit-rate", $rateLimit)
+                        }
+
+                        if ($cookies) {
+                            $args += @("--cookies", $cookies)
+                        }
+
+                        if ($sponsorBlock) {
+                            $args += @("--sponsorblock-remove", "sponsor")
+                        }
+
+                        $args += $url
+
+                        & .\yt-dlp.exe @args 2>&1 |
+                        ForEach-Object {
+                            $line = $_.ToString()
+                            [void]$allLines.Add($line)
+
+                            if ($line -match '^__FILE__:(.+)
+
+                                Emit-Event `
+                                    -EventType "Title" `
+                                    -Text "" `
+                                    -Title $title `
+                                    -Height "$height"
+                            }
+                            elseif ($line -match '\[download\]\s+([0-9.]+)%\s+of\s+(.+?)\s+at\s+(.+?)\s+ETA\s+(.+)$') {
+                                $pct = [double]$matches[1]
+                                $size = $matches[2].Trim()
+                                $speed = $matches[3].Trim()
+                                $eta = $matches[4].Trim()
+
+                                Emit-Event `
+                                    -EventType "Progress" `
+                                    -Text "" `
+                                    -Percent $pct `
+                                    -Speed $speed `
+                                    -Size $size `
+                                    -ETA $eta `
+                                    -Height "$height"
+                            }
+                            elseif ($line -match 'Merging formats|Merger') {
+                                Emit-Event -EventType "Merge" -Text "" -Height "$height"
+                            }
+                            elseif ($line -match '^ERROR:\s*(.+)$') {
+                                $lastError = $matches[1].Trim()
+                            }
+                        }
+
+                        $exit = $LASTEXITCODE
+                        $combined = $allLines -join "`n"
+
+                        if ($exit -eq 0) {
+                            $success = $true
+                            break
+                        }
+
+                        if (-not $lastError) {
+                            $lastError = "yt-dlp exit code $exit"
+                        }
+
+                        if ($height -ne "best" -and $combined -match 'Requested format is not available' -and $height -ne $qualities[-1]) {
+                            Emit-Event -EventType "Fallback" -Text ("T{0} FALLBACK <= {1}p -> next quality" -f $slot, $height) -Height "$height"
+                            continue
+                        }
+
+                        break
+                    }
+                }
+
+                if ($success) {
+                    Emit-Event -EventType "Done" -Text ("T{0} DONE #{1}/{2} q<={3} N={4} {5}" -f $slot, $index, $totalUrls, $finalHeight, $effectiveFragments, (ShortenInner -Text (Clean-DisplayTitleInner -Text $title) -Max 200)) -Height "$finalHeight"
+
+                    [pscustomobject]@{
+                        Kind = "Result"
+                        Slot = $slot
+                        Url = $url
+                        Success = $true
+                        Error = ""
+                        Height = $finalHeight
+                        Path = $finalPath
+                    }
+
+                    return
+                }
+
+                Emit-Event -EventType "Error" -Text ("T{0} ERROR #{1}/{2} {3}" -f $slot, $index, $totalUrls, $lastError) -Height "$finalHeight"
+
+                [pscustomobject]@{
+                    Kind = "Result"
+                    Slot = $slot
+                    Url = $url
+                    Success = $false
+                    Error = $lastError
+                    Height = $finalHeight
+                    Path = ""
+                }
+            }
+            catch {
+                $message = $_.Exception.Message
+
+                Emit-Event -EventType "Error" -Text ("T{0} EXCEPTION #{1}/{2} {3}" -f $slot, $index, $totalUrls, $message)
+
+                [pscustomobject]@{
+                    Kind = "Result"
+                    Slot = $slot
+                    Url = $url
+                    Success = $false
+                    Error = "ThreadJob exception: $message"
+                    Height = ""
+                    Path = ""
+                }
+            }
+        }
+    }
+
+    Start-Sleep -Milliseconds 300
+
+    foreach ($j in @($jobs)) {
+        $jobErr = $null
+        $messages = @(Receive-Job $j -ErrorVariable jobErr -ErrorAction SilentlyContinue)
+
+        if ($jobErr) {
+            foreach ($e in $jobErr) {
+                Write-Log ("T{0} JOB-ERROR {1}" -f $j.Name, $e.ToString()) Red
+            }
+        }
+
+        foreach ($msg in $messages) {
+            Handle-Message -Message $msg -Results $results -Completed $completed -Urls $urls -Titles $titles -NoProgress:$NoProgress
+        }
+    }
+
+    $done = @($jobs | Where-Object { $_.State -ne "Running" })
+
+    foreach ($j in $done) {
+        $slot = [int]$j.Name
+
+        $messages = @(Receive-Job $j -ErrorAction SilentlyContinue)
+        foreach ($msg in $messages) {
+            Handle-Message -Message $msg -Results $results -Completed $completed -Urls $urls -Titles $titles -NoProgress:$NoProgress
+        }
+
+        if (-not $NoProgress) {
+            Write-Progress -Id $slot -Activity ("T{0}" -f $slot) -Completed
+        }
+
+        Remove-Job $j -Force
+        $jobs = @($jobs | Where-Object { $_.Id -ne $j.Id })
+        $freeSlots.Enqueue($slot)
+        $titles.Remove($slot)
+    }
+}
+
+if (-not $NoProgress) {
+    foreach ($slot in 1..$MaxParallel) {
+        Write-Progress -Id $slot -Activity ("T{0}" -f $slot) -Completed
+    }
+}
+
+$successFinal = ($results | Where-Object { $_.Success }).Count
+$errorFinal = ($results | Where-Object { -not $_.Success }).Count
+$remainingCount = 0
+
+if (Test-Path $ListFile) {
+    $remainingCount = @(Get-Content $ListFile | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count
+}
+
+Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, $errorFinal, $remainingCount) Cyan
+) {
+                            $finalPath = $matches[1].Trim()
+                        }
+                        elseif ($line -match 'Destination:\s+(.+)
+                            Emit-Event -EventType "Title" -Text "" -Title $title -Height "audio"
+                        }
+                        elseif ($line -match '\[download\]\s+([0-9.]+)%\s+of\s+(.+?)\s+at\s+(.+?)\s+ETA\s+(.+)$') {
+                            $pct = [double]$matches[1]
+                            $size = $matches[2].Trim()
+                            $speed = $matches[3].Trim()
+                            $eta = $matches[4].Trim()
+
+                            Emit-Event `
+                                -EventType "Progress" `
+                                -Text "" `
+                                -Percent $pct `
+                                -Speed $speed `
+                                -Size $size `
+                                -ETA $eta `
+                                -Height "audio"
+                        }
+                        elseif ($line -match 'ExtractAudio|Deleting original file|Destination') {
+                            Emit-Event -EventType "Merge" -Text "" -Height "audio"
+                        }
+                        elseif ($line -match '^ERROR:\s*(.+)$') {
+                            $lastError = $matches[1].Trim()
+                        }
+                    }
+
+                    $exit = $LASTEXITCODE
+
+                    if ($exit -eq 0) {
+                        $success = $true
+                    }
+                    elseif (-not $lastError) {
+                        $lastError = "yt-dlp exit code $exit"
+                    }
+                }
+                else {
+                    foreach ($height in $qualities) {
+                        $finalHeight = "$height"
+                        $fmt = "bv*[height<=$height]+ba/b[height<=$height]"
+                        $allLines = [System.Collections.Generic.List[string]]::new()
+
+                        $args = @(
+                            "--encoding", "utf-8",
+                            "--newline",
+                            "--impersonate", "chrome",
+                            "-N", "$effectiveFragments",
+                            "-o", $outputTemplate,
+                            "-f", $fmt
+                        )
+
+                        if ($cookies) {
+                            $args += @("--cookies", $cookies)
+                        }
+
+                        if ($sponsorBlock) {
+                            $args += @("--sponsorblock-remove", "sponsor")
+                        }
+
+                        $args += $url
+
+                        & .\yt-dlp.exe @args 2>&1 |
+                        ForEach-Object {
+                            $line = $_.ToString()
+                            [void]$allLines.Add($line)
+
+                            if ($line -match 'Destination:\s+(.+)$') {
+                                $title = Clean-DisplayTitleInner -Text ($matches[1].Trim())
+
+                                Emit-Event `
+                                    -EventType "Title" `
+                                    -Text "" `
+                                    -Title $title `
+                                    -Height "$height"
+                            }
+                            elseif ($line -match '\[download\]\s+([0-9.]+)%\s+of\s+(.+?)\s+at\s+(.+?)\s+ETA\s+(.+)$') {
+                                $pct = [double]$matches[1]
+                                $size = $matches[2].Trim()
+                                $speed = $matches[3].Trim()
+                                $eta = $matches[4].Trim()
+
+                                Emit-Event `
+                                    -EventType "Progress" `
+                                    -Text "" `
+                                    -Percent $pct `
+                                    -Speed $speed `
+                                    -Size $size `
+                                    -ETA $eta `
+                                    -Height "$height"
+                            }
+                            elseif ($line -match 'Merging formats|Merger') {
+                                Emit-Event -EventType "Merge" -Text "" -Height "$height"
+                            }
+                            elseif ($line -match '^ERROR:\s*(.+)$') {
+                                $lastError = $matches[1].Trim()
+                            }
+                        }
+
+                        $exit = $LASTEXITCODE
+                        $combined = $allLines -join "`n"
+
+                        if ($exit -eq 0) {
+                            $success = $true
+                            break
+                        }
+
+                        if (-not $lastError) {
+                            $lastError = "yt-dlp exit code $exit"
+                        }
+
+                        if ($combined -match 'Requested format is not available' -and $height -ne $qualities[-1]) {
+                            Emit-Event -EventType "Fallback" -Text ("T{0} FALLBACK <= {1}p -> next quality" -f $slot, $height) -Height "$height"
+                            continue
+                        }
+
+                        break
+                    }
+                }
+
+                if ($success) {
+                    Emit-Event -EventType "Done" -Text ("T{0} DONE #{1}/{2} q<={3} N={4} {5}" -f $slot, $index, $totalUrls, $finalHeight, $effectiveFragments, (ShortenInner -Text (Clean-DisplayTitleInner -Text $title) -Max 200)) -Height "$finalHeight"
+
+                    [pscustomobject]@{
+                        Kind = "Result"
+                        Slot = $slot
+                        Url = $url
+                        Success = $true
+                        Error = ""
+                        Height = $finalHeight
+                    }
+
+                    return
+                }
+
+                Emit-Event -EventType "Error" -Text ("T{0} ERROR #{1}/{2} {3}" -f $slot, $index, $totalUrls, $lastError) -Height "$finalHeight"
+
+                [pscustomobject]@{
+                    Kind = "Result"
+                    Slot = $slot
+                    Url = $url
+                    Success = $false
+                    Error = $lastError
+                    Height = $finalHeight
+                }
+            }
+            catch {
+                $message = $_.Exception.Message
+
+                Emit-Event -EventType "Error" -Text ("T{0} EXCEPTION #{1}/{2} {3}" -f $slot, $index, $totalUrls, $message)
+
+                [pscustomobject]@{
+                    Kind = "Result"
+                    Slot = $slot
+                    Url = $url
+                    Success = $false
+                    Error = "ThreadJob exception: $message"
+                    Height = ""
+                }
+            }
+        }
+    }
+
+    Start-Sleep -Milliseconds 300
+
+    foreach ($j in @($jobs)) {
+        $jobErr = $null
+        $messages = @(Receive-Job $j -ErrorVariable jobErr -ErrorAction SilentlyContinue)
+
+        if ($jobErr) {
+            foreach ($e in $jobErr) {
+                Write-Log ("T{0} JOB-ERROR {1}" -f $j.Name, $e.ToString()) Red
+            }
+        }
+
+        foreach ($msg in $messages) {
+            Handle-Message -Message $msg -Results $results -Completed $completed -Urls $urls -Titles $titles -NoProgress:$NoProgress
+        }
+    }
+
+    $done = @($jobs | Where-Object { $_.State -ne "Running" })
+
+    foreach ($j in $done) {
+        $slot = [int]$j.Name
+
+        $messages = @(Receive-Job $j -ErrorAction SilentlyContinue)
+        foreach ($msg in $messages) {
+            Handle-Message -Message $msg -Results $results -Completed $completed -Urls $urls -Titles $titles -NoProgress:$NoProgress
+        }
+
+        if (-not $NoProgress) {
+            Write-Progress -Id $slot -Activity ("T{0}" -f $slot) -Completed
+        }
+
+        Remove-Job $j -Force
+        $jobs = @($jobs | Where-Object { $_.Id -ne $j.Id })
+        $freeSlots.Enqueue($slot)
+        $titles.Remove($slot)
+    }
+}
+
+if (-not $NoProgress) {
+    foreach ($slot in 1..$MaxParallel) {
+        Write-Progress -Id $slot -Activity ("T{0}" -f $slot) -Completed
+    }
+}
+
+$successFinal = ($results | Where-Object { $_.Success }).Count
+$errorFinal = ($results | Where-Object { -not $_.Success }).Count
+$remainingCount = 0
+
+if (Test-Path $ListFile) {
+    $remainingCount = @(Get-Content $ListFile | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count
+}
+
+Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, $errorFinal, $remainingCount) Cyan
+) {
+                            $title = Clean-DisplayTitleInner -Text ($matches[1].Trim())
+                            Emit-Event -EventType "Title" -Text "" -Title $title -Height "audio"
+                        }
+                        elseif ($line -match '\[download\]\s+([0-9.]+)%\s+of\s+(.+?)\s+at\s+(.+?)\s+ETA\s+(.+)$') {
+                            $pct = [double]$matches[1]
+                            $size = $matches[2].Trim()
+                            $speed = $matches[3].Trim()
+                            $eta = $matches[4].Trim()
+
+                            Emit-Event `
+                                -EventType "Progress" `
+                                -Text "" `
+                                -Percent $pct `
+                                -Speed $speed `
+                                -Size $size `
+                                -ETA $eta `
+                                -Height "audio"
+                        }
+                        elseif ($line -match 'ExtractAudio|Deleting original file|Destination') {
+                            Emit-Event -EventType "Merge" -Text "" -Height "audio"
+                        }
+                        elseif ($line -match '^ERROR:\s*(.+)$') {
+                            $lastError = $matches[1].Trim()
+                        }
+                    }
+
+                    $exit = $LASTEXITCODE
+
+                    if ($exit -eq 0) {
+                        $success = $true
+                    }
+                    elseif (-not $lastError) {
+                        $lastError = "yt-dlp exit code $exit"
+                    }
+                }
+                else {
+                    foreach ($height in $qualities) {
+                        $finalHeight = "$height"
+                        $fmt = "bv*[height<=$height]+ba/b[height<=$height]"
+                        $allLines = [System.Collections.Generic.List[string]]::new()
+
+                        $args = @(
+                            "--encoding", "utf-8",
+                            "--newline",
+                            "--impersonate", "chrome",
+                            "-N", "$effectiveFragments",
+                            "-o", $outputTemplate,
+                            "-f", $fmt
+                        )
+
+                        if ($cookies) {
+                            $args += @("--cookies", $cookies)
+                        }
+
+                        if ($sponsorBlock) {
+                            $args += @("--sponsorblock-remove", "sponsor")
+                        }
+
+                        $args += $url
+
+                        & .\yt-dlp.exe @args 2>&1 |
+                        ForEach-Object {
+                            $line = $_.ToString()
+                            [void]$allLines.Add($line)
+
+                            if ($line -match 'Destination:\s+(.+)$') {
+                                $title = Clean-DisplayTitleInner -Text ($matches[1].Trim())
+
+                                Emit-Event `
+                                    -EventType "Title" `
+                                    -Text "" `
+                                    -Title $title `
+                                    -Height "$height"
+                            }
+                            elseif ($line -match '\[download\]\s+([0-9.]+)%\s+of\s+(.+?)\s+at\s+(.+?)\s+ETA\s+(.+)$') {
+                                $pct = [double]$matches[1]
+                                $size = $matches[2].Trim()
+                                $speed = $matches[3].Trim()
+                                $eta = $matches[4].Trim()
+
+                                Emit-Event `
+                                    -EventType "Progress" `
+                                    -Text "" `
+                                    -Percent $pct `
+                                    -Speed $speed `
+                                    -Size $size `
+                                    -ETA $eta `
+                                    -Height "$height"
+                            }
+                            elseif ($line -match 'Merging formats|Merger') {
+                                Emit-Event -EventType "Merge" -Text "" -Height "$height"
+                            }
+                            elseif ($line -match '^ERROR:\s*(.+)$') {
+                                $lastError = $matches[1].Trim()
+                            }
+                        }
+
+                        $exit = $LASTEXITCODE
+                        $combined = $allLines -join "`n"
+
+                        if ($exit -eq 0) {
+                            $success = $true
+                            break
+                        }
+
+                        if (-not $lastError) {
+                            $lastError = "yt-dlp exit code $exit"
+                        }
+
+                        if ($combined -match 'Requested format is not available' -and $height -ne $qualities[-1]) {
+                            Emit-Event -EventType "Fallback" -Text ("T{0} FALLBACK <= {1}p -> next quality" -f $slot, $height) -Height "$height"
+                            continue
+                        }
+
+                        break
+                    }
+                }
+
+                if ($success) {
+                    Emit-Event -EventType "Done" -Text ("T{0} DONE #{1}/{2} q<={3} N={4} {5}" -f $slot, $index, $totalUrls, $finalHeight, $effectiveFragments, (ShortenInner -Text (Clean-DisplayTitleInner -Text $title) -Max 200)) -Height "$finalHeight"
+
+                    [pscustomobject]@{
+                        Kind = "Result"
+                        Slot = $slot
+                        Url = $url
+                        Success = $true
+                        Error = ""
+                        Height = $finalHeight
+                    }
+
+                    return
+                }
+
+                Emit-Event -EventType "Error" -Text ("T{0} ERROR #{1}/{2} {3}" -f $slot, $index, $totalUrls, $lastError) -Height "$finalHeight"
+
+                [pscustomobject]@{
+                    Kind = "Result"
+                    Slot = $slot
+                    Url = $url
+                    Success = $false
+                    Error = $lastError
+                    Height = $finalHeight
+                }
+            }
+            catch {
+                $message = $_.Exception.Message
+
+                Emit-Event -EventType "Error" -Text ("T{0} EXCEPTION #{1}/{2} {3}" -f $slot, $index, $totalUrls, $message)
+
+                [pscustomobject]@{
+                    Kind = "Result"
+                    Slot = $slot
+                    Url = $url
+                    Success = $false
+                    Error = "ThreadJob exception: $message"
+                    Height = ""
+                }
+            }
+        }
+    }
+
+    Start-Sleep -Milliseconds 300
+
+    foreach ($j in @($jobs)) {
+        $jobErr = $null
+        $messages = @(Receive-Job $j -ErrorVariable jobErr -ErrorAction SilentlyContinue)
+
+        if ($jobErr) {
+            foreach ($e in $jobErr) {
+                Write-Log ("T{0} JOB-ERROR {1}" -f $j.Name, $e.ToString()) Red
+            }
+        }
+
+        foreach ($msg in $messages) {
+            Handle-Message -Message $msg -Results $results -Completed $completed -Urls $urls -Titles $titles -NoProgress:$NoProgress
+        }
+    }
+
+    $done = @($jobs | Where-Object { $_.State -ne "Running" })
+
+    foreach ($j in $done) {
+        $slot = [int]$j.Name
+
+        $messages = @(Receive-Job $j -ErrorAction SilentlyContinue)
+        foreach ($msg in $messages) {
+            Handle-Message -Message $msg -Results $results -Completed $completed -Urls $urls -Titles $titles -NoProgress:$NoProgress
+        }
+
+        if (-not $NoProgress) {
+            Write-Progress -Id $slot -Activity ("T{0}" -f $slot) -Completed
+        }
+
+        Remove-Job $j -Force
+        $jobs = @($jobs | Where-Object { $_.Id -ne $j.Id })
+        $freeSlots.Enqueue($slot)
+        $titles.Remove($slot)
+    }
+}
+
+if (-not $NoProgress) {
+    foreach ($slot in 1..$MaxParallel) {
+        Write-Progress -Id $slot -Activity ("T{0}" -f $slot) -Completed
+    }
+}
+
+$successFinal = ($results | Where-Object { $_.Success }).Count
+$errorFinal = ($results | Where-Object { -not $_.Success }).Count
+$remainingCount = 0
+
+if (Test-Path $ListFile) {
+    $remainingCount = @(Get-Content $ListFile | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count
+}
+
+Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, $errorFinal, $remainingCount) Cyan
+) {
+                                $finalPath = $matches[1].Trim()
+                            }
+                            elseif ($line -match 'Destination:\s+(.+)
+
+                                Emit-Event `
+                                    -EventType "Title" `
+                                    -Text "" `
+                                    -Title $title `
+                                    -Height "$height"
+                            }
+                            elseif ($line -match '\[download\]\s+([0-9.]+)%\s+of\s+(.+?)\s+at\s+(.+?)\s+ETA\s+(.+)$') {
+                                $pct = [double]$matches[1]
+                                $size = $matches[2].Trim()
+                                $speed = $matches[3].Trim()
+                                $eta = $matches[4].Trim()
+
+                                Emit-Event `
+                                    -EventType "Progress" `
+                                    -Text "" `
+                                    -Percent $pct `
+                                    -Speed $speed `
+                                    -Size $size `
+                                    -ETA $eta `
+                                    -Height "$height"
+                            }
+                            elseif ($line -match 'Merging formats|Merger') {
+                                Emit-Event -EventType "Merge" -Text "" -Height "$height"
+                            }
+                            elseif ($line -match '^ERROR:\s*(.+)$') {
+                                $lastError = $matches[1].Trim()
+                            }
+                        }
+
+                        $exit = $LASTEXITCODE
+                        $combined = $allLines -join "`n"
+
+                        if ($exit -eq 0) {
+                            $success = $true
+                            break
+                        }
+
+                        if (-not $lastError) {
+                            $lastError = "yt-dlp exit code $exit"
+                        }
+
+                        if ($combined -match 'Requested format is not available' -and $height -ne $qualities[-1]) {
+                            Emit-Event -EventType "Fallback" -Text ("T{0} FALLBACK <= {1}p -> next quality" -f $slot, $height) -Height "$height"
+                            continue
+                        }
+
+                        break
+                    }
+                }
+
+                if ($success) {
+                    Emit-Event -EventType "Done" -Text ("T{0} DONE #{1}/{2} q<={3} N={4} {5}" -f $slot, $index, $totalUrls, $finalHeight, $effectiveFragments, (ShortenInner -Text (Clean-DisplayTitleInner -Text $title) -Max 200)) -Height "$finalHeight"
+
+                    [pscustomobject]@{
+                        Kind = "Result"
+                        Slot = $slot
+                        Url = $url
+                        Success = $true
+                        Error = ""
+                        Height = $finalHeight
+                    }
+
+                    return
+                }
+
+                Emit-Event -EventType "Error" -Text ("T{0} ERROR #{1}/{2} {3}" -f $slot, $index, $totalUrls, $lastError) -Height "$finalHeight"
+
+                [pscustomobject]@{
+                    Kind = "Result"
+                    Slot = $slot
+                    Url = $url
+                    Success = $false
+                    Error = $lastError
+                    Height = $finalHeight
+                }
+            }
+            catch {
+                $message = $_.Exception.Message
+
+                Emit-Event -EventType "Error" -Text ("T{0} EXCEPTION #{1}/{2} {3}" -f $slot, $index, $totalUrls, $message)
+
+                [pscustomobject]@{
+                    Kind = "Result"
+                    Slot = $slot
+                    Url = $url
+                    Success = $false
+                    Error = "ThreadJob exception: $message"
+                    Height = ""
+                }
+            }
+        }
+    }
+
+    Start-Sleep -Milliseconds 300
+
+    foreach ($j in @($jobs)) {
+        $jobErr = $null
+        $messages = @(Receive-Job $j -ErrorVariable jobErr -ErrorAction SilentlyContinue)
+
+        if ($jobErr) {
+            foreach ($e in $jobErr) {
+                Write-Log ("T{0} JOB-ERROR {1}" -f $j.Name, $e.ToString()) Red
+            }
+        }
+
+        foreach ($msg in $messages) {
+            Handle-Message -Message $msg -Results $results -Completed $completed -Urls $urls -Titles $titles -NoProgress:$NoProgress
+        }
+    }
+
+    $done = @($jobs | Where-Object { $_.State -ne "Running" })
+
+    foreach ($j in $done) {
+        $slot = [int]$j.Name
+
+        $messages = @(Receive-Job $j -ErrorAction SilentlyContinue)
+        foreach ($msg in $messages) {
+            Handle-Message -Message $msg -Results $results -Completed $completed -Urls $urls -Titles $titles -NoProgress:$NoProgress
+        }
+
+        if (-not $NoProgress) {
+            Write-Progress -Id $slot -Activity ("T{0}" -f $slot) -Completed
+        }
+
+        Remove-Job $j -Force
+        $jobs = @($jobs | Where-Object { $_.Id -ne $j.Id })
+        $freeSlots.Enqueue($slot)
+        $titles.Remove($slot)
+    }
+}
+
+if (-not $NoProgress) {
+    foreach ($slot in 1..$MaxParallel) {
+        Write-Progress -Id $slot -Activity ("T{0}" -f $slot) -Completed
+    }
+}
+
+$successFinal = ($results | Where-Object { $_.Success }).Count
+$errorFinal = ($results | Where-Object { -not $_.Success }).Count
+$remainingCount = 0
+
+if (Test-Path $ListFile) {
+    $remainingCount = @(Get-Content $ListFile | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count
+}
+
+Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, $errorFinal, $remainingCount) Cyan
+) {
+                            $finalPath = $matches[1].Trim()
+                        }
+                        elseif ($line -match 'Destination:\s+(.+)
+                            Emit-Event -EventType "Title" -Text "" -Title $title -Height "audio"
+                        }
+                        elseif ($line -match '\[download\]\s+([0-9.]+)%\s+of\s+(.+?)\s+at\s+(.+?)\s+ETA\s+(.+)$') {
+                            $pct = [double]$matches[1]
+                            $size = $matches[2].Trim()
+                            $speed = $matches[3].Trim()
+                            $eta = $matches[4].Trim()
+
+                            Emit-Event `
+                                -EventType "Progress" `
+                                -Text "" `
+                                -Percent $pct `
+                                -Speed $speed `
+                                -Size $size `
+                                -ETA $eta `
+                                -Height "audio"
+                        }
+                        elseif ($line -match 'ExtractAudio|Deleting original file|Destination') {
+                            Emit-Event -EventType "Merge" -Text "" -Height "audio"
+                        }
+                        elseif ($line -match '^ERROR:\s*(.+)$') {
+                            $lastError = $matches[1].Trim()
+                        }
+                    }
+
+                    $exit = $LASTEXITCODE
+
+                    if ($exit -eq 0) {
+                        $success = $true
+                    }
+                    elseif (-not $lastError) {
+                        $lastError = "yt-dlp exit code $exit"
+                    }
+                }
+                else {
+                    foreach ($height in $qualities) {
+                        $finalHeight = "$height"
+                        $fmt = "bv*[height<=$height]+ba/b[height<=$height]"
+                        $allLines = [System.Collections.Generic.List[string]]::new()
+
+                        $args = @(
+                            "--encoding", "utf-8",
+                            "--newline",
+                            "--impersonate", "chrome",
+                            "-N", "$effectiveFragments",
+                            "-o", $outputTemplate,
+                            "-f", $fmt
+                        )
+
+                        if ($cookies) {
+                            $args += @("--cookies", $cookies)
+                        }
+
+                        if ($sponsorBlock) {
+                            $args += @("--sponsorblock-remove", "sponsor")
+                        }
+
+                        $args += $url
+
+                        & .\yt-dlp.exe @args 2>&1 |
+                        ForEach-Object {
+                            $line = $_.ToString()
+                            [void]$allLines.Add($line)
+
+                            if ($line -match 'Destination:\s+(.+)$') {
+                                $title = Clean-DisplayTitleInner -Text ($matches[1].Trim())
+
+                                Emit-Event `
+                                    -EventType "Title" `
+                                    -Text "" `
+                                    -Title $title `
+                                    -Height "$height"
+                            }
+                            elseif ($line -match '\[download\]\s+([0-9.]+)%\s+of\s+(.+?)\s+at\s+(.+?)\s+ETA\s+(.+)$') {
+                                $pct = [double]$matches[1]
+                                $size = $matches[2].Trim()
+                                $speed = $matches[3].Trim()
+                                $eta = $matches[4].Trim()
+
+                                Emit-Event `
+                                    -EventType "Progress" `
+                                    -Text "" `
+                                    -Percent $pct `
+                                    -Speed $speed `
+                                    -Size $size `
+                                    -ETA $eta `
+                                    -Height "$height"
+                            }
+                            elseif ($line -match 'Merging formats|Merger') {
+                                Emit-Event -EventType "Merge" -Text "" -Height "$height"
+                            }
+                            elseif ($line -match '^ERROR:\s*(.+)$') {
+                                $lastError = $matches[1].Trim()
+                            }
+                        }
+
+                        $exit = $LASTEXITCODE
+                        $combined = $allLines -join "`n"
+
+                        if ($exit -eq 0) {
+                            $success = $true
+                            break
+                        }
+
+                        if (-not $lastError) {
+                            $lastError = "yt-dlp exit code $exit"
+                        }
+
+                        if ($combined -match 'Requested format is not available' -and $height -ne $qualities[-1]) {
+                            Emit-Event -EventType "Fallback" -Text ("T{0} FALLBACK <= {1}p -> next quality" -f $slot, $height) -Height "$height"
+                            continue
+                        }
+
+                        break
+                    }
+                }
+
+                if ($success) {
+                    Emit-Event -EventType "Done" -Text ("T{0} DONE #{1}/{2} q<={3} N={4} {5}" -f $slot, $index, $totalUrls, $finalHeight, $effectiveFragments, (ShortenInner -Text (Clean-DisplayTitleInner -Text $title) -Max 200)) -Height "$finalHeight"
+
+                    [pscustomobject]@{
+                        Kind = "Result"
+                        Slot = $slot
+                        Url = $url
+                        Success = $true
+                        Error = ""
+                        Height = $finalHeight
+                    }
+
+                    return
+                }
+
+                Emit-Event -EventType "Error" -Text ("T{0} ERROR #{1}/{2} {3}" -f $slot, $index, $totalUrls, $lastError) -Height "$finalHeight"
+
+                [pscustomobject]@{
+                    Kind = "Result"
+                    Slot = $slot
+                    Url = $url
+                    Success = $false
+                    Error = $lastError
+                    Height = $finalHeight
+                }
+            }
+            catch {
+                $message = $_.Exception.Message
+
+                Emit-Event -EventType "Error" -Text ("T{0} EXCEPTION #{1}/{2} {3}" -f $slot, $index, $totalUrls, $message)
+
+                [pscustomobject]@{
+                    Kind = "Result"
+                    Slot = $slot
+                    Url = $url
+                    Success = $false
+                    Error = "ThreadJob exception: $message"
+                    Height = ""
+                }
+            }
+        }
+    }
+
+    Start-Sleep -Milliseconds 300
+
+    foreach ($j in @($jobs)) {
+        $jobErr = $null
+        $messages = @(Receive-Job $j -ErrorVariable jobErr -ErrorAction SilentlyContinue)
+
+        if ($jobErr) {
+            foreach ($e in $jobErr) {
+                Write-Log ("T{0} JOB-ERROR {1}" -f $j.Name, $e.ToString()) Red
+            }
+        }
+
+        foreach ($msg in $messages) {
+            Handle-Message -Message $msg -Results $results -Completed $completed -Urls $urls -Titles $titles -NoProgress:$NoProgress
+        }
+    }
+
+    $done = @($jobs | Where-Object { $_.State -ne "Running" })
+
+    foreach ($j in $done) {
+        $slot = [int]$j.Name
+
+        $messages = @(Receive-Job $j -ErrorAction SilentlyContinue)
+        foreach ($msg in $messages) {
+            Handle-Message -Message $msg -Results $results -Completed $completed -Urls $urls -Titles $titles -NoProgress:$NoProgress
+        }
+
+        if (-not $NoProgress) {
+            Write-Progress -Id $slot -Activity ("T{0}" -f $slot) -Completed
+        }
+
+        Remove-Job $j -Force
+        $jobs = @($jobs | Where-Object { $_.Id -ne $j.Id })
+        $freeSlots.Enqueue($slot)
+        $titles.Remove($slot)
+    }
+}
+
+if (-not $NoProgress) {
+    foreach ($slot in 1..$MaxParallel) {
+        Write-Progress -Id $slot -Activity ("T{0}" -f $slot) -Completed
+    }
+}
+
+$successFinal = ($results | Where-Object { $_.Success }).Count
+$errorFinal = ($results | Where-Object { -not $_.Success }).Count
+$remainingCount = 0
+
+if (Test-Path $ListFile) {
+    $remainingCount = @(Get-Content $ListFile | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count
+}
+
+Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, $errorFinal, $remainingCount) Cyan
+) {
+                            $title = Clean-DisplayTitleInner -Text ($matches[1].Trim())
+                            Emit-Event -EventType "Title" -Text "" -Title $title -Height "audio"
+                        }
+                        elseif ($line -match '\[download\]\s+([0-9.]+)%\s+of\s+(.+?)\s+at\s+(.+?)\s+ETA\s+(.+)$') {
+                            $pct = [double]$matches[1]
+                            $size = $matches[2].Trim()
+                            $speed = $matches[3].Trim()
+                            $eta = $matches[4].Trim()
+
+                            Emit-Event `
+                                -EventType "Progress" `
+                                -Text "" `
+                                -Percent $pct `
+                                -Speed $speed `
+                                -Size $size `
+                                -ETA $eta `
+                                -Height "audio"
+                        }
+                        elseif ($line -match 'ExtractAudio|Deleting original file|Destination') {
+                            Emit-Event -EventType "Merge" -Text "" -Height "audio"
+                        }
+                        elseif ($line -match '^ERROR:\s*(.+)$') {
+                            $lastError = $matches[1].Trim()
+                        }
+                    }
+
+                    $exit = $LASTEXITCODE
+
+                    if ($exit -eq 0) {
+                        $success = $true
+                    }
+                    elseif (-not $lastError) {
+                        $lastError = "yt-dlp exit code $exit"
+                    }
+                }
+                else {
+                    foreach ($height in $qualities) {
+                        $finalHeight = "$height"
+                        $fmt = "bv*[height<=$height]+ba/b[height<=$height]"
+                        $allLines = [System.Collections.Generic.List[string]]::new()
+
+                        $args = @(
+                            "--encoding", "utf-8",
+                            "--newline",
+                            "--impersonate", "chrome",
+                            "-N", "$effectiveFragments",
+                            "-o", $outputTemplate,
+                            "-f", $fmt
+                        )
+
+                        if ($cookies) {
+                            $args += @("--cookies", $cookies)
+                        }
+
+                        if ($sponsorBlock) {
+                            $args += @("--sponsorblock-remove", "sponsor")
+                        }
+
+                        $args += $url
+
+                        & .\yt-dlp.exe @args 2>&1 |
+                        ForEach-Object {
+                            $line = $_.ToString()
+                            [void]$allLines.Add($line)
+
+                            if ($line -match 'Destination:\s+(.+)$') {
+                                $title = Clean-DisplayTitleInner -Text ($matches[1].Trim())
+
+                                Emit-Event `
+                                    -EventType "Title" `
+                                    -Text "" `
+                                    -Title $title `
+                                    -Height "$height"
+                            }
+                            elseif ($line -match '\[download\]\s+([0-9.]+)%\s+of\s+(.+?)\s+at\s+(.+?)\s+ETA\s+(.+)$') {
+                                $pct = [double]$matches[1]
+                                $size = $matches[2].Trim()
+                                $speed = $matches[3].Trim()
+                                $eta = $matches[4].Trim()
+
+                                Emit-Event `
+                                    -EventType "Progress" `
+                                    -Text "" `
+                                    -Percent $pct `
+                                    -Speed $speed `
+                                    -Size $size `
+                                    -ETA $eta `
+                                    -Height "$height"
+                            }
+                            elseif ($line -match 'Merging formats|Merger') {
+                                Emit-Event -EventType "Merge" -Text "" -Height "$height"
+                            }
+                            elseif ($line -match '^ERROR:\s*(.+)$') {
+                                $lastError = $matches[1].Trim()
+                            }
+                        }
+
+                        $exit = $LASTEXITCODE
+                        $combined = $allLines -join "`n"
+
+                        if ($exit -eq 0) {
+                            $success = $true
+                            break
+                        }
+
+                        if (-not $lastError) {
+                            $lastError = "yt-dlp exit code $exit"
+                        }
+
+                        if ($combined -match 'Requested format is not available' -and $height -ne $qualities[-1]) {
+                            Emit-Event -EventType "Fallback" -Text ("T{0} FALLBACK <= {1}p -> next quality" -f $slot, $height) -Height "$height"
+                            continue
+                        }
+
+                        break
+                    }
+                }
+
+                if ($success) {
+                    Emit-Event -EventType "Done" -Text ("T{0} DONE #{1}/{2} q<={3} N={4} {5}" -f $slot, $index, $totalUrls, $finalHeight, $effectiveFragments, (ShortenInner -Text (Clean-DisplayTitleInner -Text $title) -Max 200)) -Height "$finalHeight"
+
+                    [pscustomobject]@{
+                        Kind = "Result"
+                        Slot = $slot
+                        Url = $url
+                        Success = $true
+                        Error = ""
+                        Height = $finalHeight
+                    }
+
+                    return
+                }
+
+                Emit-Event -EventType "Error" -Text ("T{0} ERROR #{1}/{2} {3}" -f $slot, $index, $totalUrls, $lastError) -Height "$finalHeight"
+
+                [pscustomobject]@{
+                    Kind = "Result"
+                    Slot = $slot
+                    Url = $url
+                    Success = $false
+                    Error = $lastError
+                    Height = $finalHeight
+                }
+            }
+            catch {
+                $message = $_.Exception.Message
+
+                Emit-Event -EventType "Error" -Text ("T{0} EXCEPTION #{1}/{2} {3}" -f $slot, $index, $totalUrls, $message)
+
+                [pscustomobject]@{
+                    Kind = "Result"
+                    Slot = $slot
+                    Url = $url
+                    Success = $false
+                    Error = "ThreadJob exception: $message"
+                    Height = ""
+                }
+            }
+        }
+    }
+
+    Start-Sleep -Milliseconds 300
+
+    foreach ($j in @($jobs)) {
+        $jobErr = $null
+        $messages = @(Receive-Job $j -ErrorVariable jobErr -ErrorAction SilentlyContinue)
+
+        if ($jobErr) {
+            foreach ($e in $jobErr) {
+                Write-Log ("T{0} JOB-ERROR {1}" -f $j.Name, $e.ToString()) Red
+            }
+        }
+
+        foreach ($msg in $messages) {
+            Handle-Message -Message $msg -Results $results -Completed $completed -Urls $urls -Titles $titles -NoProgress:$NoProgress
+        }
+    }
+
+    $done = @($jobs | Where-Object { $_.State -ne "Running" })
+
+    foreach ($j in $done) {
+        $slot = [int]$j.Name
+
+        $messages = @(Receive-Job $j -ErrorAction SilentlyContinue)
+        foreach ($msg in $messages) {
+            Handle-Message -Message $msg -Results $results -Completed $completed -Urls $urls -Titles $titles -NoProgress:$NoProgress
+        }
+
+        if (-not $NoProgress) {
+            Write-Progress -Id $slot -Activity ("T{0}" -f $slot) -Completed
+        }
+
+        Remove-Job $j -Force
+        $jobs = @($jobs | Where-Object { $_.Id -ne $j.Id })
+        $freeSlots.Enqueue($slot)
+        $titles.Remove($slot)
+    }
+}
+
+if (-not $NoProgress) {
+    foreach ($slot in 1..$MaxParallel) {
+        Write-Progress -Id $slot -Activity ("T{0}" -f $slot) -Completed
+    }
+}
+
+$successFinal = ($results | Where-Object { $_.Success }).Count
+$errorFinal = ($results | Where-Object { -not $_.Success }).Count
+$remainingCount = 0
+
+if (Test-Path $ListFile) {
+    $remainingCount = @(Get-Content $ListFile | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count
+}
+
+Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, $errorFinal, $remainingCount) Cyan
+) {
+                                $title = Clean-DisplayTitleInner -Text ($matches[1].Trim())
+
+                                Emit-Event `
+                                    -EventType "Title" `
+                                    -Text "" `
+                                    -Title $title `
+                                    -Height "$height"
+                            }
+                            elseif ($line -match '\[download\]\s+([0-9.]+)%\s+of\s+(.+?)\s+at\s+(.+?)\s+ETA\s+(.+)$') {
+                                $pct = [double]$matches[1]
+                                $size = $matches[2].Trim()
+                                $speed = $matches[3].Trim()
+                                $eta = $matches[4].Trim()
+
+                                Emit-Event `
+                                    -EventType "Progress" `
+                                    -Text "" `
+                                    -Percent $pct `
+                                    -Speed $speed `
+                                    -Size $size `
+                                    -ETA $eta `
+                                    -Height "$height"
+                            }
+                            elseif ($line -match 'Merging formats|Merger') {
+                                Emit-Event -EventType "Merge" -Text "" -Height "$height"
+                            }
+                            elseif ($line -match '^ERROR:\s*(.+)$') {
+                                $lastError = $matches[1].Trim()
+                            }
+                        }
+
+                        $exit = $LASTEXITCODE
+                        $combined = $allLines -join "`n"
+
+                        if ($exit -eq 0) {
+                            $success = $true
+                            break
+                        }
+
+                        if (-not $lastError) {
+                            $lastError = "yt-dlp exit code $exit"
+                        }
+
+                        if ($combined -match 'Requested format is not available' -and $height -ne $qualities[-1]) {
+                            Emit-Event -EventType "Fallback" -Text ("T{0} FALLBACK <= {1}p -> next quality" -f $slot, $height) -Height "$height"
+                            continue
+                        }
+
+                        break
+                    }
+                }
+
+                if ($success) {
+                    Emit-Event -EventType "Done" -Text ("T{0} DONE #{1}/{2} q<={3} N={4} {5}" -f $slot, $index, $totalUrls, $finalHeight, $effectiveFragments, (ShortenInner -Text (Clean-DisplayTitleInner -Text $title) -Max 200)) -Height "$finalHeight"
+
+                    [pscustomobject]@{
+                        Kind = "Result"
+                        Slot = $slot
+                        Url = $url
+                        Success = $true
+                        Error = ""
+                        Height = $finalHeight
+                    }
+
+                    return
+                }
+
+                Emit-Event -EventType "Error" -Text ("T{0} ERROR #{1}/{2} {3}" -f $slot, $index, $totalUrls, $lastError) -Height "$finalHeight"
+
+                [pscustomobject]@{
+                    Kind = "Result"
+                    Slot = $slot
+                    Url = $url
+                    Success = $false
+                    Error = $lastError
+                    Height = $finalHeight
+                }
+            }
+            catch {
+                $message = $_.Exception.Message
+
+                Emit-Event -EventType "Error" -Text ("T{0} EXCEPTION #{1}/{2} {3}" -f $slot, $index, $totalUrls, $message)
+
+                [pscustomobject]@{
+                    Kind = "Result"
+                    Slot = $slot
+                    Url = $url
+                    Success = $false
+                    Error = "ThreadJob exception: $message"
+                    Height = ""
+                }
+            }
+        }
+    }
+
+    Start-Sleep -Milliseconds 300
+
+    foreach ($j in @($jobs)) {
+        $jobErr = $null
+        $messages = @(Receive-Job $j -ErrorVariable jobErr -ErrorAction SilentlyContinue)
+
+        if ($jobErr) {
+            foreach ($e in $jobErr) {
+                Write-Log ("T{0} JOB-ERROR {1}" -f $j.Name, $e.ToString()) Red
+            }
+        }
+
+        foreach ($msg in $messages) {
+            Handle-Message -Message $msg -Results $results -Completed $completed -Urls $urls -Titles $titles -NoProgress:$NoProgress
+        }
+    }
+
+    $done = @($jobs | Where-Object { $_.State -ne "Running" })
+
+    foreach ($j in $done) {
+        $slot = [int]$j.Name
+
+        $messages = @(Receive-Job $j -ErrorAction SilentlyContinue)
+        foreach ($msg in $messages) {
+            Handle-Message -Message $msg -Results $results -Completed $completed -Urls $urls -Titles $titles -NoProgress:$NoProgress
+        }
+
+        if (-not $NoProgress) {
+            Write-Progress -Id $slot -Activity ("T{0}" -f $slot) -Completed
+        }
+
+        Remove-Job $j -Force
+        $jobs = @($jobs | Where-Object { $_.Id -ne $j.Id })
+        $freeSlots.Enqueue($slot)
+        $titles.Remove($slot)
+    }
+}
+
+if (-not $NoProgress) {
+    foreach ($slot in 1..$MaxParallel) {
+        Write-Progress -Id $slot -Activity ("T{0}" -f $slot) -Completed
+    }
+}
+
+$successFinal = ($results | Where-Object { $_.Success }).Count
+$errorFinal = ($results | Where-Object { -not $_.Success }).Count
+$remainingCount = 0
+
+if (Test-Path $ListFile) {
+    $remainingCount = @(Get-Content $ListFile | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count
+}
+
+Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, $errorFinal, $remainingCount) Cyan
+) {
+                            $finalPath = $matches[1].Trim()
+                        }
+                        elseif ($line -match 'Destination:\s+(.+)
+                            Emit-Event -EventType "Title" -Text "" -Title $title -Height "audio"
+                        }
+                        elseif ($line -match '\[download\]\s+([0-9.]+)%\s+of\s+(.+?)\s+at\s+(.+?)\s+ETA\s+(.+)$') {
+                            $pct = [double]$matches[1]
+                            $size = $matches[2].Trim()
+                            $speed = $matches[3].Trim()
+                            $eta = $matches[4].Trim()
+
+                            Emit-Event `
+                                -EventType "Progress" `
+                                -Text "" `
+                                -Percent $pct `
+                                -Speed $speed `
+                                -Size $size `
+                                -ETA $eta `
+                                -Height "audio"
+                        }
+                        elseif ($line -match 'ExtractAudio|Deleting original file|Destination') {
+                            Emit-Event -EventType "Merge" -Text "" -Height "audio"
+                        }
+                        elseif ($line -match '^ERROR:\s*(.+)$') {
+                            $lastError = $matches[1].Trim()
+                        }
+                    }
+
+                    $exit = $LASTEXITCODE
+
+                    if ($exit -eq 0) {
+                        $success = $true
+                    }
+                    elseif (-not $lastError) {
+                        $lastError = "yt-dlp exit code $exit"
+                    }
+                }
+                else {
+                    foreach ($height in $qualities) {
+                        $finalHeight = "$height"
+                        $fmt = "bv*[height<=$height]+ba/b[height<=$height]"
+                        $allLines = [System.Collections.Generic.List[string]]::new()
+
+                        $args = @(
+                            "--encoding", "utf-8",
+                            "--newline",
+                            "--impersonate", "chrome",
+                            "-N", "$effectiveFragments",
+                            "-o", $outputTemplate,
+                            "-f", $fmt
+                        )
+
+                        if ($cookies) {
+                            $args += @("--cookies", $cookies)
+                        }
+
+                        if ($sponsorBlock) {
+                            $args += @("--sponsorblock-remove", "sponsor")
+                        }
+
+                        $args += $url
+
+                        & .\yt-dlp.exe @args 2>&1 |
+                        ForEach-Object {
+                            $line = $_.ToString()
+                            [void]$allLines.Add($line)
+
+                            if ($line -match 'Destination:\s+(.+)$') {
+                                $title = Clean-DisplayTitleInner -Text ($matches[1].Trim())
+
+                                Emit-Event `
+                                    -EventType "Title" `
+                                    -Text "" `
+                                    -Title $title `
+                                    -Height "$height"
+                            }
+                            elseif ($line -match '\[download\]\s+([0-9.]+)%\s+of\s+(.+?)\s+at\s+(.+?)\s+ETA\s+(.+)$') {
+                                $pct = [double]$matches[1]
+                                $size = $matches[2].Trim()
+                                $speed = $matches[3].Trim()
+                                $eta = $matches[4].Trim()
+
+                                Emit-Event `
+                                    -EventType "Progress" `
+                                    -Text "" `
+                                    -Percent $pct `
+                                    -Speed $speed `
+                                    -Size $size `
+                                    -ETA $eta `
+                                    -Height "$height"
+                            }
+                            elseif ($line -match 'Merging formats|Merger') {
+                                Emit-Event -EventType "Merge" -Text "" -Height "$height"
+                            }
+                            elseif ($line -match '^ERROR:\s*(.+)$') {
+                                $lastError = $matches[1].Trim()
+                            }
+                        }
+
+                        $exit = $LASTEXITCODE
+                        $combined = $allLines -join "`n"
+
+                        if ($exit -eq 0) {
+                            $success = $true
+                            break
+                        }
+
+                        if (-not $lastError) {
+                            $lastError = "yt-dlp exit code $exit"
+                        }
+
+                        if ($combined -match 'Requested format is not available' -and $height -ne $qualities[-1]) {
+                            Emit-Event -EventType "Fallback" -Text ("T{0} FALLBACK <= {1}p -> next quality" -f $slot, $height) -Height "$height"
+                            continue
+                        }
+
+                        break
+                    }
+                }
+
+                if ($success) {
+                    Emit-Event -EventType "Done" -Text ("T{0} DONE #{1}/{2} q<={3} N={4} {5}" -f $slot, $index, $totalUrls, $finalHeight, $effectiveFragments, (ShortenInner -Text (Clean-DisplayTitleInner -Text $title) -Max 200)) -Height "$finalHeight"
+
+                    [pscustomobject]@{
+                        Kind = "Result"
+                        Slot = $slot
+                        Url = $url
+                        Success = $true
+                        Error = ""
+                        Height = $finalHeight
+                    }
+
+                    return
+                }
+
+                Emit-Event -EventType "Error" -Text ("T{0} ERROR #{1}/{2} {3}" -f $slot, $index, $totalUrls, $lastError) -Height "$finalHeight"
+
+                [pscustomobject]@{
+                    Kind = "Result"
+                    Slot = $slot
+                    Url = $url
+                    Success = $false
+                    Error = $lastError
+                    Height = $finalHeight
+                }
+            }
+            catch {
+                $message = $_.Exception.Message
+
+                Emit-Event -EventType "Error" -Text ("T{0} EXCEPTION #{1}/{2} {3}" -f $slot, $index, $totalUrls, $message)
+
+                [pscustomobject]@{
+                    Kind = "Result"
+                    Slot = $slot
+                    Url = $url
+                    Success = $false
+                    Error = "ThreadJob exception: $message"
+                    Height = ""
+                }
+            }
+        }
+    }
+
+    Start-Sleep -Milliseconds 300
+
+    foreach ($j in @($jobs)) {
+        $jobErr = $null
+        $messages = @(Receive-Job $j -ErrorVariable jobErr -ErrorAction SilentlyContinue)
+
+        if ($jobErr) {
+            foreach ($e in $jobErr) {
+                Write-Log ("T{0} JOB-ERROR {1}" -f $j.Name, $e.ToString()) Red
+            }
+        }
+
+        foreach ($msg in $messages) {
+            Handle-Message -Message $msg -Results $results -Completed $completed -Urls $urls -Titles $titles -NoProgress:$NoProgress
+        }
+    }
+
+    $done = @($jobs | Where-Object { $_.State -ne "Running" })
+
+    foreach ($j in $done) {
+        $slot = [int]$j.Name
+
+        $messages = @(Receive-Job $j -ErrorAction SilentlyContinue)
+        foreach ($msg in $messages) {
+            Handle-Message -Message $msg -Results $results -Completed $completed -Urls $urls -Titles $titles -NoProgress:$NoProgress
+        }
+
+        if (-not $NoProgress) {
+            Write-Progress -Id $slot -Activity ("T{0}" -f $slot) -Completed
+        }
+
+        Remove-Job $j -Force
+        $jobs = @($jobs | Where-Object { $_.Id -ne $j.Id })
+        $freeSlots.Enqueue($slot)
+        $titles.Remove($slot)
+    }
+}
+
+if (-not $NoProgress) {
+    foreach ($slot in 1..$MaxParallel) {
+        Write-Progress -Id $slot -Activity ("T{0}" -f $slot) -Completed
+    }
+}
+
+$successFinal = ($results | Where-Object { $_.Success }).Count
+$errorFinal = ($results | Where-Object { -not $_.Success }).Count
+$remainingCount = 0
+
+if (Test-Path $ListFile) {
+    $remainingCount = @(Get-Content $ListFile | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count
+}
+
+Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, $errorFinal, $remainingCount) Cyan
+) {
                             $title = Clean-DisplayTitleInner -Text ($matches[1].Trim())
                             Emit-Event -EventType "Title" -Text "" -Title $title -Height "audio"
                         }
