@@ -29,7 +29,18 @@ New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
 
 $exe = Join-Path $OutputDir "VideoDownloader.exe"
 
-Invoke-ps2exe     -inputFile $gui     -outputFile $exe     -noConsole     -iconFile $icon     -title "Video Downloader"     -product "Video Downloader"     -company "bespalovnikita"     -version "1.0.0.0"
+$ps2exeArgs = @{
+    inputFile = $gui
+    outputFile = $exe
+    noConsole = $true
+    iconFile = $icon
+    title = "Video Downloader"
+    product = "Video Downloader"
+    company = "bespalovnikita"
+    version = "1.0.0.0"
+}
+
+Invoke-ps2exe @ps2exeArgs
 
 Copy-Item $engine $OutputDir
 Copy-Item $ytDlp $OutputDir
