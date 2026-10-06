@@ -36,7 +36,8 @@ param(
     [switch]$AudioOnly,
     [switch]$NoProgress,
     [switch]$DryRun,
-    [string]$Log
+    [string]$Log,
+    [string]$EventFile
 )
 
 $ListFile = $In
@@ -96,6 +97,15 @@ if ($Log) {
     }
 
     Set-Content -Path $Log -Value "" -Encoding UTF8
+}
+
+if ($EventFile) {
+    $eventDir = Split-Path -Path $EventFile -Parent
+    if (-not [string]::IsNullOrWhiteSpace($eventDir) -and -not (Test-Path $eventDir)) {
+        New-Item -ItemType Directory -Path $eventDir -Force | Out-Null
+    }
+
+    Set-Content -Path $EventFile -Value "" -Encoding UTF8
 }
 
 if ($Out) {
@@ -237,6 +247,14 @@ function Handle-Message {
 
     if (-not $Message) {
         return
+    }
+
+    if ($script:EventFile) {
+        try {
+            $json = $Message | ConvertTo-Json -Compress -Depth 5
+            Add-Content -Path $script:EventFile -Value $json -Encoding UTF8
+        }
+        catch {}
     }
 
     if ($Message.Kind -eq "Event") {
