@@ -1,0 +1,36 @@
+name: Build Windows EXE
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches:
+      - main
+      - feature/gui
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Smoke checks
+        shell: pwsh
+        run: ./tests/smoke.ps1
+
+      - name: Build portable EXE
+        shell: pwsh
+        run: ./build-exe.ps1
+
+      - name: Upload portable package
+        uses: actions/upload-artifact@v4
+        with:
+          name: VideoDownloader-windows
+          path: dist/VideoDownloader-portable.zip
+          if-no-files-found: error

@@ -36,7 +36,11 @@ param(
     [switch]$AudioOnly,
     [switch]$NoProgress,
     [switch]$DryRun,
-    [string]$Log
+    [string]$Log,
+    [string]$EventFile,
+    [string]$ResultDir,
+    [ValidateSet("Best","2160","1440","1080","720")][string]$Quality = "Best",
+    [string]$RateLimit
 )
 
 $ListFile = $In
@@ -49,8 +53,16 @@ if ([string]::IsNullOrWhiteSpace($InputDir)) {
     $InputDir = "."
 }
 
-$SuccessFile = Join-Path $InputDir ("{0}-success.txt" -f $InputBase)
-$ErrorFile   = Join-Path $InputDir ("{0}-error.txt" -f $InputBase)
+$ResultBaseDir = $InputDir
+if (-not [string]::IsNullOrWhiteSpace($ResultDir)) {
+    $ResultBaseDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($ResultDir)
+    if (-not (Test-Path $ResultBaseDir)) {
+        New-Item -ItemType Directory -Path $ResultBaseDir -Force | Out-Null
+    }
+}
+
+$SuccessFile = Join-Path $ResultBaseDir ("{0}-success.txt" -f $InputBase)
+$ErrorFile   = Join-Path $ResultBaseDir ("{0}-error.txt" -f $InputBase)
 
 if ($Threads -lt 1) {
     $Threads = 1
@@ -71,7 +83,13 @@ if ($WatchInterval -lt 1) {
 $FragmentsWasSpecified = $PSBoundParameters.ContainsKey("Fragments")
 
 $MaxParallel = $Threads
-$Qualities   = @(2160, 1440, 1080, 720)
+$Qualities = switch ($Quality) {
+    "2160" { @(2160, 1440, 1080, 720) }
+    "1440" { @(1440, 1080, 720) }
+    "1080" { @(1080, 720) }
+    "720"  { @(720) }
+    default { @("best") }
+}
 
 try {
     [Console]::InputEncoding  = [System.Text.Encoding]::UTF8
@@ -96,6 +114,14 @@ if ($Log) {
     }
 
     Set-Content -Path $Log -Value "" -Encoding UTF8
+}
+
+if ($EventFile) {
+    $eventDir = Split-Path -Path $EventFile -Parent
+    if (-not [string]::IsNullOrWhiteSpace($eventDir) -and -not (Test-Path $eventDir)) {
+        New-Item -ItemType Directory -Path $eventDir -Force | Out-Null
+    }
+    Set-Content -Path $EventFile -Value "" -Encoding UTF8
 }
 
 if ($Out) {
@@ -239,6 +265,14 @@ function Handle-Message {
         return
     }
 
+    if ($script:EventFile) {
+        try {
+            $json = $Message | ConvertTo-Json -Compress -Depth 5
+            Add-Content -Path $script:EventFile -Value $json -Encoding UTF8
+        }
+        catch {}
+    }
+
     if ($Message.Kind -eq "Event") {
         switch ($Message.EventType) {
             "Progress" {
@@ -377,6 +411,8 @@ if ($urls.Count -eq 0 -and -not $Watch) {
 
 Write-Log "Started. Total URLs: $($urls.Count). Parallel: $MaxParallel. Qualities: $($Qualities -join ' -> ')" Cyan
 Write-Log "Fragments: $Fragments" Cyan
+Write-Log "Quality: $Quality" Cyan
+if ($RateLimit) { Write-Log "Rate limit: $RateLimit" Cyan }
 
 if ($AutoFragments) {
     if ($FragmentsWasSpecified) {
@@ -507,7 +543,8 @@ while ($pendingQueue.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
             [bool]$SponsorBlock,
             [bool]$AudioOnly,
             $Fragments,
-            [bool]($AutoFragments -and -not $FragmentsWasSpecified)
+            [bool]($AutoFragments -and -not $FragmentsWasSpecified),
+            $RateLimit
         )
 
         $jobs += Start-ThreadJob -Name "$slot" -ArgumentList $jobArgs -ScriptBlock {
@@ -522,7 +559,8 @@ while ($pendingQueue.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
                 [bool]$sponsorBlock,
                 [bool]$audioOnly,
                 [int]$fragments,
-                [bool]$autoFragments
+                [bool]$autoFragments,
+                [string]$rateLimit
             )
 
             function ShortenInner {
@@ -579,6 +617,7 @@ while ($pendingQueue.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
                     Kind = "Event"
                     EventType = $EventType
                     Slot = $slot
+                    Url = $url
                     Text = $Text
                     Percent = $Percent
                     Speed = $Speed
@@ -698,6 +737,7 @@ while ($pendingQueue.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
                 $lastError = ""
                 $title = ""
                 $finalHeight = ""
+                $finalPath = ""
                 $success = $false
                 $effectiveFragments = $fragments
 
@@ -720,9 +760,14 @@ while ($pendingQueue.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
                         "--impersonate", "chrome",
                         "-N", "$effectiveFragments",
                         "-o", $outputTemplate,
+                        "--print", "after_move:__VD_FILE__:%(filepath)s",
                         "-x",
                         "--audio-format", "mp3"
                     )
+
+                    if ($rateLimit) {
+                        $args += @("--limit-rate", $rateLimit)
+                    }
 
                     if ($cookies) {
                         $args += @("--cookies", $cookies)
@@ -741,7 +786,10 @@ while ($pendingQueue.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
                         $line = $_.ToString()
                         [void]$allLines.Add($line)
 
-                        if ($line -match 'Destination:\s+(.+)$') {
+                        if ($line -match '^__VD_FILE__:(.+)$') {
+                            $finalPath = $matches[1].Trim()
+                        }
+                        elseif ($line -match 'Destination:\s+(.+)$') {
                             $title = Clean-DisplayTitleInner -Text ($matches[1].Trim())
                             Emit-Event -EventType "Title" -Text "" -Title $title -Height "audio"
                         }
@@ -760,7 +808,7 @@ while ($pendingQueue.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
                                 -ETA $eta `
                                 -Height "audio"
                         }
-                        elseif ($line -match 'ExtractAudio|Deleting original file|Destination') {
+                        elseif ($line -match 'ExtractAudio|Deleting original file') {
                             Emit-Event -EventType "Merge" -Text "" -Height "audio"
                         }
                         elseif ($line -match '^ERROR:\s*(.+)$') {
@@ -780,7 +828,12 @@ while ($pendingQueue.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
                 else {
                     foreach ($height in $qualities) {
                         $finalHeight = "$height"
-                        $fmt = "bv*[height<=$height]+ba/b[height<=$height]"
+                        $fmt = if ($height -eq "best") {
+                            "bv*+ba/b"
+                        }
+                        else {
+                            "bv*[height<=$height]+ba/b[height<=$height]"
+                        }
                         $allLines = [System.Collections.Generic.List[string]]::new()
 
                         $args = @(
@@ -789,8 +842,13 @@ while ($pendingQueue.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
                             "--impersonate", "chrome",
                             "-N", "$effectiveFragments",
                             "-o", $outputTemplate,
+                            "--print", "after_move:__VD_FILE__:%(filepath)s",
                             "-f", $fmt
                         )
+
+                        if ($rateLimit) {
+                            $args += @("--limit-rate", $rateLimit)
+                        }
 
                         if ($cookies) {
                             $args += @("--cookies", $cookies)
@@ -807,7 +865,10 @@ while ($pendingQueue.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
                             $line = $_.ToString()
                             [void]$allLines.Add($line)
 
-                            if ($line -match 'Destination:\s+(.+)$') {
+                            if ($line -match '^__VD_FILE__:(.+)$') {
+                                $finalPath = $matches[1].Trim()
+                            }
+                            elseif ($line -match 'Destination:\s+(.+)$') {
                                 $title = Clean-DisplayTitleInner -Text ($matches[1].Trim())
 
                                 Emit-Event `
@@ -851,7 +912,7 @@ while ($pendingQueue.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
                             $lastError = "yt-dlp exit code $exit"
                         }
 
-                        if ($combined -match 'Requested format is not available' -and $height -ne $qualities[-1]) {
+                        if ($height -ne "best" -and $combined -match 'Requested format is not available' -and $height -ne $qualities[-1]) {
                             Emit-Event -EventType "Fallback" -Text ("T{0} FALLBACK <= {1}p -> next quality" -f $slot, $height) -Height "$height"
                             continue
                         }
@@ -870,6 +931,7 @@ while ($pendingQueue.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
                         Success = $true
                         Error = ""
                         Height = $finalHeight
+                        Path = $finalPath
                     }
 
                     return
@@ -884,6 +946,7 @@ while ($pendingQueue.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
                     Success = $false
                     Error = $lastError
                     Height = $finalHeight
+                    Path = ""
                 }
             }
             catch {
@@ -898,6 +961,7 @@ while ($pendingQueue.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
                     Success = $false
                     Error = "ThreadJob exception: $message"
                     Height = ""
+                    Path = ""
                 }
             }
         }
