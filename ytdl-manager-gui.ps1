@@ -575,7 +575,12 @@ $form.BackColor = $bg
 $form.ForeColor = $fg
 $form.Font = [Drawing.Font]::new("Segoe UI",9)
 $form.KeyPreview = $true
-$form.Icon = [Drawing.SystemIcons]::Application
+$appIcon = Join-Path $root "assets\app.ico"
+if (Test-Path $appIcon) {
+    try { $form.Icon = [Drawing.Icon]::new($appIcon) } catch { $form.Icon = [Drawing.SystemIcons]::Application }
+} else {
+    $form.Icon = [Drawing.SystemIcons]::Application
+}
 
 $head = Label "Video Downloader" 24 14 350 20 $fg
 $head.Font = [Drawing.Font]::new("Segoe UI",19,[Drawing.FontStyle]::Bold)
