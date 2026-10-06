@@ -121,7 +121,6 @@ if ($EventFile) {
     if (-not [string]::IsNullOrWhiteSpace($eventDir) -and -not (Test-Path $eventDir)) {
         New-Item -ItemType Directory -Path $eventDir -Force | Out-Null
     }
-
     Set-Content -Path $EventFile -Value "" -Encoding UTF8
 }
 
@@ -268,10 +267,9 @@ function Handle-Message {
 
     if ($script:EventFile) {
         try {
-            $json = $Message | ConvertTo-Json -Compress -Depth 5
+            $json = $Message | ConvertTo-Json -Compress -Depth 6
             Add-Content -Path $script:EventFile -Value $json -Encoding UTF8
-        }
-        catch {}
+        } catch {}
     }
 
     if ($Message.Kind -eq "Event") {
@@ -738,9 +736,9 @@ while ($pendingQueue.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
                 $lastError = ""
                 $title = ""
                 $finalHeight = ""
+                $finalPath = ""
                 $success = $false
                 $effectiveFragments = $fragments
-                $finalPath = ""
 
                 if ($autoFragments) {
                     $auto = Get-AutoFragments -Url $url -Cookies $cookies
@@ -761,17 +759,17 @@ while ($pendingQueue.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
                         "--impersonate", "chrome",
                         "-N", "$effectiveFragments",
                         "-o", $outputTemplate,
-                        "--print", "after_move:__FILE__:%(filepath)s",
+                        "--print", "after_move:__VD_FILE__:%(filepath)s",
                         "-x",
                         "--audio-format", "mp3"
                     )
 
-                    if ($rateLimit) {
-                        $args += @("--limit-rate", $rateLimit)
-                    }
-
                     if ($cookies) {
                         $args += @("--cookies", $cookies)
+                    }
+
+                    if ($rateLimit) {
+                        $args += @("--limit-rate", $rateLimit)
                     }
 
                     if ($sponsorBlock) {
@@ -787,10 +785,7 @@ while ($pendingQueue.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
                         $line = $_.ToString()
                         [void]$allLines.Add($line)
 
-                        if ($line -match '^__FILE__:(.+)
-                            Emit-Event -EventType "Title" -Text "" -Title $title -Height "audio"
-                        }
-                        elseif ($line -match '\[download\]\s+([0-9.]+)%\s+of\s+(.+?)\s+at\s+(.+?)\s+ETA\s+(.+)$') {
+                        if ($line -match '^__VD_FILE__:(.+)\s+([0-9.]+)%\s+of\s+(.+?)\s+at\s+(.+?)\s+ETA\s+(.+)$') {
                             $pct = [double]$matches[1]
                             $size = $matches[2].Trim()
                             $speed = $matches[3].Trim()
@@ -825,11 +820,7 @@ while ($pendingQueue.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
                 else {
                     foreach ($height in $qualities) {
                         $finalHeight = "$height"
-                        $fmt = if ($height -eq "best") {
-                            "bv*+ba/b"
-                        } else {
-                            "bv*[height<=$height]+ba/b[height<=$height]"
-                        }
+                        $fmt = if ($height -eq "best") { "bv*+ba/b" } else { "bv*[height<=$height]+ba/b[height<=$height]" }
                         $allLines = [System.Collections.Generic.List[string]]::new()
 
                         $args = @(
@@ -838,16 +829,16 @@ while ($pendingQueue.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
                             "--impersonate", "chrome",
                             "-N", "$effectiveFragments",
                             "-o", $outputTemplate,
-                            "--print", "after_move:__FILE__:%(filepath)s",
+                            "--print", "after_move:__VD_FILE__:%(filepath)s",
                             "-f", $fmt
                         )
 
-                        if ($rateLimit) {
-                            $args += @("--limit-rate", $rateLimit)
-                        }
-
                         if ($cookies) {
                             $args += @("--cookies", $cookies)
+                        }
+
+                        if ($rateLimit) {
+                            $args += @("--limit-rate", $rateLimit)
                         }
 
                         if ($sponsorBlock) {
@@ -861,9 +852,7 @@ while ($pendingQueue.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
                             $line = $_.ToString()
                             [void]$allLines.Add($line)
 
-                            if ($line -match '^__FILE__:(.+)
-
-                                Emit-Event `
+                            if ($line -match '^__VD_FILE__:(.+) `
                                     -EventType "Title" `
                                     -Text "" `
                                     -Title $title `
@@ -904,7 +893,7 @@ while ($pendingQueue.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
                             $lastError = "yt-dlp exit code $exit"
                         }
 
-                        if ($height -ne "best" -and $combined -match 'Requested format is not available' -and $height -ne $qualities[-1]) {
+                        if ($combined -match 'Requested format is not available' -and $height -ne $qualities[-1]) {
                             Emit-Event -EventType "Fallback" -Text ("T{0} FALLBACK <= {1}p -> next quality" -f $slot, $height) -Height "$height"
                             continue
                         }
@@ -923,7 +912,7 @@ while ($pendingQueue.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
                         Success = $true
                         Error = ""
                         Height = $finalHeight
-                        Path = $finalPath
+                        FilePath = $finalPath
                     }
 
                     return
@@ -938,7 +927,7 @@ while ($pendingQueue.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
                     Success = $false
                     Error = $lastError
                     Height = $finalHeight
-                    Path = ""
+                    FilePath = $finalPath
                 }
             }
             catch {
@@ -953,7 +942,7 @@ while ($pendingQueue.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
                     Success = $false
                     Error = "ThreadJob exception: $message"
                     Height = ""
-                    Path = ""
+                    FilePath = ""
                 }
             }
         }
@@ -1014,11 +1003,9 @@ if (Test-Path $ListFile) {
 Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, $errorFinal, $remainingCount) Cyan
 ) {
                             $finalPath = $matches[1].Trim()
+                            Emit-Event -EventType "File" -Text $finalPath -Title $title -Height "audio"
                         }
-                        elseif ($line -match 'Destination:\s+(.+)
-                            Emit-Event -EventType "Title" -Text "" -Title $title -Height "audio"
-                        }
-                        elseif ($line -match '\[download\]\s+([0-9.]+)%\s+of\s+(.+?)\s+at\s+(.+?)\s+ETA\s+(.+)$') {
+                        elseif ($line -match 'Destination:\s+(.+)\s+([0-9.]+)%\s+of\s+(.+?)\s+at\s+(.+?)\s+ETA\s+(.+)$') {
                             $pct = [double]$matches[1]
                             $size = $matches[2].Trim()
                             $speed = $matches[3].Trim()
@@ -1446,10 +1433,9 @@ if (Test-Path $ListFile) {
 Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, $errorFinal, $remainingCount) Cyan
 ) {
                                 $finalPath = $matches[1].Trim()
+                                Emit-Event -EventType "File" -Text $finalPath -Title $title -Height "$height"
                             }
-                            elseif ($line -match 'Destination:\s+(.+)
-
-                                Emit-Event `
+                            elseif ($line -match 'Destination:\s+(.+) `
                                     -EventType "Title" `
                                     -Text "" `
                                     -Title $title `
@@ -1597,11 +1583,9 @@ if (Test-Path $ListFile) {
 Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, $errorFinal, $remainingCount) Cyan
 ) {
                             $finalPath = $matches[1].Trim()
+                            Emit-Event -EventType "File" -Text $finalPath -Title $title -Height "audio"
                         }
-                        elseif ($line -match 'Destination:\s+(.+)
-                            Emit-Event -EventType "Title" -Text "" -Title $title -Height "audio"
-                        }
-                        elseif ($line -match '\[download\]\s+([0-9.]+)%\s+of\s+(.+?)\s+at\s+(.+?)\s+ETA\s+(.+)$') {
+                        elseif ($line -match 'Destination:\s+(.+)\s+([0-9.]+)%\s+of\s+(.+?)\s+at\s+(.+?)\s+ETA\s+(.+)$') {
                             $pct = [double]$matches[1]
                             $size = $matches[2].Trim()
                             $speed = $matches[3].Trim()
@@ -2178,11 +2162,9 @@ if (Test-Path $ListFile) {
 Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, $errorFinal, $remainingCount) Cyan
 ) {
                             $finalPath = $matches[1].Trim()
+                            Emit-Event -EventType "File" -Text $finalPath -Title $title -Height "audio"
                         }
-                        elseif ($line -match 'Destination:\s+(.+)
-                            Emit-Event -EventType "Title" -Text "" -Title $title -Height "audio"
-                        }
-                        elseif ($line -match '\[download\]\s+([0-9.]+)%\s+of\s+(.+?)\s+at\s+(.+?)\s+ETA\s+(.+)$') {
+                        elseif ($line -match 'Destination:\s+(.+)\s+([0-9.]+)%\s+of\s+(.+?)\s+at\s+(.+?)\s+ETA\s+(.+)$') {
                             $pct = [double]$matches[1]
                             $size = $matches[2].Trim()
                             $speed = $matches[3].Trim()
