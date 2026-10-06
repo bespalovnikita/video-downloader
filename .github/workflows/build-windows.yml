@@ -15,6 +15,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Smoke checks
+        shell: pwsh
+        run: ./tests/smoke.ps1
+
       - name: Build portable EXE
         shell: pwsh
         run: ./build-exe.ps1
