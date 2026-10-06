@@ -272,7 +272,9 @@ function StartDownload {
     $psi.UseShellExecute = $false
     $psi.CreateNoWindow = $true
 
-    $args = @("-NoProfile","-ExecutionPolicy","Bypass","-File",$engine,"-In",$queue,"-Out",$dest,"-Threads",[string][int]$threads.Value,"-NoProgress","-Log",$script:runLog,"-EventFile",$script:runEvents)
+    $resultDir = if ($archive.Checked) { Join-Path $dest (Get-Date -Format "yyyy-MM-dd") } else { $dest }
+
+    $args = @("-NoProfile","-ExecutionPolicy","Bypass","-File",$engine,"-In",$queue,"-Out",$dest,"-Threads",[string][int]$threads.Value,"-NoProgress","-Log",$script:runLog,"-EventFile",$script:runEvents,"-ResultDir",$resultDir)
     foreach ($a in $args) { [void]$psi.ArgumentList.Add($a) }
 
     if ($fragments.SelectedIndex -eq 0) { [void]$psi.ArgumentList.Add("-AutoFragments") }
