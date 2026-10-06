@@ -330,9 +330,11 @@ $form.KeyPreview = $true
 
 $head = Label "Video Downloader" 22 15 400 18 $fg
 $head.Font = [Drawing.Font]::new("Segoe UI",18,[Drawing.FontStyle]::Bold)
+$head.Height = 34
 $form.Controls.Add($head)
 $form.Controls.Add((Label "GUI для твоего yt-dlp manager v8" 24 50 420 9 $muted))
 $status = Label "● Готов" 980 24 120 9 $muted
+$status.Anchor = "Top,Right"
 $form.Controls.Add($status)
 
 $left = [Windows.Forms.Panel]::new()
@@ -383,7 +385,7 @@ $grid.DefaultCellStyle.SelectionForeColor = $fg
 [void]$grid.Columns.Add("state","Статус")
 [void]$grid.Columns.Add("value","Видео / URL")
 $grid.Columns[0].Width = 55
-$grid.Columns[1].Width = 105
+$grid.Columns[1].Width = 225
 $grid.Columns[2].AutoSizeMode = "Fill"
 $left.Controls.Add($grid)
 
