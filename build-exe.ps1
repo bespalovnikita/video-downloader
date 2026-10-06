@@ -31,9 +31,12 @@ foreach ($path in @($gui,$engine,$ytDlp,$cmd,$docs)) {
     if (Test-Path $path) { Copy-Item $path $OutputDir -Force }
 }
 
-$assetsOut = Join-Path $OutputDir "assets"
-New-Item -ItemType Directory -Path $assetsOut -Force | Out-Null
-Copy-Item $icon (Join-Path $assetsOut "app.ico") -Force
+foreach ($dirName in @("assets","lib","ui")) {
+    $sourceDir = Join-Path $PSScriptRoot $dirName
+    if (Test-Path $sourceDir) {
+        Copy-Item $sourceDir (Join-Path $OutputDir $dirName) -Recurse -Force
+    }
+}
 
 $zip = Join-Path $OutputDir "VideoDownloader-portable.zip"
 $files = Get-ChildItem $OutputDir | Where-Object { $_.FullName -ne $zip }
