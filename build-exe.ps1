@@ -27,9 +27,13 @@ New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
 dotnet publish $launcherProject -c Release -r win-x64 --self-contained true -o $OutputDir
 if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed with exit code $LASTEXITCODE" }
 
-foreach ($path in @($gui,$engine,$ytDlp,$icon,$cmd,$docs)) {
+foreach ($path in @($gui,$engine,$ytDlp,$cmd,$docs)) {
     if (Test-Path $path) { Copy-Item $path $OutputDir -Force }
 }
+
+$assetsOut = Join-Path $OutputDir "assets"
+New-Item -ItemType Directory -Path $assetsOut -Force | Out-Null
+Copy-Item $icon (Join-Path $assetsOut "app.ico") -Force
 
 $zip = Join-Path $OutputDir "VideoDownloader-portable.zip"
 $files = Get-ChildItem $OutputDir | Where-Object { $_.FullName -ne $zip }
