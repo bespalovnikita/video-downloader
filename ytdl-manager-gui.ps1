@@ -190,6 +190,7 @@ function Running($value) {
     $start.Enabled = -not $value
     $stop.Enabled = $value
     $urls.ReadOnly = $value
+    $urls.AllowDrop = -not $value
     $out.ReadOnly = $value
     $threads.Enabled = -not $value
     $fragments.Enabled = -not $value
@@ -227,7 +228,11 @@ function StartDownload {
     }
 
     $dest = $out.Text.Trim()
-    if (-not $dest) { $dest = Join-Path $root "downloads"; $out.Text = $dest }
+    if (-not $dest) {
+        $downloadsDir = Join-Path $env:USERPROFILE "Downloads"
+        $dest = Join-Path $downloadsDir "downloaded-video"
+        $out.Text = $dest
+    }
     try {
         New-Item -ItemType Directory -Path $dest -Force | Out-Null
         $dest = (Resolve-Path $dest).Path
@@ -361,6 +366,7 @@ $urls.Size = [Drawing.Size]::new(654,145)
 $urls.Anchor = "Top,Left,Right"
 $urls.Multiline = $true
 $urls.ScrollBars = "Vertical"
+$urls.AllowDrop = $true
 StyleText $urls
 $left.Controls.Add($urls)
 
@@ -406,7 +412,8 @@ $right.Controls.Add((Label "Папка загрузки" 16 50 180 9 $muted))
 $out = [Windows.Forms.TextBox]::new()
 $out.Location = [Drawing.Point]::new(16,75)
 $out.Size = [Drawing.Size]::new(290,27)
-$out.Text = Join-Path $root "downloads"
+$downloadsDir = Join-Path $env:USERPROFILE "Downloads"
+$out.Text = Join-Path $downloadsDir "downloaded-video"
 StyleText $out
 $right.Controls.Add($out)
 $pickOut = Button "…" 314 74 42
@@ -499,6 +506,47 @@ $loadList.Add_Click({
     $fileDialog.Filter = "Text files (*.txt)|*.txt|All files (*.*)|*.*"
     if ($fileDialog.ShowDialog() -eq "OK") { $urls.Lines = @(Get-Content $fileDialog.FileName -Encoding UTF8) }
 })
+
+$urls.Add_DragEnter({
+    param($sender,$e)
+    if ($e.Data.GetDataPresent([Windows.Forms.DataFormats]::FileDrop)) {
+        $e.Effect = [Windows.Forms.DragDropEffects]::Copy
+    } else {
+        $e.Effect = [Windows.Forms.DragDropEffects]::None
+    }
+})
+
+$urls.Add_DragDrop({
+    param($sender,$e)
+
+    $files = @($e.Data.GetData([Windows.Forms.DataFormats]::FileDrop))
+    if ($files.Count -eq 0) { return }
+
+    $droppedLines = [Collections.Generic.List[string]]::new()
+
+    foreach ($file in $files) {
+        if (-not (Test-Path $file -PathType Leaf)) { continue }
+
+        try {
+            foreach ($line in @(Get-Content -Path $file -Encoding UTF8 -ErrorAction Stop)) {
+                $value = $line.Trim()
+                if ($value) { [void]$droppedLines.Add($value) }
+            }
+        } catch {
+            [Windows.Forms.MessageBox]::Show(
+                "Не удалось прочитать файл: " + $file + [Environment]::NewLine + $_.Exception.Message,
+                "Video Downloader"
+            ) | Out-Null
+        }
+    }
+
+    if ($droppedLines.Count -eq 0) { return }
+
+    $existing = @($urls.Lines | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    $combined = @($existing + $droppedLines.ToArray() | Select-Object -Unique)
+    $urls.Lines = $combined
+})
+
 $openFolder.Add_Click({
     if (Test-Path $out.Text) { Start-Process explorer.exe -ArgumentList @($out.Text) }
 })
