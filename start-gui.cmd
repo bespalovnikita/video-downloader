@@ -10,4 +10,4 @@ if errorlevel 1 (
   exit /b 1
 )
 
-start "" pwsh.exe -NoProfile -ExecutionPolicy Bypass -STA -File "%~dp0ytdl-manager-gui.ps1"
+start "" pwsh.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -STA -File "%~dp0ytdl-manager-gui.ps1"
