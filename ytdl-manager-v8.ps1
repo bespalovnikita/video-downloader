@@ -618,6 +618,7 @@ while ($pendingQueue.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
                     Kind = "Event"
                     EventType = $EventType
                     Slot = $slot
+                    Url = $url
                     Text = $Text
                     Percent = $Percent
                     Speed = $Speed
