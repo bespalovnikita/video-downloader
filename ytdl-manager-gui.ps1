@@ -34,10 +34,20 @@ function Remove-StaleGuiTempDirs {
     foreach ($dir in @(Get-ChildItem -Path $tempRoot -Directory -Filter "ytdl-gui-*" -ErrorAction SilentlyContinue)) {
         if ($dir.LastWriteTime -gt $cutoff) { continue }
 
+        $ownerFile = Join-Path $dir.FullName "owner.pid"
+        if (Test-Path $ownerFile) {
+            try {
+                $ownerPid = [int](Get-Content $ownerFile -ErrorAction Stop | Select-Object -First 1)
+                if (Get-Process -Id $ownerPid -ErrorAction SilentlyContinue) {
+                    continue
+                }
+            } catch {}
+        }
+
         try {
             Remove-Item -Path $dir.FullName -Recurse -Force -ErrorAction Stop
         } catch {
-            # A stale directory can still be locked by another process. Ignore it.
+            # Ignore locked/unavailable stale directories; next launch will retry.
         }
     }
 }
@@ -113,9 +123,11 @@ function Set-RoundedRegion($control, $radius=14) {
 }
 
 function Make-Rounded($control, $radius=14) {
+    $control.Tag = $radius
     Set-RoundedRegion $control $radius
     $control.Add_SizeChanged({
-        Set-RoundedRegion $this $radius
+        $r = if ($this.Tag) { [int]$this.Tag } else { 14 }
+        Set-RoundedRegion $this $r
     })
 }
 
@@ -309,6 +321,7 @@ function StartDownload {
     CleanTemp
     $script:runDir = Join-Path ([IO.Path]::GetTempPath()) ("ytdl-gui-" + [guid]::NewGuid().ToString("N"))
     New-Item -ItemType Directory -Path $script:runDir -Force | Out-Null
+    Set-Content -Path (Join-Path $script:runDir "owner.pid") -Value $PID -Encoding ASCII
     $queue = Join-Path $script:runDir "queue.txt"
     $script:runLog = Join-Path $script:runDir "run.log"
     $script:runEvents = Join-Path $script:runDir "events.jsonl"
