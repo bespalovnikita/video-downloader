@@ -785,7 +785,26 @@ while ($pendingQueue.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
                         $line = $_.ToString()
                         [void]$allLines.Add($line)
 
-                        if ($line -match '^__VD_FILE__:(.+)
+                        if ($line -match '^__VD_FILE__:(.+)$') {
+                            $finalPath = $matches[1].Trim()
+                        }
+                        elseif ($line -match 'Destination:\s+(.+)$') {
+                            $title = Clean-DisplayTitleInner -Text ($matches[1].Trim())
+                            Emit-Event -EventType "Title" -Text "" -Title $title -Height "audio"
+                        }
+                        elseif ($line -match '\[download\]\s+([0-9.]+)%\s+of\s+(.+?)\s+at\s+(.+?)\s+ETA\s+(.+)$') {
+                            $pct = [double]$matches[1]
+                            $size = $matches[2].Trim()
+                            $speed = $matches[3].Trim()
+                            $eta = $matches[4].Trim()
+                            Emit-Event -EventType "Progress" -Text "" -Percent $pct -Speed $speed -Size $size -ETA $eta -Height "audio"
+                        }
+                        elseif ($line -match 'ExtractAudio|Deleting original file') {
+                            Emit-Event -EventType "Merge" -Text "" -Height "audio"
+                        }
+                        elseif ($line -match '^ERROR:\s*(.+)$') {
+                            $lastError = $matches[1].Trim()
+                        }
                     }
 
                     $exit = $LASTEXITCODE
@@ -832,7 +851,26 @@ while ($pendingQueue.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
                             $line = $_.ToString()
                             [void]$allLines.Add($line)
 
-                            if ($line -match '^__VD_FILE__:(.+)
+                            if ($line -match '^__VD_FILE__:(.+)$') {
+                                $finalPath = $matches[1].Trim()
+                            }
+                            elseif ($line -match 'Destination:\s+(.+)$') {
+                                $title = Clean-DisplayTitleInner -Text ($matches[1].Trim())
+                                Emit-Event -EventType "Title" -Text "" -Title $title -Height "$height"
+                            }
+                            elseif ($line -match '\[download\]\s+([0-9.]+)%\s+of\s+(.+?)\s+at\s+(.+?)\s+ETA\s+(.+)$') {
+                                $pct = [double]$matches[1]
+                                $size = $matches[2].Trim()
+                                $speed = $matches[3].Trim()
+                                $eta = $matches[4].Trim()
+                                Emit-Event -EventType "Progress" -Text "" -Percent $pct -Speed $speed -Size $size -ETA $eta -Height "$height"
+                            }
+                            elseif ($line -match 'Merging formats|Merger') {
+                                Emit-Event -EventType "Merge" -Text "" -Height "$height"
+                            }
+                            elseif ($line -match '^ERROR:\s*(.+)$') {
+                                $lastError = $matches[1].Trim()
+                            }
                         }
 
                         $exit = $LASTEXITCODE
@@ -866,7 +904,7 @@ while ($pendingQueue.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
                         Success = $true
                         Error = ""
                         Height = $finalHeight
-                        FilePath = $finalPath
+                        Path = $finalPath
                     }
 
                     return
@@ -881,7 +919,7 @@ while ($pendingQueue.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
                     Success = $false
                     Error = $lastError
                     Height = $finalHeight
-                    FilePath = $finalPath
+                    Path = $finalPath
                 }
             }
             catch {
@@ -896,7 +934,7 @@ while ($pendingQueue.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
                     Success = $false
                     Error = "ThreadJob exception: $message"
                     Height = ""
-                    FilePath = ""
+                    Path = ""
                 }
             }
         }
@@ -2654,7 +2692,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                         Success = $true
                         Error = ""
                         Height = $finalHeight
-                        FilePath = $finalPath
+                        Path = $finalPath
                     }
 
                     return
@@ -2669,7 +2707,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                     Success = $false
                     Error = $lastError
                     Height = $finalHeight
-                    FilePath = $finalPath
+                    Path = $finalPath
                 }
             }
             catch {
@@ -2684,7 +2722,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                     Success = $false
                     Error = "ThreadJob exception: $message"
                     Height = ""
-                    FilePath = ""
+                    Path = ""
                 }
             }
         }
@@ -4443,7 +4481,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                         Success = $true
                         Error = ""
                         Height = $finalHeight
-                        FilePath = $finalPath
+                        Path = $finalPath
                     }
 
                     return
@@ -4458,7 +4496,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                     Success = $false
                     Error = $lastError
                     Height = $finalHeight
-                    FilePath = $finalPath
+                    Path = $finalPath
                 }
             }
             catch {
@@ -4473,7 +4511,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                     Success = $false
                     Error = "ThreadJob exception: $message"
                     Height = ""
-                    FilePath = ""
+                    Path = ""
                 }
             }
         }
@@ -6246,7 +6284,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                         Success = $true
                         Error = ""
                         Height = $finalHeight
-                        FilePath = $finalPath
+                        Path = $finalPath
                     }
 
                     return
@@ -6261,7 +6299,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                     Success = $false
                     Error = $lastError
                     Height = $finalHeight
-                    FilePath = $finalPath
+                    Path = $finalPath
                 }
             }
             catch {
@@ -6276,7 +6314,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                     Success = $false
                     Error = "ThreadJob exception: $message"
                     Height = ""
-                    FilePath = ""
+                    Path = ""
                 }
             }
         }
@@ -8033,7 +8071,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                         Success = $true
                         Error = ""
                         Height = $finalHeight
-                        FilePath = $finalPath
+                        Path = $finalPath
                     }
 
                     return
@@ -8048,7 +8086,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                     Success = $false
                     Error = $lastError
                     Height = $finalHeight
-                    FilePath = $finalPath
+                    Path = $finalPath
                 }
             }
             catch {
@@ -8063,7 +8101,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                     Success = $false
                     Error = "ThreadJob exception: $message"
                     Height = ""
-                    FilePath = ""
+                    Path = ""
                 }
             }
         }
@@ -9748,7 +9786,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                         Success = $true
                         Error = ""
                         Height = $finalHeight
-                        FilePath = $finalPath
+                        Path = $finalPath
                     }
 
                     return
@@ -9763,7 +9801,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                     Success = $false
                     Error = $lastError
                     Height = $finalHeight
-                    FilePath = $finalPath
+                    Path = $finalPath
                 }
             }
             catch {
@@ -9778,7 +9816,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                     Success = $false
                     Error = "ThreadJob exception: $message"
                     Height = ""
-                    FilePath = ""
+                    Path = ""
                 }
             }
         }
@@ -11536,7 +11574,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                         Success = $true
                         Error = ""
                         Height = $finalHeight
-                        FilePath = $finalPath
+                        Path = $finalPath
                     }
 
                     return
@@ -11551,7 +11589,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                     Success = $false
                     Error = $lastError
                     Height = $finalHeight
-                    FilePath = $finalPath
+                    Path = $finalPath
                 }
             }
             catch {
@@ -11566,7 +11604,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                     Success = $false
                     Error = "ThreadJob exception: $message"
                     Height = ""
-                    FilePath = ""
+                    Path = ""
                 }
             }
         }
@@ -13325,7 +13363,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                         Success = $true
                         Error = ""
                         Height = $finalHeight
-                        FilePath = $finalPath
+                        Path = $finalPath
                     }
 
                     return
@@ -13340,7 +13378,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                     Success = $false
                     Error = $lastError
                     Height = $finalHeight
-                    FilePath = $finalPath
+                    Path = $finalPath
                 }
             }
             catch {
@@ -13355,7 +13393,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                     Success = $false
                     Error = "ThreadJob exception: $message"
                     Height = ""
-                    FilePath = ""
+                    Path = ""
                 }
             }
         }
@@ -15128,7 +15166,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                         Success = $true
                         Error = ""
                         Height = $finalHeight
-                        FilePath = $finalPath
+                        Path = $finalPath
                     }
 
                     return
@@ -15143,7 +15181,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                     Success = $false
                     Error = $lastError
                     Height = $finalHeight
-                    FilePath = $finalPath
+                    Path = $finalPath
                 }
             }
             catch {
@@ -15158,7 +15196,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                     Success = $false
                     Error = "ThreadJob exception: $message"
                     Height = ""
-                    FilePath = ""
+                    Path = ""
                 }
             }
         }
@@ -16915,7 +16953,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                         Success = $true
                         Error = ""
                         Height = $finalHeight
-                        FilePath = $finalPath
+                        Path = $finalPath
                     }
 
                     return
@@ -16930,7 +16968,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                     Success = $false
                     Error = $lastError
                     Height = $finalHeight
-                    FilePath = $finalPath
+                    Path = $finalPath
                 }
             }
             catch {
@@ -16945,7 +16983,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                     Success = $false
                     Error = "ThreadJob exception: $message"
                     Height = ""
-                    FilePath = ""
+                    Path = ""
                 }
             }
         }
@@ -18635,7 +18673,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                         Success = $true
                         Error = ""
                         Height = $finalHeight
-                        FilePath = $finalPath
+                        Path = $finalPath
                     }
 
                     return
@@ -18650,7 +18688,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                     Success = $false
                     Error = $lastError
                     Height = $finalHeight
-                    FilePath = $finalPath
+                    Path = $finalPath
                 }
             }
             catch {
@@ -18665,7 +18703,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                     Success = $false
                     Error = "ThreadJob exception: $message"
                     Height = ""
-                    FilePath = ""
+                    Path = ""
                 }
             }
         }
@@ -20423,7 +20461,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                         Success = $true
                         Error = ""
                         Height = $finalHeight
-                        FilePath = $finalPath
+                        Path = $finalPath
                     }
 
                     return
@@ -20438,7 +20476,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                     Success = $false
                     Error = $lastError
                     Height = $finalHeight
-                    FilePath = $finalPath
+                    Path = $finalPath
                 }
             }
             catch {
@@ -20453,7 +20491,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                     Success = $false
                     Error = "ThreadJob exception: $message"
                     Height = ""
-                    FilePath = ""
+                    Path = ""
                 }
             }
         }
@@ -22212,7 +22250,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                         Success = $true
                         Error = ""
                         Height = $finalHeight
-                        FilePath = $finalPath
+                        Path = $finalPath
                     }
 
                     return
@@ -22227,7 +22265,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                     Success = $false
                     Error = $lastError
                     Height = $finalHeight
-                    FilePath = $finalPath
+                    Path = $finalPath
                 }
             }
             catch {
@@ -22242,7 +22280,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                     Success = $false
                     Error = "ThreadJob exception: $message"
                     Height = ""
-                    FilePath = ""
+                    Path = ""
                 }
             }
         }
@@ -24015,7 +24053,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                         Success = $true
                         Error = ""
                         Height = $finalHeight
-                        FilePath = $finalPath
+                        Path = $finalPath
                     }
 
                     return
@@ -24030,7 +24068,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                     Success = $false
                     Error = $lastError
                     Height = $finalHeight
-                    FilePath = $finalPath
+                    Path = $finalPath
                 }
             }
             catch {
@@ -24045,7 +24083,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                     Success = $false
                     Error = "ThreadJob exception: $message"
                     Height = ""
-                    FilePath = ""
+                    Path = ""
                 }
             }
         }
@@ -25802,7 +25840,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                         Success = $true
                         Error = ""
                         Height = $finalHeight
-                        FilePath = $finalPath
+                        Path = $finalPath
                     }
 
                     return
@@ -25817,7 +25855,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                     Success = $false
                     Error = $lastError
                     Height = $finalHeight
-                    FilePath = $finalPath
+                    Path = $finalPath
                 }
             }
             catch {
@@ -25832,7 +25870,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                     Success = $false
                     Error = "ThreadJob exception: $message"
                     Height = ""
-                    FilePath = ""
+                    Path = ""
                 }
             }
         }
@@ -27532,7 +27570,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                         Success = $true
                         Error = ""
                         Height = $finalHeight
-                        FilePath = $finalPath
+                        Path = $finalPath
                     }
 
                     return
@@ -27547,7 +27585,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                     Success = $false
                     Error = $lastError
                     Height = $finalHeight
-                    FilePath = $finalPath
+                    Path = $finalPath
                 }
             }
             catch {
@@ -27562,7 +27600,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                     Success = $false
                     Error = "ThreadJob exception: $message"
                     Height = ""
-                    FilePath = ""
+                    Path = ""
                 }
             }
         }
@@ -29320,7 +29358,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                         Success = $true
                         Error = ""
                         Height = $finalHeight
-                        FilePath = $finalPath
+                        Path = $finalPath
                     }
 
                     return
@@ -29335,7 +29373,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                     Success = $false
                     Error = $lastError
                     Height = $finalHeight
-                    FilePath = $finalPath
+                    Path = $finalPath
                 }
             }
             catch {
@@ -29350,7 +29388,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                     Success = $false
                     Error = "ThreadJob exception: $message"
                     Height = ""
-                    FilePath = ""
+                    Path = ""
                 }
             }
         }
@@ -31109,7 +31147,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                         Success = $true
                         Error = ""
                         Height = $finalHeight
-                        FilePath = $finalPath
+                        Path = $finalPath
                     }
 
                     return
@@ -31124,7 +31162,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                     Success = $false
                     Error = $lastError
                     Height = $finalHeight
-                    FilePath = $finalPath
+                    Path = $finalPath
                 }
             }
             catch {
@@ -31139,7 +31177,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                     Success = $false
                     Error = "ThreadJob exception: $message"
                     Height = ""
-                    FilePath = ""
+                    Path = ""
                 }
             }
         }
@@ -32912,7 +32950,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                         Success = $true
                         Error = ""
                         Height = $finalHeight
-                        FilePath = $finalPath
+                        Path = $finalPath
                     }
 
                     return
@@ -32927,7 +32965,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                     Success = $false
                     Error = $lastError
                     Height = $finalHeight
-                    FilePath = $finalPath
+                    Path = $finalPath
                 }
             }
             catch {
@@ -32942,7 +32980,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                     Success = $false
                     Error = "ThreadJob exception: $message"
                     Height = ""
-                    FilePath = ""
+                    Path = ""
                 }
             }
         }
@@ -34699,7 +34737,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                         Success = $true
                         Error = ""
                         Height = $finalHeight
-                        FilePath = $finalPath
+                        Path = $finalPath
                     }
 
                     return
@@ -34714,7 +34752,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                     Success = $false
                     Error = $lastError
                     Height = $finalHeight
-                    FilePath = $finalPath
+                    Path = $finalPath
                 }
             }
             catch {
@@ -34729,7 +34767,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                     Success = $false
                     Error = "ThreadJob exception: $message"
                     Height = ""
-                    FilePath = ""
+                    Path = ""
                 }
             }
         }
@@ -36413,7 +36451,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                         Success = $true
                         Error = ""
                         Height = $finalHeight
-                        FilePath = $finalPath
+                        Path = $finalPath
                     }
 
                     return
@@ -36428,7 +36466,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                     Success = $false
                     Error = $lastError
                     Height = $finalHeight
-                    FilePath = $finalPath
+                    Path = $finalPath
                 }
             }
             catch {
@@ -36443,7 +36481,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                     Success = $false
                     Error = "ThreadJob exception: $message"
                     Height = ""
-                    FilePath = ""
+                    Path = ""
                 }
             }
         }
@@ -38201,7 +38239,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                         Success = $true
                         Error = ""
                         Height = $finalHeight
-                        FilePath = $finalPath
+                        Path = $finalPath
                     }
 
                     return
@@ -38216,7 +38254,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                     Success = $false
                     Error = $lastError
                     Height = $finalHeight
-                    FilePath = $finalPath
+                    Path = $finalPath
                 }
             }
             catch {
@@ -38231,7 +38269,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                     Success = $false
                     Error = "ThreadJob exception: $message"
                     Height = ""
-                    FilePath = ""
+                    Path = ""
                 }
             }
         }
@@ -39990,7 +40028,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                         Success = $true
                         Error = ""
                         Height = $finalHeight
-                        FilePath = $finalPath
+                        Path = $finalPath
                     }
 
                     return
@@ -40005,7 +40043,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                     Success = $false
                     Error = $lastError
                     Height = $finalHeight
-                    FilePath = $finalPath
+                    Path = $finalPath
                 }
             }
             catch {
@@ -40020,7 +40058,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                     Success = $false
                     Error = "ThreadJob exception: $message"
                     Height = ""
-                    FilePath = ""
+                    Path = ""
                 }
             }
         }
@@ -41793,7 +41831,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                         Success = $true
                         Error = ""
                         Height = $finalHeight
-                        FilePath = $finalPath
+                        Path = $finalPath
                     }
 
                     return
@@ -41808,7 +41846,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                     Success = $false
                     Error = $lastError
                     Height = $finalHeight
-                    FilePath = $finalPath
+                    Path = $finalPath
                 }
             }
             catch {
@@ -41823,7 +41861,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                     Success = $false
                     Error = "ThreadJob exception: $message"
                     Height = ""
-                    FilePath = ""
+                    Path = ""
                 }
             }
         }
@@ -43580,7 +43618,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                         Success = $true
                         Error = ""
                         Height = $finalHeight
-                        FilePath = $finalPath
+                        Path = $finalPath
                     }
 
                     return
@@ -43595,7 +43633,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                     Success = $false
                     Error = $lastError
                     Height = $finalHeight
-                    FilePath = $finalPath
+                    Path = $finalPath
                 }
             }
             catch {
@@ -43610,7 +43648,7 @@ Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successFinal, 
                     Success = $false
                     Error = "ThreadJob exception: $message"
                     Height = ""
-                    FilePath = ""
+                    Path = ""
                 }
             }
         }
