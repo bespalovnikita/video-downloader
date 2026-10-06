@@ -19,7 +19,9 @@ pwsh -STA -File .\ytdl-manager-gui.ps1
 
 - многострочная очередь URL;
 - импорт списка из txt;
+- drag&drop одного или нескольких файлов со списками URL прямо в поле очереди;
 - выбор папки загрузки;
+- папка по умолчанию: %USERPROFILE%\Downloads\downloaded-video;
 - 1–32 параллельных URL;
 - AutoFragments или фиксированные 1–4;
 - Archive;
