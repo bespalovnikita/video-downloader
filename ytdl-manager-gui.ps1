@@ -1,25 +1,39 @@
 #requires -Version 7.0
+param(
+    [Parameter(ValueFromRemainingArguments=$true)]
+    [string[]]$StartupArgs
+)
+
 if (-not $IsWindows) { throw "Windows only." }
 
+Add-Type -AssemblyName PresentationFramework
+Add-Type -AssemblyName PresentationCore
+Add-Type -AssemblyName WindowsBase
+Add-Type -AssemblyName System.Xaml
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
 Add-Type @"
 using System;
 using System.Runtime.InteropServices;
-public static class NativeUi {
-    [DllImport("gdi32.dll", SetLastError=true)]
-    public static extern IntPtr CreateRoundRectRgn(int l,int t,int r,int b,int w,int h);
-    [DllImport("gdi32.dll", SetLastError=true)]
-    public static extern bool DeleteObject(IntPtr h);
+public static class NativeProcessControl {
+    [DllImport("ntdll.dll", SetLastError=true)]
+    public static extern int NtSuspendProcess(IntPtr processHandle);
+    [DllImport("ntdll.dll", SetLastError=true)]
+    public static extern int NtResumeProcess(IntPtr processHandle);
 }
 "@
-
-[Windows.Forms.Application]::EnableVisualStyles()
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $engine = Join-Path $root "ytdl-manager-v8.ps1"
 $ytDlp = Join-Path $root "yt-dlp.exe"
+$coreModule = Join-Path $root "lib\VideoDownloader.Core.psm1"
+$xamlPath = Join-Path $root "ui\MainWindow.xaml"
+
+foreach ($required in @($engine,$ytDlp,$coreModule,$xamlPath)) {
+    if (-not (Test-Path $required)) { throw "Missing required file: $required" }
+}
+Import-Module $coreModule -Force
 
 function Remove-StaleGuiTempDirs {
     $cutoff = (Get-Date).AddHours(-24)
@@ -37,357 +51,464 @@ function Remove-StaleGuiTempDirs {
 }
 Remove-StaleGuiTempDirs
 
+[xml]$xaml = Get-Content $xamlPath -Raw -Encoding UTF8
+$reader = [System.Xml.XmlNodeReader]::new($xaml)
+$window = [System.Windows.Markup.XamlReader]::Load($reader)
+
+$controlNames = @(
+    "HeaderStats","HeaderStatus","QueueCount","UrlInput","AddUrlButton","OpenListButton","RemoveQueueButton",
+    "ClearQueueButton","MoveUpButton","MoveDownButton","RetryFailedButton","QueueGrid","WatchClipboardCheck",
+    "ClipboardHint","DownloadGrid","OpenFileButton","OpenFolderButton","CopyPathButton","OpenUrlButton","LogBox",
+    "PreviewImage","PreviewTitle","PreviewMeta","PreviewFormats","ProfileCombo","QualityCombo","CodecCombo",
+    "ContainerCombo","RateLimitCombo","ThreadsBox","FragmentsCombo","FilenameTemplateBox","WriteSubsCheck",
+    "AutoSubsCheck","EmbedSubsCheck","SubtitleLangsBox","EmbedThumbnailCheck","EmbedMetadataCheck",
+    "EmbedChaptersCheck","ArchiveCheck","SponsorCheck","AudioOnlyCheck","OutputBox","PickOutputButton",
+    "CookiesBox","PickCookiesButton","DependencyStatus","RefreshDepsButton","InstallFfmpegButton",
+    "UpdateYtDlpButton","RegisterProtocolButton","SessionStats","OverallProgress","TrayButton","PauseButton",
+    "StopButton","StartButton"
+)
+foreach ($name in $controlNames) {
+    Set-Variable -Name $name -Value $window.FindName($name) -Scope Script
+}
+
+$script:queue = [Collections.ObjectModel.ObservableCollection[object]]::new()
+$script:downloads = [Collections.ObjectModel.ObservableCollection[object]]::new()
+$QueueGrid.ItemsSource = $script:queue
+$DownloadGrid.ItemsSource = $script:downloads
+
 $script:proc = $null
 $script:runDir = $null
 $script:runLog = $null
 $script:runEvents = $null
 $script:logLines = 0
 $script:eventLines = 0
-$script:total = 0
-$script:done = 0
-$script:success = 0
-$script:failed = 0
-$script:stopping = $false
 $script:failedUrls = [Collections.Generic.List[string]]::new()
 $script:speeds = @{}
-$script:lastFiles = @{}
+$script:pausedPids = @()
+$script:isPaused = $false
+$script:stopping = $false
 $script:previewJob = $null
 $script:previewUrl = ""
-$script:updateJob = $null
-$script:lastClipboard = ""
-$script:allowExit = $false
+$script:dependencyJob = $null
+$script:lastClipboardText = ""
+$script:dragItem = $null
+$script:dragStart = [System.Windows.Point]::new(0,0)
+$script:sessionStarted = $null
+$script:sessionSuccess = 0
+$script:sessionFailed = 0
+$script:sessionBytes = [int64]0
+$script:sessionTotal = 0
+$script:lastFiles = @{}
+$script:allowClose = $false
 
-$bg = [Drawing.Color]::FromArgb(17,19,24)
-$panel = [Drawing.Color]::FromArgb(27,30,37)
-$field = [Drawing.Color]::FromArgb(37,41,50)
-$field2 = [Drawing.Color]::FromArgb(45,50,62)
-$fg = [Drawing.Color]::FromArgb(238,241,248)
-$muted = [Drawing.Color]::FromArgb(148,156,174)
-$accent = [Drawing.Color]::FromArgb(99,102,241)
-$danger = [Drawing.Color]::FromArgb(239,68,68)
-$ok = [Drawing.Color]::FromArgb(34,197,94)
-$warn = [Drawing.Color]::FromArgb(245,158,11)
+function Log-Line([string]$Text) {
+    if ([string]::IsNullOrWhiteSpace($Text)) { return }
+    $LogBox.AppendText($Text + [Environment]::NewLine)
+    $LogBox.ScrollToEnd()
+}
 
-function Label($text,$x,$y,$w=160,$size=9,$color=$fg) {
-    $c = [Windows.Forms.Label]::new()
-    $c.Text = $text
-    $c.Location = [Drawing.Point]::new($x,$y)
-    $c.Size = [Drawing.Size]::new($w,24)
-    $c.Font = [Drawing.Font]::new("Segoe UI",$size)
-    $c.ForeColor = $color
-    $c.BackColor = [Drawing.Color]::Transparent
-    return $c
+function Format-Bytes([int64]$Bytes) {
+    if ($Bytes -ge 1TB) { return "{0:N2} TB" -f ($Bytes/1TB) }
+    if ($Bytes -ge 1GB) { return "{0:N2} GB" -f ($Bytes/1GB) }
+    if ($Bytes -ge 1MB) { return "{0:N1} MB" -f ($Bytes/1MB) }
+    if ($Bytes -ge 1KB) { return "{0:N0} KB" -f ($Bytes/1KB) }
+    return "$Bytes B"
 }
-function Button($text,$x,$y,$w=110,$h=34,$color=$field2) {
-    $c = [Windows.Forms.Button]::new()
-    $c.Text = $text
-    $c.Location = [Drawing.Point]::new($x,$y)
-    $c.Size = [Drawing.Size]::new($w,$h)
-    $c.FlatStyle = "Flat"
-    $c.FlatAppearance.BorderSize = 0
-    $c.BackColor = $color
-    $c.ForeColor = $fg
-    $c.Font = [Drawing.Font]::new("Segoe UI",9,[Drawing.FontStyle]::Semibold)
-    return $c
+
+function Format-Speed([double]$Bytes) {
+    if ($Bytes -ge 1GB) { return "{0:N1} GB/s" -f ($Bytes/1GB) }
+    if ($Bytes -ge 1MB) { return "{0:N1} MB/s" -f ($Bytes/1MB) }
+    if ($Bytes -ge 1KB) { return "{0:N0} KB/s" -f ($Bytes/1KB) }
+    return "0 KB/s"
 }
-function StyleText($c) {
-    $c.BackColor = $field
-    $c.ForeColor = $fg
-    $c.BorderStyle = "FixedSingle"
-    $c.Font = [Drawing.Font]::new("Segoe UI",9)
-}
-function Set-RoundedRegion($control,$radius=14) {
-    if (-not $control -or $control.Width -le 0 -or $control.Height -le 0) { return }
-    try {
-        $h = [NativeUi]::CreateRoundRectRgn(0,0,$control.Width+1,$control.Height+1,$radius,$radius)
-        if ($h -eq [IntPtr]::Zero) { return }
-        $region = [Drawing.Region]::FromHrgn($h)
-        if ($control.Region) { $control.Region.Dispose() }
-        $control.Region = $region
-        [void][NativeUi]::DeleteObject($h)
-    } catch {}
-}
-function Make-Rounded($control,$radius=14) {
-    $control.Tag = $radius
-    Set-RoundedRegion $control $radius
-    $control.Add_SizeChanged({
-        $r = 14
-        if ($this.Tag) { $r = [int]$this.Tag }
-        Set-RoundedRegion $this $r
-    })
-}
-function Is-ValidUrl([string]$value) {
-    if ([string]::IsNullOrWhiteSpace($value)) { return $false }
+
+function Is-ValidUrl([string]$Value) {
+    if ([string]::IsNullOrWhiteSpace($Value)) { return $false }
     $uri = $null
-    if (-not [Uri]::TryCreate($value.Trim(),[UriKind]::Absolute,[ref]$uri)) { return $false }
+    if (-not [Uri]::TryCreate($Value.Trim(),[UriKind]::Absolute,[ref]$uri)) { return $false }
     return $uri.Scheme -eq "http" -or $uri.Scheme -eq "https"
 }
-function Extract-Urls([string]$text) {
+
+function Extract-Urls([string]$Text) {
     $found = [Collections.Generic.List[string]]::new()
-    if ([string]::IsNullOrWhiteSpace($text)) { return $found.ToArray() }
-    foreach ($token in ($text -split "[\r\n\t ]+")) {
+    if ([string]::IsNullOrWhiteSpace($Text)) { return $found.ToArray() }
+
+    foreach ($token in ($Text -split "[\r\n\t ]+")) {
         $v = $token.Trim()
         if (Is-ValidUrl $v -and -not $found.Contains($v)) { [void]$found.Add($v) }
     }
     return $found.ToArray()
 }
-function Update-QueueSummary {
-    $queueCount.Text = "$($queueGrid.Rows.Count) URL"
-    $start.Enabled = ($queueGrid.Rows.Count -gt 0 -and -not ($script:proc -and -not $script:proc.HasExited))
-}
-function Add-Urls([string[]]$values) {
-    $rejected = 0
-    $existing = @{}
-    foreach ($r in $queueGrid.Rows) {
-        if ($r.Cells["url"].Value) { $existing[[string]$r.Cells["url"].Value] = $true }
+
+function Reindex-Queue {
+    for ($i=0; $i -lt $script:queue.Count; $i++) {
+        $script:queue[$i].Order = $i + 1
     }
-    foreach ($raw in $values) {
+    $QueueGrid.Items.Refresh()
+    $QueueCount.Text = "$($script:queue.Count) URLs"
+    Update-StartState
+}
+
+function Add-Urls([string[]]$Urls) {
+    $existing = @{}
+    foreach ($item in $script:queue) { $existing[$item.Url] = $true }
+
+    foreach ($raw in $Urls) {
         $u = ([string]$raw).Trim()
-        if (-not (Is-ValidUrl $u)) { $rejected++; continue }
+        if (-not (Is-ValidUrl $u)) { continue }
         if ($existing.ContainsKey($u)) { continue }
-        $i = $queueGrid.Rows.Add("✓",$u,"В очереди")
-        $queueGrid.Rows[$i].Cells["valid"].Style.ForeColor = $ok
-        $queueGrid.Rows[$i].Cells["state"].Style.ForeColor = $muted
+
+        $script:queue.Add([pscustomobject]@{
+            Order = $script:queue.Count + 1
+            Url = $u
+            State = "Queued"
+        })
         $existing[$u] = $true
     }
-    Update-QueueSummary
-    if ($rejected -gt 0) { LogLine "Пропущено некорректных URL: $rejected" $warn }
+    Reindex-Queue
 }
-function Add-FileToQueue([string]$path) {
-    if (-not (Test-Path $path -PathType Leaf)) { return }
+
+function Add-FileToQueue([string]$Path) {
+    if (-not (Test-Path $Path -PathType Leaf)) { return }
     try {
-        if ([IO.Path]::GetExtension($path).ToLowerInvariant() -eq ".url") {
-            $urlLine = @(Get-Content $path -Encoding UTF8 -ErrorAction Stop) | Where-Object { $_ -match '^URL=' } | Select-Object -First 1
-            if ($urlLine) { Add-Urls @($urlLine.Substring(4)) }
+        if ([IO.Path]::GetExtension($Path).ToLowerInvariant() -eq ".url") {
+            $line = @(Get-Content $Path -Encoding UTF8) | Where-Object { $_ -match '^URL=' } | Select-Object -First 1
+            if ($line) { Add-Urls @($line.Substring(4)) }
             return
         }
-        Add-Urls @(Get-Content $path -Encoding UTF8 -ErrorAction Stop)
+        Add-Urls @(Get-Content $Path -Encoding UTF8)
     } catch {
-        $msg = "Не удалось прочитать файл:" + [Environment]::NewLine + $path + [Environment]::NewLine + $_.Exception.Message
-        [Windows.Forms.MessageBox]::Show($msg,"Video Downloader") | Out-Null
+        $message = "Cannot read file: " + $Path + [Environment]::NewLine + $_.Exception.Message
+        [System.Windows.MessageBox]::Show($message,"Video Downloader") | Out-Null
     }
 }
-function Friendly-Error([string]$text) {
-    if ([string]::IsNullOrWhiteSpace($text)) { return "Неизвестная ошибка" }
-    $e = $text.ToLowerInvariant()
-    if ($e -match "private|sign in|login|cookies") { return "Нужна авторизация / cookies" }
-    if ($e -match "not available|unavailable|removed|deleted") { return "Видео недоступно" }
-    if ($e -match "geo|country|region") { return "Региональное ограничение" }
-    if ($e -match "429|too many requests") { return "Слишком много запросов" }
-    if ($e -match "timeout|timed out|network|connection|dns|unable to download") { return "Ошибка сети" }
-    if ($e -match "requested format|format") { return "Формат недоступен" }
-    if ($e -match "ffmpeg|ffprobe") { return "Ошибка FFmpeg" }
-    return "Ошибка загрузки"
+
+function Get-QueueUrls {
+    return @($script:queue | ForEach-Object { $_.Url })
 }
-function Convert-SpeedToBytes([string]$speed) {
-    if ([string]::IsNullOrWhiteSpace($speed) -or $speed -notmatch '([0-9.,]+)\s*([KMGT]?i?B)/s') { return 0.0 }
-    $value = 0.0
-    $num = $matches[1].Replace(",",".")
-    if (-not [double]::TryParse($num,[Globalization.NumberStyles]::Float,[Globalization.CultureInfo]::InvariantCulture,[ref]$value)) { return 0.0 }
-    switch -Regex ($matches[2].ToUpperInvariant()) {
-        '^K' { return $value * 1KB }
-        '^M' { return $value * 1MB }
-        '^G' { return $value * 1GB }
-        '^T' { return $value * 1TB }
-        default { return $value }
+
+function Move-QueueItem([object]$Item,[int]$TargetIndex) {
+    if (-not $Item) { return }
+    $old = $script:queue.IndexOf($Item)
+    if ($old -lt 0) { return }
+    $TargetIndex = [Math]::Max(0,[Math]::Min($script:queue.Count-1,$TargetIndex))
+    if ($old -eq $TargetIndex) { return }
+
+    $script:queue.RemoveAt($old)
+    if ($TargetIndex -gt $script:queue.Count) { $TargetIndex = $script:queue.Count }
+    $script:queue.Insert($TargetIndex,$Item)
+    Reindex-Queue
+    $QueueGrid.SelectedItem = $Item
+}
+
+function Get-GridItemAtPoint($Grid,[System.Windows.Point]$Point) {
+    $element = $Grid.InputHitTest($Point)
+    while ($element -and -not ($element -is [System.Windows.Controls.DataGridRow])) {
+        try { $element = [System.Windows.Media.VisualTreeHelper]::GetParent($element) } catch { $element = $null }
     }
+    if ($element -is [System.Windows.Controls.DataGridRow]) { return $element.Item }
+    return $null
 }
-function Format-Speed([double]$bytes) {
-    if ($bytes -ge 1GB) { return ("{0:N1} GB/s" -f ($bytes/1GB)) }
-    if ($bytes -ge 1MB) { return ("{0:N1} MB/s" -f ($bytes/1MB)) }
-    if ($bytes -ge 1KB) { return ("{0:N0} KB/s" -f ($bytes/1KB)) }
-    return "0 KB/s"
-}
-function Update-Stats {
-    $sum = 0.0
-    foreach ($v in $script:speeds.Values) { $sum += [double]$v }
-    $active = 0
-    foreach ($v in $script:speeds.Values) { if ([double]$v -gt 0) { $active++ } }
-    $stats.Text = "$active активных   ·   $(Format-Speed $sum)   ·   $($script:done)/$($script:total) готово"
-}
-function LogLine($line,$color=$muted) {
-    if ([string]::IsNullOrWhiteSpace($line)) { return }
-    $log.SelectionStart = $log.TextLength
-    $log.SelectionColor = $color
-    $log.AppendText($line + [Environment]::NewLine)
-    $log.ScrollToCaret()
-}
-function Find-DownloadRow([int]$slot) {
-    foreach ($r in $downloadGrid.Rows) {
-        if ([string]$r.Cells["slot"].Value -eq "T$slot") { return $r }
+
+function Find-Download([int]$Slot) {
+    foreach ($item in $script:downloads) {
+        if ($item.Slot -eq "T$Slot") { return $item }
     }
     return $null
 }
-function Set-DownloadRow([int]$slot,[string]$state,[string]$value,$color,[string]$filePath="") {
-    $row = Find-DownloadRow $slot
-    if ($null -eq $row) {
-        $i = $downloadGrid.Rows.Add("T$slot",$state,$value,$filePath)
-        $row = $downloadGrid.Rows[$i]
+
+function Set-Download {
+    param(
+        [int]$Slot,
+        [string]$State,
+        [string]$Title="",
+        [string]$Url="",
+        [string]$Path="",
+        [string]$RawError=""
+    )
+
+    $item = Find-Download $Slot
+    if (-not $item) {
+        $item = [pscustomobject]@{
+            Slot = "T$Slot"
+            State = $State
+            Title = $Title
+            Url = $Url
+            Path = $Path
+            RawError = $RawError
+        }
+        $script:downloads.Add($item)
     } else {
-        $row.Cells["state"].Value = $state
-        if ($value) { $row.Cells["video"].Value = $value }
-        if ($filePath) { $row.Cells["file"].Value = $filePath }
+        $item.State = $State
+        if ($Title) { $item.Title = $Title }
+        if ($Url) { $item.Url = $Url }
+        if ($Path) { $item.Path = $Path }
+        if ($RawError) { $item.RawError = $RawError }
     }
-    $row.Cells["state"].Style.ForeColor = $color
+    $DownloadGrid.Items.Refresh()
 }
-function Update-Progress {
-    if ($script:total -le 0) {
-        $bar.Value = 0
-        $progressText.Text = "0 / 0"
-        Update-Stats
-        return
+
+function Update-StartState {
+    $running = $script:proc -and -not $script:proc.HasExited
+    $StartButton.IsEnabled = (-not $running -and $script:queue.Count -gt 0)
+    $StopButton.IsEnabled = [bool]$running
+    $PauseButton.IsEnabled = [bool]$running
+    $RetryFailedButton.IsEnabled = (-not $running -and $script:failedUrls.Count -gt 0)
+}
+
+function Set-Running([bool]$Running) {
+    $StartButton.IsEnabled = (-not $Running -and $script:queue.Count -gt 0)
+    $StopButton.IsEnabled = $Running
+    $PauseButton.IsEnabled = $Running
+
+    foreach ($c in @(
+        $UrlInput,$AddUrlButton,$OpenListButton,$RemoveQueueButton,$ClearQueueButton,$MoveUpButton,$MoveDownButton,
+        $QueueGrid,$ProfileCombo,$QualityCombo,$CodecCombo,$ContainerCombo,$RateLimitCombo,$ThreadsBox,
+        $FragmentsCombo,$FilenameTemplateBox,$WriteSubsCheck,$AutoSubsCheck,$EmbedSubsCheck,$SubtitleLangsBox,
+        $EmbedThumbnailCheck,$EmbedMetadataCheck,$EmbedChaptersCheck,$ArchiveCheck,$SponsorCheck,$AudioOnlyCheck,
+        $OutputBox,$PickOutputButton,$CookiesBox,$PickCookiesButton
+    )) {
+        $c.IsEnabled = -not $Running
     }
-    $p = [int](100*$script:done/$script:total)
-    $p = [Math]::Max(0,[Math]::Min(100,$p))
-    $bar.Value = $p
-    $progressText.Text = "$($script:done) / $($script:total)   $p%"
-    Update-Stats
+
+    if ($Running) {
+        $HeaderStatus.Text = "● Running"
+        $HeaderStatus.Foreground = [System.Windows.Media.Brushes]::LightGreen
+    } else {
+        $HeaderStatus.Text = "● Ready"
+        $HeaderStatus.Foreground = [System.Windows.Media.Brushes]::Gray
+    }
 }
-function TailLog {
+
+function Clean-Temp {
+    if ($script:runDir -and (Test-Path $script:runDir)) {
+        Remove-Item $script:runDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    $script:runDir = $null
+    $script:runLog = $null
+    $script:runEvents = $null
+}
+
+function Update-LiveStats {
+    $sum = 0.0
+    $active = 0
+    foreach ($v in $script:speeds.Values) {
+        $sum += [double]$v
+        if ([double]$v -gt 0) { $active++ }
+    }
+    $done = $script:sessionSuccess + $script:sessionFailed
+    $HeaderStats.Text = "$active active · $(Format-Speed $sum) · $done/$($script:sessionTotal)"
+
+    if ($script:sessionStarted) {
+        $elapsed = (Get-Date) - $script:sessionStarted
+        $avg = 0.0
+        if ($elapsed.TotalSeconds -gt 0) { $avg = $script:sessionBytes / $elapsed.TotalSeconds }
+        $SessionStats.Text = "Session: $($script:sessionSuccess) ok · $($script:sessionFailed) failed · $(Format-Bytes $script:sessionBytes) · $($elapsed.ToString('hh\:mm\:ss')) · avg $(Format-Speed $avg)"
+    }
+}
+
+function Tail-Log {
     if (-not $script:runLog -or -not (Test-Path $script:runLog)) { return }
-    try { $lines = @(Get-Content $script:runLog -Encoding UTF8 -ErrorAction Stop) } catch { return }
-    for ($i=$script:logLines;$i -lt $lines.Count;$i++) {
-        $line = $lines[$i]
-        if ($line -match 'ERROR|EXCEPTION|JOB-ERROR') { LogLine $line $danger }
-        elseif ($line -match 'FALLBACK|WARNING') { LogLine $line $warn }
-        elseif ($line -match 'DONE|Finished') { LogLine $line $ok }
-        else { LogLine $line }
-    }
+    try { $lines = @(Get-Content $script:runLog -Encoding UTF8) } catch { return }
+    for ($i=$script:logLines; $i -lt $lines.Count; $i++) { Log-Line $lines[$i] }
     $script:logLines = $lines.Count
 }
-function TailEvents {
+
+function Tail-Events {
     if (-not $script:runEvents -or -not (Test-Path $script:runEvents)) { return }
-    try { $lines = @(Get-Content $script:runEvents -Encoding UTF8 -ErrorAction Stop) } catch { return }
-    for ($i=$script:eventLines;$i -lt $lines.Count;$i++) {
+    try { $lines = @(Get-Content $script:runEvents -Encoding UTF8) } catch { return }
+
+    for ($i=$script:eventLines; $i -lt $lines.Count; $i++) {
         if ([string]::IsNullOrWhiteSpace($lines[$i])) { continue }
         try { $event = $lines[$i] | ConvertFrom-Json -ErrorAction Stop } catch { continue }
 
         if ($event.Kind -eq "Event") {
             $slot = [int]$event.Slot
             switch ($event.EventType) {
-                "Title" { if ($event.Title) { Set-DownloadRow $slot "Подготовка" ([string]$event.Title) $muted } }
+                "Title" {
+                    Set-Download -Slot $slot -State "Preparing" -Title ([string]$event.Title) -Url ([string]$event.Url)
+                }
                 "Progress" {
                     $parts = @("{0:N1}%" -f [double]$event.Percent)
                     if ($event.Speed) { $parts += [string]$event.Speed }
                     if ($event.ETA) { $parts += ("ETA " + [string]$event.ETA) }
-                    Set-DownloadRow $slot ($parts -join "  ·  ") "" $accent
-                    $script:speeds[$slot] = Convert-SpeedToBytes ([string]$event.Speed)
-                    Update-Stats
+                    Set-Download -Slot $slot -State ($parts -join " · ") -Url ([string]$event.Url)
+                    $script:speeds[$slot] = Convert-SpeedTextToBytes ([string]$event.Speed)
                 }
-                "Merge" { Set-DownloadRow $slot "Склейка дорожек…" "" $warn }
+                "Merge" { Set-Download -Slot $slot -State "Merging..." -Url ([string]$event.Url) }
+                "Retry" { Set-Download -Slot $slot -State "Retrying..." -Url ([string]$event.Url) }
                 "File" {
                     $path = [string]$event.Text
-                    if ($path) {
-                        $script:lastFiles[$slot] = $path
-                        Set-DownloadRow $slot "Финализация…" "" $warn $path
-                    }
+                    $script:lastFiles[$slot] = $path
+                    Set-Download -Slot $slot -State "Finalizing..." -Url ([string]$event.Url) -Path $path
                 }
-                "Error" { Set-DownloadRow $slot (Friendly-Error ([string]$event.Text)) "" $danger }
+                "Error" {
+                    Set-Download -Slot $slot -State "Error" -Url ([string]$event.Url) -RawError ([string]$event.Text)
+                }
             }
         } elseif ($event.Kind -eq "Result") {
             $slot = [int]$event.Slot
             $script:speeds[$slot] = 0
-            $script:done++
+
             if ([bool]$event.Success) {
-                $script:success++
-                $fp = [string]$event.FilePath
-                if (-not $fp) { $fp = [string]$event.Path }
-                if (-not $fp -and $script:lastFiles.ContainsKey($slot)) { $fp = [string]$script:lastFiles[$slot] }
-                Set-DownloadRow $slot "Готово" "" $ok $fp
+                $script:sessionSuccess++
+                $path = [string]$event.Path
+                if (-not $path -and $script:lastFiles.ContainsKey($slot)) { $path = [string]$script:lastFiles[$slot] }
+                $size = [int64]$event.FileSize
+                if ($size -le 0 -and $path -and (Test-Path $path -PathType Leaf)) {
+                    try { $size = (Get-Item $path).Length } catch {}
+                }
+                $script:sessionBytes += $size
+                Set-Download -Slot $slot -State "Done" -Url ([string]$event.Url) -Path $path
             } else {
-                $script:failed++
+                $script:sessionFailed++
                 $u = [string]$event.Url
                 if ($u -and -not $script:failedUrls.Contains($u)) { [void]$script:failedUrls.Add($u) }
-                Set-DownloadRow $slot (Friendly-Error ([string]$event.Error)) "" $danger
+                $friendly = [string]$event.FriendlyError
+                if (-not $friendly) { $friendly = Get-FriendlyDownloadError ([string]$event.Error) }
+                Set-Download -Slot $slot -State $friendly -Url $u -RawError ([string]$event.Error)
             }
-            Update-Progress
+
+            $done = $script:sessionSuccess + $script:sessionFailed
+            $pct = 0
+            if ($script:sessionTotal -gt 0) { $pct = [int](100*$done/$script:sessionTotal) }
+            $OverallProgress.Value = [Math]::Min(100,[Math]::Max(0,$pct))
+            Update-LiveStats
         }
     }
+
     $script:eventLines = $lines.Count
+    Update-LiveStats
 }
-function CleanTemp {
-    if ($script:runDir -and (Test-Path $script:runDir)) { Remove-Item $script:runDir -Recurse -Force -ErrorAction SilentlyContinue }
-    $script:runDir = $null
-    $script:runLog = $null
-    $script:runEvents = $null
-}
-function Show-Notification([string]$title,[string]$message,[bool]$isError=$false) {
+
+function Show-Notification([string]$Title,[string]$Message,[bool]$Error=$false) {
     $shown = $false
     try {
         [void][Windows.UI.Notifications.ToastNotificationManager,Windows.UI.Notifications,ContentType=WindowsRuntime]
         [void][Windows.Data.Xml.Dom.XmlDocument,Windows.Data.Xml.Dom.XmlDocument,ContentType=WindowsRuntime]
-        $st = [Security.SecurityElement]::Escape($title)
-        $sm = [Security.SecurityElement]::Escape($message)
-        $xml = "<toast><visual><binding template='ToastGeneric'><text>$st</text><text>$sm</text></binding></visual></toast>"
+        $safeTitle = [Security.SecurityElement]::Escape($Title)
+        $safeMessage = [Security.SecurityElement]::Escape($Message)
+        $xmlText = "<toast><visual><binding template='ToastGeneric'><text>$safeTitle</text><text>$safeMessage</text></binding></visual></toast>"
         $doc = [Windows.Data.Xml.Dom.XmlDocument]::new()
-        $doc.LoadXml($xml)
+        $doc.LoadXml($xmlText)
         $toast = [Windows.UI.Notifications.ToastNotification]::new($doc)
         [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("Video Downloader").Show($toast)
         $shown = $true
     } catch {}
+
     if (-not $shown) {
-        $tray.BalloonTipTitle = $title
-        $tray.BalloonTipText = $message
-        if ($isError) { $tray.BalloonTipIcon = "Error" } else { $tray.BalloonTipIcon = "Info" }
+        $tray.BalloonTipTitle = $Title
+        $tray.BalloonTipText = $Message
+        if ($Error) { $tray.BalloonTipIcon = "Error" } else { $tray.BalloonTipIcon = "Info" }
         $tray.ShowBalloonTip(5000)
     }
 }
-function Set-Running([bool]$value) {
-    $start.Enabled = -not $value -and $queueGrid.Rows.Count -gt 0
-    $stop.Enabled = $value
-    $retry.Enabled = -not $value -and $script:failedUrls.Count -gt 0
-    foreach ($c in @($queueGrid,$urlInput,$addUrl,$removeUrl,$clearQueue,$loadList,$quality,$rateLimit,$threads,$fragments,$archive,$sponsor,$audio,$pickOut,$pickCookies)) { $c.Enabled = -not $value }
-    $cookies.ReadOnly = $value
-    $out.ReadOnly = $value
-    if ($value) { $status.Text = "● Работает"; $status.ForeColor = $ok }
-    else { $status.Text = "● Готов"; $status.ForeColor = $muted }
-}
-function Get-QueueUrls {
-    $items = [Collections.Generic.List[string]]::new()
-    foreach ($r in $queueGrid.Rows) {
-        $u = [string]$r.Cells["url"].Value
-        if (Is-ValidUrl $u -and -not $items.Contains($u)) { [void]$items.Add($u) }
+
+function Get-ProcessTreeIds([int]$RootPid) {
+    $all = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Select-Object ProcessId,ParentProcessId)
+    $result = [Collections.Generic.List[int]]::new()
+    $queue = [Collections.Generic.Queue[int]]::new()
+    $queue.Enqueue($RootPid)
+
+    while ($queue.Count -gt 0) {
+        $pidValue = $queue.Dequeue()
+        if (-not $result.Contains($pidValue)) { [void]$result.Add($pidValue) }
+        foreach ($child in @($all | Where-Object { [int]$_.ParentProcessId -eq $pidValue })) {
+            $queue.Enqueue([int]$child.ProcessId)
+        }
     }
-    return $items.ToArray()
+    return $result.ToArray()
 }
-function StartDownload([string[]]$overrideUrls=$null) {
+
+function Suspend-ProcessTree {
+    if (-not $script:proc -or $script:proc.HasExited) { return }
+    $ids = @(Get-ProcessTreeIds $script:proc.Id)
+    $script:pausedPids = $ids
+
+    foreach ($pidValue in ($ids | Sort-Object -Descending)) {
+        try {
+            $p = [Diagnostics.Process]::GetProcessById($pidValue)
+            [void][NativeProcessControl]::NtSuspendProcess($p.Handle)
+            $p.Dispose()
+        } catch {}
+    }
+
+    $script:isPaused = $true
+    $PauseButton.Content = "Resume"
+    $HeaderStatus.Text = "● Paused"
+    $HeaderStatus.Foreground = [System.Windows.Media.Brushes]::Orange
+}
+
+function Resume-ProcessTree {
+    foreach ($pidValue in @($script:pausedPids | Sort-Object)) {
+        try {
+            $p = [Diagnostics.Process]::GetProcessById($pidValue)
+            [void][NativeProcessControl]::NtResumeProcess($p.Handle)
+            $p.Dispose()
+        } catch {}
+    }
+
+    $script:pausedPids = @()
+    $script:isPaused = $false
+    $PauseButton.Content = "Pause"
+    $HeaderStatus.Text = "● Running"
+    $HeaderStatus.Foreground = [System.Windows.Media.Brushes]::LightGreen
+}
+
+function Start-Download([string[]]$OverrideUrls=$null) {
     if ($script:proc -and -not $script:proc.HasExited) { return }
-    if (-not (Test-Path $engine) -or -not (Test-Path $ytDlp)) {
-        [Windows.Forms.MessageBox]::Show("Рядом с GUI должны лежать ytdl-manager-v8.ps1 и yt-dlp.exe.","Video Downloader") | Out-Null
-        return
-    }
 
-    $items = $overrideUrls
+    $items = $OverrideUrls
     if ($null -eq $items) { $items = @(Get-QueueUrls) }
-    if ($items.Count -eq 0) {
-        [Windows.Forms.MessageBox]::Show("В очереди нет корректных URL.","Video Downloader") | Out-Null
+    if ($items.Count -eq 0) { return }
+
+    $dest = $OutputBox.Text.Trim()
+    if (-not $dest) {
+        $dest = Join-Path (Join-Path $env:USERPROFILE "Downloads") "downloaded-video"
+        $OutputBox.Text = $dest
+    }
+
+    try {
+        New-Item -ItemType Directory -Path $dest -Force | Out-Null
+        $dest = (Resolve-Path $dest).Path
+    } catch {
+        [System.Windows.MessageBox]::Show("Cannot use output folder: $dest","Video Downloader") | Out-Null
         return
     }
 
-    $dest = $out.Text.Trim()
-    if (-not $dest) { $dest = Join-Path (Join-Path $env:USERPROFILE "Downloads") "downloaded-video"; $out.Text = $dest }
-    try { New-Item -ItemType Directory -Path $dest -Force | Out-Null; $dest = (Resolve-Path $dest).Path }
-    catch { [Windows.Forms.MessageBox]::Show("Не удалось открыть папку: $dest","Video Downloader") | Out-Null; return }
+    $threadCount = 4
+    [void][int]::TryParse($ThreadsBox.Text,[ref]$threadCount)
+    $threadCount = [Math]::Max(1,[Math]::Min(32,$threadCount))
 
-    $cookiePath = $cookies.Text.Trim()
-    if ($cookiePath -and -not (Test-Path $cookiePath)) {
-        [Windows.Forms.MessageBox]::Show("Cookies-файл не найден.","Video Downloader") | Out-Null
-        return
-    }
-
-    CleanTemp
+    Clean-Temp
     $script:runDir = Join-Path ([IO.Path]::GetTempPath()) ("ytdl-gui-" + [guid]::NewGuid().ToString("N"))
     New-Item -ItemType Directory -Path $script:runDir -Force | Out-Null
     Set-Content (Join-Path $script:runDir "owner.pid") $PID -Encoding ASCII
-    $queue = Join-Path $script:runDir "queue.txt"
+
+    $queuePath = Join-Path $script:runDir "queue.txt"
     $script:runLog = Join-Path $script:runDir "run.log"
     $script:runEvents = Join-Path $script:runDir "events.jsonl"
-    Set-Content $queue $items -Encoding UTF8
+    Set-Content $queuePath $items -Encoding UTF8
 
-    $script:logLines = 0; $script:eventLines = 0; $script:total = $items.Count
-    $script:done = 0; $script:success = 0; $script:failed = 0; $script:stopping = $false
-    $script:failedUrls.Clear(); $script:speeds.Clear(); $script:lastFiles.Clear()
-    $downloadGrid.Rows.Clear(); $log.Clear(); Update-Progress
+    $script:logLines = 0
+    $script:eventLines = 0
+    $script:failedUrls.Clear()
+    $script:speeds.Clear()
+    $script:lastFiles.Clear()
+    $script:downloads.Clear()
+    $LogBox.Clear()
+    $script:stopping = $false
+    $script:isPaused = $false
+    $script:pausedPids = @()
+    $PauseButton.Content = "Pause"
+
+    $script:sessionStarted = Get-Date
+    $script:sessionSuccess = 0
+    $script:sessionFailed = 0
+    $script:sessionBytes = [int64]0
+    $script:sessionTotal = $items.Count
+    $OverallProgress.Value = 0
+    Update-LiveStats
 
     $pwsh = Join-Path $PSHOME "pwsh.exe"
     if (-not (Test-Path $pwsh)) { $pwsh = "pwsh.exe" }
@@ -398,393 +519,677 @@ function StartDownload([string[]]$overrideUrls=$null) {
     $psi.CreateNoWindow = $true
 
     $resultDir = $dest
-    if ($archive.Checked) { $resultDir = Join-Path $dest (Get-Date -Format "yyyy-MM-dd") }
+    if ($ArchiveCheck.IsChecked) { $resultDir = Join-Path $dest (Get-Date -Format "yyyy-MM-dd") }
 
-    $args = @("-NoProfile","-ExecutionPolicy","Bypass","-File",$engine,"-In",$queue,"-Out",$dest,"-Threads",[string][int]$threads.Value,"-NoProgress","-Log",$script:runLog,"-EventFile",$script:runEvents,"-ResultDir",$resultDir,"-Quality",[string]$quality.SelectedItem)
-    $limit = $rateLimit.Text.Trim()
-    if ($limit -and $limit -ne "Без лимита") { $args += @("-RateLimit",$limit) }
+    $args = @(
+        "-NoProfile","-ExecutionPolicy","Bypass","-File",$engine,
+        "-In",$queuePath,"-Out",$dest,"-Threads",[string]$threadCount,
+        "-NoProgress","-Log",$script:runLog,"-EventFile",$script:runEvents,"-ResultDir",$resultDir,
+        "-Quality",[string]$QualityCombo.SelectedItem,
+        "-Container",[string]$ContainerCombo.SelectedItem,
+        "-VideoCodec",[string]$CodecCombo.SelectedItem,
+        "-FilenameTemplate",$FilenameTemplateBox.Text,
+        "-Retries","3","-RetryDelaySeconds","5"
+    )
+
+    $rate = $RateLimitCombo.Text.Trim()
+    if ($rate -and $rate -ne "Unlimited") { $args += @("-RateLimit",$rate) }
+
+    if ([string]$FragmentsCombo.SelectedItem -eq "Auto") { $args += "-AutoFragments" }
+    else { $args += @("-Fragments",[string]$FragmentsCombo.SelectedItem) }
+
+    if ($ArchiveCheck.IsChecked) { $args += "-Archive" }
+    if ($SponsorCheck.IsChecked) { $args += "-SponsorBlock" }
+    if ($AudioOnlyCheck.IsChecked) { $args += "-AudioOnly" }
+
+    $cookie = $CookiesBox.Text.Trim()
+    if ($cookie) {
+        if (-not (Test-Path $cookie)) {
+            [System.Windows.MessageBox]::Show("Cookies file not found.","Video Downloader") | Out-Null
+            return
+        }
+        $args += @("-Cookies",(Resolve-Path $cookie).Path)
+    }
+
+    if ($WriteSubsCheck.IsChecked) { $args += "-WriteSubtitles" }
+    if ($AutoSubsCheck.IsChecked) { $args += "-WriteAutoSubtitles" }
+    if ($EmbedSubsCheck.IsChecked) { $args += "-EmbedSubtitles" }
+    if ($SubtitleLangsBox.Text.Trim()) { $args += @("-SubtitleLangs",$SubtitleLangsBox.Text.Trim()) }
+    if ($EmbedThumbnailCheck.IsChecked) { $args += "-EmbedThumbnail" }
+    if ($EmbedMetadataCheck.IsChecked) { $args += "-EmbedMetadata" }
+    if ($EmbedChaptersCheck.IsChecked) { $args += "-EmbedChapters" }
+
     foreach ($a in $args) { [void]$psi.ArgumentList.Add($a) }
-
-    if ($fragments.SelectedIndex -eq 0) { [void]$psi.ArgumentList.Add("-AutoFragments") }
-    else { [void]$psi.ArgumentList.Add("-Fragments"); [void]$psi.ArgumentList.Add([string]$fragments.SelectedItem) }
-    if ($archive.Checked) { [void]$psi.ArgumentList.Add("-Archive") }
-    if ($sponsor.Checked) { [void]$psi.ArgumentList.Add("-SponsorBlock") }
-    if ($audio.Checked) { [void]$psi.ArgumentList.Add("-AudioOnly") }
-    if ($cookiePath) { [void]$psi.ArgumentList.Add("-Cookies"); [void]$psi.ArgumentList.Add((Resolve-Path $cookiePath).Path) }
 
     try {
         $script:proc = [Diagnostics.Process]::Start($psi)
         Set-Running $true
-        LogLine "Запуск: $($items.Count) URL · $([int]$threads.Value) потоков · качество $($quality.Text) · папка $dest" $accent
-        $timer.Start()
+        Log-Line "Started $($items.Count) URL(s) into $dest"
     } catch {
-        CleanTemp
         $script:proc = $null
         Set-Running $false
-        [Windows.Forms.MessageBox]::Show("Ошибка запуска: $($_.Exception.Message)","Video Downloader") | Out-Null
+        Clean-Temp
+        [System.Windows.MessageBox]::Show("Failed to start downloader: $($_.Exception.Message)","Video Downloader") | Out-Null
     }
 }
-function StopDownload {
+
+function Stop-Download {
     if (-not $script:proc -or $script:proc.HasExited) { return }
     $script:stopping = $true
-    $status.Text = "● Остановка"
-    $status.ForeColor = $warn
-    try { $script:proc.Kill($true) } catch { LogLine $_.Exception.Message $danger }
+    if ($script:isPaused) { Resume-ProcessTree }
+    try { $script:proc.Kill($true) } catch {}
 }
-function FinishDownload {
-    TailEvents; TailLog
+
+function Finish-Download {
+    Tail-Events
+    Tail-Log
+
     $code = $null
     try { $code = $script:proc.ExitCode } catch {}
     try { $script:proc.Dispose() } catch {}
     $script:proc = $null
+
     Set-Running $false
+    $PauseButton.Content = "Pause"
+    $script:isPaused = $false
+    $script:pausedPids = @()
+
+    Update-LiveStats
+    $elapsed = if ($script:sessionStarted) { (Get-Date)-$script:sessionStarted } else { [TimeSpan]::Zero }
+    $summary = "$($script:sessionSuccess) ok · $($script:sessionFailed) failed · $(Format-Bytes $script:sessionBytes) · $($elapsed.ToString('hh\:mm\:ss'))"
 
     if ($script:stopping) {
-        $status.Text = "● Остановлено"; $status.ForeColor = $warn; LogLine "Остановлено пользователем." $warn
-    } elseif ($code -eq 0 -and $script:failed -eq 0) {
-        $status.Text = "● Завершено"; $status.ForeColor = $ok
-        LogLine "Готово: $($script:success)/$($script:total)." $ok
+        $HeaderStatus.Text = "● Stopped"
+        $HeaderStatus.Foreground = [System.Windows.Media.Brushes]::Orange
+    } elseif ($script:sessionFailed -eq 0 -and $code -eq 0) {
+        $HeaderStatus.Text = "● Completed"
+        $HeaderStatus.Foreground = [System.Windows.Media.Brushes]::LightGreen
         try { [Media.SystemSounds]::Asterisk.Play() } catch {}
-        Show-Notification "Video Downloader" "Готово: $($script:success)/$($script:total) видео."
+        Show-Notification "Video Downloader" $summary
     } else {
-        $status.Text = "● С ошибками"; $status.ForeColor = $danger
-        LogLine "Завершено: успешно $($script:success), ошибок $($script:failed)." $danger
+        $HeaderStatus.Text = "● Completed with errors"
+        $HeaderStatus.Foreground = [System.Windows.Media.Brushes]::Tomato
         try { [Media.SystemSounds]::Hand.Play() } catch {}
-        Show-Notification "Video Downloader" "Успешно: $($script:success). Ошибок: $($script:failed)." $true
+        Show-Notification "Video Downloader" $summary $true
     }
-    $retry.Enabled = $script:failedUrls.Count -gt 0
+
+    $SessionStats.Text = "Session: $summary"
+    $RetryFailedButton.IsEnabled = $script:failedUrls.Count -gt 0
     $script:stopping = $false
-    CleanTemp
+    Clean-Temp
 }
-function Start-Preview([string]$url) {
-    if (-not (Is-ValidUrl $url) -or -not (Test-Path $ytDlp)) { return }
+
+function Start-Preview([string]$Url) {
+    if (-not (Is-ValidUrl $Url)) { return }
     if ($script:previewJob) {
         try { Stop-Job $script:previewJob -ErrorAction SilentlyContinue; Remove-Job $script:previewJob -Force -ErrorAction SilentlyContinue } catch {}
     }
-    $script:previewUrl = $url
-    $previewTitle.Text = "Загрузка информации…"
-    $previewMeta.Text = $url
-    $thumb.Image = $null
+
+    $script:previewUrl = $Url
+    $PreviewTitle.Text = "Loading..."
+    $PreviewMeta.Text = $Url
+    $PreviewFormats.Text = ""
+    $PreviewImage.Source = $null
+
+    $cookie = $CookiesBox.Text.Trim()
     $exe = $ytDlp
-    $cookie = $cookies.Text.Trim()
-    $script:previewJob = Start-ThreadJob -ArgumentList $exe,$url,$cookie -ScriptBlock {
+    $script:previewJob = Start-ThreadJob -ArgumentList $exe,$Url,$cookie -ScriptBlock {
         param($exe,$url,$cookie)
+
         $args = @("--dump-single-json","--skip-download","--no-warnings","--encoding","utf-8","--impersonate","chrome")
         if ($cookie -and (Test-Path $cookie)) { $args += @("--cookies",$cookie) }
         $args += $url
+
         $raw = & $exe @args 2>$null
         if ($LASTEXITCODE -ne 0) { throw "yt-dlp metadata failed" }
-        return ($raw -join [Environment]::NewLine)
+        $j = ($raw -join [Environment]::NewLine) | ConvertFrom-Json
+
+        $formats = @($j.formats | Where-Object { $_.vcodec -and $_.vcodec -ne "none" })
+        $maxHeight = 0
+        $maxFps = 0.0
+        $codecSet = [Collections.Generic.HashSet[string]]::new()
+        $rangeSet = [Collections.Generic.HashSet[string]]::new()
+
+        foreach ($fmt in $formats) {
+            if ($fmt.height -and [int]$fmt.height -gt $maxHeight) { $maxHeight = [int]$fmt.height }
+            if ($fmt.fps -and [double]$fmt.fps -gt $maxFps) { $maxFps = [double]$fmt.fps }
+
+            $vc = [string]$fmt.vcodec
+            if ($vc.StartsWith("av01")) { [void]$codecSet.Add("AV1") }
+            elseif ($vc.StartsWith("vp9")) { [void]$codecSet.Add("VP9") }
+            elseif ($vc.StartsWith("avc1") -or $vc.StartsWith("h264")) { [void]$codecSet.Add("H264") }
+            elseif ($vc) { [void]$codecSet.Add($vc.Split('.')[0]) }
+
+            $dr = [string]$fmt.dynamic_range
+            if ($dr -and $dr -ne "SDR" -and $dr -ne "None") { [void]$rangeSet.Add($dr) }
+        }
+
+        [pscustomobject]@{
+            Title = [string]$j.title
+            Uploader = [string]$j.uploader
+            Duration = [double]$j.duration
+            Thumbnail = [string]$j.thumbnail
+            Extractor = [string]$j.extractor_key
+            MaxHeight = $maxHeight
+            MaxFps = $maxFps
+            Codecs = (@($codecSet) -join ", ")
+            DynamicRange = (@($rangeSet) -join ", ")
+        }
     }
 }
+
 function Complete-Preview {
     if (-not $script:previewJob -or $script:previewJob.State -eq "Running") { return }
+
     try {
-        if ($script:previewJob.State -ne "Completed") { throw "Не удалось получить метаданные" }
-        $raw = Receive-Job $script:previewJob -ErrorAction Stop
-        $json = ($raw -join [Environment]::NewLine) | ConvertFrom-Json -ErrorAction Stop
-        $title = [string]$json.title
-        if (-not $title) { $title = "Без названия" }
-        $previewTitle.Text = $title
+        if ($script:previewJob.State -ne "Completed") { throw "Preview failed" }
+        $r = Receive-Job $script:previewJob -ErrorAction Stop | Select-Object -Last 1
 
+        $PreviewTitle.Text = if ($r.Title) { [string]$r.Title } else { "Untitled" }
         $duration = ""
-        if ($json.duration) {
-            $ts = [TimeSpan]::FromSeconds([double]$json.duration)
-            if ($ts.TotalHours -ge 1) { $duration = $ts.ToString("hh\:mm\:ss") } else { $duration = $ts.ToString("mm\:ss") }
+        if ($r.Duration -gt 0) {
+            $ts = [TimeSpan]::FromSeconds([double]$r.Duration)
+            $duration = if ($ts.TotalHours -ge 1) { $ts.ToString("hh\:mm\:ss") } else { $ts.ToString("mm\:ss") }
         }
-        $maxHeight = 0
-        foreach ($f in @($json.formats)) { if ($f.height -and [int]$f.height -gt $maxHeight) { $maxHeight = [int]$f.height } }
-        $parts = [Collections.Generic.List[string]]::new()
-        if ($json.uploader) { [void]$parts.Add([string]$json.uploader) }
-        if ($duration) { [void]$parts.Add($duration) }
-        if ($maxHeight -gt 0) { [void]$parts.Add(([string]$maxHeight + "p")) }
-        if ($json.extractor_key) { [void]$parts.Add([string]$json.extractor_key) }
-        $previewMeta.Text = $parts -join "  ·  "
 
-        if ($json.thumbnail) {
+        $meta = @()
+        if ($r.Uploader) { $meta += [string]$r.Uploader }
+        if ($duration) { $meta += $duration }
+        if ($r.Extractor) { $meta += [string]$r.Extractor }
+        $PreviewMeta.Text = $meta -join " · "
+
+        $formatParts = @()
+        if ($r.MaxHeight -gt 0) {
+            $res = [string]$r.MaxHeight + "p"
+            if ($r.MaxFps -gt 0) { $res += ("{0:N0}" -f [double]$r.MaxFps) }
+            $formatParts += $res
+        }
+        if ($r.Codecs) { $formatParts += ("Codecs: " + [string]$r.Codecs) }
+        if ($r.DynamicRange) { $formatParts += ("HDR: " + [string]$r.DynamicRange) }
+        $PreviewFormats.Text = $formatParts -join " · "
+
+        if ($r.Thumbnail) {
             try {
-                $wc = [Net.WebClient]::new()
-                $bytes = $wc.DownloadData([string]$json.thumbnail)
-                $wc.Dispose()
-                $ms = [IO.MemoryStream]::new($bytes)
-                $img = [Drawing.Image]::FromStream($ms)
-                $thumb.Image = [Drawing.Bitmap]::new($img)
-                $img.Dispose(); $ms.Dispose()
+                $bitmap = [System.Windows.Media.Imaging.BitmapImage]::new()
+                $bitmap.BeginInit()
+                $bitmap.CacheOption = [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad
+                $bitmap.UriSource = [Uri]::new([string]$r.Thumbnail)
+                $bitmap.EndInit()
+                $bitmap.Freeze()
+                $PreviewImage.Source = $bitmap
             } catch {}
         }
     } catch {
-        $previewTitle.Text = "Предпросмотр недоступен"
-        $previewMeta.Text = $_.Exception.Message
+        $PreviewTitle.Text = "Preview unavailable"
+        $PreviewMeta.Text = $_.Exception.Message
     } finally {
         try { Remove-Job $script:previewJob -Force -ErrorAction SilentlyContinue } catch {}
         $script:previewJob = $null
     }
 }
-function Start-YtDlpUpdate {
-    if ($script:updateJob -or -not (Test-Path $ytDlp)) { return }
-    $updateYt.Enabled = $false
-    $updateYt.Text = "Обновление…"
-    $exe = $ytDlp
-    $script:updateJob = Start-ThreadJob -ArgumentList $exe -ScriptBlock {
-        param($exe)
-        $o = & $exe -U 2>&1
-        [pscustomobject]@{ ExitCode=$LASTEXITCODE; Text=($o -join [Environment]::NewLine) }
-    }
-}
-function Complete-YtDlpUpdate {
-    if (-not $script:updateJob -or $script:updateJob.State -eq "Running") { return }
+
+function Refresh-Dependencies {
+    $parts = [Collections.Generic.List[string]]::new()
+    [void]$parts.Add("PowerShell $($PSVersionTable.PSVersion)")
+
     try {
-        $r = Receive-Job $script:updateJob -ErrorAction Stop | Select-Object -Last 1
-        if ($r.ExitCode -eq 0) { LogLine "yt-dlp: $($r.Text)" $ok; Show-Notification "Video Downloader" "yt-dlp обновлён." }
-        else { LogLine "Не удалось обновить yt-dlp: $($r.Text)" $danger }
-    } catch { LogLine "Не удалось обновить yt-dlp: $($_.Exception.Message)" $danger }
-    finally {
-        try { Remove-Job $script:updateJob -Force -ErrorAction SilentlyContinue } catch {}
-        $script:updateJob = $null
-        $updateYt.Enabled = $true
-        $updateYt.Text = "Обновить yt-dlp"
+        $v = & $ytDlp --version 2>$null | Select-Object -First 1
+        if ($v) { [void]$parts.Add("yt-dlp $v") } else { [void]$parts.Add("yt-dlp: missing") }
+    } catch { [void]$parts.Add("yt-dlp: error") }
+
+    $ffmpeg = Join-Path $root "ffmpeg.exe"
+    if (-not (Test-Path $ffmpeg)) {
+        $cmd = Get-Command ffmpeg.exe -ErrorAction SilentlyContinue
+        if ($cmd) { $ffmpeg = $cmd.Source }
+    }
+
+    $ffprobe = Join-Path $root "ffprobe.exe"
+    if (-not (Test-Path $ffprobe)) {
+        $cmd = Get-Command ffprobe.exe -ErrorAction SilentlyContinue
+        if ($cmd) { $ffprobe = $cmd.Source }
+    }
+
+    if ($ffmpeg -and (Test-Path $ffmpeg)) {
+        try { [void]$parts.Add((& $ffmpeg -version 2>$null | Select-Object -First 1)) } catch { [void]$parts.Add("ffmpeg: installed") }
+        $InstallFfmpegButton.IsEnabled = $false
+    } else {
+        [void]$parts.Add("ffmpeg: missing")
+        $InstallFfmpegButton.IsEnabled = $true
+    }
+
+    if ($ffprobe -and (Test-Path $ffprobe)) { [void]$parts.Add("ffprobe: installed") }
+    else { [void]$parts.Add("ffprobe: missing") }
+
+    $DependencyStatus.Text = $parts -join [Environment]::NewLine
+}
+
+function Start-DependencyJob([string]$Kind) {
+    if ($script:dependencyJob) { return }
+
+    if ($Kind -eq "ffmpeg") {
+        $InstallFfmpegButton.IsEnabled = $false
+        $DependencyStatus.Text = "Downloading FFmpeg..."
+        $destRoot = $root
+        $script:dependencyJob = Start-ThreadJob -ArgumentList $destRoot -ScriptBlock {
+            param($destRoot)
+            $temp = Join-Path ([IO.Path]::GetTempPath()) ("video-downloader-ffmpeg-" + [guid]::NewGuid().ToString("N"))
+            New-Item -ItemType Directory -Path $temp -Force | Out-Null
+            try {
+                $zip = Join-Path $temp "ffmpeg.zip"
+                Invoke-WebRequest "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile $zip
+                Expand-Archive $zip (Join-Path $temp "unpacked") -Force
+                $ffmpeg = Get-ChildItem (Join-Path $temp "unpacked") -Filter ffmpeg.exe -Recurse | Select-Object -First 1
+                $ffprobe = Get-ChildItem (Join-Path $temp "unpacked") -Filter ffprobe.exe -Recurse | Select-Object -First 1
+                if (-not $ffmpeg -or -not $ffprobe) { throw "FFmpeg binaries not found in archive" }
+                Copy-Item $ffmpeg.FullName (Join-Path $destRoot "ffmpeg.exe") -Force
+                Copy-Item $ffprobe.FullName (Join-Path $destRoot "ffprobe.exe") -Force
+                [pscustomobject]@{ Success=$true; Message="FFmpeg installed next to the app." }
+            } catch {
+                [pscustomobject]@{ Success=$false; Message=$_.Exception.Message }
+            } finally {
+                Remove-Item $temp -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+    } elseif ($Kind -eq "ytdlp") {
+        $UpdateYtDlpButton.IsEnabled = $false
+        $DependencyStatus.Text = "Updating yt-dlp..."
+        $exe = $ytDlp
+        $script:dependencyJob = Start-ThreadJob -ArgumentList $exe -ScriptBlock {
+            param($exe)
+            try {
+                $text = & $exe -U 2>&1
+                [pscustomobject]@{ Success=($LASTEXITCODE -eq 0); Message=($text -join [Environment]::NewLine) }
+            } catch {
+                [pscustomobject]@{ Success=$false; Message=$_.Exception.Message }
+            }
+        }
     }
 }
-function Open-SelectedFile {
-    if ($downloadGrid.SelectedRows.Count -eq 0) { return }
-    $path = [string]$downloadGrid.SelectedRows[0].Cells["file"].Value
-    if ($path -and (Test-Path $path -PathType Leaf)) { Start-Process $path }
+
+function Complete-DependencyJob {
+    if (-not $script:dependencyJob -or $script:dependencyJob.State -eq "Running") { return }
+
+    try {
+        $r = Receive-Job $script:dependencyJob -ErrorAction Stop | Select-Object -Last 1
+        if ($r.Success) {
+            Log-Line ([string]$r.Message)
+            Show-Notification "Video Downloader" ([string]$r.Message)
+        } else {
+            Log-Line ("Dependency operation failed: " + [string]$r.Message)
+            [System.Windows.MessageBox]::Show([string]$r.Message,"Dependency error") | Out-Null
+        }
+    } catch {
+        Log-Line ("Dependency operation failed: " + $_.Exception.Message)
+    } finally {
+        try { Remove-Job $script:dependencyJob -Force -ErrorAction SilentlyContinue } catch {}
+        $script:dependencyJob = $null
+        $UpdateYtDlpButton.IsEnabled = $true
+        Refresh-Dependencies
+    }
 }
+
+function Register-Protocol {
+    try {
+        $base = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey("Software\Classes\videodownloader")
+        $base.SetValue("","URL:VideoDownloader Protocol")
+        $base.SetValue("URL Protocol","")
+
+        $exe = Join-Path $root "VideoDownloader.exe"
+        $iconKey = $base.CreateSubKey("DefaultIcon")
+        if (Test-Path $exe) { $iconKey.SetValue("",('"' + $exe + '",0')) }
+        $iconKey.Close()
+
+        $commandKey = $base.CreateSubKey("shell\open\command")
+        if (Test-Path $exe) {
+            $command = '"' + $exe + '" "%1"'
+        } else {
+            $pwsh = (Get-Command pwsh.exe -ErrorAction Stop).Source
+            $command = '"' + $pwsh + '" -NoProfile -ExecutionPolicy Bypass -STA -File "' + $PSCommandPath + '" "%1"'
+        }
+        $commandKey.SetValue("",$command)
+        $commandKey.Close()
+        $base.Close()
+
+        [System.Windows.MessageBox]::Show("Registered videodownloader:// for the current user.","Video Downloader") | Out-Null
+    } catch {
+        [System.Windows.MessageBox]::Show("Protocol registration failed: $($_.Exception.Message)","Video Downloader") | Out-Null
+    }
+}
+
+function Handle-StartupArgs {
+    foreach ($arg in @($StartupArgs)) {
+        if ([string]::IsNullOrWhiteSpace($arg)) { continue }
+
+        if ($arg.StartsWith("videodownloader://",[StringComparison]::OrdinalIgnoreCase)) {
+            $payload = $arg.Substring("videodownloader://".Length).TrimStart('/')
+            try { $payload = [Uri]::UnescapeDataString($payload) } catch {}
+            if (Is-ValidUrl $payload) { Add-Urls @($payload) }
+            continue
+        }
+
+        if (Test-Path $arg -PathType Leaf) {
+            Add-FileToQueue $arg
+            continue
+        }
+
+        if (Is-ValidUrl $arg) { Add-Urls @($arg) }
+    }
+}
+
+function Apply-Profile([string]$Name) {
+    switch ($Name) {
+        "Universal" {
+            $QualityCombo.SelectedItem="Best"; $CodecCombo.SelectedItem="Auto"; $ContainerCombo.SelectedItem="Auto"
+            $AudioOnlyCheck.IsChecked=$false; $EmbedMetadataCheck.IsChecked=$true; $EmbedChaptersCheck.IsChecked=$true
+            $EmbedThumbnailCheck.IsChecked=$false; $WriteSubsCheck.IsChecked=$false; $EmbedSubsCheck.IsChecked=$false
+        }
+        "4K archive" {
+            $QualityCombo.SelectedItem="2160"; $CodecCombo.SelectedItem="Auto"; $ContainerCombo.SelectedItem="MKV"
+            $AudioOnlyCheck.IsChecked=$false; $EmbedMetadataCheck.IsChecked=$true; $EmbedChaptersCheck.IsChecked=$true
+            $EmbedThumbnailCheck.IsChecked=$true
+        }
+        "MP4 compatibility" {
+            $QualityCombo.SelectedItem="1080"; $CodecCombo.SelectedItem="H264"; $ContainerCombo.SelectedItem="MP4"
+            $AudioOnlyCheck.IsChecked=$false; $EmbedMetadataCheck.IsChecked=$true; $EmbedThumbnailCheck.IsChecked=$true
+        }
+        "Music MP3" {
+            $QualityCombo.SelectedItem="Best"; $CodecCombo.SelectedItem="Auto"; $ContainerCombo.SelectedItem="Auto"
+            $AudioOnlyCheck.IsChecked=$true; $EmbedMetadataCheck.IsChecked=$true; $EmbedThumbnailCheck.IsChecked=$true
+            $WriteSubsCheck.IsChecked=$false; $EmbedSubsCheck.IsChecked=$false
+        }
+        "Subtitles archive" {
+            $QualityCombo.SelectedItem="Best"; $CodecCombo.SelectedItem="Auto"; $ContainerCombo.SelectedItem="MKV"
+            $AudioOnlyCheck.IsChecked=$false; $WriteSubsCheck.IsChecked=$true; $AutoSubsCheck.IsChecked=$true
+            $EmbedSubsCheck.IsChecked=$true; $EmbedMetadataCheck.IsChecked=$true; $EmbedChaptersCheck.IsChecked=$true
+        }
+    }
+}
+
+foreach ($v in @("Best","2160","1440","1080","720")) { [void]$QualityCombo.Items.Add($v) }
+foreach ($v in @("Auto","H264","VP9","AV1")) { [void]$CodecCombo.Items.Add($v) }
+foreach ($v in @("Auto","MP4","MKV","WebM")) { [void]$ContainerCombo.Items.Add($v) }
+foreach ($v in @("Unlimited","1M","5M","10M","25M","50M")) { [void]$RateLimitCombo.Items.Add($v) }
+foreach ($v in @("Auto","1","2","3","4","6","8")) { [void]$FragmentsCombo.Items.Add($v) }
+foreach ($v in @("Universal","4K archive","MP4 compatibility","Music MP3","Subtitles archive")) { [void]$ProfileCombo.Items.Add($v) }
+
+$QualityCombo.SelectedItem = "Best"
+$CodecCombo.SelectedItem = "Auto"
+$ContainerCombo.SelectedItem = "Auto"
+$RateLimitCombo.SelectedItem = "Unlimited"
+$FragmentsCombo.SelectedItem = "Auto"
+$ProfileCombo.SelectedItem = "Universal"
+$OutputBox.Text = Join-Path (Join-Path $env:USERPROFILE "Downloads") "downloaded-video"
+
+$folderDialog = [System.Windows.Forms.FolderBrowserDialog]::new()
+$fileDialog = [System.Windows.Forms.OpenFileDialog]::new()
+
+$appIcon = Join-Path $root "assets\app.ico"
+$tray = [System.Windows.Forms.NotifyIcon]::new()
+if (Test-Path $appIcon) {
+    try { $tray.Icon = [Drawing.Icon]::new($appIcon) } catch { $tray.Icon = [Drawing.SystemIcons]::Application }
+} else {
+    $tray.Icon = [Drawing.SystemIcons]::Application
+}
+$tray.Text = "Video Downloader"
+$tray.Visible = $true
+$trayMenu = [System.Windows.Forms.ContextMenuStrip]::new()
+$trayShow = $trayMenu.Items.Add("Open")
+$trayFolder = $trayMenu.Items.Add("Open downloads")
+[void]$trayMenu.Items.Add("-")
+$trayExit = $trayMenu.Items.Add("Exit")
+$tray.ContextMenuStrip = $trayMenu
+
+$queueMenu = [System.Windows.Controls.ContextMenu]::new()
+$queueOpen = [System.Windows.Controls.MenuItem]::new(); $queueOpen.Header = "Open URL"
+$queueCopy = [System.Windows.Controls.MenuItem]::new(); $queueCopy.Header = "Copy URL"
+$queueRetry = [System.Windows.Controls.MenuItem]::new(); $queueRetry.Header = "Download selected"
+$queueRemove = [System.Windows.Controls.MenuItem]::new(); $queueRemove.Header = "Remove"
+foreach ($m in @($queueOpen,$queueCopy,$queueRetry,$queueRemove)) { [void]$queueMenu.Items.Add($m) }
+$QueueGrid.ContextMenu = $queueMenu
+
+$downloadMenu = [System.Windows.Controls.ContextMenu]::new()
+$dlOpenFile = [System.Windows.Controls.MenuItem]::new(); $dlOpenFile.Header = "Open file"
+$dlFolder = [System.Windows.Controls.MenuItem]::new(); $dlFolder.Header = "Show in folder"
+$dlCopyPath = [System.Windows.Controls.MenuItem]::new(); $dlCopyPath.Header = "Copy path"
+$dlOpenUrl = [System.Windows.Controls.MenuItem]::new(); $dlOpenUrl.Header = "Open URL"
+$dlRetry = [System.Windows.Controls.MenuItem]::new(); $dlRetry.Header = "Retry URL"
+$dlError = [System.Windows.Controls.MenuItem]::new(); $dlError.Header = "Show raw error"
+foreach ($m in @($dlOpenFile,$dlFolder,$dlCopyPath,$dlOpenUrl,$dlRetry,$dlError)) { [void]$downloadMenu.Items.Add($m) }
+$DownloadGrid.ContextMenu = $downloadMenu
+
+function Open-SelectedFile {
+    $item = $DownloadGrid.SelectedItem
+    if ($item -and $item.Path -and (Test-Path $item.Path -PathType Leaf)) { Start-Process $item.Path }
+}
+
 function Open-SelectedFolder {
-    if ($downloadGrid.SelectedRows.Count -eq 0) {
-        if (Test-Path $out.Text) { Start-Process explorer.exe -ArgumentList @($out.Text) }
+    $item = $DownloadGrid.SelectedItem
+    if ($item -and $item.Path -and (Test-Path $item.Path -PathType Leaf)) {
+        Start-Process explorer.exe -ArgumentList @("/select," + [char]34 + $item.Path + [char]34)
+    } elseif (Test-Path $OutputBox.Text) {
+        Start-Process explorer.exe -ArgumentList @($OutputBox.Text)
+    }
+}
+
+function Copy-SelectedPath {
+    $item = $DownloadGrid.SelectedItem
+    if ($item -and $item.Path) { [System.Windows.Clipboard]::SetText([string]$item.Path) }
+}
+
+$AddUrlButton.Add_Click({
+    $values = @(Extract-Urls $UrlInput.Text)
+    if ($values.Count -eq 0) {
+        [System.Windows.MessageBox]::Show("No valid HTTP/HTTPS URL found.","Video Downloader") | Out-Null
         return
     }
-    $path = [string]$downloadGrid.SelectedRows[0].Cells["file"].Value
-    if ($path -and (Test-Path $path -PathType Leaf)) {
-        Start-Process explorer.exe -ArgumentList @("/select," + [char]34 + $path + [char]34)
-    } elseif (Test-Path $out.Text) { Start-Process explorer.exe -ArgumentList @($out.Text) }
-}
-function Copy-SelectedPath {
-    if ($downloadGrid.SelectedRows.Count -eq 0) { return }
-    $path = [string]$downloadGrid.SelectedRows[0].Cells["file"].Value
-    if ($path) { [Windows.Forms.Clipboard]::SetText($path) }
-}
-
-$form = [Windows.Forms.Form]::new()
-$form.Text = "Video Downloader"
-$form.Size = [Drawing.Size]::new(1390,850)
-$form.MinimumSize = [Drawing.Size]::new(1280,780)
-$form.StartPosition = "CenterScreen"
-$form.BackColor = $bg
-$form.ForeColor = $fg
-$form.Font = [Drawing.Font]::new("Segoe UI",9)
-$form.KeyPreview = $true
-$appIcon = Join-Path $root "assets\app.ico"
-if (Test-Path $appIcon) {
-    try { $form.Icon = [Drawing.Icon]::new($appIcon) } catch { $form.Icon = [Drawing.SystemIcons]::Application }
-} else {
-    $form.Icon = [Drawing.SystemIcons]::Application
-}
-
-$head = Label "Video Downloader" 24 14 350 20 $fg
-$head.Font = [Drawing.Font]::new("Segoe UI",19,[Drawing.FontStyle]::Bold)
-$head.Height = 36
-$form.Controls.Add($head)
-$form.Controls.Add((Label "yt-dlp manager · очередь · предпросмотр · параллельные загрузки" 26 50 650 9 $muted))
-$stats = Label "0 активных   ·   0 KB/s   ·   0/0 готово" 650 22 440 9 $muted
-$stats.TextAlign = "MiddleRight"; $stats.Anchor = "Top,Right"; $form.Controls.Add($stats)
-$status = Label "● Готов" 1110 18 125 9 $muted
-$status.Anchor = "Top,Right"; $status.BackColor = $field; $status.TextAlign = "MiddleCenter"; $status.Height = 30
-Make-Rounded $status 16; $form.Controls.Add($status)
-$minTray = Button "▁  В трей" 1248 16 105 32 $field
-$minTray.Anchor = "Top,Right"; Make-Rounded $minTray 12; $form.Controls.Add($minTray)
-
-$left = [Windows.Forms.Panel]::new()
-$left.Location = [Drawing.Point]::new(22,82); $left.Size = [Drawing.Size]::new(500,700); $left.Anchor = "Top,Bottom,Left"; $left.BackColor = $panel
-Make-Rounded $left 22; $form.Controls.Add($left)
-$middle = [Windows.Forms.Panel]::new()
-$middle.Location = [Drawing.Point]::new(538,82); $middle.Size = [Drawing.Size]::new(470,700); $middle.Anchor = "Top,Bottom,Left,Right"; $middle.BackColor = $panel
-Make-Rounded $middle 22; $form.Controls.Add($middle)
-$right = [Windows.Forms.Panel]::new()
-$right.Location = [Drawing.Point]::new(1024,82); $right.Size = [Drawing.Size]::new(330,700); $right.Anchor = "Top,Bottom,Right"; $right.BackColor = $panel
-Make-Rounded $right 22; $form.Controls.Add($right)
-
-$left.Controls.Add((Label "Очередь URL" 16 14 180 11 $fg))
-$queueCount = Label "0 URL" 395 14 85 9 $muted; $queueCount.TextAlign = "MiddleRight"; $left.Controls.Add($queueCount)
-$urlInput = [Windows.Forms.TextBox]::new(); $urlInput.Location = [Drawing.Point]::new(16,48); $urlInput.Size = [Drawing.Size]::new(360,28); StyleText $urlInput; $left.Controls.Add($urlInput)
-$addUrl = Button "+ Добавить" 386 46 96 32 $accent; Make-Rounded $addUrl 12; $left.Controls.Add($addUrl)
-$clipButton = Button "Добавить из буфера" 16 87 466 34 $field2; $clipButton.Visible = $false; Make-Rounded $clipButton 12; $left.Controls.Add($clipButton)
-
-$queueGrid = [Windows.Forms.DataGridView]::new()
-$queueGrid.Location = [Drawing.Point]::new(16,132); $queueGrid.Size = [Drawing.Size]::new(466,455); $queueGrid.Anchor = "Top,Bottom,Left,Right"
-$queueGrid.BackgroundColor = $field; $queueGrid.BorderStyle = "None"; $queueGrid.RowHeadersVisible = $false; $queueGrid.AllowUserToAddRows = $false
-$queueGrid.AllowUserToResizeRows = $false; $queueGrid.ReadOnly = $true; $queueGrid.MultiSelect = $true; $queueGrid.SelectionMode = "FullRowSelect"
-$queueGrid.EnableHeadersVisualStyles = $false; $queueGrid.ColumnHeadersDefaultCellStyle.BackColor = $bg; $queueGrid.ColumnHeadersDefaultCellStyle.ForeColor = $muted
-$queueGrid.DefaultCellStyle.BackColor = $field; $queueGrid.DefaultCellStyle.ForeColor = $fg; $queueGrid.DefaultCellStyle.SelectionBackColor = [Drawing.Color]::FromArgb(54,60,78)
-$queueGrid.DefaultCellStyle.SelectionForeColor = $fg; $queueGrid.RowTemplate.Height = 30; $queueGrid.AllowDrop = $true
-[void]$queueGrid.Columns.Add("valid",""); [void]$queueGrid.Columns.Add("url","URL"); [void]$queueGrid.Columns.Add("state","Статус")
-$queueGrid.Columns["valid"].Width = 32; $queueGrid.Columns["url"].AutoSizeMode = "Fill"; $queueGrid.Columns["state"].Width = 92
-$left.Controls.Add($queueGrid)
-
-$loadList = Button "Открыть .txt" 16 604 105
-$removeUrl = Button "Удалить" 129 604 105
-$clearQueue = Button "Очистить" 242 604 105
-$retry = Button "↻ Ошибки" 355 604 127 34 $warn
-$retry.Enabled = $false
-foreach ($b in @($loadList,$removeUrl,$clearQueue,$retry)) { Make-Rounded $b 12; $left.Controls.Add($b) }
-$dropHint = Label "Можно перетащить .txt, .url или ссылку прямо сюда" 18 650 455 8.5 $muted
-$dropHint.Anchor = "Bottom,Left,Right"; $left.Controls.Add($dropHint)
-
-$middle.Controls.Add((Label "Загрузки" 16 14 180 11 $fg))
-$downloadGrid = [Windows.Forms.DataGridView]::new()
-$downloadGrid.Location = [Drawing.Point]::new(16,48); $downloadGrid.Size = [Drawing.Size]::new(438,365); $downloadGrid.Anchor = "Top,Left,Right"
-$downloadGrid.BackgroundColor = $field; $downloadGrid.BorderStyle = "None"; $downloadGrid.RowHeadersVisible = $false; $downloadGrid.AllowUserToAddRows = $false
-$downloadGrid.ReadOnly = $true; $downloadGrid.SelectionMode = "FullRowSelect"; $downloadGrid.MultiSelect = $false; $downloadGrid.EnableHeadersVisualStyles = $false
-$downloadGrid.ColumnHeadersDefaultCellStyle.BackColor = $bg; $downloadGrid.ColumnHeadersDefaultCellStyle.ForeColor = $muted
-$downloadGrid.DefaultCellStyle.BackColor = $field; $downloadGrid.DefaultCellStyle.ForeColor = $fg; $downloadGrid.DefaultCellStyle.SelectionBackColor = [Drawing.Color]::FromArgb(54,60,78)
-$downloadGrid.DefaultCellStyle.SelectionForeColor = $fg; $downloadGrid.RowTemplate.Height = 31
-[void]$downloadGrid.Columns.Add("slot","Слот"); [void]$downloadGrid.Columns.Add("state","Статус"); [void]$downloadGrid.Columns.Add("video","Видео"); [void]$downloadGrid.Columns.Add("file","Файл")
-$downloadGrid.Columns["slot"].Width = 48; $downloadGrid.Columns["state"].Width = 170; $downloadGrid.Columns["video"].AutoSizeMode = "Fill"; $downloadGrid.Columns["file"].Visible = $false
-$middle.Controls.Add($downloadGrid)
-
-$openFile = Button "Открыть файл" 16 426 130
-$openFolder = Button "Папка" 154 426 130
-$copyPath = Button "Копировать путь" 292 426 162
-foreach ($b in @($openFile,$openFolder,$copyPath)) { Make-Rounded $b 12; $middle.Controls.Add($b) }
-$middle.Controls.Add((Label "Лог" 16 478 100 10 $fg))
-$log = [Windows.Forms.RichTextBox]::new()
-$log.Location = [Drawing.Point]::new(16,510); $log.Size = [Drawing.Size]::new(438,170); $log.Anchor = "Top,Bottom,Left,Right"
-$log.ReadOnly = $true; $log.BackColor = [Drawing.Color]::FromArgb(13,15,19); $log.ForeColor = $muted; $log.BorderStyle = "None"; $log.Font = [Drawing.Font]::new("Cascadia Mono",8.5)
-$middle.Controls.Add($log)
-
-$right.Controls.Add((Label "Предпросмотр" 16 14 180 11 $fg))
-$thumb = [Windows.Forms.PictureBox]::new(); $thumb.Location = [Drawing.Point]::new(16,48); $thumb.Size = [Drawing.Size]::new(298,168)
-$thumb.BackColor = $bg; $thumb.SizeMode = "Zoom"; Make-Rounded $thumb 14; $right.Controls.Add($thumb)
-$previewTitle = Label "Выбери URL в очереди" 16 226 298 10 $fg; $previewTitle.AutoEllipsis = $true; $right.Controls.Add($previewTitle)
-$previewMeta = Label "Название, длительность, качество и обложка появятся здесь." 16 252 298 8.5 $muted
-$previewMeta.Height = 42; $previewMeta.AutoEllipsis = $true; $right.Controls.Add($previewMeta)
-
-$right.Controls.Add((Label "Качество" 16 304 130 9 $muted))
-$quality = [Windows.Forms.ComboBox]::new(); $quality.Location = [Drawing.Point]::new(174,302); $quality.Size = [Drawing.Size]::new(140,28)
-$quality.DropDownStyle = "DropDownList"; $quality.BackColor = $field; $quality.ForeColor = $fg
-foreach ($q in @("Best","2160","1440","1080","720")) { [void]$quality.Items.Add($q) }; $quality.SelectedIndex = 0; $right.Controls.Add($quality)
-
-$right.Controls.Add((Label "Лимит скорости" 16 340 130 9 $muted))
-$rateLimit = [Windows.Forms.ComboBox]::new(); $rateLimit.Location = [Drawing.Point]::new(174,338); $rateLimit.Size = [Drawing.Size]::new(140,28)
-$rateLimit.DropDownStyle = "DropDown"; $rateLimit.BackColor = $field; $rateLimit.ForeColor = $fg
-foreach ($v in @("Без лимита","1M","5M","10M","25M","50M")) { [void]$rateLimit.Items.Add($v) }; $rateLimit.SelectedIndex = 0; $right.Controls.Add($rateLimit)
-
-$right.Controls.Add((Label "Параллельные URL" 16 376 145 9 $muted))
-$threads = [Windows.Forms.NumericUpDown]::new(); $threads.Location = [Drawing.Point]::new(224,374); $threads.Size = [Drawing.Size]::new(90,27)
-$threads.Minimum = 1; $threads.Maximum = 32; $threads.Value = 4; $threads.BackColor = $field; $threads.ForeColor = $fg; $right.Controls.Add($threads)
-
-$right.Controls.Add((Label "Фрагменты" 16 412 145 9 $muted))
-$fragments = [Windows.Forms.ComboBox]::new(); $fragments.Location = [Drawing.Point]::new(224,410); $fragments.Size = [Drawing.Size]::new(90,27)
-$fragments.DropDownStyle = "DropDownList"; $fragments.BackColor = $field; $fragments.ForeColor = $fg
-[void]$fragments.Items.Add("Авто"); 1..4 | ForEach-Object { [void]$fragments.Items.Add([string]$_) }; $fragments.SelectedIndex = 0; $right.Controls.Add($fragments)
-
-$archive = [Windows.Forms.CheckBox]::new(); $archive.Text = "Архив по дате"; $archive.Location = [Drawing.Point]::new(16,448); $archive.Size = [Drawing.Size]::new(140,24); $archive.ForeColor = $fg; $right.Controls.Add($archive)
-$sponsor = [Windows.Forms.CheckBox]::new(); $sponsor.Text = "SponsorBlock"; $sponsor.Location = [Drawing.Point]::new(166,448); $sponsor.Size = [Drawing.Size]::new(140,24); $sponsor.ForeColor = $fg; $right.Controls.Add($sponsor)
-$audio = [Windows.Forms.CheckBox]::new(); $audio.Text = "Только MP3"; $audio.Location = [Drawing.Point]::new(16,476); $audio.Size = [Drawing.Size]::new(140,24); $audio.ForeColor = $fg; $right.Controls.Add($audio)
-
-$right.Controls.Add((Label "Папка загрузки" 16 510 140 8.5 $muted))
-$out = [Windows.Forms.TextBox]::new(); $out.Location = [Drawing.Point]::new(16,534); $out.Size = [Drawing.Size]::new(250,27)
-$out.Text = Join-Path (Join-Path $env:USERPROFILE "Downloads") "downloaded-video"; StyleText $out; $right.Controls.Add($out)
-$pickOut = Button "…" 274 533 40 29; Make-Rounded $pickOut 10; $right.Controls.Add($pickOut)
-
-$right.Controls.Add((Label "Cookies" 16 568 140 8.5 $muted))
-$cookies = [Windows.Forms.TextBox]::new(); $cookies.Location = [Drawing.Point]::new(16,592); $cookies.Size = [Drawing.Size]::new(250,27); StyleText $cookies; $right.Controls.Add($cookies)
-$pickCookies = Button "…" 274 591 40 29; Make-Rounded $pickCookies 10; $right.Controls.Add($pickCookies)
-
-$updateYt = Button "Обновить yt-dlp" 16 630 142 34; Make-Rounded $updateYt 12; $right.Controls.Add($updateYt)
-$checkVersion = Label "" 168 636 146 8 $muted; $checkVersion.TextAlign = "MiddleRight"; $right.Controls.Add($checkVersion)
-
-$bar = [Windows.Forms.ProgressBar]::new(); $bar.Location = [Drawing.Point]::new(22,794); $bar.Size = [Drawing.Size]::new(995,18); $bar.Anchor = "Bottom,Left,Right"; $form.Controls.Add($bar)
-$progressText = Label "0 / 0" 1026 789 120 9 $muted; $progressText.Anchor = "Bottom,Right"; $progressText.TextAlign = "MiddleRight"; $form.Controls.Add($progressText)
-$stop = Button "■  Стоп" 1155 783 90 40 $danger; $stop.Anchor = "Bottom,Right"; $stop.Enabled = $false; Make-Rounded $stop 14; $form.Controls.Add($stop)
-$start = Button "▶  Начать" 1254 783 100 40 $accent; $start.Anchor = "Bottom,Right"; $start.Enabled = $false; Make-Rounded $start 14; $form.Controls.Add($start)
-
-$folderDialog = [Windows.Forms.FolderBrowserDialog]::new()
-$fileDialog = [Windows.Forms.OpenFileDialog]::new()
-$trayMenu = [Windows.Forms.ContextMenuStrip]::new()
-$trayShow = $trayMenu.Items.Add("Открыть"); $trayFolder = $trayMenu.Items.Add("Открыть папку загрузки"); [void]$trayMenu.Items.Add("-"); $trayExit = $trayMenu.Items.Add("Выход")
-$tray = [Windows.Forms.NotifyIcon]::new(); $tray.Icon = $form.Icon; $tray.Text = "Video Downloader"; $tray.Visible = $true; $tray.ContextMenuStrip = $trayMenu
-
-function Restore-Window { $form.Show(); $form.WindowState = "Normal"; $form.Activate() }
-function Hide-ToTray {
-    $form.Hide()
-    $tray.BalloonTipTitle = "Video Downloader"; $tray.BalloonTipText = "Приложение продолжает работать в трее."; $tray.BalloonTipIcon = "Info"; $tray.ShowBalloonTip(1800)
-}
-
-$addUrl.Add_Click({
-    $values = @(Extract-Urls $urlInput.Text)
-    if ($values.Count -eq 0) { [Windows.Forms.MessageBox]::Show("В строке нет корректного http/https URL.","Video Downloader") | Out-Null; return }
-    Add-Urls $values; $urlInput.Clear()
+    Add-Urls $values
+    $UrlInput.Clear()
 })
-$urlInput.Add_KeyDown({ param($s,$e); if ($e.KeyCode -eq [Windows.Forms.Keys]::Enter) { $addUrl.PerformClick(); $e.SuppressKeyPress = $true } })
-$loadList.Add_Click({ $fileDialog.Filter = "URL lists (*.txt;*.url)|*.txt;*.url|All files (*.*)|*.*"; if ($fileDialog.ShowDialog() -eq "OK") { Add-FileToQueue $fileDialog.FileName } })
-$removeUrl.Add_Click({ foreach ($r in @($queueGrid.SelectedRows)) { if (-not $r.IsNewRow) { $queueGrid.Rows.Remove($r) } }; Update-QueueSummary })
-$clearQueue.Add_Click({ $queueGrid.Rows.Clear(); Update-QueueSummary; $previewTitle.Text = "Выбери URL в очереди"; $previewMeta.Text = ""; $thumb.Image = $null })
-$retry.Add_Click({ $items = @($script:failedUrls.ToArray()); if ($items.Count -gt 0) { StartDownload $items } })
-$clipButton.Add_Click({ try { $values = @(Extract-Urls ([Windows.Forms.Clipboard]::GetText())); if ($values.Count -gt 0) { Add-Urls $values }; $clipButton.Visible = $false } catch {} })
-$queueGrid.Add_SelectionChanged({ if ($queueGrid.SelectedRows.Count -eq 1) { $u = [string]$queueGrid.SelectedRows[0].Cells["url"].Value; if (Is-ValidUrl $u -and $u -ne $script:previewUrl) { Start-Preview $u } } })
-$queueGrid.Add_DragEnter({
+
+$UrlInput.Add_KeyDown({
     param($s,$e)
-    if ($e.Data.GetDataPresent([Windows.Forms.DataFormats]::FileDrop) -or $e.Data.GetDataPresent([Windows.Forms.DataFormats]::Text)) {
-        $e.Effect = [Windows.Forms.DragDropEffects]::Copy; $queueGrid.BackgroundColor = [Drawing.Color]::FromArgb(54,60,78); $dropHint.Text = "Отпусти — добавлю содержимое в очередь"; $dropHint.ForeColor = $accent
-    } else { $e.Effect = [Windows.Forms.DragDropEffects]::None }
-})
-$queueGrid.Add_DragLeave({ $queueGrid.BackgroundColor = $field; $dropHint.Text = "Можно перетащить .txt, .url или ссылку прямо сюда"; $dropHint.ForeColor = $muted })
-$queueGrid.Add_DragDrop({
-    param($s,$e)
-    $queueGrid.BackgroundColor = $field; $dropHint.Text = "Можно перетащить .txt, .url или ссылку прямо сюда"; $dropHint.ForeColor = $muted
-    if ($e.Data.GetDataPresent([Windows.Forms.DataFormats]::FileDrop)) { foreach ($f in @($e.Data.GetData([Windows.Forms.DataFormats]::FileDrop))) { Add-FileToQueue ([string]$f) } }
-    if ($e.Data.GetDataPresent([Windows.Forms.DataFormats]::Text)) { Add-Urls @(Extract-Urls ([string]$e.Data.GetData([Windows.Forms.DataFormats]::Text))) }
-})
-$pickOut.Add_Click({ $folderDialog.SelectedPath = $out.Text; if ($folderDialog.ShowDialog() -eq "OK") { $out.Text = $folderDialog.SelectedPath } })
-$pickCookies.Add_Click({ $fileDialog.Filter = "Text files (*.txt)|*.txt|All files (*.*)|*.*"; if ($fileDialog.ShowDialog() -eq "OK") { $cookies.Text = $fileDialog.FileName } })
-$openFile.Add_Click({ Open-SelectedFile }); $openFolder.Add_Click({ Open-SelectedFolder }); $copyPath.Add_Click({ Copy-SelectedPath }); $downloadGrid.Add_CellDoubleClick({ Open-SelectedFile })
-$updateYt.Add_Click({ Start-YtDlpUpdate }); $start.Add_Click({ StartDownload }); $stop.Add_Click({ StopDownload })
-$minTray.Add_Click({ Hide-ToTray }); $tray.Add_DoubleClick({ Restore-Window }); $trayShow.Add_Click({ Restore-Window })
-$trayFolder.Add_Click({ if (Test-Path $out.Text) { Start-Process explorer.exe -ArgumentList @($out.Text) } })
-$trayExit.Add_Click({ $script:allowExit = $true; $form.Close() })
-$form.Add_Resize({ if ($form.WindowState -eq "Minimized") { Hide-ToTray } })
-$form.Add_KeyDown({ param($s,$e); if ($e.Control -and $e.KeyCode -eq [Windows.Forms.Keys]::Enter) { StartDownload; $e.SuppressKeyPress = $true } })
-
-$timer = [Windows.Forms.Timer]::new(); $timer.Interval = 400
-$timer.Add_Tick({
-    TailEvents; TailLog; Complete-Preview; Complete-YtDlpUpdate
-    if ($script:proc) {
-        try {
-            if ($script:proc.HasExited) { $timer.Stop(); FinishDownload; $timer.Start() }
-        } catch {}
+    if ($e.Key -eq [System.Windows.Input.Key]::Enter) {
+        $AddUrlButton.RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Button]::ClickEvent))
+        $e.Handled = $true
     }
 })
-$clipboardTimer = [Windows.Forms.Timer]::new(); $clipboardTimer.Interval = 1200
+
+$OpenListButton.Add_Click({
+    $fileDialog.Filter = "URL lists (*.txt;*.url)|*.txt;*.url|All files (*.*)|*.*"
+    if ($fileDialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Add-FileToQueue $fileDialog.FileName }
+})
+
+$RemoveQueueButton.Add_Click({
+    foreach ($item in @($QueueGrid.SelectedItems)) { [void]$script:queue.Remove($item) }
+    Reindex-Queue
+})
+
+$ClearQueueButton.Add_Click({ $script:queue.Clear(); Reindex-Queue })
+
+$MoveUpButton.Add_Click({
+    $item = $QueueGrid.SelectedItem
+    if ($item) { Move-QueueItem $item ([Math]::Max(0,$script:queue.IndexOf($item)-1)) }
+})
+
+$MoveDownButton.Add_Click({
+    $item = $QueueGrid.SelectedItem
+    if ($item) { Move-QueueItem $item ([Math]::Min($script:queue.Count-1,$script:queue.IndexOf($item)+1)) }
+})
+
+$RetryFailedButton.Add_Click({
+    $items = @($script:failedUrls.ToArray())
+    if ($items.Count -gt 0) { Start-Download $items }
+})
+
+$QueueGrid.Add_SelectionChanged({
+    $item = $QueueGrid.SelectedItem
+    if ($item -and $item.Url -and $item.Url -ne $script:previewUrl) { Start-Preview ([string]$item.Url) }
+})
+
+$QueueGrid.Add_PreviewMouseLeftButtonDown({
+    param($s,$e)
+    $script:dragStart = $e.GetPosition($QueueGrid)
+    $script:dragItem = Get-GridItemAtPoint $QueueGrid $script:dragStart
+})
+
+$QueueGrid.Add_MouseMove({
+    param($s,$e)
+    if ($e.LeftButton -ne [System.Windows.Input.MouseButtonState]::Pressed -or -not $script:dragItem) { return }
+    $pos = $e.GetPosition($QueueGrid)
+    $dx = [Math]::Abs($pos.X-$script:dragStart.X)
+    $dy = [Math]::Abs($pos.Y-$script:dragStart.Y)
+    if ($dx -lt [System.Windows.SystemParameters]::MinimumHorizontalDragDistance -and $dy -lt [System.Windows.SystemParameters]::MinimumVerticalDragDistance) { return }
+
+    $data = [System.Windows.DataObject]::new()
+    $data.SetData("VideoDownloader.QueueItem",$script:dragItem)
+    [void][System.Windows.DragDrop]::DoDragDrop($QueueGrid,$data,[System.Windows.DragDropEffects]::Move)
+})
+
+$QueueGrid.Add_DragOver({
+    param($s,$e)
+    if ($e.Data.GetDataPresent("VideoDownloader.QueueItem") -or $e.Data.GetDataPresent([System.Windows.DataFormats]::FileDrop) -or $e.Data.GetDataPresent([System.Windows.DataFormats]::UnicodeText)) {
+        $e.Effects = [System.Windows.DragDropEffects]::Move
+    } else {
+        $e.Effects = [System.Windows.DragDropEffects]::None
+    }
+    $e.Handled = $true
+})
+
+$QueueGrid.Add_Drop({
+    param($s,$e)
+    if ($e.Data.GetDataPresent("VideoDownloader.QueueItem")) {
+        $drag = $e.Data.GetData("VideoDownloader.QueueItem")
+        $target = Get-GridItemAtPoint $QueueGrid ($e.GetPosition($QueueGrid))
+        if ($drag -and $target -and $drag -ne $target) { Move-QueueItem $drag ($script:queue.IndexOf($target)) }
+        $script:dragItem = $null
+        return
+    }
+
+    if ($e.Data.GetDataPresent([System.Windows.DataFormats]::FileDrop)) {
+        foreach ($p in @($e.Data.GetData([System.Windows.DataFormats]::FileDrop))) { Add-FileToQueue ([string]$p) }
+    }
+    if ($e.Data.GetDataPresent([System.Windows.DataFormats]::UnicodeText)) {
+        Add-Urls @(Extract-Urls ([string]$e.Data.GetData([System.Windows.DataFormats]::UnicodeText)))
+    }
+})
+
+$window.Add_Drop({
+    param($s,$e)
+    if ($e.Data.GetDataPresent([System.Windows.DataFormats]::FileDrop)) {
+        foreach ($p in @($e.Data.GetData([System.Windows.DataFormats]::FileDrop))) { Add-FileToQueue ([string]$p) }
+    } elseif ($e.Data.GetDataPresent([System.Windows.DataFormats]::UnicodeText)) {
+        Add-Urls @(Extract-Urls ([string]$e.Data.GetData([System.Windows.DataFormats]::UnicodeText)))
+    }
+})
+
+$ProfileCombo.Add_SelectionChanged({
+    if ($ProfileCombo.SelectedItem) { Apply-Profile ([string]$ProfileCombo.SelectedItem) }
+})
+
+$PickOutputButton.Add_Click({
+    $folderDialog.SelectedPath = $OutputBox.Text
+    if ($folderDialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $OutputBox.Text = $folderDialog.SelectedPath }
+})
+
+$PickCookiesButton.Add_Click({
+    $fileDialog.Filter = "Text files (*.txt)|*.txt|All files (*.*)|*.*"
+    if ($fileDialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $CookiesBox.Text = $fileDialog.FileName }
+})
+
+$OpenFileButton.Add_Click({ Open-SelectedFile })
+$OpenFolderButton.Add_Click({ Open-SelectedFolder })
+$CopyPathButton.Add_Click({ Copy-SelectedPath })
+$OpenUrlButton.Add_Click({ $item=$DownloadGrid.SelectedItem; if ($item -and (Is-ValidUrl ([string]$item.Url))) { Start-Process ([string]$item.Url) } })
+
+$queueOpen.Add_Click({ $item=$QueueGrid.SelectedItem; if ($item -and (Is-ValidUrl ([string]$item.Url))) { Start-Process ([string]$item.Url) } })
+$queueCopy.Add_Click({ $item=$QueueGrid.SelectedItem; if ($item) { [System.Windows.Clipboard]::SetText([string]$item.Url) } })
+$queueRetry.Add_Click({ $item=$QueueGrid.SelectedItem; if ($item) { Start-Download @([string]$item.Url) } })
+$queueRemove.Add_Click({ $item=$QueueGrid.SelectedItem; if ($item) { [void]$script:queue.Remove($item); Reindex-Queue } })
+
+$dlOpenFile.Add_Click({ Open-SelectedFile })
+$dlFolder.Add_Click({ Open-SelectedFolder })
+$dlCopyPath.Add_Click({ Copy-SelectedPath })
+$dlOpenUrl.Add_Click({ $item=$DownloadGrid.SelectedItem; if ($item -and (Is-ValidUrl ([string]$item.Url))) { Start-Process ([string]$item.Url) } })
+$dlRetry.Add_Click({ $item=$DownloadGrid.SelectedItem; if ($item -and $item.Url) { Start-Download @([string]$item.Url) } })
+$dlError.Add_Click({ $item=$DownloadGrid.SelectedItem; if ($item -and $item.RawError) { [System.Windows.MessageBox]::Show([string]$item.RawError,"Raw yt-dlp error") | Out-Null } })
+
+$StartButton.Add_Click({ Start-Download })
+$StopButton.Add_Click({ Stop-Download })
+$PauseButton.Add_Click({ if ($script:isPaused) { Resume-ProcessTree } else { Suspend-ProcessTree } })
+
+$RefreshDepsButton.Add_Click({ Refresh-Dependencies })
+$InstallFfmpegButton.Add_Click({ Start-DependencyJob "ffmpeg" })
+$UpdateYtDlpButton.Add_Click({ Start-DependencyJob "ytdlp" })
+$RegisterProtocolButton.Add_Click({ Register-Protocol })
+
+$tray.Add_DoubleClick({ $window.Show(); $window.WindowState=[System.Windows.WindowState]::Normal; $window.Activate() })
+$trayShow.Add_Click({ $window.Show(); $window.WindowState=[System.Windows.WindowState]::Normal; $window.Activate() })
+$trayFolder.Add_Click({ if (Test-Path $OutputBox.Text) { Start-Process explorer.exe -ArgumentList @($OutputBox.Text) } })
+$trayExit.Add_Click({ $script:allowClose=$true; $window.Close() })
+$TrayButton.Add_Click({ $window.Hide() })
+$window.Add_StateChanged({ if ($window.WindowState -eq [System.Windows.WindowState]::Minimized) { $window.Hide() } })
+
+$timer = [System.Windows.Threading.DispatcherTimer]::new()
+$timer.Interval = [TimeSpan]::FromMilliseconds(350)
+$timer.Add_Tick({
+    Tail-Events
+    Tail-Log
+    Complete-Preview
+    Complete-DependencyJob
+
+    if ($script:proc) {
+        try { if ($script:proc.HasExited) { Finish-Download } } catch {}
+    }
+})
+
+$clipboardTimer = [System.Windows.Threading.DispatcherTimer]::new()
+$clipboardTimer.Interval = [TimeSpan]::FromMilliseconds(900)
 $clipboardTimer.Add_Tick({
     try {
-        if (-not [Windows.Forms.Clipboard]::ContainsText()) { $clipButton.Visible = $false; return }
-        $values = @(Extract-Urls ([Windows.Forms.Clipboard]::GetText()))
+        if (-not [System.Windows.Clipboard]::ContainsText()) { return }
+        $text = [System.Windows.Clipboard]::GetText()
+        if ($text -eq $script:lastClipboardText) { return }
+
+        $values = @(Extract-Urls $text)
         if ($values.Count -gt 0) {
-            $joined = $values -join [Environment]::NewLine
-            if ($joined -ne $script:lastClipboard) { $script:lastClipboard = $joined; $clipButton.Text = "＋ Добавить из буфера ($($values.Count))" }
-            $clipButton.Visible = $true
-        } else { $clipButton.Visible = $false }
+            $script:lastClipboardText = $text
+            if ($WatchClipboardCheck.IsChecked) {
+                Add-Urls $values
+                $ClipboardHint.Text = "Auto-added $($values.Count) URL(s) from clipboard."
+            } else {
+                $ClipboardHint.Text = "URL detected in clipboard. Enable Watch clipboard to auto-add."
+            }
+        }
     } catch {}
-})
-$form.Add_Shown({
-    $timer.Start(); $clipboardTimer.Start()
-    try { $v = & $ytDlp --version 2>$null | Select-Object -First 1; if ($v) { $checkVersion.Text = "yt-dlp $v" } } catch {}
-})
-$form.Add_FormClosing({
-    param($s,$e)
-    if (-not $script:allowExit -and $script:proc -and -not $script:proc.HasExited) {
-        $a = [Windows.Forms.MessageBox]::Show("Идёт загрузка. Остановить её и закрыть программу?","Video Downloader","YesNo","Warning")
-        if ($a -ne "Yes") { $e.Cancel = $true; return }
-        try { $script:proc.Kill($true) } catch {}
-    }
-    try {
-        if ($script:previewJob) { Stop-Job $script:previewJob -ErrorAction SilentlyContinue; Remove-Job $script:previewJob -Force -ErrorAction SilentlyContinue }
-        if ($script:updateJob) { Stop-Job $script:updateJob -ErrorAction SilentlyContinue; Remove-Job $script:updateJob -Force -ErrorAction SilentlyContinue }
-    } catch {}
-    $tray.Visible = $false; $tray.Dispose(); $timer.Stop(); $clipboardTimer.Stop(); CleanTemp
 })
 
-Update-QueueSummary
-[void]$form.ShowDialog()
+$window.Add_Closing({
+    param($s,$e)
+    if (-not $script:allowClose -and $script:proc -and -not $script:proc.HasExited) {
+        $answer = [System.Windows.MessageBox]::Show("A download is running. Stop it and exit?","Video Downloader",[System.Windows.MessageBoxButton]::YesNo,[System.Windows.MessageBoxImage]::Warning)
+        if ($answer -ne [System.Windows.MessageBoxResult]::Yes) {
+            $e.Cancel = $true
+            return
+        }
+        if ($script:isPaused) { Resume-ProcessTree }
+        try { $script:proc.Kill($true) } catch {}
+    }
+
+    try {
+        if ($script:previewJob) { Stop-Job $script:previewJob -ErrorAction SilentlyContinue; Remove-Job $script:previewJob -Force -ErrorAction SilentlyContinue }
+        if ($script:dependencyJob) { Stop-Job $script:dependencyJob -ErrorAction SilentlyContinue; Remove-Job $script:dependencyJob -Force -ErrorAction SilentlyContinue }
+    } catch {}
+
+    $tray.Visible = $false
+    $tray.Dispose()
+    $timer.Stop()
+    $clipboardTimer.Stop()
+    Clean-Temp
+})
+
+Reindex-Queue
+Refresh-Dependencies
+Handle-StartupArgs
+$timer.Start()
+$clipboardTimer.Start()
+[void]$window.ShowDialog()
