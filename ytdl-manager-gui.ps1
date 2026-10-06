@@ -12,7 +12,9 @@ $ytDlp = Join-Path $root "yt-dlp.exe"
 $script:proc = $null
 $script:runDir = $null
 $script:runLog = $null
+$script:runEvents = $null
 $script:logLines = 0
+$script:eventLines = 0
 $script:total = 0
 $script:done = 0
 $script:stopping = $false
@@ -82,6 +84,32 @@ function Slot($slot, $state, $value, $color) {
     $row.Cells[1].Style.ForeColor = $color
 }
 
+function SlotState($slot, $state, $color) {
+    $name = "T$slot"
+    $row = $null
+    foreach ($r in $grid.Rows) {
+        if ($r.Cells[0].Value -eq $name) { $row = $r; break }
+    }
+    if ($null -eq $row) {
+        $i = $grid.Rows.Add($name,$state,"")
+        $row = $grid.Rows[$i]
+    } else {
+        $row.Cells[1].Value = $state
+    }
+    $row.Cells[1].Style.ForeColor = $color
+}
+
+function SlotTitle($slot, $title) {
+    $name = "T$slot"
+    foreach ($r in $grid.Rows) {
+        if ($r.Cells[0].Value -eq $name) {
+            $r.Cells[2].Value = $title
+            return
+        }
+    }
+    [void]$grid.Rows.Add($name,"Подготовка",$title)
+}
+
 function Progress {
     if ($script:total -le 0) {
         $bar.Value = 0
@@ -129,6 +157,35 @@ function TailLog {
     $script:logLines = $lines.Count
 }
 
+function TailEvents {
+    if (-not $script:runEvents -or -not (Test-Path $script:runEvents)) { return }
+    try { $lines = @(Get-Content $script:runEvents -Encoding UTF8 -ErrorAction Stop) } catch { return }
+
+    for ($i=$script:eventLines; $i -lt $lines.Count; $i++) {
+        if ([string]::IsNullOrWhiteSpace($lines[$i])) { continue }
+        try { $event = $lines[$i] | ConvertFrom-Json -ErrorAction Stop } catch { continue }
+        if ($event.Kind -ne "Event") { continue }
+
+        switch ($event.EventType) {
+            "Title" {
+                if ($event.Title) { SlotTitle ([int]$event.Slot) ([string]$event.Title) }
+            }
+            "Progress" {
+                $pct = "{0:N1}%" -f [double]$event.Percent
+                $parts = @($pct)
+                if ($event.Speed) { $parts += [string]$event.Speed }
+                if ($event.ETA) { $parts += ("ETA " + [string]$event.ETA) }
+                SlotState ([int]$event.Slot) ($parts -join "  ·  ") $accent
+            }
+            "Merge" {
+                SlotState ([int]$event.Slot) "Склейка дорожек…" $warn
+            }
+        }
+    }
+
+    $script:eventLines = $lines.Count
+}
+
 function Running($value) {
     $start.Enabled = -not $value
     $stop.Enabled = $value
@@ -153,6 +210,7 @@ function CleanTemp {
     }
     $script:runDir = $null
     $script:runLog = $null
+    $script:runEvents = $null
 }
 
 function StartDownload {
@@ -189,9 +247,11 @@ function StartDownload {
     New-Item -ItemType Directory -Path $script:runDir -Force | Out-Null
     $queue = Join-Path $script:runDir "queue.txt"
     $script:runLog = Join-Path $script:runDir "run.log"
+    $script:runEvents = Join-Path $script:runDir "events.jsonl"
     Set-Content $queue $items -Encoding UTF8
 
     $script:logLines = 0
+    $script:eventLines = 0
     $script:total = $items.Count
     $script:done = 0
     $script:stopping = $false
@@ -207,7 +267,7 @@ function StartDownload {
     $psi.UseShellExecute = $false
     $psi.CreateNoWindow = $true
 
-    $args = @("-NoProfile","-ExecutionPolicy","Bypass","-File",$engine,"-In",$queue,"-Out",$dest,"-Threads",[string][int]$threads.Value,"-NoProgress","-Log",$script:runLog)
+    $args = @("-NoProfile","-ExecutionPolicy","Bypass","-File",$engine,"-In",$queue,"-Out",$dest,"-Threads",[string][int]$threads.Value,"-NoProgress","-Log",$script:runLog,"-EventFile",$script:runEvents)
     foreach ($a in $args) { [void]$psi.ArgumentList.Add($a) }
 
     if ($fragments.SelectedIndex -eq 0) { [void]$psi.ArgumentList.Add("-AutoFragments") }
@@ -244,6 +304,7 @@ function StopDownload {
 }
 
 function FinishDownload {
+    TailEvents
     TailLog
     $code = $null
     try { $code = $script:proc.ExitCode } catch {}
@@ -453,6 +514,7 @@ $form.Add_KeyDown({
 $timer = [Windows.Forms.Timer]::new()
 $timer.Interval = 400
 $timer.Add_Tick({
+    TailEvents
     TailLog
     if ($script:proc) {
         try {
