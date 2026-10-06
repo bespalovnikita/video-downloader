@@ -11,7 +11,7 @@ foreach ($file in @($gui,$engine)) {
     [void][System.Management.Automation.Language.Parser]::ParseFile($file,[ref]$tokens,[ref]$errors)
     if ($errors.Count -gt 0) {
         $text = ($errors | ForEach-Object { "$($_.Extent.StartLineNumber): $($_.Message)" }) -join [Environment]::NewLine
-        throw "PowerShell parse errors in $file:$([Environment]::NewLine)$text"
+        throw ("PowerShell parse errors in {0}:{1}{2}" -f $file,[Environment]::NewLine,$text)
     }
 }
 
