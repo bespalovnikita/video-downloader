@@ -20,7 +20,11 @@ jobs:
         with:
           dotnet-version: "8.0.x"
 
-      - name: Smoke checks
+      - name: Core parser tests
+        shell: pwsh
+        run: ./tests/core-tests.ps1
+
+      - name: WPF and engine smoke checks
         shell: pwsh
         run: ./tests/smoke.ps1
 
