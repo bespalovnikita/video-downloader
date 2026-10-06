@@ -37,7 +37,8 @@ param(
     [switch]$NoProgress,
     [switch]$DryRun,
     [string]$Log,
-    [string]$EventFile
+    [string]$EventFile,
+    [string]$ResultDir
 )
 
 $ListFile = $In
@@ -50,8 +51,16 @@ if ([string]::IsNullOrWhiteSpace($InputDir)) {
     $InputDir = "."
 }
 
-$SuccessFile = Join-Path $InputDir ("{0}-success.txt" -f $InputBase)
-$ErrorFile   = Join-Path $InputDir ("{0}-error.txt" -f $InputBase)
+$ResultBaseDir = $InputDir
+if (-not [string]::IsNullOrWhiteSpace($ResultDir)) {
+    $ResultBaseDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($ResultDir)
+    if (-not (Test-Path $ResultBaseDir)) {
+        New-Item -ItemType Directory -Path $ResultBaseDir -Force | Out-Null
+    }
+}
+
+$SuccessFile = Join-Path $ResultBaseDir ("{0}-success.txt" -f $InputBase)
+$ErrorFile   = Join-Path $ResultBaseDir ("{0}-error.txt" -f $InputBase)
 
 if ($Threads -lt 1) {
     $Threads = 1
