@@ -390,9 +390,23 @@ function FinishDownload {
     try { $script:proc.Dispose() } catch {}
     $script:proc = $null
     Running $false
-    if ($script:stopping) { $status.Text = "● Остановлено"; $status.ForeColor = $warn; LogLine "Остановлено пользователем." $warn }
-    elseif ($code -eq 0) { $status.Text = "● Завершено"; $status.ForeColor = $ok; LogLine "Загрузка завершена." $ok }
-    else { $status.Text = "● Ошибка"; $status.ForeColor = $danger; LogLine "Процесс завершился с кодом $code." $danger }
+    if ($script:stopping) {
+        $status.Text = "● Остановлено"
+        $status.ForeColor = $warn
+        LogLine "Остановлено пользователем." $warn
+    }
+    elseif ($code -eq 0) {
+        $status.Text = "● Завершено"
+        $status.ForeColor = $ok
+        LogLine "Загрузка завершена." $ok
+        try { [System.Media.SystemSounds]::Asterisk.Play() } catch {}
+    }
+    else {
+        $status.Text = "● Ошибка"
+        $status.ForeColor = $danger
+        LogLine "Процесс завершился с кодом $code." $danger
+        try { [System.Media.SystemSounds]::Hand.Play() } catch {}
+    }
     $script:stopping = $false
     CleanTemp
 }
