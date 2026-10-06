@@ -7,7 +7,7 @@ using System.Windows.Forms;
 internal static class Program
 {
     [STAThread]
-    private static void Main()
+    private static void Main(string[] args)
     {
         var root = AppContext.BaseDirectory;
         var script = Path.Combine(root, "ytdl-manager-gui.ps1");
@@ -50,6 +50,11 @@ internal static class Program
         psi.ArgumentList.Add("-STA");
         psi.ArgumentList.Add("-File");
         psi.ArgumentList.Add(script);
+
+        foreach (var arg in args)
+        {
+            psi.ArgumentList.Add(arg);
+        }
 
         try
         {
