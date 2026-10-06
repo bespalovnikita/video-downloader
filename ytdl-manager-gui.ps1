@@ -3,11 +3,46 @@ if (-not $IsWindows) { throw "Windows only." }
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
+
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+
+public static class NativeUi {
+    [DllImport("gdi32.dll", SetLastError=true)]
+    public static extern IntPtr CreateRoundRectRgn(
+        int nLeftRect, int nTopRect, int nRightRect, int nBottomRect,
+        int nWidthEllipse, int nHeightEllipse);
+
+    [DllImport("gdi32.dll", SetLastError=true)]
+    public static extern bool DeleteObject(IntPtr hObject);
+}
+"@
+
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $engine = Join-Path $root "ytdl-manager-v8.ps1"
 $ytDlp = Join-Path $root "yt-dlp.exe"
+
+function Remove-StaleGuiTempDirs {
+    param([int]$OlderThanHours = 24)
+
+    $cutoff = (Get-Date).AddHours(-$OlderThanHours)
+    $tempRoot = [IO.Path]::GetTempPath()
+
+    foreach ($dir in @(Get-ChildItem -Path $tempRoot -Directory -Filter "ytdl-gui-*" -ErrorAction SilentlyContinue)) {
+        if ($dir.LastWriteTime -gt $cutoff) { continue }
+
+        try {
+            Remove-Item -Path $dir.FullName -Recurse -Force -ErrorAction Stop
+        } catch {
+            # A stale directory can still be locked by another process. Ignore it.
+        }
+    }
+}
+
+Remove-StaleGuiTempDirs
 
 $script:proc = $null
 $script:runDir = $null
@@ -58,6 +93,30 @@ function StyleText($c) {
     $c.ForeColor = $fg
     $c.BorderStyle = "FixedSingle"
     $c.Font = [Drawing.Font]::new("Segoe UI",9)
+}
+
+function Set-RoundedRegion($control, $radius=14) {
+    if (-not $control -or $control.Width -le 0 -or $control.Height -le 0) { return }
+
+    try {
+        $handle = [NativeUi]::CreateRoundRectRgn(
+            0, 0, $control.Width + 1, $control.Height + 1, $radius, $radius
+        )
+
+        if ($handle -eq [IntPtr]::Zero) { return }
+
+        $region = [Drawing.Region]::FromHrgn($handle)
+        if ($control.Region) { $control.Region.Dispose() }
+        $control.Region = $region
+        [void][NativeUi]::DeleteObject($handle)
+    } catch {}
+}
+
+function Make-Rounded($control, $radius=14) {
+    Set-RoundedRegion $control $radius
+    $control.Add_SizeChanged({
+        Set-RoundedRegion $this $radius
+    })
 }
 
 function LogLine($line, $color=$muted) {
@@ -340,8 +399,12 @@ $head.Font = [Drawing.Font]::new("Segoe UI",18,[Drawing.FontStyle]::Bold)
 $head.Height = 34
 $form.Controls.Add($head)
 $form.Controls.Add((Label "GUI для твоего yt-dlp manager v8" 24 50 420 9 $muted))
-$status = Label "● Готов" 980 24 120 9 $muted
+$status = Label "● Готов" 970 20 130 9 $muted
 $status.Anchor = "Top,Right"
+$status.BackColor = $field
+$status.TextAlign = "MiddleCenter"
+$status.Height = 30
+Make-Rounded $status 16
 $form.Controls.Add($status)
 
 $left = [Windows.Forms.Panel]::new()
@@ -349,6 +412,7 @@ $left.Location = [Drawing.Point]::new(22,84)
 $left.Size = [Drawing.Size]::new(690,610)
 $left.Anchor = "Top,Bottom,Left,Right"
 $left.BackColor = $panel
+Make-Rounded $left 22
 $form.Controls.Add($left)
 
 $right = [Windows.Forms.Panel]::new()
@@ -356,10 +420,12 @@ $right.Location = [Drawing.Point]::new(728,84)
 $right.Size = [Drawing.Size]::new(374,610)
 $right.Anchor = "Top,Bottom,Right"
 $right.BackColor = $panel
+Make-Rounded $right 22
 $form.Controls.Add($right)
 
 $left.Controls.Add((Label "Очередь URL" 16 12 200 10 $fg))
 $loadList = Button "Открыть .txt" 550 10 120
+Make-Rounded $loadList 12
 $left.Controls.Add($loadList)
 
 $urls = [Windows.Forms.TextBox]::new()
@@ -369,8 +435,12 @@ $urls.Anchor = "Top,Left,Right"
 $urls.Multiline = $true
 $urls.ScrollBars = "Vertical"
 $urls.AllowDrop = $true
+$urls.BorderStyle = "None"
 StyleText $urls
 $left.Controls.Add($urls)
+
+$queueHint = Label "Перетащи сюда .txt со ссылками или вставь URL построчно" 20 171 500 8.5 $muted
+$left.Controls.Add($queueHint)
 
 $left.Controls.Add((Label "Текущие загрузки" 16 205 220 10 $fg))
 $grid = [Windows.Forms.DataGridView]::new()
@@ -389,6 +459,10 @@ $grid.DefaultCellStyle.BackColor = $field
 $grid.DefaultCellStyle.ForeColor = $fg
 $grid.DefaultCellStyle.SelectionBackColor = [Drawing.Color]::FromArgb(52,58,70)
 $grid.DefaultCellStyle.SelectionForeColor = $fg
+$grid.CellBorderStyle = "SingleHorizontal"
+$grid.ColumnHeadersBorderStyle = "None"
+$grid.RowTemplate.Height = 30
+$grid.DefaultCellStyle.Padding = [Windows.Forms.Padding]::new(4,0,4,0)
 [void]$grid.Columns.Add("slot","Слот")
 [void]$grid.Columns.Add("state","Статус")
 [void]$grid.Columns.Add("value","Видео / URL")
@@ -403,7 +477,7 @@ $log.Location = [Drawing.Point]::new(16,450)
 $log.Size = [Drawing.Size]::new(654,140)
 $log.Anchor = "Top,Bottom,Left,Right"
 $log.ReadOnly = $true
-$log.BackColor = $bg
+$log.BackColor = [Drawing.Color]::FromArgb(18,20,25)
 $log.ForeColor = $muted
 $log.BorderStyle = "None"
 $log.Font = [Drawing.Font]::new("Cascadia Mono",8.5)
@@ -419,6 +493,7 @@ $out.Text = Join-Path $downloadsDir "downloaded-video"
 StyleText $out
 $right.Controls.Add($out)
 $pickOut = Button "…" 314 74 42
+Make-Rounded $pickOut 10
 $right.Controls.Add($pickOut)
 
 $right.Controls.Add((Label "Параллельные URL" 16 122 180 9 $muted))
@@ -472,6 +547,7 @@ $cookies.Size = [Drawing.Size]::new(290,27)
 StyleText $cookies
 $right.Controls.Add($cookies)
 $pickCookies = Button "…" 314 331 42
+Make-Rounded $pickCookies 10
 $right.Controls.Add($pickCookies)
 
 $right.Controls.Add((Label "Общий прогресс" 16 385 180 9 $muted))
@@ -485,11 +561,14 @@ $right.Controls.Add($bar)
 
 $start = Button "▶  Начать загрузку" 16 458 340 $accent
 $start.Size = [Drawing.Size]::new(340,42)
+Make-Rounded $start 14
 $right.Controls.Add($start)
 $stop = Button "■  Остановить" 16 510 164 $danger
 $stop.Enabled = $false
+Make-Rounded $stop 14
 $right.Controls.Add($stop)
 $openFolder = Button "Открыть папку" 192 510 164
+Make-Rounded $openFolder 14
 $right.Controls.Add($openFolder)
 $right.Controls.Add((Label "Ctrl+Enter — начать загрузку" 16 566 300 8.5 $muted))
 
@@ -513,13 +592,27 @@ $urls.Add_DragEnter({
     param($sender,$e)
     if ($e.Data.GetDataPresent([Windows.Forms.DataFormats]::FileDrop)) {
         $e.Effect = [Windows.Forms.DragDropEffects]::Copy
+        $sender.BackColor = [Drawing.Color]::FromArgb(54,60,78)
+        $queueHint.Text = "Отпусти файл — ссылки добавятся в очередь"
+        $queueHint.ForeColor = $accent
     } else {
         $e.Effect = [Windows.Forms.DragDropEffects]::None
     }
 })
 
+$urls.Add_DragLeave({
+    param($sender,$e)
+    $sender.BackColor = $field
+    $queueHint.Text = "Перетащи сюда .txt со ссылками или вставь URL построчно"
+    $queueHint.ForeColor = $muted
+})
+
 $urls.Add_DragDrop({
     param($sender,$e)
+
+    $sender.BackColor = $field
+    $queueHint.Text = "Перетащи сюда .txt со ссылками или вставь URL построчно"
+    $queueHint.ForeColor = $muted
 
     $files = @($e.Data.GetData([Windows.Forms.DataFormats]::FileDrop))
     if ($files.Count -eq 0) { return }
