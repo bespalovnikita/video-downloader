@@ -30,6 +30,7 @@ if (-not (Test-Path $launcher)) { throw "Missing launcher project" }
 
 $guiText = Get-Content $gui -Raw
 $engineText = Get-Content $engine -Raw
+$previewCacheText = Get-Content $previewCache -Raw
 $xamlText = Get-Content $xaml -Raw
 
 $guiMarkers = @(
@@ -64,10 +65,23 @@ $guiMarkers = @(
     'function Save-CachedPreview',
     'Show-PreviewResult -Result $cached -FromCache $true',
     'Write-VdPreviewCache',
-    'Read-VdPreviewCache'
+    'Read-VdPreviewCache',
+    'function Queue-PreviewPrefetch',
+    'function Start-NextPreviewPrefetch',
+    'function Complete-PreviewPrefetch',
+    'Queue-PreviewPrefetch -Url $u',
+    'Queue-PreviewPrefetch -Url $Url -Priority $true',
+    'Get-VdPreviewData -YtDlpPath $exe -Url $url -CookiePath $cookie',
+    '$script:previewPrefetchQueue',
+    '$script:previewPrefetchJob',
+    'Complete-PreviewPrefetch'
 )
 foreach ($marker in $guiMarkers) {
     if (-not $guiText.Contains($marker)) { throw "Missing GUI feature marker: $marker" }
+}
+
+foreach ($marker in @("function Get-VdPreviewData","--dump-single-json","ThumbnailBase64")) {
+    if (-not $previewCacheText.Contains($marker)) { throw "Missing preview cache/prefetch marker: $marker" }
 }
 
 $xamlMarkers = @(
