@@ -263,13 +263,20 @@ function Set-Running([bool]$Running) {
 
     foreach ($c in @(
         $UrlInput,$AddUrlButton,$OpenListButton,$RemoveQueueButton,$ClearQueueButton,$MoveUpButton,$MoveDownButton,
-        $QueueGrid,$ProfileCombo,$QualityCombo,$CodecCombo,$ContainerCombo,$RateLimitCombo,$ThreadsBox,
+        $ProfileCombo,$QualityCombo,$CodecCombo,$ContainerCombo,$RateLimitCombo,$ThreadsBox,
         $FragmentsCombo,$FilenameTemplateBox,$WriteSubsCheck,$AutoSubsCheck,$EmbedSubsCheck,$SubtitleLangsBox,
         $EmbedThumbnailCheck,$EmbedMetadataCheck,$EmbedChaptersCheck,$ArchiveCheck,$SponsorCheck,$AudioOnlyCheck,
         $OutputBox,$PickOutputButton,$CookiesBox,$PickCookiesButton
     )) {
         $c.IsEnabled = -not $Running
     }
+
+    # Keep the queue selectable while downloading so preview/open/copy still work,
+    # but freeze queue mutations until the active session finishes.
+    $QueueGrid.IsEnabled = $true
+    $QueueGrid.AllowDrop = -not $Running
+    $queueRemove.IsEnabled = -not $Running
+    $queueRetry.IsEnabled = -not $Running
 
     if ($Running) {
         $HeaderStatus.Text = "● Running"
@@ -1028,6 +1035,10 @@ $QueueGrid.Add_SelectionChanged({
 
 $QueueGrid.Add_PreviewMouseLeftButtonDown({
     param($s,$e)
+    if ($script:proc -and -not $script:proc.HasExited) {
+        $script:dragItem = $null
+        return
+    }
     $script:dragStart = $e.GetPosition($QueueGrid)
     $script:dragItem = Get-GridItemAtPoint $QueueGrid $script:dragStart
 })
@@ -1057,6 +1068,10 @@ $QueueGrid.Add_DragOver({
 
 $QueueGrid.Add_Drop({
     param($s,$e)
+    if ($script:proc -and -not $script:proc.HasExited) {
+        $e.Handled = $true
+        return
+    }
     if ($e.Data.GetDataPresent("VideoDownloader.QueueItem")) {
         $drag = $e.Data.GetData("VideoDownloader.QueueItem")
         $target = Get-GridItemAtPoint $QueueGrid ($e.GetPosition($QueueGrid))
@@ -1075,6 +1090,10 @@ $QueueGrid.Add_Drop({
 
 $window.Add_Drop({
     param($s,$e)
+    if ($script:proc -and -not $script:proc.HasExited) {
+        $e.Handled = $true
+        return
+    }
     if ($e.Data.GetDataPresent([System.Windows.DataFormats]::FileDrop)) {
         foreach ($p in @($e.Data.GetData([System.Windows.DataFormats]::FileDrop))) { Add-FileToQueue ([string]$p) }
     } elseif ($e.Data.GetDataPresent([System.Windows.DataFormats]::UnicodeText)) {
@@ -1104,7 +1123,11 @@ $OpenUrlButton.Add_Click({ $item=$DownloadGrid.SelectedItem; if ($item -and (Is-
 $queueOpen.Add_Click({ $item=$QueueGrid.SelectedItem; if ($item -and (Is-ValidUrl ([string]$item.Url))) { Start-Process ([string]$item.Url) } })
 $queueCopy.Add_Click({ $item=$QueueGrid.SelectedItem; if ($item) { [System.Windows.Clipboard]::SetText([string]$item.Url) } })
 $queueRetry.Add_Click({ $item=$QueueGrid.SelectedItem; if ($item) { Start-Download @([string]$item.Url) } })
-$queueRemove.Add_Click({ $item=$QueueGrid.SelectedItem; if ($item) { [void]$script:queue.Remove($item); Reindex-Queue } })
+$queueRemove.Add_Click({
+    if ($script:proc -and -not $script:proc.HasExited) { return }
+    $item=$QueueGrid.SelectedItem
+    if ($item) { [void]$script:queue.Remove($item); Reindex-Queue }
+})
 
 $dlOpenFile.Add_Click({ Open-SelectedFile })
 $dlFolder.Add_Click({ Open-SelectedFolder })
