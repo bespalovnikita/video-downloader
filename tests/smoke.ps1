@@ -52,7 +52,11 @@ $guiMarkers = @(
     'Set-QueueState $u "Done"',
     '$state -eq "NotStarted"',
     '--playlist-items","1"',
-    "Preview returned no result"
+    "Preview returned no result",
+    "ThumbnailBase64",
+    "no JPEG/PNG thumbnail was provided by yt-dlp",
+    '$bitmap.StreamSource = $stream',
+    '$bitmap.DecodePixelWidth = 720'
 )
 foreach ($marker in $guiMarkers) {
     if (-not $guiText.Contains($marker)) { throw "Missing GUI feature marker: $marker" }

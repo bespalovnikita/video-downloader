@@ -749,6 +749,51 @@ function Start-Preview([string]$Url) {
                 if ($dr -and $dr -ne "SDR" -and $dr -ne "None") { [void]$rangeSet.Add($dr) }
             }
 
+            $thumbnailBase64 = ""
+            $thumbnailError = ""
+            $thumbnailUrl = ""
+
+            # Prefer a real JPEG/PNG thumbnail. WPF/WIC support for remote WebP
+            # varies by Windows build and can result in a blank/black preview.
+            $thumbnailCandidate = @(
+                $source.thumbnails |
+                    Where-Object {
+                        $u = [string]$_.url
+                        $u -and $u -match '(?i)\.(jpe?g|png)(?:\?|$)'
+                    } |
+                    Sort-Object @{ Expression = { ([int64]$_.width) * ([int64]$_.height) } } -Descending |
+                    Select-Object -First 1
+            )
+
+            if ($thumbnailCandidate.Count -gt 0) {
+                $thumbnailUrl = [string]$thumbnailCandidate[0].url
+            } elseif ([string]$source.thumbnail -match '(?i)\.(jpe?g|png)(?:\?|$)') {
+                $thumbnailUrl = [string]$source.thumbnail
+            }
+
+            if ($thumbnailUrl) {
+                $client = $null
+                try {
+                    $handler = [Net.Http.HttpClientHandler]::new()
+                    $handler.AllowAutoRedirect = $true
+                    $client = [Net.Http.HttpClient]::new($handler)
+                    $client.Timeout = [TimeSpan]::FromSeconds(12)
+                    $client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) VideoDownloader/1.0")
+                    $bytes = $client.GetByteArrayAsync($thumbnailUrl).GetAwaiter().GetResult()
+                    if ($bytes -and $bytes.Length -gt 0) {
+                        $thumbnailBase64 = [Convert]::ToBase64String($bytes)
+                    } else {
+                        $thumbnailError = "thumbnail response was empty"
+                    }
+                } catch {
+                    $thumbnailError = $_.Exception.Message
+                } finally {
+                    if ($client) { $client.Dispose() }
+                }
+            } else {
+                $thumbnailError = "no JPEG/PNG thumbnail was provided by yt-dlp"
+            }
+
             return [pscustomobject]@{
                 Success = $true
                 Error = ""
@@ -756,7 +801,9 @@ function Start-Preview([string]$Url) {
                 PlaylistTitle = $playlistTitle
                 Uploader = [string]$source.uploader
                 Duration = [double]$source.duration
-                Thumbnail = [string]$source.thumbnail
+                ThumbnailBase64 = $thumbnailBase64
+                ThumbnailUrl = $thumbnailUrl
+                ThumbnailError = $thumbnailError
                 Extractor = [string]$source.extractor_key
                 MaxHeight = $maxHeight
                 MaxFps = $maxFps
@@ -820,18 +867,32 @@ function Complete-Preview {
         if ($r.DynamicRange) { $formatParts += ("HDR: " + [string]$r.DynamicRange) }
         $PreviewFormats.Text = $formatParts -join " · "
 
-        if ($r.Thumbnail) {
+        if ($r.ThumbnailBase64) {
+            $stream = $null
             try {
+                $bytes = [Convert]::FromBase64String([string]$r.ThumbnailBase64)
+                $stream = [IO.MemoryStream]::new($bytes,$false)
+
                 $bitmap = [System.Windows.Media.Imaging.BitmapImage]::new()
                 $bitmap.BeginInit()
                 $bitmap.CacheOption = [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad
                 $bitmap.CreateOptions = [System.Windows.Media.Imaging.BitmapCreateOptions]::IgnoreColorProfile
-                $bitmap.UriSource = [Uri]::new([string]$r.Thumbnail)
+                $bitmap.DecodePixelWidth = 720
+                $bitmap.StreamSource = $stream
                 $bitmap.EndInit()
                 $bitmap.Freeze()
+
                 $PreviewImage.Source = $bitmap
             } catch {
-                Log-Line ("Preview thumbnail failed: " + $_.Exception.Message)
+                $PreviewImage.Source = $null
+                Log-Line ("Preview thumbnail decode failed: " + $_.Exception.Message)
+            } finally {
+                if ($stream) { $stream.Dispose() }
+            }
+        } else {
+            $PreviewImage.Source = $null
+            if ($r.ThumbnailError) {
+                Log-Line ("Preview thumbnail unavailable: " + [string]$r.ThumbnailError)
             }
         }
     } catch {
