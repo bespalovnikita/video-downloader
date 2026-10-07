@@ -58,7 +58,11 @@ $xamlMarkers = @(
     'x:Name="ContainerCombo"',
     'x:Name="WriteSubsCheck"',
     'x:Name="FilenameTemplateBox"',
-    'x:Name="DependencyStatus"'
+    'x:Name="DependencyStatus"',
+    '<Setter Property="IsReadOnly" Value="True"/>',
+    '<Style TargetType="DataGridRow">',
+    '<Setter Property="AlternatingRowBackground" Value="#20242D"/>',
+    '<Style x:Key="GridTextStyle" TargetType="TextBlock">'
 )
 foreach ($marker in $xamlMarkers) {
     if (-not $xamlText.Contains($marker)) { throw "Missing XAML control marker: $marker" }
