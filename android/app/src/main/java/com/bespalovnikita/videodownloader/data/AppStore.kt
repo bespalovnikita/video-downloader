@@ -147,7 +147,9 @@ class AppStore(context: Context) {
     private fun persist(state: AppState) {
         val out = file.startWrite()
         try {
-            out.bufferedWriter(Charsets.UTF_8).use { it.write(state.toJson().toString()) }
+            val writer = out.bufferedWriter(Charsets.UTF_8)
+            writer.write(state.toJson().toString())
+            writer.flush()
             file.finishWrite(out)
         } catch (t: Throwable) {
             file.failWrite(out)
