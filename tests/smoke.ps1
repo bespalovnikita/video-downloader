@@ -45,7 +45,9 @@ $guiMarkers = @(
     "SessionStats",
     "Start-Preview",
     "DynamicRange",
-    "ContextMenu"
+    "ContextMenu",
+    '$QueueGrid.IsEnabled = $true',
+    '$QueueGrid.AllowDrop = -not $Running'
 )
 foreach ($marker in $guiMarkers) {
     if (-not $guiText.Contains($marker)) { throw "Missing GUI feature marker: $marker" }
@@ -66,7 +68,9 @@ $xamlMarkers = @(
     '<Style TargetType="ComboBoxItem">',
     '<ControlTemplate TargetType="ComboBox">',
     'x:Name="PART_EditableTextBox"',
-    'x:Name="PART_Popup"'
+    'x:Name="PART_Popup"',
+    '<RowDefinition Height="2*"/>',
+    '<RowDefinition Height="3*"/>'
 )
 foreach ($marker in $xamlMarkers) {
     if (-not $xamlText.Contains($marker)) { throw "Missing XAML control marker: $marker" }
