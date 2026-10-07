@@ -53,10 +53,7 @@ $guiMarkers = @(
     "function Set-QueueState",
     'Set-QueueState $u "Done"',
     '$state -eq "NotStarted"',
-    '--playlist-items","1"',
-    "Preview returned no result",
     "ThumbnailBase64",
-    "no JPEG/PNG thumbnail was provided by yt-dlp",
     '$bitmap.StreamSource = $stream',
     '$bitmap.DecodePixelWidth = 720',
     '$script:previewCacheTtlHours = 72',
@@ -80,7 +77,13 @@ foreach ($marker in $guiMarkers) {
     if (-not $guiText.Contains($marker)) { throw "Missing GUI feature marker: $marker" }
 }
 
-foreach ($marker in @("function Get-VdPreviewData","--dump-single-json","ThumbnailBase64")) {
+foreach ($marker in @(
+    "function Get-VdPreviewData",
+    "--dump-single-json",
+    '--playlist-items","1"',
+    "ThumbnailBase64",
+    "no JPEG/PNG thumbnail was provided by yt-dlp"
+)) {
     if (-not $previewCacheText.Contains($marker)) { throw "Missing preview cache/prefetch marker: $marker" }
 }
 
