@@ -44,7 +44,7 @@ Write-Host "Core parser/retry tests passed."
 
 
 $previewCacheModule = Join-Path $root "lib\VideoDownloader.PreviewCache.psm1"
-Import-Module $previewCacheModule -Force
+$previewModule = Import-Module $previewCacheModule -Force -PassThru
 
 $cacheRoot = Join-Path ([IO.Path]::GetTempPath()) ("video-downloader-preview-cache-test-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $cacheRoot -Force | Out-Null
@@ -89,5 +89,37 @@ try {
 finally {
     Remove-Item $cacheRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
+
+
+$missingFieldsSource = [pscustomobject]@{
+    formats = @(
+        [pscustomobject]@{ format_id = "storyboard"; ext = "mhtml" },
+        [pscustomobject]@{ vcodec = "none"; acodec = "opus" },
+        [pscustomobject]@{ vcodec = "avc1.640028"; height = 1080 },
+        [pscustomobject]@{ vcodec = "vp9"; fps = 60; dynamic_range = "HDR10" }
+    )
+}
+
+$summary = & $previewModule {
+    param($source)
+    Get-VdFormatSummary -Source $source
+} $missingFieldsSource
+
+Assert-Equal 1080 $summary.MaxHeight "Preview summary must ignore formats without height/vcodec"
+Assert-Equal 60 $summary.MaxFps "Preview summary must tolerate missing fps"
+Assert-True ($summary.Codecs -match "H264") "Preview summary must detect H264"
+Assert-True ($summary.Codecs -match "VP9") "Preview summary must detect VP9"
+Assert-Equal "HDR10" $summary.DynamicRange "Preview summary HDR"
+
+$missingEverythingSource = [pscustomobject]@{ title = "Minimal" }
+$emptySummary = & $previewModule {
+    param($source)
+    Get-VdFormatSummary -Source $source
+} $missingEverythingSource
+
+Assert-Equal 0 $emptySummary.MaxHeight "Preview summary without formats"
+Assert-Equal "" $emptySummary.Codecs "Preview summary without codecs"
+
+Write-Host "Preview missing-field regression tests passed."
 
 Write-Host "Preview cache tests passed."

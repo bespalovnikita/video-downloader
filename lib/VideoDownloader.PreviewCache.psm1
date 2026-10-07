@@ -1,5 +1,61 @@
 Set-StrictMode -Version Latest
 
+function Get-VdPropertyValue {
+    param(
+        [AllowNull()][object]$InputObject,
+        [Parameter(Mandatory=$true)][string]$Name,
+        [AllowNull()][object]$Default = $null
+    )
+
+    if ($null -eq $InputObject) { return $Default }
+    $property = $InputObject.PSObject.Properties[$Name]
+    if ($null -eq $property) { return $Default }
+    if ($null -eq $property.Value) { return $Default }
+    return $property.Value
+}
+
+function Get-VdFormatSummary {
+    param(
+        [AllowNull()][object]$Source
+    )
+
+    $sourceFormats = @(Get-VdPropertyValue -InputObject $Source -Name "formats" -Default @())
+    $formats = @(
+        $sourceFormats | Where-Object {
+            $vc = [string](Get-VdPropertyValue -InputObject $_ -Name "vcodec" -Default "")
+            $vc -and $vc -ne "none"
+        }
+    )
+
+    $maxHeight = 0
+    $maxFps = 0.0
+    $codecSet = [Collections.Generic.HashSet[string]]::new()
+    $rangeSet = [Collections.Generic.HashSet[string]]::new()
+
+    foreach ($fmt in $formats) {
+        $height = Get-VdPropertyValue -InputObject $fmt -Name "height" -Default 0
+        if ($height -and [int]$height -gt $maxHeight) { $maxHeight = [int]$height }
+
+        $fps = Get-VdPropertyValue -InputObject $fmt -Name "fps" -Default 0
+        if ($fps -and [double]$fps -gt $maxFps) { $maxFps = [double]$fps }
+
+        $vc = [string](Get-VdPropertyValue -InputObject $fmt -Name "vcodec" -Default "")
+        if ($vc.StartsWith("av01")) { [void]$codecSet.Add("AV1") }
+        elseif ($vc.StartsWith("vp9")) { [void]$codecSet.Add("VP9") }
+        elseif ($vc.StartsWith("avc1") -or $vc.StartsWith("h264")) { [void]$codecSet.Add("H264") }
+        elseif ($vc) { [void]$codecSet.Add($vc.Split('.')[0]) }
+
+        $dr = [string](Get-VdPropertyValue -InputObject $fmt -Name "dynamic_range" -Default "")
+        if ($dr -and $dr -ne "SDR" -and $dr -ne "None") { [void]$rangeSet.Add($dr) }
+    }
+
+    return [pscustomobject]@{
+        MaxHeight = $maxHeight
+        MaxFps = $maxFps
+        Codecs = (@($codecSet) -join ", ")
+        DynamicRange = (@($rangeSet) -join ", ")
+    }
+}
 function Get-VdPreviewCachePath {
     param(
         [Parameter(Mandatory=$true)][string]$CacheDir,
@@ -74,18 +130,18 @@ function Write-VdPreviewCache {
         Url = $Url
         Success = $true
         Error = ""
-        Title = [string]$Preview.Title
-        PlaylistTitle = [string]$Preview.PlaylistTitle
-        Uploader = [string]$Preview.Uploader
-        Duration = [double]$Preview.Duration
-        ThumbnailBase64 = [string]$Preview.ThumbnailBase64
-        ThumbnailUrl = [string]$Preview.ThumbnailUrl
-        ThumbnailError = [string]$Preview.ThumbnailError
-        Extractor = [string]$Preview.Extractor
-        MaxHeight = [int]$Preview.MaxHeight
-        MaxFps = [double]$Preview.MaxFps
-        Codecs = [string]$Preview.Codecs
-        DynamicRange = [string]$Preview.DynamicRange
+        Title = [string](Get-VdPropertyValue -InputObject $Preview -Name "Title" -Default "")
+        PlaylistTitle = [string](Get-VdPropertyValue -InputObject $Preview -Name "PlaylistTitle" -Default "")
+        Uploader = [string](Get-VdPropertyValue -InputObject $Preview -Name "Uploader" -Default "")
+        Duration = [double](Get-VdPropertyValue -InputObject $Preview -Name "Duration" -Default 0)
+        ThumbnailBase64 = [string](Get-VdPropertyValue -InputObject $Preview -Name "ThumbnailBase64" -Default "")
+        ThumbnailUrl = [string](Get-VdPropertyValue -InputObject $Preview -Name "ThumbnailUrl" -Default "")
+        ThumbnailError = [string](Get-VdPropertyValue -InputObject $Preview -Name "ThumbnailError" -Default "")
+        Extractor = [string](Get-VdPropertyValue -InputObject $Preview -Name "Extractor" -Default "")
+        MaxHeight = [int](Get-VdPropertyValue -InputObject $Preview -Name "MaxHeight" -Default 0)
+        MaxFps = [double](Get-VdPropertyValue -InputObject $Preview -Name "MaxFps" -Default 0)
+        Codecs = [string](Get-VdPropertyValue -InputObject $Preview -Name "Codecs" -Default "")
+        DynamicRange = [string](Get-VdPropertyValue -InputObject $Preview -Name "DynamicRange" -Default "")
     }
 
     try {
@@ -162,52 +218,44 @@ function Get-VdPreviewData {
         $source = $j
         $playlistTitle = ""
 
-        if ((-not $j.formats) -and $j.entries) {
-            $first = @($j.entries | Where-Object { $_ } | Select-Object -First 1)
+        $rootFormats = Get-VdPropertyValue -InputObject $j -Name "formats" -Default $null
+        $rootEntries = Get-VdPropertyValue -InputObject $j -Name "entries" -Default $null
+        if ((-not $rootFormats) -and $rootEntries) {
+            $first = @($rootEntries | Where-Object { $_ } | Select-Object -First 1)
             if ($first.Count -gt 0) {
                 $source = $first[0]
-                $playlistTitle = [string]$j.title
+                $playlistTitle = [string](Get-VdPropertyValue -InputObject $j -Name "title" -Default "")
             }
         }
 
-        $formats = @($source.formats | Where-Object { $_.vcodec -and $_.vcodec -ne "none" })
-        $maxHeight = 0
-        $maxFps = 0.0
-        $codecSet = [Collections.Generic.HashSet[string]]::new()
-        $rangeSet = [Collections.Generic.HashSet[string]]::new()
-
-        foreach ($fmt in $formats) {
-            if ($fmt.height -and [int]$fmt.height -gt $maxHeight) { $maxHeight = [int]$fmt.height }
-            if ($fmt.fps -and [double]$fmt.fps -gt $maxFps) { $maxFps = [double]$fmt.fps }
-
-            $vc = [string]$fmt.vcodec
-            if ($vc.StartsWith("av01")) { [void]$codecSet.Add("AV1") }
-            elseif ($vc.StartsWith("vp9")) { [void]$codecSet.Add("VP9") }
-            elseif ($vc.StartsWith("avc1") -or $vc.StartsWith("h264")) { [void]$codecSet.Add("H264") }
-            elseif ($vc) { [void]$codecSet.Add($vc.Split('.')[0]) }
-
-            $dr = [string]$fmt.dynamic_range
-            if ($dr -and $dr -ne "SDR" -and $dr -ne "None") { [void]$rangeSet.Add($dr) }
-        }
+        $formatSummary = Get-VdFormatSummary -Source $source
 
         $thumbnailBase64 = ""
         $thumbnailError = ""
         $thumbnailUrl = ""
 
+        $sourceThumbnails = @(Get-VdPropertyValue -InputObject $source -Name "thumbnails" -Default @())
         $thumbnailCandidate = @(
-            $source.thumbnails |
+            $sourceThumbnails |
                 Where-Object {
-                    $u = [string]$_.url
+                    $u = [string](Get-VdPropertyValue -InputObject $_ -Name "url" -Default "")
                     $u -and $u -match '(?i)\.(jpe?g|png)(?:\?|$)'
                 } |
-                Sort-Object @{ Expression = { ([int64]$_.width) * ([int64]$_.height) } } -Descending |
+                Sort-Object @{ Expression = {
+                    $w = Get-VdPropertyValue -InputObject $_ -Name "width" -Default 0
+                    $h = Get-VdPropertyValue -InputObject $_ -Name "height" -Default 0
+                    ([int64]$w) * ([int64]$h)
+                } } -Descending |
                 Select-Object -First 1
         )
 
         if ($thumbnailCandidate.Count -gt 0) {
-            $thumbnailUrl = [string]$thumbnailCandidate[0].url
-        } elseif ([string]$source.thumbnail -match '(?i)\.(jpe?g|png)(?:\?|$)') {
-            $thumbnailUrl = [string]$source.thumbnail
+            $thumbnailUrl = [string](Get-VdPropertyValue -InputObject $thumbnailCandidate[0] -Name "url" -Default "")
+        } else {
+            $fallbackThumbnail = [string](Get-VdPropertyValue -InputObject $source -Name "thumbnail" -Default "")
+            if ($fallbackThumbnail -match '(?i)\.(jpe?g|png)(?:\?|$)') {
+                $thumbnailUrl = $fallbackThumbnail
+            }
         }
 
         if ($thumbnailUrl) {
@@ -236,18 +284,18 @@ function Get-VdPreviewData {
         return [pscustomobject]@{
             Success = $true
             Error = ""
-            Title = [string]$source.title
+            Title = [string](Get-VdPropertyValue -InputObject $source -Name "title" -Default "")
             PlaylistTitle = $playlistTitle
-            Uploader = [string]$source.uploader
-            Duration = [double]$source.duration
+            Uploader = [string](Get-VdPropertyValue -InputObject $source -Name "uploader" -Default "")
+            Duration = [double](Get-VdPropertyValue -InputObject $source -Name "duration" -Default 0)
             ThumbnailBase64 = $thumbnailBase64
             ThumbnailUrl = $thumbnailUrl
             ThumbnailError = $thumbnailError
-            Extractor = [string]$source.extractor_key
-            MaxHeight = $maxHeight
-            MaxFps = $maxFps
-            Codecs = (@($codecSet) -join ", ")
-            DynamicRange = (@($rangeSet) -join ", ")
+            Extractor = [string](Get-VdPropertyValue -InputObject $source -Name "extractor_key" -Default "")
+            MaxHeight = [int]$formatSummary.MaxHeight
+            MaxFps = [double]$formatSummary.MaxFps
+            Codecs = [string]$formatSummary.Codecs
+            DynamicRange = [string]$formatSummary.DynamicRange
         }
     } catch {
         return [pscustomobject]@{
