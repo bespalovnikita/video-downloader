@@ -4,11 +4,12 @@ $root = Split-Path -Parent $PSScriptRoot
 $gui = Join-Path $root "ytdl-manager-gui.ps1"
 $engine = Join-Path $root "ytdl-manager-v8.ps1"
 $core = Join-Path $root "lib\VideoDownloader.Core.psm1"
+$previewCache = Join-Path $root "lib\VideoDownloader.PreviewCache.psm1"
 $xaml = Join-Path $root "ui\MainWindow.xaml"
 $icon = Join-Path $root "assets\app.ico"
 $launcher = Join-Path $root "launcher\VideoDownloader.csproj"
 
-foreach ($file in @($gui,$engine,$core)) {
+foreach ($file in @($gui,$engine,$core,$previewCache)) {
     $tokens = $null
     $errors = $null
     [void][System.Management.Automation.Language.Parser]::ParseFile($file,[ref]$tokens,[ref]$errors)
@@ -56,7 +57,14 @@ $guiMarkers = @(
     "ThumbnailBase64",
     "no JPEG/PNG thumbnail was provided by yt-dlp",
     '$bitmap.StreamSource = $stream',
-    '$bitmap.DecodePixelWidth = 720'
+    '$bitmap.DecodePixelWidth = 720',
+    '$script:previewCacheTtlHours = 72',
+    'VideoDownloader\preview-cache',
+    'function Get-CachedPreview',
+    'function Save-CachedPreview',
+    'Show-PreviewResult -Result $cached -FromCache $true',
+    'Write-VdPreviewCache',
+    'Read-VdPreviewCache'
 )
 foreach ($marker in $guiMarkers) {
     if (-not $guiText.Contains($marker)) { throw "Missing GUI feature marker: $marker" }
