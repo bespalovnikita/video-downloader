@@ -28,12 +28,14 @@ $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $engine = Join-Path $root "ytdl-manager-v8.ps1"
 $ytDlp = Join-Path $root "yt-dlp.exe"
 $coreModule = Join-Path $root "lib\VideoDownloader.Core.psm1"
+$previewCacheModule = Join-Path $root "lib\VideoDownloader.PreviewCache.psm1"
 $xamlPath = Join-Path $root "ui\MainWindow.xaml"
 
-foreach ($required in @($engine,$ytDlp,$coreModule,$xamlPath)) {
+foreach ($required in @($engine,$ytDlp,$coreModule,$previewCacheModule,$xamlPath)) {
     if (-not (Test-Path $required)) { throw "Missing required file: $required" }
 }
 Import-Module $coreModule -Force
+Import-Module $previewCacheModule -Force
 
 function Remove-StaleGuiTempDirs {
     $cutoff = (Get-Date).AddHours(-24)
@@ -89,6 +91,11 @@ $script:isPaused = $false
 $script:stopping = $false
 $script:previewJob = $null
 $script:previewUrl = ""
+$script:previewMemoryCache = @{}
+$script:previewCacheTtlHours = 72
+$script:previewCacheDir = Join-Path $env:LOCALAPPDATA "VideoDownloader\preview-cache"
+New-Item -ItemType Directory -Path $script:previewCacheDir -Force | Out-Null
+Remove-VdExpiredPreviewCache -CacheDir $script:previewCacheDir -TtlHours $script:previewCacheTtlHours
 $script:dependencyJob = $null
 $script:lastClipboardText = ""
 $script:dragItem = $null
@@ -664,13 +671,119 @@ function Finish-Download {
     Clean-Temp
 }
 
+function Get-CachedPreview([string]$Url) {
+    if ([string]::IsNullOrWhiteSpace($Url)) { return $null }
+
+    if ($script:previewMemoryCache.ContainsKey($Url)) {
+        $entry = $script:previewMemoryCache[$Url]
+        try {
+            $savedAt = [DateTime]::Parse(
+                [string]$entry.SavedAtUtc,
+                [Globalization.CultureInfo]::InvariantCulture,
+                [Globalization.DateTimeStyles]::RoundtripKind
+            ).ToUniversalTime()
+
+            if (([DateTime]::UtcNow - $savedAt).TotalHours -lt $script:previewCacheTtlHours) {
+                return $entry
+            }
+        } catch {}
+
+        $script:previewMemoryCache.Remove($Url)
+    }
+
+    $entry = Read-VdPreviewCache -CacheDir $script:previewCacheDir -Url $Url -TtlHours $script:previewCacheTtlHours
+    if ($entry) {
+        $script:previewMemoryCache[$Url] = $entry
+        return $entry
+    }
+
+    return $null
+}
+
+function Save-CachedPreview([string]$Url,[object]$Preview) {
+    if ([string]::IsNullOrWhiteSpace($Url) -or -not $Preview) { return }
+    try {
+        $record = Write-VdPreviewCache -CacheDir $script:previewCacheDir -Url $Url -Preview $Preview
+        if ($record) { $script:previewMemoryCache[$Url] = $record }
+    } catch {
+        Log-Line ("Preview cache write failed: " + $_.Exception.Message)
+    }
+}
+
+function Show-PreviewResult([object]$Result,[bool]$FromCache=$false) {
+    if (-not $Result) { return }
+
+    $PreviewTitle.Text = if ($Result.Title) { [string]$Result.Title } else { "Untitled" }
+
+    $duration = ""
+    if ($Result.Duration -gt 0) {
+        $ts = [TimeSpan]::FromSeconds([double]$Result.Duration)
+        $duration = if ($ts.TotalHours -ge 1) { $ts.ToString("hh\:mm\:ss") } else { $ts.ToString("mm\:ss") }
+    }
+
+    $meta = @()
+    if ($Result.PlaylistTitle) { $meta += ("Playlist: " + [string]$Result.PlaylistTitle) }
+    if ($Result.Uploader) { $meta += [string]$Result.Uploader }
+    if ($duration) { $meta += $duration }
+    if ($Result.Extractor) { $meta += [string]$Result.Extractor }
+    if ($FromCache) { $meta += "cache" }
+    $PreviewMeta.Text = $meta -join " · "
+
+    $formatParts = @()
+    if ($Result.MaxHeight -gt 0) {
+        $res = [string]$Result.MaxHeight + "p"
+        if ($Result.MaxFps -gt 0) { $res += ("{0:N0}" -f [double]$Result.MaxFps) }
+        $formatParts += $res
+    }
+    if ($Result.Codecs) { $formatParts += ("Codecs: " + [string]$Result.Codecs) }
+    if ($Result.DynamicRange) { $formatParts += ("HDR: " + [string]$Result.DynamicRange) }
+    $PreviewFormats.Text = $formatParts -join " · "
+
+    if ($Result.ThumbnailBase64) {
+        $stream = $null
+        try {
+            $bytes = [Convert]::FromBase64String([string]$Result.ThumbnailBase64)
+            $stream = [IO.MemoryStream]::new($bytes,$false)
+
+            $bitmap = [System.Windows.Media.Imaging.BitmapImage]::new()
+            $bitmap.BeginInit()
+            $bitmap.CacheOption = [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad
+            $bitmap.CreateOptions = [System.Windows.Media.Imaging.BitmapCreateOptions]::IgnoreColorProfile
+            $bitmap.DecodePixelWidth = 720
+            $bitmap.StreamSource = $stream
+            $bitmap.EndInit()
+            $bitmap.Freeze()
+
+            $PreviewImage.Source = $bitmap
+        } catch {
+            $PreviewImage.Source = $null
+            Log-Line ("Preview thumbnail decode failed: " + $_.Exception.Message)
+        } finally {
+            if ($stream) { $stream.Dispose() }
+        }
+    } else {
+        $PreviewImage.Source = $null
+        if ($Result.ThumbnailError) {
+            Log-Line ("Preview thumbnail unavailable: " + [string]$Result.ThumbnailError)
+        }
+    }
+}
+
 function Start-Preview([string]$Url) {
     if (-not (Is-ValidUrl $Url)) { return }
     if ($script:previewJob) {
         try { Stop-Job $script:previewJob -ErrorAction SilentlyContinue; Remove-Job $script:previewJob -Force -ErrorAction SilentlyContinue } catch {}
+        $script:previewJob = $null
     }
 
     $script:previewUrl = $Url
+
+    $cached = Get-CachedPreview $Url
+    if ($cached) {
+        Show-PreviewResult -Result $cached -FromCache $true
+        return
+    }
+
     $PreviewTitle.Text = "Loading..."
     $PreviewMeta.Text = $Url
     $PreviewFormats.Text = ""
@@ -842,59 +955,8 @@ function Complete-Preview {
             throw $message
         }
 
-        $PreviewTitle.Text = if ($r.Title) { [string]$r.Title } else { "Untitled" }
-
-        $duration = ""
-        if ($r.Duration -gt 0) {
-            $ts = [TimeSpan]::FromSeconds([double]$r.Duration)
-            $duration = if ($ts.TotalHours -ge 1) { $ts.ToString("hh\:mm\:ss") } else { $ts.ToString("mm\:ss") }
-        }
-
-        $meta = @()
-        if ($r.PlaylistTitle) { $meta += ("Playlist: " + [string]$r.PlaylistTitle) }
-        if ($r.Uploader) { $meta += [string]$r.Uploader }
-        if ($duration) { $meta += $duration }
-        if ($r.Extractor) { $meta += [string]$r.Extractor }
-        $PreviewMeta.Text = $meta -join " · "
-
-        $formatParts = @()
-        if ($r.MaxHeight -gt 0) {
-            $res = [string]$r.MaxHeight + "p"
-            if ($r.MaxFps -gt 0) { $res += ("{0:N0}" -f [double]$r.MaxFps) }
-            $formatParts += $res
-        }
-        if ($r.Codecs) { $formatParts += ("Codecs: " + [string]$r.Codecs) }
-        if ($r.DynamicRange) { $formatParts += ("HDR: " + [string]$r.DynamicRange) }
-        $PreviewFormats.Text = $formatParts -join " · "
-
-        if ($r.ThumbnailBase64) {
-            $stream = $null
-            try {
-                $bytes = [Convert]::FromBase64String([string]$r.ThumbnailBase64)
-                $stream = [IO.MemoryStream]::new($bytes,$false)
-
-                $bitmap = [System.Windows.Media.Imaging.BitmapImage]::new()
-                $bitmap.BeginInit()
-                $bitmap.CacheOption = [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad
-                $bitmap.CreateOptions = [System.Windows.Media.Imaging.BitmapCreateOptions]::IgnoreColorProfile
-                $bitmap.DecodePixelWidth = 720
-                $bitmap.StreamSource = $stream
-                $bitmap.EndInit()
-                $bitmap.Freeze()
-
-                $PreviewImage.Source = $bitmap
-            } catch {
-                $PreviewImage.Source = $null
-                Log-Line ("Preview thumbnail decode failed: " + $_.Exception.Message)
-            } finally {
-                if ($stream) { $stream.Dispose() }
-            }
-        } else {
-            $PreviewImage.Source = $null
-            if ($r.ThumbnailError) {
-                Log-Line ("Preview thumbnail unavailable: " + [string]$r.ThumbnailError)
-            }
-        }
+        Save-CachedPreview -Url $script:previewUrl -Preview $r
+        Show-PreviewResult -Result $r -FromCache $false
     } catch {
         $message = $_.Exception.Message
         $PreviewTitle.Text = "Preview unavailable"
