@@ -854,7 +854,7 @@ function Complete-PreviewPrefetch {
         } else {
             $message = [string]$r.Error
             if ([string]::IsNullOrWhiteSpace($message)) { $message = "yt-dlp could not prefetch preview" }
-            Log-Line ("Preview prefetch failed for $url: " + $message)
+            Log-Line ("Preview prefetch failed for ${url}: " + $message)
             if ([string]::Equals($script:previewUrl,$url,[StringComparison]::Ordinal)) {
                 $PreviewTitle.Text = "Preview unavailable"
                 $PreviewMeta.Text = $message
@@ -864,7 +864,7 @@ function Complete-PreviewPrefetch {
         }
     } catch {
         $message = $_.Exception.Message
-        Log-Line ("Preview prefetch failed for $url: " + $message)
+        Log-Line ("Preview prefetch failed for ${url}: " + $message)
         if ([string]::Equals($script:previewUrl,$url,[StringComparison]::Ordinal)) {
             $PreviewTitle.Text = "Preview unavailable"
             $PreviewMeta.Text = $message
