@@ -4,11 +4,12 @@ $root = Split-Path -Parent $PSScriptRoot
 $gui = Join-Path $root "ytdl-manager-gui.ps1"
 $engine = Join-Path $root "ytdl-manager-v8.ps1"
 $core = Join-Path $root "lib\VideoDownloader.Core.psm1"
+$previewCache = Join-Path $root "lib\VideoDownloader.PreviewCache.psm1"
 $xaml = Join-Path $root "ui\MainWindow.xaml"
 $icon = Join-Path $root "assets\app.ico"
 $launcher = Join-Path $root "launcher\VideoDownloader.csproj"
 
-foreach ($file in @($gui,$engine,$core)) {
+foreach ($file in @($gui,$engine,$core,$previewCache)) {
     $tokens = $null
     $errors = $null
     [void][System.Management.Automation.Language.Parser]::ParseFile($file,[ref]$tokens,[ref]$errors)
@@ -29,6 +30,7 @@ if (-not (Test-Path $launcher)) { throw "Missing launcher project" }
 
 $guiText = Get-Content $gui -Raw
 $engineText = Get-Content $engine -Raw
+$previewCacheText = Get-Content $previewCache -Raw
 $xamlText = Get-Content $xaml -Raw
 
 $guiMarkers = @(
@@ -51,15 +53,38 @@ $guiMarkers = @(
     "function Set-QueueState",
     'Set-QueueState $u "Done"',
     '$state -eq "NotStarted"',
-    '--playlist-items","1"',
-    "Preview returned no result",
     "ThumbnailBase64",
-    "no JPEG/PNG thumbnail was provided by yt-dlp",
     '$bitmap.StreamSource = $stream',
-    '$bitmap.DecodePixelWidth = 720'
+    '$bitmap.DecodePixelWidth = 720',
+    '$script:previewCacheTtlHours = 72',
+    'VideoDownloader\preview-cache',
+    'function Get-CachedPreview',
+    'function Save-CachedPreview',
+    'Show-PreviewResult -Result $cached -FromCache $true',
+    'Write-VdPreviewCache',
+    'Read-VdPreviewCache',
+    'function Queue-PreviewPrefetch',
+    'function Start-NextPreviewPrefetch',
+    'function Complete-PreviewPrefetch',
+    'Queue-PreviewPrefetch -Url $u',
+    'Queue-PreviewPrefetch -Url $Url -Priority $true',
+    'Get-VdPreviewData -YtDlpPath $exe -Url $url -CookiePath $cookie',
+    '$script:previewPrefetchQueue',
+    '$script:previewPrefetchJob',
+    'Complete-PreviewPrefetch'
 )
 foreach ($marker in $guiMarkers) {
     if (-not $guiText.Contains($marker)) { throw "Missing GUI feature marker: $marker" }
+}
+
+foreach ($marker in @(
+    "function Get-VdPreviewData",
+    "--dump-single-json",
+    '--playlist-items","1"',
+    "ThumbnailBase64",
+    "no JPEG/PNG thumbnail was provided by yt-dlp"
+)) {
+    if (-not $previewCacheText.Contains($marker)) { throw "Missing preview cache/prefetch marker: $marker" }
 }
 
 $xamlMarkers = @(
