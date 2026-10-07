@@ -68,7 +68,9 @@ class PreviewCache(context: Context) {
 
         val out = file.startWrite()
         try {
-            out.bufferedWriter(Charsets.UTF_8).use { it.write(root.toString()) }
+            val writer = out.bufferedWriter(Charsets.UTF_8)
+            writer.write(root.toString())
+            writer.flush()
             file.finishWrite(out)
         } catch (t: Throwable) {
             file.failWrite(out)
