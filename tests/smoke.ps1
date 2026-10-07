@@ -62,7 +62,11 @@ $xamlMarkers = @(
     '<Setter Property="IsReadOnly" Value="True"/>',
     '<Style TargetType="DataGridRow">',
     '<Setter Property="AlternatingRowBackground" Value="#20242D"/>',
-    '<Style x:Key="GridTextStyle" TargetType="TextBlock">'
+    '<Style x:Key="GridTextStyle" TargetType="TextBlock">',
+    '<Style TargetType="ComboBoxItem">',
+    '<ControlTemplate TargetType="ComboBox">',
+    'x:Name="PART_EditableTextBox"',
+    'x:Name="PART_Popup"'
 )
 foreach ($marker in $xamlMarkers) {
     if (-not $xamlText.Contains($marker)) { throw "Missing XAML control marker: $marker" }
