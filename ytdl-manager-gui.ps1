@@ -801,10 +801,9 @@ function Queue-PreviewPrefetch {
 }
 
 function Start-NextPreviewPrefetch {
-    if ($script:previewPrefetchJob) {
-        $state = [string]$script:previewPrefetchJob.State
-        if ($state -eq "NotStarted" -or $state -eq "Running") { return }
-    }
+    # A completed/failed job is still owned by Complete-PreviewPrefetch until its
+    # result is received and cached. Never skip over it here.
+    if ($script:previewPrefetchJob) { return }
 
     while ($script:previewPrefetchQueue.Count -gt 0) {
         $url = [string]$script:previewPrefetchQueue[0]
