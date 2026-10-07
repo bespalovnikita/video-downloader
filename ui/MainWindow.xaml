@@ -75,6 +75,10 @@
             <Setter Property="RowHeaderWidth" Value="0"/>
             <Setter Property="CanUserAddRows" Value="False"/>
             <Setter Property="CanUserResizeRows" Value="False"/>
+            <Setter Property="IsReadOnly" Value="True"/>
+            <Setter Property="RowBackground" Value="#1B1E25"/>
+            <Setter Property="AlternatingRowBackground" Value="#20242D"/>
+            <Setter Property="AlternationCount" Value="2"/>
             <Setter Property="SelectionMode" Value="Extended"/>
             <Setter Property="SelectionUnit" Value="FullRow"/>
             <Setter Property="AutoGenerateColumns" Value="False"/>
@@ -87,9 +91,45 @@
             <Setter Property="Padding" Value="8,6"/>
         </Style>
 
+        <Style TargetType="DataGridRow">
+            <Setter Property="Foreground" Value="#EEF1F8"/>
+            <Setter Property="Background" Value="#1B1E25"/>
+            <Setter Property="BorderBrush" Value="#343946"/>
+            <Setter Property="BorderThickness" Value="0,0,0,1"/>
+            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#252B36"/>
+                </Trigger>
+                <Trigger Property="IsSelected" Value="True">
+                    <Setter Property="Background" Value="#2F3A63"/>
+                    <Setter Property="Foreground" Value="#FFFFFF"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
         <Style TargetType="DataGridCell">
+            <Setter Property="Foreground" Value="#EEF1F8"/>
+            <Setter Property="Background" Value="Transparent"/>
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="Padding" Value="6,4"/>
+            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+            <Style.Triggers>
+                <Trigger Property="IsSelected" Value="True">
+                    <Setter Property="Background" Value="#2F3A63"/>
+                    <Setter Property="Foreground" Value="#FFFFFF"/>
+                </Trigger>
+                <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                    <Setter Property="Background" Value="#2F3A63"/>
+                    <Setter Property="Foreground" Value="#FFFFFF"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+        <Style x:Key="GridTextStyle" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#EEF1F8"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
         </Style>
 
         <Style TargetType="Expander">
@@ -183,9 +223,9 @@
 
                     <DataGrid x:Name="QueueGrid" Grid.Row="3" AllowDrop="True">
                         <DataGrid.Columns>
-                            <DataGridTextColumn Header="#" Binding="{Binding Order}" Width="38"/>
-                            <DataGridTextColumn Header="URL" Binding="{Binding Url}" Width="*"/>
-                            <DataGridTextColumn Header="State" Binding="{Binding State}" Width="90"/>
+                            <DataGridTextColumn Header="#" Binding="{Binding Order}" Width="38" ElementStyle="{StaticResource GridTextStyle}"/>
+                            <DataGridTextColumn Header="URL" Binding="{Binding Url}" Width="*" ElementStyle="{StaticResource GridTextStyle}"/>
+                            <DataGridTextColumn Header="State" Binding="{Binding State}" Width="90" ElementStyle="{StaticResource GridTextStyle}"/>
                         </DataGrid.Columns>
                     </DataGrid>
 
@@ -209,9 +249,9 @@
 
                     <DataGrid x:Name="DownloadGrid" Grid.Row="1" SelectionMode="Single">
                         <DataGrid.Columns>
-                            <DataGridTextColumn Header="Slot" Binding="{Binding Slot}" Width="52"/>
-                            <DataGridTextColumn Header="State" Binding="{Binding State}" Width="185"/>
-                            <DataGridTextColumn Header="Video" Binding="{Binding Title}" Width="*"/>
+                            <DataGridTextColumn Header="Slot" Binding="{Binding Slot}" Width="52" ElementStyle="{StaticResource GridTextStyle}"/>
+                            <DataGridTextColumn Header="State" Binding="{Binding State}" Width="185" ElementStyle="{StaticResource GridTextStyle}"/>
+                            <DataGridTextColumn Header="Video" Binding="{Binding Title}" Width="*" ElementStyle="{StaticResource GridTextStyle}"/>
                         </DataGrid.Columns>
                     </DataGrid>
 
