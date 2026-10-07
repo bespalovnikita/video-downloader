@@ -47,7 +47,12 @@ $guiMarkers = @(
     "DynamicRange",
     "ContextMenu",
     '$QueueGrid.IsEnabled = $true',
-    '$QueueGrid.AllowDrop = -not $Running'
+    '$QueueGrid.AllowDrop = -not $Running',
+    "function Set-QueueState",
+    'Set-QueueState $u "Done"',
+    '$state -eq "NotStarted"',
+    '--playlist-items","1"',
+    "Preview returned no result"
 )
 foreach ($marker in $guiMarkers) {
     if (-not $guiText.Contains($marker)) { throw "Missing GUI feature marker: $marker" }

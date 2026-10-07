@@ -149,6 +149,24 @@ function Reindex-Queue {
     Update-StartState
 }
 
+function Find-QueueItem([string]$Url) {
+    if ([string]::IsNullOrWhiteSpace($Url)) { return $null }
+    foreach ($item in $script:queue) {
+        if ([string]::Equals([string]$item.Url,$Url,[StringComparison]::Ordinal)) {
+            return $item
+        }
+    }
+    return $null
+}
+
+function Set-QueueState([string]$Url,[string]$State) {
+    $item = Find-QueueItem $Url
+    if (-not $item) { return }
+    if ([string]$item.State -eq $State) { return }
+    $item.State = $State
+    $QueueGrid.Items.Refresh()
+}
+
 function Add-Urls([string[]]$Urls) {
     $existing = @{}
     foreach ($item in $script:queue) { $existing[$item.Url] = $true }
@@ -333,24 +351,40 @@ function Tail-Events {
             $slot = [int]$event.Slot
             switch ($event.EventType) {
                 "Title" {
-                    Set-Download -Slot $slot -State "Preparing" -Title ([string]$event.Title) -Url ([string]$event.Url)
+                    $u = [string]$event.Url
+                    Set-Download -Slot $slot -State "Preparing" -Title ([string]$event.Title) -Url $u
+                    Set-QueueState $u "Preparing"
                 }
                 "Progress" {
                     $parts = @("{0:N1}%" -f [double]$event.Percent)
                     if ($event.Speed) { $parts += [string]$event.Speed }
                     if ($event.ETA) { $parts += ("ETA " + [string]$event.ETA) }
-                    Set-Download -Slot $slot -State ($parts -join " · ") -Url ([string]$event.Url)
+                    $u = [string]$event.Url
+                    Set-Download -Slot $slot -State ($parts -join " · ") -Url $u
+                    Set-QueueState $u ("{0:N1}%" -f [double]$event.Percent)
                     $script:speeds[$slot] = Convert-SpeedTextToBytes ([string]$event.Speed)
                 }
-                "Merge" { Set-Download -Slot $slot -State "Merging..." -Url ([string]$event.Url) }
-                "Retry" { Set-Download -Slot $slot -State "Retrying..." -Url ([string]$event.Url) }
+                "Merge" {
+                    $u = [string]$event.Url
+                    Set-Download -Slot $slot -State "Merging..." -Url $u
+                    Set-QueueState $u "Merging"
+                }
+                "Retry" {
+                    $u = [string]$event.Url
+                    Set-Download -Slot $slot -State "Retrying..." -Url $u
+                    Set-QueueState $u "Retrying"
+                }
                 "File" {
                     $path = [string]$event.Text
+                    $u = [string]$event.Url
                     $script:lastFiles[$slot] = $path
-                    Set-Download -Slot $slot -State "Finalizing..." -Url ([string]$event.Url) -Path $path
+                    Set-Download -Slot $slot -State "Finalizing..." -Url $u -Path $path
+                    Set-QueueState $u "Finalizing"
                 }
                 "Error" {
-                    Set-Download -Slot $slot -State "Error" -Url ([string]$event.Url) -RawError ([string]$event.Text)
+                    $u = [string]$event.Url
+                    Set-Download -Slot $slot -State "Error" -Url $u -RawError ([string]$event.Text)
+                    Set-QueueState $u "Error"
                 }
             }
         } elseif ($event.Kind -eq "Result") {
@@ -366,7 +400,9 @@ function Tail-Events {
                     try { $size = (Get-Item $path).Length } catch {}
                 }
                 $script:sessionBytes += $size
-                Set-Download -Slot $slot -State "Done" -Url ([string]$event.Url) -Path $path
+                $u = [string]$event.Url
+                Set-Download -Slot $slot -State "Done" -Url $u -Path $path
+                Set-QueueState $u "Done"
             } else {
                 $script:sessionFailed++
                 $u = [string]$event.Url
@@ -374,6 +410,7 @@ function Tail-Events {
                 $friendly = [string]$event.FriendlyError
                 if (-not $friendly) { $friendly = Get-FriendlyDownloadError ([string]$event.Error) }
                 Set-Download -Slot $slot -State $friendly -Url $u -RawError ([string]$event.Error)
+                Set-QueueState $u $friendly
             }
 
             $done = $script:sessionSuccess + $script:sessionFailed
@@ -515,6 +552,7 @@ function Start-Download([string[]]$OverrideUrls=$null) {
     $script:sessionBytes = [int64]0
     $script:sessionTotal = $items.Count
     $OverallProgress.Value = 0
+    foreach ($u in $items) { Set-QueueState ([string]$u) "Starting" }
     Update-LiveStats
 
     $pwsh = Join-Path $PSHOME "pwsh.exe"
@@ -643,56 +681,122 @@ function Start-Preview([string]$Url) {
     $script:previewJob = Start-ThreadJob -ArgumentList $exe,$Url,$cookie -ScriptBlock {
         param($exe,$url,$cookie)
 
-        $args = @("--dump-single-json","--skip-download","--no-warnings","--encoding","utf-8","--impersonate","chrome")
-        if ($cookie -and (Test-Path $cookie)) { $args += @("--cookies",$cookie) }
-        $args += $url
+        $stderrFile = Join-Path ([IO.Path]::GetTempPath()) ("video-downloader-preview-" + [guid]::NewGuid().ToString("N") + ".log")
+        try {
+            $args = @(
+                "--dump-single-json",
+                "--skip-download",
+                "--no-warnings",
+                "--playlist-items","1",
+                "--encoding","utf-8",
+                "--impersonate","chrome"
+            )
+            if ($cookie -and (Test-Path $cookie)) { $args += @("--cookies",$cookie) }
+            $args += $url
 
-        $raw = & $exe @args 2>$null
-        if ($LASTEXITCODE -ne 0) { throw "yt-dlp metadata failed" }
-        $j = ($raw -join [Environment]::NewLine) | ConvertFrom-Json
+            $raw = & $exe @args 2>$stderrFile
+            $exitCode = $LASTEXITCODE
+            $stderr = ""
+            if (Test-Path $stderrFile) {
+                $stderr = (@(Get-Content $stderrFile -Encoding UTF8 -ErrorAction SilentlyContinue) | Select-Object -Last 12) -join " | "
+            }
 
-        $formats = @($j.formats | Where-Object { $_.vcodec -and $_.vcodec -ne "none" })
-        $maxHeight = 0
-        $maxFps = 0.0
-        $codecSet = [Collections.Generic.HashSet[string]]::new()
-        $rangeSet = [Collections.Generic.HashSet[string]]::new()
+            if ($exitCode -ne 0) {
+                if ([string]::IsNullOrWhiteSpace($stderr)) { $stderr = "yt-dlp exit code $exitCode" }
+                return [pscustomobject]@{
+                    Success = $false
+                    Error = $stderr
+                }
+            }
 
-        foreach ($fmt in $formats) {
-            if ($fmt.height -and [int]$fmt.height -gt $maxHeight) { $maxHeight = [int]$fmt.height }
-            if ($fmt.fps -and [double]$fmt.fps -gt $maxFps) { $maxFps = [double]$fmt.fps }
+            $jsonText = ($raw -join [Environment]::NewLine)
+            if ([string]::IsNullOrWhiteSpace($jsonText)) {
+                return [pscustomobject]@{
+                    Success = $false
+                    Error = "yt-dlp returned no metadata"
+                }
+            }
 
-            $vc = [string]$fmt.vcodec
-            if ($vc.StartsWith("av01")) { [void]$codecSet.Add("AV1") }
-            elseif ($vc.StartsWith("vp9")) { [void]$codecSet.Add("VP9") }
-            elseif ($vc.StartsWith("avc1") -or $vc.StartsWith("h264")) { [void]$codecSet.Add("H264") }
-            elseif ($vc) { [void]$codecSet.Add($vc.Split('.')[0]) }
+            $j = $jsonText | ConvertFrom-Json -ErrorAction Stop
+            $source = $j
+            $playlistTitle = ""
 
-            $dr = [string]$fmt.dynamic_range
-            if ($dr -and $dr -ne "SDR" -and $dr -ne "None") { [void]$rangeSet.Add($dr) }
-        }
+            if ((-not $j.formats) -and $j.entries) {
+                $first = @($j.entries | Where-Object { $_ } | Select-Object -First 1)
+                if ($first.Count -gt 0) {
+                    $source = $first[0]
+                    $playlistTitle = [string]$j.title
+                }
+            }
 
-        [pscustomobject]@{
-            Title = [string]$j.title
-            Uploader = [string]$j.uploader
-            Duration = [double]$j.duration
-            Thumbnail = [string]$j.thumbnail
-            Extractor = [string]$j.extractor_key
-            MaxHeight = $maxHeight
-            MaxFps = $maxFps
-            Codecs = (@($codecSet) -join ", ")
-            DynamicRange = (@($rangeSet) -join ", ")
+            $formats = @($source.formats | Where-Object { $_.vcodec -and $_.vcodec -ne "none" })
+            $maxHeight = 0
+            $maxFps = 0.0
+            $codecSet = [Collections.Generic.HashSet[string]]::new()
+            $rangeSet = [Collections.Generic.HashSet[string]]::new()
+
+            foreach ($fmt in $formats) {
+                if ($fmt.height -and [int]$fmt.height -gt $maxHeight) { $maxHeight = [int]$fmt.height }
+                if ($fmt.fps -and [double]$fmt.fps -gt $maxFps) { $maxFps = [double]$fmt.fps }
+
+                $vc = [string]$fmt.vcodec
+                if ($vc.StartsWith("av01")) { [void]$codecSet.Add("AV1") }
+                elseif ($vc.StartsWith("vp9")) { [void]$codecSet.Add("VP9") }
+                elseif ($vc.StartsWith("avc1") -or $vc.StartsWith("h264")) { [void]$codecSet.Add("H264") }
+                elseif ($vc) { [void]$codecSet.Add($vc.Split('.')[0]) }
+
+                $dr = [string]$fmt.dynamic_range
+                if ($dr -and $dr -ne "SDR" -and $dr -ne "None") { [void]$rangeSet.Add($dr) }
+            }
+
+            return [pscustomobject]@{
+                Success = $true
+                Error = ""
+                Title = [string]$source.title
+                PlaylistTitle = $playlistTitle
+                Uploader = [string]$source.uploader
+                Duration = [double]$source.duration
+                Thumbnail = [string]$source.thumbnail
+                Extractor = [string]$source.extractor_key
+                MaxHeight = $maxHeight
+                MaxFps = $maxFps
+                Codecs = (@($codecSet) -join ", ")
+                DynamicRange = (@($rangeSet) -join ", ")
+            }
+        } catch {
+            return [pscustomobject]@{
+                Success = $false
+                Error = $_.Exception.Message
+            }
+        } finally {
+            Remove-Item $stderrFile -Force -ErrorAction SilentlyContinue
         }
     }
 }
 
 function Complete-Preview {
-    if (-not $script:previewJob -or $script:previewJob.State -eq "Running") { return }
+    if (-not $script:previewJob) { return }
+
+    $state = [string]$script:previewJob.State
+    if ($state -eq "NotStarted" -or $state -eq "Running") { return }
 
     try {
-        if ($script:previewJob.State -ne "Completed") { throw "Preview failed" }
+        if ($state -ne "Completed") {
+            $reason = $script:previewJob.JobStateInfo.Reason
+            if ($reason) { throw $reason }
+            throw "Preview job ended with state: $state"
+        }
+
         $r = Receive-Job $script:previewJob -ErrorAction Stop | Select-Object -Last 1
+        if (-not $r) { throw "Preview returned no result" }
+        if (-not [bool]$r.Success) {
+            $message = [string]$r.Error
+            if ([string]::IsNullOrWhiteSpace($message)) { $message = "yt-dlp could not read this URL" }
+            throw $message
+        }
 
         $PreviewTitle.Text = if ($r.Title) { [string]$r.Title } else { "Untitled" }
+
         $duration = ""
         if ($r.Duration -gt 0) {
             $ts = [TimeSpan]::FromSeconds([double]$r.Duration)
@@ -700,6 +804,7 @@ function Complete-Preview {
         }
 
         $meta = @()
+        if ($r.PlaylistTitle) { $meta += ("Playlist: " + [string]$r.PlaylistTitle) }
         if ($r.Uploader) { $meta += [string]$r.Uploader }
         if ($duration) { $meta += $duration }
         if ($r.Extractor) { $meta += [string]$r.Extractor }
@@ -720,15 +825,24 @@ function Complete-Preview {
                 $bitmap = [System.Windows.Media.Imaging.BitmapImage]::new()
                 $bitmap.BeginInit()
                 $bitmap.CacheOption = [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad
+                $bitmap.CreateOptions = [System.Windows.Media.Imaging.BitmapCreateOptions]::IgnoreColorProfile
                 $bitmap.UriSource = [Uri]::new([string]$r.Thumbnail)
                 $bitmap.EndInit()
                 $bitmap.Freeze()
                 $PreviewImage.Source = $bitmap
-            } catch {}
+            } catch {
+                Log-Line ("Preview thumbnail failed: " + $_.Exception.Message)
+            }
         }
     } catch {
+        $message = $_.Exception.Message
         $PreviewTitle.Text = "Preview unavailable"
-        $PreviewMeta.Text = $_.Exception.Message
+        $PreviewMeta.Text = $message
+        $PreviewFormats.Text = ""
+        Log-Line ("Preview failed for $($script:previewUrl): " + $message)
+
+        # Allow selecting this URL again after an error to retry preview.
+        $script:previewUrl = ""
     } finally {
         try { Remove-Job $script:previewJob -Force -ErrorAction SilentlyContinue } catch {}
         $script:previewJob = $null
