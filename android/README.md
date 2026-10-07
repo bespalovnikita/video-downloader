@@ -7,7 +7,7 @@ Experimental Android port of the Windows Video Downloader, isolated on the featu
 - Kotlin
 - Jetpack Compose
 - Android Gradle Plugin 9.4
-- compile/target SDK 37
+- compile/target SDK 36
 - min SDK 29
 - youtubedl-android 0.18.1
 - bundled FFmpeg module from youtubedl-android
@@ -73,7 +73,7 @@ Pause stops the active yt-dlp processes. Resume requeues the paused items. yt-dl
 
 ## Build
 
-The branch contains an Android CI workflow. Locally, with JDK 17 + Android SDK 37:
+The branch contains an Android CI workflow. Locally, with JDK 17 + Android SDK 36:
 
     gradle -p android :app:testDebugUnitTest :app:assembleDebug
 
