@@ -51,7 +51,7 @@ $guiMarkers = @(
     "Show-DuplicateDownloadDialog",
     "Import-CompletedUrlsToHistory",
     "Resolve-VdDuplicateDownloadPlan",
-    "$historyModule",
+    'Import-Module $historyModule -Force',
     "Sync-RecoveredEngine",
     "Save-SessionCheckpoint",
     "Write-VdSessionCheckpoint",
