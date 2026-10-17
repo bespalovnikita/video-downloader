@@ -7,11 +7,13 @@ $core = Join-Path $root "lib\VideoDownloader.Core.psm1"
 $previewCache = Join-Path $root "lib\VideoDownloader.PreviewCache.psm1"
 $lifecycle = Join-Path $root "lib\VideoDownloader.WindowLifecycle.psm1"
 $sessionModule = Join-Path $root "lib\VideoDownloader.Session.psm1"
+$historyModule = Join-Path $root "lib\VideoDownloader.DownloadHistory.psm1"
+$duplicateDialogXaml = Join-Path $root "ui\DuplicateDownloadDialog.xaml"
 $xaml = Join-Path $root "ui\MainWindow.xaml"
 $icon = Join-Path $root "assets\app.ico"
 $launcher = Join-Path $root "launcher\VideoDownloader.csproj"
 
-foreach ($file in @($gui,$engine,$core,$previewCache,$lifecycle,$sessionModule)) {
+foreach ($file in @($gui,$engine,$core,$previewCache,$lifecycle,$sessionModule,$historyModule)) {
     $tokens = $null
     $errors = $null
     [void][System.Management.Automation.Language.Parser]::ParseFile($file,[ref]$tokens,[ref]$errors)
@@ -23,6 +25,13 @@ foreach ($file in @($gui,$engine,$core,$previewCache,$lifecycle,$sessionModule))
 
 [xml]$xamlDoc = Get-Content $xaml -Raw -Encoding UTF8
 if ($xamlDoc.DocumentElement.LocalName -ne "Window") { throw "MainWindow.xaml root is not Window" }
+[xml]$duplicateDialogDoc = Get-Content $duplicateDialogXaml -Raw -Encoding UTF8
+if ($duplicateDialogDoc.DocumentElement.LocalName -ne "Window") { throw "DuplicateDownloadDialog.xaml root is not Window" }
+foreach ($name in @("YesButton","NoButton","YesAllButton","NoAllButton","CancelButton","DuplicateUrl")) {
+    if (-not $duplicateDialogDoc.OuterXml.Contains('x:Name="' + $name + '"')) {
+        throw "Duplicate dialog missing control: $name"
+    }
+}
 
 Add-Type -AssemblyName System.Drawing
 $ico = [System.Drawing.Icon]::new($icon)
@@ -38,6 +47,11 @@ $xamlText = Get-Content $xaml -Raw
 $guiMarkers = @(
     "PresentationFramework",
     "Restore-PreviousSession",
+    "Confirm-DuplicateDownloads",
+    "Show-DuplicateDownloadDialog",
+    "Import-CompletedUrlsToHistory",
+    "Resolve-VdDuplicateDownloadPlan",
+    "$historyModule",
     "Sync-RecoveredEngine",
     "Save-SessionCheckpoint",
     "Write-VdSessionCheckpoint",
@@ -131,7 +145,9 @@ $engineMarkers = @(
     "Retries",
     "--progress-template",
     "__VD_PROGRESS__",
-    "Test-TransientDownloadError"
+    "Test-TransientDownloadError",
+    "Add-VdSuccessfulDownloadUrl",
+    "Read-VdDownloadHistory"
 )
 foreach ($marker in $engineMarkers) {
     if (-not $engineText.Contains($marker)) { throw "Missing engine feature marker: $marker" }
