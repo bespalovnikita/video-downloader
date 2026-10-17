@@ -155,6 +155,7 @@ Fetch/cache логика находится в <code>lib/VideoDownloader.Preview
 ~~~powershell
 pwsh -File .\tests\core-tests.ps1
 pwsh -File .\tests\smoke.ps1
+pwsh -STA -File .\tests\tray-lifecycle-tests.ps1
 ~~~
 
 Если менялась упаковка:
