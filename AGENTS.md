@@ -90,6 +90,16 @@ Fetch/cache логика находится в <code>lib/VideoDownloader.Preview
 - Не перезапускай задания, пока ещё жив старый engine, сопоставляй PID с StartTime, чтобы защититься от PID reuse.
 - При изменении checkpoint logic дополняй `tests/session-checkpoint-tests.ps1`.
 
+## Global successful-download history
+
+- Все успешные URL из Windows GUI и CLI engine записываются append-only в `%LOCALAPPDATA%\\VideoDownloader\\successful-downloads.jsonl`.
+- История независима от session checkpoint и удаления Queue: **никогда не очищай её** при завершении сеанса.
+- Сравнение URL точное (ordinal), без сомнительной нормализации параметров.
+- Перед **каждым** download start/explicit retry проверяй кандидатов в истории и применяй Yes/No/YesAll/NoAll. No удаляет соответствующий URL из Queue. Cancel/X не запускает процесс и не меняет очередь.
+- Не записывай failed/dry-run URL как успешные; UI проверяет историю *до* запуска engine.
+- Файл историй может пополняться из нескольких CLI процессов. Используй межпроцессную синхронизацию и не проглатывай ошибки при чтении повреждённой истории.
+- При изменениях запускай `tests/download-history-tests.ps1` вместе с остальным CI.
+
 ## WPF
 
 - основной UI framework — WPF/XAML;
@@ -165,6 +175,7 @@ pwsh -File .\tests\core-tests.ps1
 pwsh -File .\tests\smoke.ps1
 pwsh -STA -File .\tests\tray-lifecycle-tests.ps1
 pwsh -File .\tests\session-checkpoint-tests.ps1
+pwsh -File .\tests\download-history-tests.ps1
 ~~~
 
 Если менялась упаковка:

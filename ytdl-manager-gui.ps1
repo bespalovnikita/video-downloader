@@ -38,16 +38,19 @@ $ytDlp = Join-Path $root "yt-dlp.exe"
 $coreModule = Join-Path $root "lib\VideoDownloader.Core.psm1"
 $previewCacheModule = Join-Path $root "lib\VideoDownloader.PreviewCache.psm1"
 $sessionModule = Join-Path $root "lib\VideoDownloader.Session.psm1"
+$historyModule = Join-Path $root "lib\VideoDownloader.DownloadHistory.psm1"
+$duplicateDialogXaml = Join-Path $root "ui\DuplicateDownloadDialog.xaml"
 $lifecycleModule = Join-Path $root "lib\VideoDownloader.WindowLifecycle.psm1"
 $xamlPath = Join-Path $root "ui\MainWindow.xaml"
 
-foreach ($required in @($engine,$ytDlp,$coreModule,$previewCacheModule,$lifecycleModule,$sessionModule,$xamlPath)) {
+foreach ($required in @($engine,$ytDlp,$coreModule,$previewCacheModule,$lifecycleModule,$sessionModule,$historyModule,$duplicateDialogXaml,$xamlPath)) {
     if (-not (Test-Path $required)) { throw "Missing required file: $required" }
 }
 Import-Module $coreModule -Force
 Import-Module $previewCacheModule -Force
 Import-Module $lifecycleModule -Force
 Import-Module $sessionModule -Force
+Import-Module $historyModule -Force
 
 function Remove-StaleGuiTempDirs {
     $cutoff = (Get-Date).AddHours(-24)
@@ -124,6 +127,7 @@ $script:lastFiles = @{}
 $script:exitFromTray = $false
 $script:restoringSession = $false
 $script:sessionPath = Join-Path $env:LOCALAPPDATA "VideoDownloader\session.json"
+$script:historyPath = Join-Path $env:LOCALAPPDATA "VideoDownloader\successful-downloads.jsonl"
 $script:lastSessionSnapshot = ""
 $script:lastSessionCheck = [DateTime]::MinValue
 $script:activeEngine = $null
@@ -168,6 +172,56 @@ function Extract-Urls([string]$Text) {
         if (Is-ValidUrl $v -and -not $found.Contains($v)) { [void]$found.Add($v) }
     }
     return $found.ToArray()
+}
+
+function Import-CompletedUrlsToHistory([object[]]$Items) {
+    try {
+        $known = Read-VdDownloadHistory -Path $script:historyPath
+        foreach ($item in $Items) {
+            $url = [string]$item.Url
+            if ($item.Status -eq "Completed" -and (Is-ValidUrl $url) -and -not $known.Contains($url)) {
+                Add-VdSuccessfulDownloadUrl -Path $script:historyPath -Url $url
+                [void]$known.Add($url)
+            }
+        }
+    } catch {
+        Log-Line ("WARNING: Could not import previously completed URLs into download history: " + $_.Exception.Message)
+    }
+}
+
+function Show-DuplicateDownloadDialog([string]$Url,[int]$Index,[int]$Total) {
+    [xml]$xaml = Get-Content -LiteralPath $duplicateDialogXaml -Raw -Encoding UTF8
+    $reader = [System.Xml.XmlNodeReader]::new($xaml)
+    $dialog = [System.Windows.Markup.XamlReader]::Load($reader)
+    $dialog.Owner = $window
+    $dialog.Tag = "Cancel"
+    $dialog.FindName("CounterLabel").Text = "Previously downloaded ($Index / $Total)"
+    $dialog.FindName("DuplicateUrl").Text = $Url
+    foreach ($name in @("YesButton","NoButton","YesAllButton","NoAllButton")) {
+        $button = $dialog.FindName($name)
+        $button.Tag = switch ($name) {
+            "YesButton" { "Yes" }
+            "NoButton" { "No" }
+            "YesAllButton" { "YesAll" }
+            "NoAllButton" { "NoAll" }
+        }
+        $button.Add_Click({
+            param($sender,$eventArgs)
+            $owner = [System.Windows.Window]::GetWindow($sender)
+            $owner.Tag = [string]$sender.Tag
+            $owner.DialogResult = $true
+        })
+    }
+    [void]$dialog.ShowDialog()
+    return [string]$dialog.Tag
+}
+
+function Confirm-DuplicateDownloads([string[]]$Urls) {
+    $known = Read-VdDownloadHistory -Path $script:historyPath
+    return Resolve-VdDuplicateDownloadPlan -Urls $Urls -Known $known -Prompt {
+        param($url,$index,$total)
+        Show-DuplicateDownloadDialog -Url $url -Index $index -Total $total
+    }
 }
 
 function Get-SessionSettings {
@@ -264,6 +318,7 @@ function Sync-RecoveredEngine {
     if (Test-VdSessionEngineAlive -Engine $script:recoveredEngine) { return $false }
     $checkpoint = Get-SessionSnapshot
     $checkpoint = Merge-VdSessionResultEvents -Session $checkpoint -EventsPath ([string]$script:recoveredEngine.EventsPath)
+    Import-CompletedUrlsToHistory -Items @($checkpoint.Queue)
     $script:restoringSession = $true
     try {
         $script:queue.Clear()
@@ -296,6 +351,9 @@ function Restore-PreviousSession {
         return
     }
     if (-not $checkpoint) { return }
+    # One-time best-effort migration of successfully downloaded URLs from the
+    # previous checkpoint, even when the user declines restoring that queue.
+    Import-CompletedUrlsToHistory -Items @($checkpoint.Queue)
     $items = @(Get-VdRestoredQueue -Session $checkpoint)
     if (-not (Test-VdSessionHasPending -Queue $items)) {
         # A detached worker also needs to be guarded when there is no pending queue.
@@ -713,6 +771,26 @@ function Start-Download([string[]]$OverrideUrls=$null) {
     }
     $items = $OverrideUrls
     if ($null -eq $items) { $items = @(Get-VdResumeUrls -Queue @($script:queue | ForEach-Object { $_ })) }
+    if ($items.Count -eq 0) { return }
+
+    # Resolve decisions before mutating Queue or creating any engine temp files.
+    # Cancel/X leaves the entire queue unchanged, and never starts a download.
+    try {
+        $plan = Confirm-DuplicateDownloads -Urls @($items)
+    } catch {
+        [System.Windows.MessageBox]::Show(
+            "Cannot check previous downloads. Nothing was started or removed. " + $_.Exception.Message,
+            "Download history error", [System.Windows.MessageBoxButton]::OK,
+            [System.Windows.MessageBoxImage]::Warning) | Out-Null
+        return
+    }
+    if ($plan.Cancelled) { return }
+    foreach ($url in @($plan.Remove)) {
+        $queueItem = Find-QueueItem ([string]$url)
+        if ($queueItem) { [void]$script:queue.Remove($queueItem) }
+    }
+    if (@($plan.Remove).Count -gt 0) { Reindex-Queue }
+    $items = @($plan.Selected)
     if ($items.Count -eq 0) { return }
 
     foreach ($u in $items) { Queue-PreviewPrefetch -Url ([string]$u) }
