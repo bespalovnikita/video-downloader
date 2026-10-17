@@ -59,6 +59,19 @@ try {
     Assert-Vd ($merged.Queue[2].Status -eq "Failed") "Failure event not reconciled"
     Assert-Vd ((@(Get-VdResumeUrls -Queue @(Get-VdRestoredQueue -Session $merged))).Count -eq 2) "Recovered results should not re-download"
 
+    # URL paths are case-sensitive: a result must not complete the wrong row.
+    $caseSession = [ordered]@{
+        Queue = @(
+            [ordered]@{ Url="https://example.com/Video"; Status="Queued"; DisplayState="Queued"; Path="" },
+            [ordered]@{ Url="https://example.com/video"; Status="Queued"; DisplayState="Queued"; Path="" }
+        )
+        Settings = [ordered]@{}
+        Engine = $null
+    }
+    [IO.File]::WriteAllText($events,'{"Kind":"Result","Url":"https://example.com/Video","Success":true}')
+    $caseMerged = Merge-VdSessionResultEvents -Session $caseSession -EventsPath $events
+    Assert-Vd ($caseMerged.Queue[0].Status -eq "Completed" -and $caseMerged.Queue[1].Status -eq "Queued") "Result URL matching must be case-sensitive"
+
     Write-VdSessionCheckpoint -Path $path -Session $merged
     Assert-Vd (@(Get-ChildItem -LiteralPath $dir -Filter "*.tmp").Count -eq 0) "Atomic write left temp files"
     $readAgain = Read-VdSessionCheckpoint -Path $path
