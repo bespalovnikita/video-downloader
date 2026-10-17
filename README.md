@@ -23,6 +23,7 @@ Windows GUI и CLI-движок поверх **yt-dlp** для пакетной 
 | Preview cache | RAM + %LOCALAPPDATA%\VideoDownloader\preview-cache, TTL **72 часа** |
 | UX | dark WPF UI, tray, notifications, session stats, actions для готовых файлов |
 | Recovery | атомарный session checkpoint, восстановление незавершённой очереди и параметров с подтверждением |
+| Download history | сохраняет все успешные URL из CLI/GUI между сессиями, перед повторной загрузкой спрашивает Yes/No/Yes to all/No to all |
 | Dependencies | проверка yt-dlp / FFmpeg / ffprobe, update yt-dlp, install FFmpeg |
 | Integration | user-level protocol videodownloader:// |
 
@@ -208,6 +209,7 @@ CI на PR и push в main выполняет:
 - single-instance/IPC пока нет, поэтому custom protocol может открыть второй экземпляр;
 - пользовательские presets пока не сохраняются; настройки активной очереди сохраняются в session checkpoint;
 - CLI использует входной .txt как рабочую очередь и удаляет из него завершённые URL;
+- долговременная история успешных URL хранится отдельно: `%LOCALAPPDATA%\\VideoDownloader\\successful-downloads.jsonl`; при наличии предыдущей загрузки GUI показывает диалог выбора перед Start/Retry (в CLI вопросов нет);
 - success/error txt относятся к текущему запуску, а не являются вечной историей.
 
 ## Документация
