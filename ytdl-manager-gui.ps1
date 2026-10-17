@@ -984,12 +984,14 @@ function Finish-Download {
     Update-LiveStats
     $elapsed = if ($script:sessionStarted) { (Get-Date)-$script:sessionStarted } else { [TimeSpan]::Zero }
     $summary = "$($script:sessionSuccess) ok · $($script:sessionFailed) failed · $(Format-Bytes $script:sessionBytes) · $($elapsed.ToString('hh\:mm\:ss'))"
+    $remainingQueued = @($script:queue | Where-Object { $_.Status -eq "Queued" }).Count
+    if ($remainingQueued -gt 0) { $summary += " · $remainingQueued queued for next Start" }
 
     if ($script:stopping) {
         $HeaderStatus.Text = "● Stopped"
         $HeaderStatus.Foreground = [System.Windows.Media.Brushes]::Orange
     } elseif ($script:sessionFailed -eq 0 -and $code -eq 0) {
-        $HeaderStatus.Text = "● Completed"
+        $HeaderStatus.Text = if ($remainingQueued -gt 0) { "● Completed · $remainingQueued queued" } else { "● Completed" }
         $HeaderStatus.Foreground = [System.Windows.Media.Brushes]::LightGreen
         try { [Media.SystemSounds]::Asterisk.Play() } catch {}
         Show-Notification "Video Downloader" $summary
