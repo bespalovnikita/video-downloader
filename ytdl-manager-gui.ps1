@@ -39,11 +39,12 @@ $coreModule = Join-Path $root "lib\VideoDownloader.Core.psm1"
 $previewCacheModule = Join-Path $root "lib\VideoDownloader.PreviewCache.psm1"
 $sessionModule = Join-Path $root "lib\VideoDownloader.Session.psm1"
 $historyModule = Join-Path $root "lib\VideoDownloader.DownloadHistory.psm1"
+$liveQueueModule = Join-Path $root "lib\VideoDownloader.LiveQueue.psm1"
 $duplicateDialogXaml = Join-Path $root "ui\DuplicateDownloadDialog.xaml"
 $lifecycleModule = Join-Path $root "lib\VideoDownloader.WindowLifecycle.psm1"
 $xamlPath = Join-Path $root "ui\MainWindow.xaml"
 
-foreach ($required in @($engine,$ytDlp,$coreModule,$previewCacheModule,$lifecycleModule,$sessionModule,$historyModule,$duplicateDialogXaml,$xamlPath)) {
+foreach ($required in @($engine,$ytDlp,$coreModule,$previewCacheModule,$lifecycleModule,$sessionModule,$historyModule,$liveQueueModule,$duplicateDialogXaml,$xamlPath)) {
     if (-not (Test-Path $required)) { throw "Missing required file: $required" }
 }
 Import-Module $coreModule -Force
@@ -51,6 +52,7 @@ Import-Module $previewCacheModule -Force
 Import-Module $lifecycleModule -Force
 Import-Module $sessionModule -Force
 Import-Module $historyModule -Force
+Import-Module $liveQueueModule -Force
 
 function Remove-StaleGuiTempDirs {
     $cutoff = (Get-Date).AddHours(-24)
@@ -73,7 +75,7 @@ $reader = [System.Xml.XmlNodeReader]::new($xaml)
 $window = [System.Windows.Markup.XamlReader]::Load($reader)
 
 $controlNames = @(
-    "HeaderStats","HeaderStatus","QueueCount","UrlInput","AddUrlButton","OpenListButton","RemoveQueueButton",
+    "HeaderStats","HeaderStatus","QueueCount","UrlInput","AddUrlButton","PasteClipboardButton","OpenListButton","RemoveQueueButton",
     "ClearQueueButton","MoveUpButton","MoveDownButton","RetryFailedButton","QueueGrid","WatchClipboardCheck",
     "ClipboardHint","DownloadGrid","OpenFileButton","OpenFolderButton","CopyPathButton","OpenUrlButton","LogBox",
     "PreviewImage","PreviewTitle","PreviewMeta","PreviewFormats","ProfileCombo","QualityCombo","CodecCombo",
@@ -97,6 +99,7 @@ $script:proc = $null
 $script:runDir = $null
 $script:runLog = $null
 $script:runEvents = $null
+$script:liveQueuePath = $null
 $script:logLines = 0
 $script:eventLines = 0
 $script:failedUrls = [Collections.Generic.List[string]]::new()
@@ -134,6 +137,7 @@ $script:activeEngine = $null
 $script:recoveredEngine = $null
 $script:lastSessionError = ""
 $script:checkpointReadOnly = $false
+$script:lastAddedCount = 0
 
 function Log-Line([string]$Text) {
     if ([string]::IsNullOrWhiteSpace($Text)) { return }
@@ -426,14 +430,38 @@ function Set-QueueState([string]$Url,[string]$State,[string]$Status="") {
 }
 
 function Add-Urls([string[]]$Urls) {
-    $existing = @{}
-    foreach ($item in $script:queue) { $existing[$item.Url] = $true }
+    $script:lastAddedCount = 0
+    $existing = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($item in $script:queue) { [void]$existing.Add([string]$item.Url) }
 
+    $newUrls = [Collections.Generic.List[string]]::new()
     foreach ($raw in $Urls) {
         $u = ([string]$raw).Trim()
-        if (-not (Is-ValidUrl $u)) { continue }
-        if ($existing.ContainsKey($u)) { continue }
+        if ((Is-ValidUrl $u) -and $existing.Add($u)) { [void]$newUrls.Add($u) }
+    }
+    if ($newUrls.Count -eq 0) { return }
 
+    $running = $script:proc -and -not $script:proc.HasExited
+    $toAdd = @($newUrls.ToArray())
+    if ($running) {
+        # The history prompt applies to live additions too, before the engine or UI changes.
+        try {
+            $plan = Confirm-DuplicateDownloads -Urls $toAdd
+            if ($plan.Cancelled) { return }
+            $toAdd = @($plan.Selected)
+            if ($toAdd.Count -eq 0) { return }
+            # Only the dedicated append-only ingress is written; never edit engine queue.txt.
+            Add-VdLiveQueueUrls -Path $script:liveQueuePath -Urls $toAdd
+        } catch {
+            [System.Windows.MessageBox]::Show(
+                "Could not add URLs to the active download. Queue was not changed: " + $_.Exception.Message,
+                "Video Downloader", [System.Windows.MessageBoxButton]::OK,
+                [System.Windows.MessageBoxImage]::Warning) | Out-Null
+            return
+        }
+    }
+
+    foreach ($u in $toAdd) {
         $script:queue.Add([pscustomobject]@{
             Order = $script:queue.Count + 1
             Url = $u
@@ -441,8 +469,13 @@ function Add-Urls([string[]]$Urls) {
             Status = "Queued"
             Path = ""
         })
-        $existing[$u] = $true
         Queue-PreviewPrefetch -Url $u
+    }
+    $script:lastAddedCount = $toAdd.Count
+    if ($running) {
+        $script:sessionTotal += $toAdd.Count
+        Update-LiveStats
+        Log-Line ("Added $($toAdd.Count) URL(s) to the active download queue.")
     }
     Reindex-Queue
 }
@@ -541,7 +574,7 @@ function Set-Running([bool]$Running) {
     $PauseButton.IsEnabled = $Running
 
     foreach ($c in @(
-        $UrlInput,$AddUrlButton,$OpenListButton,$RemoveQueueButton,$ClearQueueButton,$MoveUpButton,$MoveDownButton,
+        $OpenListButton,$RemoveQueueButton,$ClearQueueButton,$MoveUpButton,$MoveDownButton,
         $ProfileCombo,$QualityCombo,$CodecCombo,$ContainerCombo,$RateLimitCombo,$ThreadsBox,
         $FragmentsCombo,$FilenameTemplateBox,$WriteSubsCheck,$AutoSubsCheck,$EmbedSubsCheck,$SubtitleLangsBox,
         $EmbedThumbnailCheck,$EmbedMetadataCheck,$EmbedChaptersCheck,$ArchiveCheck,$SponsorCheck,$AudioOnlyCheck,
@@ -573,6 +606,7 @@ function Clean-Temp {
     $script:runDir = $null
     $script:runLog = $null
     $script:runEvents = $null
+    $script:liveQueuePath = $null
 }
 
 function Update-LiveStats {
@@ -611,6 +645,11 @@ function Tail-Events {
         if ($event.Kind -eq "Event") {
             $slot = [int]$event.Slot
             switch ($event.EventType) {
+                "Started" {
+                    $u = [string]$event.Url
+                    Set-Download -Slot $slot -State "Starting" -Url $u
+                    Set-QueueState $u "Starting" "Running"
+                }
                 "Title" {
                     $u = [string]$event.Url
                     Set-Download -Slot $slot -State "Preparing" -Title ([string]$event.Title) -Url $u
@@ -827,6 +866,8 @@ function Start-Download([string[]]$OverrideUrls=$null) {
     $queuePath = Join-Path $script:runDir "queue.txt"
     $script:runLog = Join-Path $script:runDir "run.log"
     $script:runEvents = Join-Path $script:runDir "events.jsonl"
+    $script:liveQueuePath = Join-Path $script:runDir "incoming.txt"
+    [IO.File]::WriteAllText($script:liveQueuePath, "")
     Set-Content $queuePath $items -Encoding UTF8
 
     $script:logLines = 0
@@ -865,7 +906,7 @@ function Start-Download([string[]]$OverrideUrls=$null) {
     $args = @(
         "-NoProfile","-ExecutionPolicy","Bypass","-File",$engine,
         "-In",$queuePath,"-Out",$dest,"-Threads",[string]$threadCount,
-        "-NoProgress","-Log",$script:runLog,"-EventFile",$script:runEvents,"-ResultDir",$resultDir,
+        "-NoProgress","-Log",$script:runLog,"-EventFile",$script:runEvents,"-LiveQueueFile",$script:liveQueuePath,"-ResultDir",$resultDir,
         "-Quality",[string]$QualityCombo.SelectedItem,
         "-Container",[string]$ContainerCombo.SelectedItem,
         "-VideoCodec",[string]$CodecCombo.SelectedItem,
@@ -1433,6 +1474,26 @@ function Copy-SelectedPath {
     if ($item -and $item.Path) { [System.Windows.Clipboard]::SetText([string]$item.Path) }
 }
 
+$PasteClipboardButton.Add_Click({
+    try {
+        if (-not [System.Windows.Clipboard]::ContainsText()) {
+            $ClipboardHint.Text = "Clipboard contains no text."
+            return
+        }
+        $urls = @(Extract-Urls ([System.Windows.Clipboard]::GetText()))
+        if ($urls.Count -eq 0) {
+            $ClipboardHint.Text = "Clipboard contains no valid HTTP/HTTPS URLs."
+            return
+        }
+        Add-Urls $urls
+        $ClipboardHint.Text = if ($script:lastAddedCount -gt 0) {
+            "Added $($script:lastAddedCount) URL(s) from clipboard."
+        } else { "No new URLs added." }
+    } catch {
+        [System.Windows.MessageBox]::Show("Cannot read the clipboard: $($_.Exception.Message)", "Video Downloader") | Out-Null
+    }
+})
+
 $AddUrlButton.Add_Click({
     $values = @(Extract-Urls $UrlInput.Text)
     if ($values.Count -eq 0) {
@@ -1636,7 +1697,9 @@ $clipboardTimer.Add_Tick({
             $script:lastClipboardText = $text
             if ($WatchClipboardCheck.IsChecked) {
                 Add-Urls $values
-                $ClipboardHint.Text = "Auto-added $($values.Count) URL(s) from clipboard."
+                $ClipboardHint.Text = if ($script:lastAddedCount -gt 0) {
+                    "Auto-added $($script:lastAddedCount) URL(s) from clipboard."
+                } else { "No new URLs added from clipboard." }
             } else {
                 $ClipboardHint.Text = "URL detected in clipboard. Enable Watch clipboard to auto-add."
             }
