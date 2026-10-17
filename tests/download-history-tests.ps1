@@ -72,6 +72,32 @@ try {
     Assert (-not $empty.Cancelled -and $empty.Selected.Count -eq 0) "Empty selection must do nothing"
     Expect-Throw { Resolve-VdDuplicateDownloadPlan -Urls @($upper) -Known $known -Prompt { "Unknown" } } "Invalid decision must fail closed"
 
+    # Independent runspaces concurrently append to the same long-lived history.
+    $moduleFile = Join-Path (Split-Path -Parent $PSScriptRoot) "lib/VideoDownloader.DownloadHistory.psm1"
+    $jobs = @(
+        1..3 | ForEach-Object {
+            Start-ThreadJob -ArgumentList $moduleFile,$path,$_ -ScriptBlock {
+                param($module,$historyFile,$worker)
+                Import-Module $module -Force
+                foreach ($n in 1..8) {
+                    Add-VdSuccessfulDownloadUrl -Path $historyFile -Url "https://example.com/worker-$worker/item-$n"
+                }
+            }
+        }
+    )
+    try {
+        $finished = @($jobs | Wait-Job -Timeout 45)
+        Assert ($finished.Count -eq $jobs.Count) "Concurrent append timed out"
+        foreach ($job in $jobs) {
+            Assert ($job.State -eq "Completed") "Concurrent append job failed"
+            Receive-Job $job -ErrorAction Stop | Out-Null
+        }
+        $concurrentHistory = Read-VdDownloadHistory -Path $path
+        Assert ($concurrentHistory.Count -eq 26) "Concurrent append lost or corrupted successful URLs"
+    } finally {
+        foreach ($job in $jobs) { Remove-Job $job -Force -ErrorAction SilentlyContinue }
+    }
+
     $sizeBefore = (Get-Item $path).Length
     Expect-Throw { Add-VdSuccessfulDownloadUrl -Path $path -Url "file:///oops" } "History must reject non-HTTP entries"
     Assert ((Get-Item $path).Length -eq $sizeBefore) "Invalid entry must never alter history"
