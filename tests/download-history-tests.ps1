@@ -62,8 +62,8 @@ try {
     $script:calls = 0
     $cancelled = Resolve-VdDuplicateDownloadPlan -Urls $queue -Known $known -Prompt {
         param($url)
-        $calls++
-        if ($calls -eq 1) { "No" } else { "Cancel" }
+        $script:calls++
+        if ($script:calls -eq 1) { "No" } else { "Cancel" }
     }
     Assert ($cancelled.Cancelled -and $cancelled.Selected.Count -eq 0 -and $cancelled.Remove.Count -eq 0) "Cancel must roll back all earlier decisions"
     $none = Resolve-VdDuplicateDownloadPlan -Urls @($fresh) -Known $known -Prompt { throw "Non-matches must not prompt" }
