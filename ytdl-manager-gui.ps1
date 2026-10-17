@@ -14,7 +14,7 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
 $createdGuiMutex = $false
-$script:guiMutex = [Threading.Mutex]::new($true, "Local\\VideoDownloader.GuiSession", [ref]$createdGuiMutex)
+$script:guiMutex = [Threading.Mutex]::new($true, "Local\VideoDownloader.GuiSession", [ref]$createdGuiMutex)
 if (-not $createdGuiMutex) {
     [System.Windows.MessageBox]::Show("Video Downloader is already running. Open it from the tray.", "Video Downloader") | Out-Null
     $script:guiMutex.Dispose()
@@ -1595,7 +1595,9 @@ $window.Add_Closing({
     Clean-Temp
 })
 
+$script:restoringSession = $true
 Reindex-Queue
+$script:restoringSession = $false
 Restore-PreviousSession
 Refresh-Dependencies
 Handle-StartupArgs
