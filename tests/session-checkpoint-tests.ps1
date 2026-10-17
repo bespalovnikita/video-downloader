@@ -82,6 +82,11 @@ try {
     Assert-Vd (-not (Test-VdSessionHasPending -Queue @())) "Empty queue should not trigger restore"
     Assert-Vd (-not (Test-VdSessionEngineAlive -Engine $null)) "Null worker must not be treated as running"
     Assert-Vd (-not (Test-VdSessionEngineAlive -Engine @{ Pid=$PID; StartedUtc="2000-01-01T00:00:00Z" })) "PID reuse must not produce false running worker"
+    if ($IsWindows) {
+        $selfProcess = Get-Process -Id $PID
+        $selfEngine = @{ Pid=$PID; StartedUtc=$selfProcess.StartTime.ToUniversalTime().ToString("o") }
+        Assert-Vd (Test-VdSessionEngineAlive -Engine $selfEngine) "Running pwsh process with matching creation timestamp must be detected"
+    }
 
     [IO.File]::WriteAllText($path,'{"Version":999,"Queue":[],"Settings":{}}')
     Assert-Throws { Read-VdSessionCheckpoint -Path $path | Out-Null } "Unsupported version must fail"
