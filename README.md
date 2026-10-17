@@ -22,6 +22,7 @@ Windows GUI и CLI-движок поверх **yt-dlp** для пакетной 
 | Preview prefetch | metadata и thumbnail готовятся отдельным background worker сразу после добавления URL |
 | Preview cache | RAM + %LOCALAPPDATA%\VideoDownloader\preview-cache, TTL **72 часа** |
 | UX | dark WPF UI, tray, notifications, session stats, actions для готовых файлов |
+| Recovery | атомарный session checkpoint, восстановление незавершённой очереди и параметров с подтверждением |
 | Dependencies | проверка yt-dlp / FFmpeg / ffprobe, update yt-dlp, install FFmpeg |
 | Integration | user-level protocol videodownloader:// |
 
@@ -205,7 +206,7 @@ CI на PR и push в main выполняет:
 - FFmpeg не bundled по умолчанию;
 - FFmpeg installer скачивает архив с gyan.dev без собственной checksum/signature verification;
 - single-instance/IPC пока нет, поэтому custom protocol может открыть второй экземпляр;
-- settings и пользовательские presets не сохраняются;
+- пользовательские presets пока не сохраняются; настройки активной очереди сохраняются в session checkpoint;
 - CLI использует входной .txt как рабочую очередь и удаляет из него завершённые URL;
 - success/error txt относятся к текущему запуску, а не являются вечной историей.
 
