@@ -52,7 +52,9 @@ try {
         }
         $values = @(Read-VdLiveQueueUrls -Path $path)
         Assert ($values.Count -eq 48) "Concurrent appended URLs must never be lost or torn"
-        Assert ((@($values | Sort-Object -Unique).Count) -eq 48) "Concurrent writes must not duplicate URL content"
+        $uniqueUrls = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+        foreach ($value in $values) { [void]$uniqueUrls.Add($value) }
+        Assert ($uniqueUrls.Count -eq 48) "Concurrent writes must not duplicate URL content"
     } finally {
         foreach ($j in $jobs) { Remove-Job $j -Force -ErrorAction SilentlyContinue }
     }
