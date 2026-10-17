@@ -293,9 +293,14 @@ FriendlyError
 Height
 Path
 FileSize
+TransferredBytes
 ~~~
 
 Progress формируется из machine-readable yt-dlp progress-template, а не из regex по обычной строке [download].
+
+Engine включает `--progress` явно, независимо от quiet-режима `--print`. Progress events содержат `DownloadedBytes`, `TotalBytes` текущего media-компонента и накопленный `TransferredBytes` URL; отдельные streams учитываются независимо. Result повторяет итоговый `TransferredBytes`, а `FileSize` описывает размер готового файла. `-NoProgress` выключает только PowerShell progress bars и не выключает machine-readable events. GUI не прибавляет `FileSize` к уже учтённым progress-байтам.
+
+`-SubtitleLangs` применяется также при одном `-WriteAutoSubtitles`, без обязательного `-WriteSubtitles`/`-EmbedSubtitles`.
 
 ## Log
 

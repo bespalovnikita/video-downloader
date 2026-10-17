@@ -23,7 +23,7 @@ Windows GUI и CLI-движок поверх **yt-dlp** для пакетной 
 | Preview cache | RAM + %LOCALAPPDATA%\VideoDownloader\preview-cache, TTL **72 часа** |
 | UX | dark WPF UI, tray, notifications, session stats, actions для готовых файлов |
 | Recovery | атомарный session checkpoint, восстановление незавершённой очереди и параметров с подтверждением |
-| Download history | сохраняет все успешные URL из CLI/GUI между сессиями, перед повторной загрузкой спрашивает Yes/No/Yes to all/No to all |
+| Download history | сохраняет URL и время каждого успеха; перед повтором показывает дату последнего скачивания и Yes/No/Yes to all/No to all |
 | Dependencies | проверка yt-dlp / FFmpeg / ffprobe, update yt-dlp, install FFmpeg |
 | Integration | user-level protocol videodownloader:// |
 
@@ -128,6 +128,8 @@ Engine использует:
 
 Парсер находится в <code>lib/VideoDownloader.Core.psm1</code>. GUI получает JSONL events и синхронизирует Queue/Downloads.
 
+В обеих таблицах для каждого URL видны progress bar, процент, скорость, объём текущего media-компонента и ETA. Downloads сохраняет отдельную строку для каждого URL, даже при повторном использовании worker slot. В Session постоянно обновляются суммарная скорость и накопленный объём по progress-счётчикам; размер готового файла второй раз не прибавляется. При разных video/audio streams учитываются оба компонента. Процент может начаться заново при переходе от видео к аудио или при retry.
+
 ## Retry и fallback
 
 Для transient/network ошибок engine делает внешний retry с exponential backoff. По умолчанию:
@@ -209,7 +211,7 @@ CI на PR и push в main выполняет:
 - PowerShell 7 пока обязателен;
 - FFmpeg не bundled по умолчанию;
 - FFmpeg installer скачивает архив с gyan.dev без собственной checksum/signature verification;
-- single-instance/IPC пока нет, поэтому custom protocol может открыть второй экземпляр;
+- Windows GUI работает в одном экземпляре; повторный запуск передаёт URL/списки в открытое окно через user-only named pipe;
 - пользовательские presets пока не сохраняются; настройки активной очереди сохраняются в session checkpoint;
 - CLI использует входной .txt как рабочую очередь и удаляет из него завершённые URL;
 - долговременная история успешных URL хранится отдельно: `%LOCALAPPDATA%\\VideoDownloader\\successful-downloads.jsonl`; при наличии предыдущей загрузки GUI показывает диалог выбора перед Start/Retry (в CLI вопросов нет);

@@ -30,6 +30,8 @@ Structured parser находится в <code>lib/VideoDownloader.Core.psm1</cod
 
 Human-readable stdout допустимо анализировать только для вспомогательных событий вроде merge/error diagnostics.
 
+`--progress` обязателен вместе с `--print`. EventFile читается по завершённым строкам с byte cursor; недописанный UTF-8/JSONL хвост нельзя пропускать. UI показывает progress/скорость/объём/ETA в обеих таблицах. Result не должен повторно прибавлять размер файла к уже учтённому session transfer volume. Все конкретные media paths проверяй через `-LiteralPath`.
+
 ### 2. Preview prefetch-ится заранее
 
 URL должен попадать в preview-prefetch queue сразу после добавления в Queue.
@@ -95,6 +97,7 @@ Fetch/cache логика находится в <code>lib/VideoDownloader.Preview
 ## Global successful-download history
 
 - Все успешные URL из Windows GUI и CLI engine записываются append-only в `%LOCALAPPDATA%\\VideoDownloader\\successful-downloads.jsonl`.
+- `CompletedAtUtc` хранит время успеха; в диалог повтора передаётся последняя дата, а не дата импорта. Legacy-запись без времени остаётся с неизвестной датой.
 - История независима от session checkpoint и удаления Queue: **никогда не очищай её** при завершении сеанса.
 - Сравнение URL точное (ordinal), без сомнительной нормализации параметров.
 - Перед **каждым** download start/explicit retry проверяй кандидатов в истории и применяй Yes/No/YesAll/NoAll. No удаляет соответствующий URL из Queue. Cancel/X не запускает процесс и не меняет очередь.
@@ -179,6 +182,8 @@ pwsh -STA -File .\tests\tray-lifecycle-tests.ps1
 pwsh -File .\tests\session-checkpoint-tests.ps1
 pwsh -File .\tests\download-history-tests.ps1
 pwsh -File .\tests\live-queue-tests.ps1
+pwsh -STA -File .\tests\windows-regression-tests.ps1
+pwsh -File .\tests\engine-integration-tests.ps1
 ~~~
 
 Если менялась упаковка:
