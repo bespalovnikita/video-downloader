@@ -450,8 +450,15 @@ function Add-Urls([string[]]$Urls) {
             if ($plan.Cancelled) { return }
             $toAdd = @($plan.Selected)
             if ($toAdd.Count -eq 0) { return }
-            # Only the dedicated append-only ingress is written; never edit engine queue.txt.
-            Add-VdLiveQueueUrls -Path $script:liveQueuePath -Urls $toAdd
+            # The dialog is modal but dispatcher timers still run; the engine
+            # can finish during user confirmation. In that case retain URLs as
+            # Queued for the next Start rather than writing to a deleted file.
+            $running = $script:proc -and -not $script:proc.HasExited -and
+                -not [string]::IsNullOrWhiteSpace($script:liveQueuePath)
+            if ($running) {
+                # Only the dedicated ingress is written; never edit engine queue.txt.
+                Add-VdLiveQueueUrls -Path $script:liveQueuePath -Urls $toAdd
+            }
         } catch {
             [System.Windows.MessageBox]::Show(
                 "Could not add URLs to the active download. Queue was not changed: " + $_.Exception.Message,
