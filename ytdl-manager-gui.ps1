@@ -29,13 +29,15 @@ $engine = Join-Path $root "ytdl-manager-v8.ps1"
 $ytDlp = Join-Path $root "yt-dlp.exe"
 $coreModule = Join-Path $root "lib\VideoDownloader.Core.psm1"
 $previewCacheModule = Join-Path $root "lib\VideoDownloader.PreviewCache.psm1"
+$lifecycleModule = Join-Path $root "lib\VideoDownloader.WindowLifecycle.psm1"
 $xamlPath = Join-Path $root "ui\MainWindow.xaml"
 
-foreach ($required in @($engine,$ytDlp,$coreModule,$previewCacheModule,$xamlPath)) {
+foreach ($required in @($engine,$ytDlp,$coreModule,$previewCacheModule,$lifecycleModule,$xamlPath)) {
     if (-not (Test-Path $required)) { throw "Missing required file: $required" }
 }
 Import-Module $coreModule -Force
 Import-Module $previewCacheModule -Force
+Import-Module $lifecycleModule -Force
 
 function Remove-StaleGuiTempDirs {
     $cutoff = (Get-Date).AddHours(-24)
@@ -1379,4 +1381,4 @@ Refresh-Dependencies
 Handle-StartupArgs
 $timer.Start()
 $clipboardTimer.Start()
-[void]$window.ShowDialog()
+Start-VdGuiMessageLoop -Window $window

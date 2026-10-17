@@ -28,6 +28,11 @@ jobs:
         shell: pwsh
         run: ./tests/smoke.ps1
 
+      - name: Tray lifecycle regression tests
+        shell: pwsh
+        run: pwsh -NoProfile -STA -File ./tests/tray-lifecycle-tests.ps1
+        timeout-minutes: 2
+
       - name: Build portable EXE
         shell: pwsh
         run: ./build-exe.ps1
