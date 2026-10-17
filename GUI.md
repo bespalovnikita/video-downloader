@@ -285,7 +285,7 @@ Single-instance IPC пока нет, поэтому protocol handler может 
 
 ## Tray и notifications
 
-При minimize окно скрывается в tray.
+При minimize окно скрывается в tray, но **приложение продолжает работать**: фоновые загрузки, preview prefetch и уведомления не останавливаются. Окно можно вернуть через двойной клик по значку или пункт Open; только Exit из меню трея (либо обычное закрытие окна) завершает приложение.
 
 Tray menu:
 
@@ -324,6 +324,7 @@ Tray menu:
 ~~~powershell
 pwsh -File .\tests\core-tests.ps1
 pwsh -File .\tests\smoke.ps1
+pwsh -STA -File .\tests\tray-lifecycle-tests.ps1
 pwsh -File .\build-exe.ps1
 ~~~
 
