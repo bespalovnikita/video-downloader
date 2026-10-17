@@ -5,11 +5,12 @@ $gui = Join-Path $root "ytdl-manager-gui.ps1"
 $engine = Join-Path $root "ytdl-manager-v8.ps1"
 $core = Join-Path $root "lib\VideoDownloader.Core.psm1"
 $previewCache = Join-Path $root "lib\VideoDownloader.PreviewCache.psm1"
+$lifecycle = Join-Path $root "lib\VideoDownloader.WindowLifecycle.psm1"
 $xaml = Join-Path $root "ui\MainWindow.xaml"
 $icon = Join-Path $root "assets\app.ico"
 $launcher = Join-Path $root "launcher\VideoDownloader.csproj"
 
-foreach ($file in @($gui,$engine,$core,$previewCache)) {
+foreach ($file in @($gui,$engine,$core,$previewCache,$lifecycle)) {
     $tokens = $null
     $errors = $null
     [void][System.Management.Automation.Language.Parser]::ParseFile($file,[ref]$tokens,[ref]$errors)
@@ -35,6 +36,7 @@ $xamlText = Get-Content $xaml -Raw
 
 $guiMarkers = @(
     "PresentationFramework",
+    'Start-VdGuiMessageLoop -Window $window',
     "ObservableCollection",
     "DoDragDrop",
     "Suspend-ProcessTree",
