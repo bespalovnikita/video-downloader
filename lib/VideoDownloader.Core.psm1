@@ -55,6 +55,7 @@ function Parse-VdProgressLine {
         ETA = $parts[3].Trim()
         DownloadedBytes = $downloaded
         TotalBytes = $total
+        StreamId = if ($parts.Count -gt 6) { $parts[6] } else { "default" }
     }
 }
 
@@ -65,11 +66,11 @@ function Get-FriendlyDownloadError {
     $e = $Text.ToLowerInvariant()
 
     if ($e -match 'private|sign in|login|cookies|authentication') { return "Нужна авторизация / cookies" }
-    if ($e -match 'not available|unavailable|removed|deleted|does not exist') { return "Видео недоступно" }
     if ($e -match 'geo|country|region|not available in your') { return "Региональное ограничение" }
+    if ($e -match 'requested format|format is not available') { return "Формат недоступен" }
+    if ($e -match 'not available|unavailable|removed|deleted|does not exist') { return "Видео недоступно" }
     if ($e -match '429|too many requests|rate.?limit') { return "Слишком много запросов" }
     if ($e -match 'timeout|timed out|network|connection|dns|unable to download|temporary failure|reset by peer') { return "Ошибка сети" }
-    if ($e -match 'requested format|format is not available') { return "Формат недоступен" }
     if ($e -match 'ffmpeg|ffprobe') { return "Ошибка FFmpeg" }
     return "Ошибка загрузки"
 }
@@ -79,6 +80,8 @@ function Test-TransientDownloadError {
 
     if ([string]::IsNullOrWhiteSpace($Text)) { return $false }
     $e = $Text.ToLowerInvariant()
+
+    if ($e -match 'http error (400|401|403|404|405|410|451)\b|private video|sign in|login required|video unavailable|video has been removed|requested format is not available') { return $false }
 
     return [bool]($e -match (
         'timeout|timed out|temporary failure|connection reset|connection aborted|' +
@@ -101,4 +104,36 @@ function Get-VideoCodecSelector {
     }
 }
 
-Export-ModuleMember -Function Convert-SpeedTextToBytes,Parse-VdProgressLine,Get-FriendlyDownloadError,Test-TransientDownloadError,Get-VideoCodecSelector
+function Read-VdEventLines {
+    param([string]$Path,[hashtable]$Cursor)
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return }
+    $stream = [IO.FileStream]::new($Path,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::ReadWrite)
+    try {
+        if ($stream.Length -lt [long]$Cursor.Offset) { $Cursor.Offset = 0L }
+        [void]$stream.Seek([long]$Cursor.Offset,[IO.SeekOrigin]::Begin)
+        $buffer = [IO.MemoryStream]::new()
+        try {
+            $stream.CopyTo($buffer)
+            $bytes = $buffer.ToArray()
+            $last = [Array]::LastIndexOf($bytes,[byte]10)
+            if ($last -lt 0) { return }
+            $text = [Text.Encoding]::UTF8.GetString($bytes,0,$last+1).TrimStart([char]0xFEFF)
+            $Cursor.Offset = [long]$Cursor.Offset + $last + 1
+            foreach ($line in $text.Split("`n")) { if ($line.Trim()) { $line.TrimEnd("`r") } }
+        } finally { $buffer.Dispose() }
+    } finally { $stream.Dispose() }
+}
+
+function Add-VdTransferSample {
+    param([hashtable]$State,[string]$StreamId,[long]$DownloadedBytes)
+    if (-not $State.ContainsKey('Streams')) { $State.Streams = @{}; $State.Bytes = 0L }
+    $previous = if ($State.Streams.ContainsKey($StreamId)) { [long]$State.Streams[$StreamId] } else { 0L }
+    $current = [Math]::Max(0L,$DownloadedBytes)
+    # A counter reset denotes a new transfer/retry; repeated final samples add nothing.
+    $delta = if ($current -lt $previous) { $current } else { $current-$previous }
+    $State.Bytes += $delta
+    $State.Streams[$StreamId] = $current
+    return [long]$State.Bytes
+}
+
+Export-ModuleMember -Function Convert-SpeedTextToBytes,Parse-VdProgressLine,Get-FriendlyDownloadError,Test-TransientDownloadError,Get-VideoCodecSelector,Read-VdEventLines,Add-VdTransferSample

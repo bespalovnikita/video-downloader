@@ -9,12 +9,13 @@ $lifecycle = Join-Path $root "lib\VideoDownloader.WindowLifecycle.psm1"
 $sessionModule = Join-Path $root "lib\VideoDownloader.Session.psm1"
 $historyModule = Join-Path $root "lib\VideoDownloader.DownloadHistory.psm1"
 $liveQueueModule = Join-Path $root "lib\VideoDownloader.LiveQueue.psm1"
+$ipcModule = Join-Path $root "lib\VideoDownloader.Ipc.psm1"
 $duplicateDialogXaml = Join-Path $root "ui\DuplicateDownloadDialog.xaml"
 $xaml = Join-Path $root "ui\MainWindow.xaml"
 $icon = Join-Path $root "assets\app.ico"
 $launcher = Join-Path $root "launcher\VideoDownloader.csproj"
 
-foreach ($file in @($gui,$engine,$core,$previewCache,$lifecycle,$sessionModule,$historyModule,$liveQueueModule)) {
+foreach ($file in @($gui,$engine,$core,$previewCache,$lifecycle,$sessionModule,$historyModule,$liveQueueModule,$ipcModule)) {
     $tokens = $null
     $errors = $null
     [void][System.Management.Automation.Language.Parser]::ParseFile($file,[ref]$tokens,[ref]$errors)

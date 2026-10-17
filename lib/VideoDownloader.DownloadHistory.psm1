@@ -27,8 +27,9 @@ function Invoke-VdHistoryLocked {
 }
 
 function Read-VdDownloadHistory {
-    param([Parameter(Mandatory)][string]$Path)
+    param([Parameter(Mandatory)][string]$Path,[switch]$IncludeTimestamps)
     $known = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    $records = [Collections.Generic.Dictionary[string,object]]::new([StringComparer]::Ordinal)
     Invoke-VdHistoryLocked {
         if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return }
         $lineNumber = 0
@@ -46,6 +47,15 @@ function Read-VdDownloadHistory {
                         throw "Invalid success history record"
                     }
                     [void]$known.Add([string]$entry.Url)
+                    $completed = $null
+                    if ($entry.CompletedAtUtc) {
+                        $completed = [DateTimeOffset]$entry.CompletedAtUtc
+                    }
+                    $url = [string]$entry.Url
+                    if (-not $records.ContainsKey($url) -or ($completed -and
+                        (-not $records[$url].CompletedAtUtc -or $completed -gt $records[$url].CompletedAtUtc))) {
+                        $records[$url] = [pscustomobject]@{ Url=$url; CompletedAtUtc=$completed }
+                    }
                 } catch {
                     # Fail closed: never silently continue with an incomplete history.
                     throw "Success history is damaged at line $lineNumber in '$Path': $($_.Exception.Message)"
@@ -55,16 +65,17 @@ function Read-VdDownloadHistory {
             $reader.Dispose()
         }
     }
+    if ($IncludeTimestamps) { return ,$records }
     return ,$known
 }
 
 function Add-VdSuccessfulDownloadUrl {
-    param([Parameter(Mandatory)][string]$Path,[Parameter(Mandatory)][string]$Url)
+    param([Parameter(Mandatory)][string]$Path,[Parameter(Mandatory)][string]$Url,[switch]$UnknownCompletionTime)
     if (-not (Test-VdHistoryUrl $Url)) { throw "Invalid successful download URL." }
     $entry = ConvertTo-Json -InputObject ([ordered]@{
         Version = 1
         Url = $Url
-        CompletedAtUtc = [DateTime]::UtcNow.ToString("o")
+        CompletedAtUtc = if ($UnknownCompletionTime) { $null } else { [DateTime]::UtcNow.ToString("o") }
     }) -Compress
     Invoke-VdHistoryLocked {
         $dir = [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($Path))
@@ -83,7 +94,8 @@ function Resolve-VdDuplicateDownloadPlan {
     param(
         [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$Urls,
         [Parameter(Mandatory)][Collections.Generic.HashSet[string]]$Known,
-        [Parameter(Mandatory)][scriptblock]$Prompt
+        [Parameter(Mandatory)][scriptblock]$Prompt,
+        [Collections.Generic.Dictionary[string,object]]$LastDownloads
     )
     $selected = [Collections.Generic.List[string]]::new()
     $removed = [Collections.Generic.List[string]]::new()
@@ -96,7 +108,8 @@ function Resolve-VdDuplicateDownloadPlan {
             continue
         }
         $matchIndex++
-        $decision = if ($apply) { $apply } else { & $Prompt $url $matchIndex $matches.Count }
+        $completedAt = if ($LastDownloads -and $LastDownloads.ContainsKey($url)) { $LastDownloads[$url].CompletedAtUtc } else { $null }
+        $decision = if ($apply) { $apply } else { & $Prompt $url $matchIndex $matches.Count $completedAt }
         switch ([string]$decision) {
             "Yes" { [void]$selected.Add($url) }
             "No" { [void]$removed.Add($url) }

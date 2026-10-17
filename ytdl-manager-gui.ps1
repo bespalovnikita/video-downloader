@@ -5,6 +5,9 @@ param(
 )
 
 if (-not $IsWindows) { throw "Windows only." }
+$root = Split-Path -Parent $MyInvocation.MyCommand.Path
+Import-Module (Join-Path $root 'lib\VideoDownloader.Ipc.psm1') -Force
+$ipcName = Get-VdIpcName
 
 Add-Type -AssemblyName PresentationFramework
 Add-Type -AssemblyName PresentationCore
@@ -16,10 +19,16 @@ Add-Type -AssemblyName System.Drawing
 $createdGuiMutex = $false
 $script:guiMutex = [Threading.Mutex]::new($true, "Local\VideoDownloader.GuiSession", [ref]$createdGuiMutex)
 if (-not $createdGuiMutex) {
-    [System.Windows.MessageBox]::Show("Video Downloader is already running. Open it from the tray.", "Video Downloader") | Out-Null
+    try {
+        $message = ConvertTo-Json -InputObject @($StartupArgs) -Compress
+        [void][VideoDownloader.Ipc]::Send($ipcName,$message).GetAwaiter().GetResult()
+    } catch {
+        [System.Windows.MessageBox]::Show("Could not forward the link to the running app. Please try again: " + $_.Exception.Message, "Video Downloader") | Out-Null
+    }
     $script:guiMutex.Dispose()
     return
 }
+$script:ipcServer = [VideoDownloader.Ipc]::new($ipcName)
 
 Add-Type @"
 using System;
@@ -102,6 +111,7 @@ $script:runEvents = $null
 $script:liveQueuePath = $null
 $script:logLines = 0
 $script:eventLines = 0
+$script:eventCursor = @{ Offset=0L }
 $script:failedUrls = [Collections.Generic.List[string]]::new()
 $script:speeds = @{}
 $script:pausedPids = @()
@@ -125,6 +135,7 @@ $script:sessionStarted = $null
 $script:sessionSuccess = 0
 $script:sessionFailed = 0
 $script:sessionBytes = [int64]0
+$script:transferredByUrl = [Collections.Generic.Dictionary[string,long]]::new([StringComparer]::Ordinal)
 $script:sessionTotal = 0
 $script:lastFiles = @{}
 $script:exitFromTray = $false
@@ -184,7 +195,7 @@ function Import-CompletedUrlsToHistory([object[]]$Items) {
         foreach ($item in $Items) {
             $url = [string]$item.Url
             if ($item.Status -eq "Completed" -and (Is-ValidUrl $url) -and -not $known.Contains($url)) {
-                Add-VdSuccessfulDownloadUrl -Path $script:historyPath -Url $url
+                Add-VdSuccessfulDownloadUrl -Path $script:historyPath -Url $url -UnknownCompletionTime
                 [void]$known.Add($url)
             }
         }
@@ -193,7 +204,7 @@ function Import-CompletedUrlsToHistory([object[]]$Items) {
     }
 }
 
-function Show-DuplicateDownloadDialog([string]$Url,[int]$Index,[int]$Total) {
+function Show-DuplicateDownloadDialog([string]$Url,[int]$Index,[int]$Total,$CompletedAt) {
     [xml]$xaml = Get-Content -LiteralPath $duplicateDialogXaml -Raw -Encoding UTF8
     $reader = [System.Xml.XmlNodeReader]::new($xaml)
     $dialog = [System.Windows.Markup.XamlReader]::Load($reader)
@@ -201,6 +212,9 @@ function Show-DuplicateDownloadDialog([string]$Url,[int]$Index,[int]$Total) {
     $dialog.Tag = "Cancel"
     $dialog.FindName("CounterLabel").Text = "Previously downloaded ($Index / $Total)"
     $dialog.FindName("DuplicateUrl").Text = $Url
+    $dialog.FindName("CompletedAtLabel").Text = if ($CompletedAt) {
+        "Last successful download: " + ([DateTimeOffset]$CompletedAt).ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss zzz")
+    } else { "Last successful download: time unavailable (legacy history)" }
     foreach ($name in @("YesButton","NoButton","YesAllButton","NoAllButton")) {
         $button = $dialog.FindName($name)
         $button.Tag = switch ($name) {
@@ -221,10 +235,12 @@ function Show-DuplicateDownloadDialog([string]$Url,[int]$Index,[int]$Total) {
 }
 
 function Confirm-DuplicateDownloads([string[]]$Urls) {
-    $known = Read-VdDownloadHistory -Path $script:historyPath
-    return Resolve-VdDuplicateDownloadPlan -Urls $Urls -Known $known -Prompt {
-        param($url,$index,$total)
-        Show-DuplicateDownloadDialog -Url $url -Index $index -Total $total
+    $records = Read-VdDownloadHistory -Path $script:historyPath -IncludeTimestamps
+    $known = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($url in $records.Keys) { [void]$known.Add($url) }
+    return Resolve-VdDuplicateDownloadPlan -Urls $Urls -Known $known -LastDownloads $records -Prompt {
+        param($url,$index,$total,$completedAt)
+        Show-DuplicateDownloadDialog -Url $url -Index $index -Total $total -CompletedAt $completedAt
     }
 }
 
@@ -400,6 +416,10 @@ function Restore-PreviousSession {
 }
 
 function Reindex-Queue {
+    $script:failedUrls.Clear()
+    foreach ($item in $script:queue) {
+        if ($item.Status -eq "Failed") { [void]$script:failedUrls.Add([string]$item.Url) }
+    }
     for ($i=0; $i -lt $script:queue.Count; $i++) {
         $script:queue[$i].Order = $i + 1
     }
@@ -475,6 +495,10 @@ function Add-Urls([string[]]$Urls) {
             State = "Queued"
             Status = "Queued"
             Path = ""
+            Progress = 0.0
+            Speed = ""
+            Downloaded = ""
+            ETA = ""
         })
         Queue-PreviewPrefetch -Url $u
     }
@@ -529,9 +553,11 @@ function Get-GridItemAtPoint($Grid,[System.Windows.Point]$Point) {
     return $null
 }
 
-function Find-Download([int]$Slot) {
+function Find-Download([int]$Slot,[string]$Url="") {
     foreach ($item in $script:downloads) {
-        if ($item.Slot -eq "T$Slot") { return $item }
+        if ($Url) {
+            if ([string]::Equals([string]$item.Url,$Url,[StringComparison]::Ordinal)) { return $item }
+        } elseif ($item.Slot -eq "T$Slot") { return $item }
     }
     return $null
 }
@@ -546,7 +572,7 @@ function Set-Download {
         [string]$RawError=""
     )
 
-    $item = Find-Download $Slot
+    $item = Find-Download -Slot $Slot -Url $Url
     if (-not $item) {
         $item = [pscustomobject]@{
             Slot = "T$Slot"
@@ -555,10 +581,15 @@ function Set-Download {
             Url = $Url
             Path = $Path
             RawError = $RawError
+            Progress = 0.0
+            Speed = ""
+            Downloaded = ""
+            ETA = ""
         }
         $script:downloads.Add($item)
     } else {
         $item.State = $State
+        $item.Slot = "T$Slot"
         if ($Title) { $item.Title = $Title }
         if ($Url) { $item.Url = $Url }
         if ($Path) { $item.Path = $Path }
@@ -623,6 +654,7 @@ function Update-LiveStats {
         $sum += [double]$v
         if ([double]$v -gt 0) { $active++ }
     }
+    if ($script:isPaused) { $sum = 0; $active = 0 }
     $done = $script:sessionSuccess + $script:sessionFailed
     $HeaderStats.Text = "$active active · $(Format-Speed $sum) · $done/$($script:sessionTotal)"
 
@@ -630,8 +662,29 @@ function Update-LiveStats {
         $elapsed = (Get-Date) - $script:sessionStarted
         $avg = 0.0
         if ($elapsed.TotalSeconds -gt 0) { $avg = $script:sessionBytes / $elapsed.TotalSeconds }
-        $SessionStats.Text = "Session: $($script:sessionSuccess) ok · $($script:sessionFailed) failed · $(Format-Bytes $script:sessionBytes) · $($elapsed.ToString('hh\:mm\:ss')) · avg $(Format-Speed $avg)"
+        $SessionStats.Text = "Session: $($script:sessionSuccess) ok · $($script:sessionFailed) failed · Downloaded $(Format-Bytes $script:sessionBytes) · Speed $(Format-Speed $sum) · $($elapsed.ToString('hh\:mm\:ss')) · avg $(Format-Speed $avg)"
     }
+}
+
+function Update-TransferBytes([string]$Url,[long]$Bytes) {
+    $previous = if ($script:transferredByUrl.ContainsKey($Url)) { $script:transferredByUrl[$Url] } else { 0L }
+    if ($Bytes -gt $previous) {
+        $script:sessionBytes += $Bytes-$previous
+        $script:transferredByUrl[$Url] = $Bytes
+    }
+}
+
+function Set-RowProgress([string]$Url,[double]$Percent,[string]$Speed,[string]$Downloaded,[string]$ETA) {
+    $items = @((Find-QueueItem $Url),(Find-Download -Slot 0 -Url $Url))
+    foreach ($item in $items) {
+        if (-not $item) { continue }
+        $item.Progress = [Math]::Clamp($Percent,0,100)
+        $item.Speed = $Speed
+        if ($Downloaded) { $item.Downloaded = $Downloaded }
+        $item.ETA = $ETA
+    }
+    $QueueGrid.Items.Refresh()
+    $DownloadGrid.Items.Refresh()
 }
 
 function Tail-Log {
@@ -643,9 +696,9 @@ function Tail-Log {
 
 function Tail-Events {
     if (-not $script:runEvents -or -not (Test-Path $script:runEvents)) { return }
-    try { $lines = @(Get-Content $script:runEvents -Encoding UTF8) } catch { return }
+    try { $lines = @(Read-VdEventLines -Path $script:runEvents -Cursor $script:eventCursor) } catch { return }
 
-    for ($i=$script:eventLines; $i -lt $lines.Count; $i++) {
+    for ($i=0; $i -lt $lines.Count; $i++) {
         if ([string]::IsNullOrWhiteSpace($lines[$i])) { continue }
         try { $event = $lines[$i] | ConvertFrom-Json -ErrorAction Stop } catch { continue }
 
@@ -654,7 +707,10 @@ function Tail-Events {
             switch ($event.EventType) {
                 "Started" {
                     $u = [string]$event.Url
+                    $script:lastFiles.Remove($slot)
+                    $script:speeds[$slot] = 0
                     Set-Download -Slot $slot -State "Starting" -Url $u
+                    Set-RowProgress -Url $u -Percent 0 -Speed "" -Downloaded "0 B" -ETA ""
                     Set-QueueState $u "Starting" "Running"
                 }
                 "Title" {
@@ -663,27 +719,32 @@ function Tail-Events {
                     Set-QueueState $u "Preparing"
                 }
                 "Progress" {
-                    $parts = @("{0:N1}%" -f [double]$event.Percent)
-                    if ($event.Speed) { $parts += [string]$event.Speed }
-                    if ($event.ETA) { $parts += ("ETA " + [string]$event.ETA) }
                     $u = [string]$event.Url
-                    Set-Download -Slot $slot -State ($parts -join " · ") -Url $u
+                    Set-Download -Slot $slot -State "Downloading" -Url $u
                     Set-QueueState $u ("{0:N1}%" -f [double]$event.Percent)
                     $script:speeds[$slot] = Convert-SpeedTextToBytes ([string]$event.Speed)
+                    Update-TransferBytes -Url $u -Bytes ([long]$event.TransferredBytes)
+                    Set-RowProgress -Url $u -Percent ([double]$event.Percent) -Speed ([string]$event.Speed) -Downloaded ("$(Format-Bytes ([long]$event.DownloadedBytes)) / $(Format-Bytes ([long]$event.TotalBytes))") -ETA ([string]$event.ETA)
                 }
                 "Merge" {
                     $u = [string]$event.Url
+                    $script:speeds[$slot] = 0
+                    Set-RowProgress -Url $u -Percent 100 -Speed "" -Downloaded "" -ETA ""
                     Set-Download -Slot $slot -State "Merging..." -Url $u
                     Set-QueueState $u "Merging"
                 }
                 "Retry" {
                     $u = [string]$event.Url
+                    $script:speeds[$slot] = 0
+                    Set-RowProgress -Url $u -Percent 0 -Speed "" -Downloaded "" -ETA ""
                     Set-Download -Slot $slot -State "Retrying..." -Url $u
                     Set-QueueState $u "Retrying"
                 }
                 "File" {
                     $path = [string]$event.Text
                     $u = [string]$event.Url
+                    $script:speeds[$slot] = 0
+                    Set-RowProgress -Url $u -Percent 100 -Speed "" -Downloaded "" -ETA ""
                     $script:lastFiles[$slot] = $path
                     Set-Download -Slot $slot -State "Finalizing..." -Url $u -Path $path
                     Set-QueueState $u "Finalizing"
@@ -697,16 +758,17 @@ function Tail-Events {
         } elseif ($event.Kind -eq "Result") {
             $slot = [int]$event.Slot
             $script:speeds[$slot] = 0
+            Update-TransferBytes -Url ([string]$event.Url) -Bytes ([long]$event.TransferredBytes)
+            Set-RowProgress -Url ([string]$event.Url) -Percent $(if ($event.Success) {100} else {0}) -Speed "" -Downloaded "" -ETA ""
 
             if ([bool]$event.Success) {
                 $script:sessionSuccess++
                 $path = [string]$event.Path
                 if (-not $path -and $script:lastFiles.ContainsKey($slot)) { $path = [string]$script:lastFiles[$slot] }
                 $size = [int64]$event.FileSize
-                if ($size -le 0 -and $path -and (Test-Path $path -PathType Leaf)) {
-                    try { $size = (Get-Item $path).Length } catch {}
+                if ($size -le 0 -and $path -and (Test-Path -LiteralPath $path -PathType Leaf)) {
+                    try { $size = (Get-Item -LiteralPath $path).Length } catch {}
                 }
-                $script:sessionBytes += $size
                 $u = [string]$event.Url
                 Set-Download -Slot $slot -State "Done" -Url $u -Path $path
                 $completedItem = Find-QueueItem $u
@@ -730,7 +792,6 @@ function Tail-Events {
         }
     }
 
-    $script:eventLines = $lines.Count
     Update-LiveStats
 }
 
@@ -879,6 +940,7 @@ function Start-Download([string[]]$OverrideUrls=$null) {
 
     $script:logLines = 0
     $script:eventLines = 0
+    $script:eventCursor = @{ Offset=0L }
     $script:failedUrls.Clear()
     $script:speeds.Clear()
     $script:lastFiles.Clear()
@@ -893,6 +955,7 @@ function Start-Download([string[]]$OverrideUrls=$null) {
     $script:sessionSuccess = 0
     $script:sessionFailed = 0
     $script:sessionBytes = [int64]0
+    $script:transferredByUrl.Clear()
     $script:sessionTotal = $items.Count
     $OverallProgress.Value = 0
     foreach ($u in $items) { Set-QueueState ([string]$u) "Starting" "Running" }
@@ -975,6 +1038,10 @@ function Finish-Download {
     try { $code = $script:proc.ExitCode } catch {}
     try { $script:proc.Dispose() } catch {}
     $script:proc = $null
+    $script:speeds.Clear()
+    foreach ($item in @($script:queue) + @($script:downloads)) { $item.Speed = ""; $item.ETA = "" }
+    $QueueGrid.Items.Refresh()
+    $DownloadGrid.Items.Refresh()
 
     Set-Running $false
     $PauseButton.Content = "Pause"
@@ -1363,8 +1430,8 @@ function Register-Protocol {
     }
 }
 
-function Handle-StartupArgs {
-    foreach ($arg in @($StartupArgs)) {
+function Handle-StartupArgs([string[]]$Arguments=$StartupArgs) {
+    foreach ($arg in @($Arguments)) {
         if ([string]::IsNullOrWhiteSpace($arg)) { continue }
 
         if ($arg.StartsWith("videodownloader://",[StringComparison]::OrdinalIgnoreCase)) {
@@ -1374,7 +1441,7 @@ function Handle-StartupArgs {
             continue
         }
 
-        if (Test-Path $arg -PathType Leaf) {
+        if (Test-Path -LiteralPath $arg -PathType Leaf) {
             Add-FileToQueue $arg
             continue
         }
@@ -1466,12 +1533,12 @@ $DownloadGrid.ContextMenu = $downloadMenu
 
 function Open-SelectedFile {
     $item = $DownloadGrid.SelectedItem
-    if ($item -and $item.Path -and (Test-Path $item.Path -PathType Leaf)) { Start-Process $item.Path }
+    if ($item -and $item.Path -and (Test-Path -LiteralPath $item.Path -PathType Leaf)) { Start-Process -FilePath $item.Path }
 }
 
 function Open-SelectedFolder {
     $item = $DownloadGrid.SelectedItem
-    if ($item -and $item.Path -and (Test-Path $item.Path -PathType Leaf)) {
+    if ($item -and $item.Path -and (Test-Path -LiteralPath $item.Path -PathType Leaf)) {
         Start-Process explorer.exe -ArgumentList @("/select," + [char]34 + $item.Path + [char]34)
     } elseif (Test-Path $OutputBox.Text) {
         Start-Process explorer.exe -ArgumentList @($OutputBox.Text)
@@ -1544,7 +1611,7 @@ $MoveDownButton.Add_Click({
 })
 
 $RetryFailedButton.Add_Click({
-    $items = @($script:failedUrls.ToArray())
+    $items = @($script:queue | Where-Object { $_.Status -eq "Failed" } | ForEach-Object { [string]$_.Url })
     if ($items.Count -gt 0) { Start-Download $items }
 })
 
@@ -1678,6 +1745,15 @@ $window.Add_StateChanged({ if ($window.WindowState -eq [System.Windows.WindowSta
 $timer = [System.Windows.Threading.DispatcherTimer]::new()
 $timer.Interval = [TimeSpan]::FromMilliseconds(350)
 $timer.Add_Tick({
+    while ($null -ne ($message = $script:ipcServer.Take())) {
+        try {
+            $arguments = @(ConvertFrom-Json -InputObject $message -ErrorAction Stop)
+            $window.Show()
+            $window.WindowState = [System.Windows.WindowState]::Normal
+            [void]$window.Activate()
+            Handle-StartupArgs -Arguments $arguments
+        } catch { Log-Line ("Could not add forwarded URLs: " + $_.Exception.Message) }
+    }
     Tail-Events
     Tail-Log
     Complete-PreviewPrefetch
@@ -1778,6 +1854,7 @@ $timer.Start()
 $clipboardTimer.Start()
 try { Start-VdGuiMessageLoop -Window $window }
 finally {
+    if ($script:ipcServer) { $script:ipcServer.Dispose() }
     if ($script:guiMutex) {
         try { $script:guiMutex.ReleaseMutex() } catch {}
         $script:guiMutex.Dispose()

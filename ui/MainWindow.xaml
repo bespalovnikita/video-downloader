@@ -297,6 +297,18 @@
         <Style x:Key="MutedText" TargetType="TextBlock">
             <Setter Property="Foreground" Value="{StaticResource MutedBrush}"/>
         </Style>
+        <DataTemplate x:Key="TransferDetails">
+            <StackPanel Margin="0,3,0,3">
+                <ProgressBar Height="4" Minimum="0" Maximum="100" Value="{Binding Progress}"
+                             Background="#303644" Foreground="#8997FF" BorderThickness="0"/>
+                <WrapPanel Margin="0,3,0,0">
+                    <TextBlock Text="{Binding Progress, StringFormat={}{0:F1}%}" Foreground="#EEF1F8" Margin="0,0,8,0"/>
+                    <TextBlock Text="{Binding Speed}" Foreground="#B8C1D4" Margin="0,0,8,0"/>
+                    <TextBlock Text="{Binding ETA}" Foreground="#B8C1D4" ToolTip="Time remaining"/>
+                </WrapPanel>
+                <TextBlock Text="{Binding Downloaded}" Foreground="#B8C1D4" FontSize="11"/>
+            </StackPanel>
+        </DataTemplate>
     </Window.Resources>
 
     <Grid Margin="18">
@@ -372,7 +384,16 @@
                     <DataGrid x:Name="QueueGrid" Grid.Row="3" AllowDrop="True">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="#" Binding="{Binding Order}" Width="38" ElementStyle="{StaticResource GridTextStyle}"/>
-                            <DataGridTextColumn Header="URL" Binding="{Binding Url}" Width="*" ElementStyle="{StaticResource GridTextStyle}"/>
+                            <DataGridTemplateColumn Header="URL / progress" Width="*" MinWidth="185">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <StackPanel Margin="4">
+                                            <TextBlock Text="{Binding Url}" ToolTip="{Binding Url}" TextTrimming="CharacterEllipsis"/>
+                                            <ContentControl Content="{Binding}" ContentTemplate="{StaticResource TransferDetails}"/>
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
                             <DataGridTextColumn Header="State" Binding="{Binding State}" Width="90" ElementStyle="{StaticResource GridTextStyle}"/>
                         </DataGrid.Columns>
                     </DataGrid>
@@ -398,8 +419,17 @@
                     <DataGrid x:Name="DownloadGrid" Grid.Row="1" SelectionMode="Single">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="Slot" Binding="{Binding Slot}" Width="52" ElementStyle="{StaticResource GridTextStyle}"/>
-                            <DataGridTextColumn Header="State" Binding="{Binding State}" Width="185" ElementStyle="{StaticResource GridTextStyle}"/>
-                            <DataGridTextColumn Header="Video" Binding="{Binding Title}" Width="*" ElementStyle="{StaticResource GridTextStyle}"/>
+                            <DataGridTextColumn Header="State" Binding="{Binding State}" Width="110" ElementStyle="{StaticResource GridTextStyle}"/>
+                            <DataGridTemplateColumn Header="Video / progress" Width="*" MinWidth="220">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <StackPanel Margin="4">
+                                            <TextBlock Text="{Binding Title}" ToolTip="{Binding Url}" TextTrimming="CharacterEllipsis"/>
+                                            <ContentControl Content="{Binding}" ContentTemplate="{StaticResource TransferDetails}"/>
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
                         </DataGrid.Columns>
                     </DataGrid>
 
