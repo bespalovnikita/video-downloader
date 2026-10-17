@@ -81,12 +81,12 @@ function Get-VdRestoredQueue {
 }
 
 function Get-VdResumeUrls {
-    param([Parameter(Mandatory)][object[]]$Queue)
+    param([Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Queue)
     return @($Queue | Where-Object { $_.Status -ne "Completed" } | ForEach-Object { [string]$_.Url })
 }
 
 function Test-VdSessionHasPending {
-    param([Parameter(Mandatory)][object[]]$Queue)
+    param([Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Queue)
     return @($Queue | Where-Object { $_.Status -ne "Completed" }).Count -gt 0
 }
 
