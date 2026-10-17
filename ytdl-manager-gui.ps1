@@ -1582,6 +1582,9 @@ $window.Add_Closing({
             return
         }
     }
+    # The engine may have finished since the last timer tick; collect its final
+    # Result events before saving the last checkpoint and deleting temp files.
+    if ($script:proc) { Tail-Events }
     if ($script:proc -and -not $script:proc.HasExited) {
         $answer = [System.Windows.MessageBox]::Show("A download is running. Stop it and exit?","Video Downloader",[System.Windows.MessageBoxButton]::YesNo,[System.Windows.MessageBoxImage]::Warning)
         if ($answer -ne [System.Windows.MessageBoxResult]::Yes) {
