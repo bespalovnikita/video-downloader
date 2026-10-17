@@ -297,15 +297,27 @@ function Restore-PreviousSession {
     }
     if (-not $checkpoint) { return }
     $items = @(Get-VdRestoredQueue -Session $checkpoint)
-    if (-not (Test-VdSessionHasPending -Queue $items)) { return }
+    if (-not (Test-VdSessionHasPending -Queue $items)) {
+        # A detached worker also needs to be guarded when there is no pending queue.
+        if (Test-VdSessionEngineAlive -Engine $checkpoint.Engine) {
+            $script:recoveredEngine = $checkpoint.Engine
+            Log-Line "An earlier downloader is still running. Start is blocked until it finishes."
+        }
+        return
+    }
     $answer = [System.Windows.MessageBox]::Show(
         "An unfinished session with $($items.Count) URL(s) was found. Restore its queue, statuses and download settings? Downloads will NOT start automatically.",
         "Video Downloader", [System.Windows.MessageBoxButton]::YesNo, [System.Windows.MessageBoxImage]::Question)
     if ($answer -ne [System.Windows.MessageBoxResult]::Yes) {
+        if (Test-VdSessionEngineAlive -Engine $checkpoint.Engine) {
+            $script:recoveredEngine = $checkpoint.Engine
+            Log-Line "Queue discarded; previous downloader is still running. New downloads are blocked until it finishes."
+        }
         try { Remove-Item -LiteralPath $script:sessionPath -Force -ErrorAction Stop } catch {
             $script:checkpointReadOnly = $true
             [System.Windows.MessageBox]::Show("Could not discard previous session. Automatic checkpoint saving is disabled to protect it: $($_.Exception.Message)", "Video Downloader") | Out-Null
         }
+        Save-SessionCheckpoint
         return
     }
     $script:restoringSession = $true
@@ -459,14 +471,14 @@ function Set-Download {
 
 function Update-StartState {
     $running = $script:proc -and -not $script:proc.HasExited
-    $StartButton.IsEnabled = (-not $running -and (Test-VdSessionHasPending -Queue @($script:queue)))
+    $StartButton.IsEnabled = (-not $running -and (Test-VdSessionHasPending -Queue @($script:queue | ForEach-Object { $_ })))
     $StopButton.IsEnabled = [bool]$running
     $PauseButton.IsEnabled = [bool]$running
     $RetryFailedButton.IsEnabled = (-not $running -and $script:failedUrls.Count -gt 0)
 }
 
 function Set-Running([bool]$Running) {
-    $StartButton.IsEnabled = (-not $Running -and (Test-VdSessionHasPending -Queue @($script:queue)))
+    $StartButton.IsEnabled = (-not $Running -and (Test-VdSessionHasPending -Queue @($script:queue | ForEach-Object { $_ })))
     $StopButton.IsEnabled = $Running
     $PauseButton.IsEnabled = $Running
 
@@ -700,7 +712,7 @@ function Start-Download([string[]]$OverrideUrls=$null) {
         return
     }
     $items = $OverrideUrls
-    if ($null -eq $items) { $items = @(Get-VdResumeUrls -Queue @($script:queue)) }
+    if ($null -eq $items) { $items = @(Get-VdResumeUrls -Queue @($script:queue | ForEach-Object { $_ })) }
     if ($items.Count -eq 0) { return }
 
     foreach ($u in $items) { Queue-PreviewPrefetch -Url ([string]$u) }
