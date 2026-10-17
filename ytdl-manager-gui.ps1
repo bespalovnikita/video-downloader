@@ -179,7 +179,7 @@ function Import-CompletedUrlsToHistory([object[]]$Items) {
         $known = Read-VdDownloadHistory -Path $script:historyPath
         foreach ($item in $Items) {
             $url = [string]$item.Url
-            if ($item.Status -eq "Completed" -and (Test-VdHistoryUrl $url) -and -not $known.Contains($url)) {
+            if ($item.Status -eq "Completed" -and (Is-ValidUrl $url) -and -not $known.Contains($url)) {
                 Add-VdSuccessfulDownloadUrl -Path $script:historyPath -Url $url
                 [void]$known.Add($url)
             }
