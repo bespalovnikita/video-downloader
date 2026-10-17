@@ -111,7 +111,7 @@ function Merge-VdSessionResultEvents {
     if ([string]::IsNullOrWhiteSpace($EventsPath) -or -not (Test-Path -LiteralPath $EventsPath -PathType Leaf)) {
         return $Session
     }
-    $byUrl = @{}
+    $byUrl = [Collections.Generic.Dictionary[string,object]]::new([StringComparer]::Ordinal)
     foreach ($item in $Session.Queue) { $byUrl[[string]$item.Url] = $item }
     # Read append-only JSONL events. An incomplete tail line must not destroy the session.
     foreach ($line in [IO.File]::ReadLines($EventsPath)) {
