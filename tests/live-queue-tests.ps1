@@ -30,7 +30,6 @@ try {
     Assert ((Get-Item -LiteralPath $path).Length -eq $oldSize) "Empty append must be a no-op"
 
     # Multiple independent runspaces simulate GUI writes while engine polls.
-    Import-Module ThreadJob
     $module = Join-Path (Split-Path -Parent $PSScriptRoot) "lib/VideoDownloader.LiveQueue.psm1"
     $jobs = @(
         1..3 | ForEach-Object {
