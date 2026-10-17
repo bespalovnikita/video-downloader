@@ -50,7 +50,6 @@ $guiMarkers = @(
     "Restore-PreviousSession",
     "Confirm-DuplicateDownloads",
     "Add-VdLiveQueueUrls",
-    "Read-VdLiveQueueUrls",
     '$script:liveQueuePath',
     '$script:sessionTotal += $toAdd.Count',
     '$PasteClipboardButton.Add_Click({',
