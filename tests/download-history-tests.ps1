@@ -30,27 +30,27 @@ try {
     Assert ((Get-Content $path).Count -eq 3) "History must append, not overwrite, successful attempts"
 
     $queue = @($fresh,$upper,$another,$lower)
-    $promptCount = 0
+    $script:promptCount = 0
     $plan = Resolve-VdDuplicateDownloadPlan -Urls $queue -Known $known -Prompt {
         param($url,$i,$n)
-        $promptCount++
-        Assert ($i -eq $promptCount -and $n -eq 2) "Prompt should receive correct duplicate index and total"
+        $script:promptCount++
+        Assert ($i -eq $script:promptCount -and $n -eq 2) "Prompt should receive correct duplicate index and total"
         if ($url -eq $upper) { return "Yes" }
         return "No"
     }
-    Assert (-not $plan.Cancelled -and $promptCount -eq 2) "Yes/No must prompt per matching URL"
+    Assert (-not $plan.Cancelled -and $script:promptCount -eq 2) "Yes/No must prompt per matching URL"
     Assert ($plan.Selected.Count -eq 3 -and $plan.Remove.Count -eq 1 -and $plan.Remove[0] -eq $another) "No must remove only the selected matching URL"
     Assert ($plan.Selected[0] -eq $fresh -and $plan.Selected[1] -eq $upper -and $plan.Selected[2] -eq $lower) "Yes must keep matched URL without dropping other items"
     Assert ($queue.Count -eq 4) "Planner must not mutate the input queue"
 
     foreach ($mode in @("YesAll","NoAll")) {
-        $calls = 0
+        $script:calls = 0
         $result = Resolve-VdDuplicateDownloadPlan -Urls $queue -Known $known -Prompt {
             param($url,$index,$total)
-            $calls++
+            $script:calls++
             return $mode
         }
-        Assert ($calls -eq 1) "$mode should prompt only once and apply to later matches"
+        Assert ($script:calls -eq 1) "$mode should prompt only once and apply to later matches"
         if ($mode -eq "YesAll") {
             Assert ($result.Selected.Count -eq 4 -and $result.Remove.Count -eq 0) "YesAll must retain every URL"
         } else {
@@ -59,7 +59,7 @@ try {
         }
     }
 
-    $calls = 0
+    $script:calls = 0
     $cancelled = Resolve-VdDuplicateDownloadPlan -Urls $queue -Known $known -Prompt {
         param($url)
         $calls++
