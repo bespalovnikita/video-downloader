@@ -129,6 +129,7 @@ $script:lastSessionCheck = [DateTime]::MinValue
 $script:activeEngine = $null
 $script:recoveredEngine = $null
 $script:lastSessionError = ""
+$script:checkpointReadOnly = $false
 
 function Log-Line([string]$Text) {
     if ([string]::IsNullOrWhiteSpace($Text)) { return }
@@ -244,7 +245,7 @@ function Get-SessionSnapshot {
 }
 
 function Save-SessionCheckpoint {
-    if ($script:restoringSession) { return }
+    if ($script:restoringSession -or $script:checkpointReadOnly) { return }
     $snapshot = Get-SessionSnapshot
     $fingerprint = ConvertTo-Json -InputObject $snapshot -Compress -Depth 12
     if ($fingerprint -eq $script:lastSessionSnapshot) { return }
@@ -285,8 +286,12 @@ function Restore-PreviousSession {
     } catch {
         # Retain broken checkpoints for manual recovery instead of overwriting them.
         $backup = $script:sessionPath + ".invalid-" + (Get-Date -Format "yyyyMMddHHmmss")
-        try { Move-Item -LiteralPath $script:sessionPath -Destination $backup -ErrorAction Stop } catch {}
-        [System.Windows.MessageBox]::Show("Saved session cannot be read. Backup: $backup" + [Environment]::NewLine + $_.Exception.Message,
+        $errorText = $_.Exception.Message
+        try { Move-Item -LiteralPath $script:sessionPath -Destination $backup -ErrorAction Stop } catch {
+            $script:checkpointReadOnly = $true
+            $backup = "Could not back up corrupt checkpoint; automatic saves disabled: " + $_.Exception.Message
+        }
+        [System.Windows.MessageBox]::Show("Saved session cannot be read. Backup: $backup" + [Environment]::NewLine + $errorText,
             "Video Downloader", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Warning) | Out-Null
         return
     }
@@ -717,6 +722,12 @@ function Start-Download([string[]]$OverrideUrls=$null) {
     [void][int]::TryParse($ThreadsBox.Text,[ref]$threadCount)
     $threadCount = [Math]::Max(1,[Math]::Min(32,$threadCount))
 
+    $cookie = $CookiesBox.Text.Trim()
+    if ($cookie -and -not (Test-Path $cookie -PathType Leaf)) {
+        [System.Windows.MessageBox]::Show("Cookies file not found.","Video Downloader") | Out-Null
+        return
+    }
+
     Clean-Temp
     $script:runDir = Join-Path ([IO.Path]::GetTempPath()) ("ytdl-gui-" + [guid]::NewGuid().ToString("N"))
     New-Item -ItemType Directory -Path $script:runDir -Force | Out-Null
@@ -781,14 +792,7 @@ function Start-Download([string[]]$OverrideUrls=$null) {
     if ($SponsorCheck.IsChecked) { $args += "-SponsorBlock" }
     if ($AudioOnlyCheck.IsChecked) { $args += "-AudioOnly" }
 
-    $cookie = $CookiesBox.Text.Trim()
-    if ($cookie) {
-        if (-not (Test-Path $cookie)) {
-            [System.Windows.MessageBox]::Show("Cookies file not found.","Video Downloader") | Out-Null
-            return
-        }
-        $args += @("-Cookies",(Resolve-Path $cookie).Path)
-    }
+    if ($cookie) { $args += @("-Cookies",(Resolve-Path $cookie).Path) }
 
     if ($WriteSubsCheck.IsChecked) { $args += "-WriteSubtitles" }
     if ($AutoSubsCheck.IsChecked) { $args += "-WriteAutoSubtitles" }
@@ -1553,7 +1557,7 @@ $window.Add_Closing({
     param($s,$e)
     if (-not $script:exitFromTray) {
         $choice = [System.Windows.MessageBox]::Show(
-            "Hide Video Downloader in the tray?\n\nYes — hide in tray\nNo — exit application\nCancel — keep window open",
+            "Hide Video Downloader in the tray?`n`nYes — hide in tray`nNo — exit application`nCancel — keep window open",
             "Video Downloader", [System.Windows.MessageBoxButton]::YesNoCancel, [System.Windows.MessageBoxImage]::Question)
         if ($choice -eq [System.Windows.MessageBoxResult]::Yes) {
             $e.Cancel = $true
@@ -1580,6 +1584,8 @@ $window.Add_Closing({
     foreach ($item in $script:queue) {
         if ($item.Status -eq "Running") { Set-QueueState ([string]$item.Url) "Interrupted" "Interrupted" }
     }
+    # If the worker survived an unsuccessful kill, keep its PID/start time guard.
+    if ($script:proc -and -not $script:proc.HasExited) { $script:recoveredEngine = $script:activeEngine }
     $script:activeEngine = $null
     Save-SessionCheckpoint
 
