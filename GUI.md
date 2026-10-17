@@ -24,6 +24,7 @@ start-gui.cmd
 
 - один или несколько HTTP/HTTPS URL;
 - URL из clipboard при включённом **Watch clipboard**;
+- явная кнопка **Paste** рядом с **+ Add** (работает и во время загрузки);
 - .txt со списком URL;
 - .url Internet Shortcut;
 - текст/файлы через drag & drop.
@@ -41,7 +42,9 @@ Queue остаётся кликабельной. Можно:
 - открыть URL;
 - скопировать URL.
 
-До окончания текущей download session блокируются операции, меняющие snapshot очереди: reorder, drop, remove и download selected.
+Во время загрузки **Paste**, ввод в URL-поле с кнопкой **+ Add** и **Watch clipboard** продолжают работать. URL после проверки по истории успешных скачиваний добавляется в Queue, сразу сохраняется в session checkpoint и поступает в *текущий* engine через отдельный `incoming.txt`. Engine опрашивает его примерно каждые 500 мс. Если процесс завершился во время подтверждения, новые URL остаются `Queued` для следующего Start.
+
+До окончания сессии по-прежнему запрещены операции с существующей очередью: reorder, drop, remove и download selected. Очередь engine `queue.txt` напрямую не изменяется из GUI.
 
 State синхронизируется с engine и может показывать:
 
@@ -346,6 +349,7 @@ pwsh -File .\tests\smoke.ps1
 pwsh -STA -File .\tests\tray-lifecycle-tests.ps1
 pwsh -File .\tests\session-checkpoint-tests.ps1
 pwsh -File .\tests\download-history-tests.ps1
+pwsh -File .\tests\live-queue-tests.ps1
 pwsh -File .\build-exe.ps1
 ~~~
 

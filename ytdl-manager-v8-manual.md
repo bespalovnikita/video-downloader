@@ -36,6 +36,7 @@ list-error.txt
 | -AutoFragments | off | автоматический выбор 1/2/4 fragments |
 | -Watch | off | продолжать следить за input file |
 | -WatchInterval | 2 | период проверки input file в секундах |
+| -LiveQueueFile | — | append-only файл новых URL; опрашивается ~раз в 0.5 секунды пока engine работает |
 | -Archive | off | добавить к output подпапку yyyy-MM-dd |
 | -Cookies | — | cookies.txt для yt-dlp |
 | -SponsorBlock | off | удалить SponsorBlock category sponsor |
@@ -311,6 +312,10 @@ Progress формируется из machine-readable yt-dlp progress-template, 
 ~~~
 
 Меняет расположение success/error txt, но не media output.
+
+## LiveQueueFile
+
+Windows GUI передаёт движку отдельный append-only файл `-LiveQueueFile` (например `%TEMP%\\ytdl-gui-<id>\\incoming.txt`). Новые ссылки добавляются через `lib/VideoDownloader.LiveQueue.psm1` с межпроцессной блокировкой. Engine читает файл во время выполнения, дедуплицирует URL и ставит их на скачивание; рабочий `-In` из GUI не модифицируется. В отличие от `-Watch`, `-LiveQueueFile` не удерживает engine после исчерпания задач. Если он завершился, новые ссылки остаются в GUI Queue для следующего запуска.
 
 ## Watch
 

@@ -13,7 +13,7 @@ Windows GUI и CLI-движок поверх **yt-dlp** для пакетной 
 
 | Область | Что есть |
 | --- | --- |
-| Queue | несколько URL, dedupe, drag & drop reorder, импорт .txt / .url, clipboard watcher, context menu |
+| Queue | несколько URL, dedupe, drag & drop reorder, импорт .txt / .url, clipboard watcher, кнопка Paste, live additions во время скачивания |
 | Download | параллельные URL, fragment concurrency, rate limit, pause/resume, stop, transient retry с exponential backoff |
 | Formats | Best / 2160 / 1440 / 1080 / 720, Auto / H264 / VP9 / AV1, Auto / MP4 / MKV / WebM |
 | Subtitles | обычные и auto-generated, language selector, embed |
@@ -80,7 +80,9 @@ Preview-worker один и работает независимо от download t
 
 Во время активной сессии Queue остаётся доступной для выбора: можно переключать строки, смотреть preview, открывать и копировать URL.
 
-Чтобы snapshot download engine не расходился с UI, до завершения сессии блокируются операции, меняющие очередь: remove, reorder, drop и отдельный запуск выбранной строки.
+Во время скачивания разрешены **Paste**, ручное добавление URL через **+ Add** и **Watch clipboard**. Новые ссылки попадают в активный engine через отдельный безопасный append-only ingress и могут скачиваться в том же сеансе. Параметры загрузки для них остаются теми же. Перед добавлением уже скачанных ссылок запрашивается подтверждение из постоянной истории. Если engine уже завершился, ссылка остаётся в очереди для следующего Start.
+
+Операции remove, reorder, drag/drop и отдельный запуск выбранной строки до завершения сессии остаются заблокированными.
 
 ## Presets
 
@@ -174,6 +176,7 @@ Launcher публикуется как self-contained win-x64 .NET 8 прило�
 
 ~~~powershell
 pwsh -File .\tests\core-tests.ps1
+pwsh -File .\tests\live-queue-tests.ps1
 pwsh -File .\tests\smoke.ps1
 ~~~
 
