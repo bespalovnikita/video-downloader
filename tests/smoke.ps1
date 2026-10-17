@@ -6,11 +6,12 @@ $engine = Join-Path $root "ytdl-manager-v8.ps1"
 $core = Join-Path $root "lib\VideoDownloader.Core.psm1"
 $previewCache = Join-Path $root "lib\VideoDownloader.PreviewCache.psm1"
 $lifecycle = Join-Path $root "lib\VideoDownloader.WindowLifecycle.psm1"
+$sessionModule = Join-Path $root "lib\VideoDownloader.Session.psm1"
 $xaml = Join-Path $root "ui\MainWindow.xaml"
 $icon = Join-Path $root "assets\app.ico"
 $launcher = Join-Path $root "launcher\VideoDownloader.csproj"
 
-foreach ($file in @($gui,$engine,$core,$previewCache,$lifecycle)) {
+foreach ($file in @($gui,$engine,$core,$previewCache,$lifecycle,$sessionModule)) {
     $tokens = $null
     $errors = $null
     [void][System.Management.Automation.Language.Parser]::ParseFile($file,[ref]$tokens,[ref]$errors)
@@ -36,6 +37,13 @@ $xamlText = Get-Content $xaml -Raw
 
 $guiMarkers = @(
     "PresentationFramework",
+    "Restore-PreviousSession",
+    "Sync-RecoveredEngine",
+    "Save-SessionCheckpoint",
+    "Write-VdSessionCheckpoint",
+    "Get-VdResumeUrls",
+    "[System.Windows.MessageBoxButton]::YesNoCancel",
+    "Test-VdSessionEngineAlive",
     'Start-VdGuiMessageLoop -Window $window',
     "ObservableCollection",
     "DoDragDrop",

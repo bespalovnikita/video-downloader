@@ -13,6 +13,14 @@ Add-Type -AssemblyName System.Xaml
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
+$createdGuiMutex = $false
+$script:guiMutex = [Threading.Mutex]::new($true, "Local\VideoDownloader.GuiSession", [ref]$createdGuiMutex)
+if (-not $createdGuiMutex) {
+    [System.Windows.MessageBox]::Show("Video Downloader is already running. Open it from the tray.", "Video Downloader") | Out-Null
+    $script:guiMutex.Dispose()
+    return
+}
+
 Add-Type @"
 using System;
 using System.Runtime.InteropServices;
@@ -29,15 +37,17 @@ $engine = Join-Path $root "ytdl-manager-v8.ps1"
 $ytDlp = Join-Path $root "yt-dlp.exe"
 $coreModule = Join-Path $root "lib\VideoDownloader.Core.psm1"
 $previewCacheModule = Join-Path $root "lib\VideoDownloader.PreviewCache.psm1"
+$sessionModule = Join-Path $root "lib\VideoDownloader.Session.psm1"
 $lifecycleModule = Join-Path $root "lib\VideoDownloader.WindowLifecycle.psm1"
 $xamlPath = Join-Path $root "ui\MainWindow.xaml"
 
-foreach ($required in @($engine,$ytDlp,$coreModule,$previewCacheModule,$lifecycleModule,$xamlPath)) {
+foreach ($required in @($engine,$ytDlp,$coreModule,$previewCacheModule,$lifecycleModule,$sessionModule,$xamlPath)) {
     if (-not (Test-Path $required)) { throw "Missing required file: $required" }
 }
 Import-Module $coreModule -Force
 Import-Module $previewCacheModule -Force
 Import-Module $lifecycleModule -Force
+Import-Module $sessionModule -Force
 
 function Remove-StaleGuiTempDirs {
     $cutoff = (Get-Date).AddHours(-24)
@@ -111,7 +121,15 @@ $script:sessionFailed = 0
 $script:sessionBytes = [int64]0
 $script:sessionTotal = 0
 $script:lastFiles = @{}
-$script:allowClose = $false
+$script:exitFromTray = $false
+$script:restoringSession = $false
+$script:sessionPath = Join-Path $env:LOCALAPPDATA "VideoDownloader\session.json"
+$script:lastSessionSnapshot = ""
+$script:lastSessionCheck = [DateTime]::MinValue
+$script:activeEngine = $null
+$script:recoveredEngine = $null
+$script:lastSessionError = ""
+$script:checkpointReadOnly = $false
 
 function Log-Line([string]$Text) {
     if ([string]::IsNullOrWhiteSpace($Text)) { return }
@@ -152,6 +170,173 @@ function Extract-Urls([string]$Text) {
     return $found.ToArray()
 }
 
+function Get-SessionSettings {
+    return [ordered]@{
+        Profile = [string]$ProfileCombo.SelectedItem
+        Quality = [string]$QualityCombo.SelectedItem
+        Codec = [string]$CodecCombo.SelectedItem
+        Container = [string]$ContainerCombo.SelectedItem
+        RateLimit = [string]$RateLimitCombo.Text
+        Threads = [string]$ThreadsBox.Text
+        Fragments = [string]$FragmentsCombo.SelectedItem
+        FilenameTemplate = [string]$FilenameTemplateBox.Text
+        Output = [string]$OutputBox.Text
+        Cookies = [string]$CookiesBox.Text
+        SubtitleLangs = [string]$SubtitleLangsBox.Text
+        WriteSubs = ($WriteSubsCheck.IsChecked -eq $true)
+        AutoSubs = ($AutoSubsCheck.IsChecked -eq $true)
+        EmbedSubs = ($EmbedSubsCheck.IsChecked -eq $true)
+        EmbedThumbnail = ($EmbedThumbnailCheck.IsChecked -eq $true)
+        EmbedMetadata = ($EmbedMetadataCheck.IsChecked -eq $true)
+        EmbedChapters = ($EmbedChaptersCheck.IsChecked -eq $true)
+        Archive = ($ArchiveCheck.IsChecked -eq $true)
+        Sponsor = ($SponsorCheck.IsChecked -eq $true)
+        AudioOnly = ($AudioOnlyCheck.IsChecked -eq $true)
+        WatchClipboard = ($WatchClipboardCheck.IsChecked -eq $true)
+    }
+}
+
+function Restore-SessionSettings([object]$Settings) {
+    if (-not $Settings) { return }
+    foreach ($entry in @(
+        @($ProfileCombo,"Profile"), @($QualityCombo,"Quality"), @($CodecCombo,"Codec"),
+        @($ContainerCombo,"Container"), @($FragmentsCombo,"Fragments")
+    )) {
+        $combo = $entry[0]
+        $value = [string]$Settings[$entry[1]]
+        if ($combo.Items.Contains($value)) { $combo.SelectedItem = $value }
+    }
+    if ($Settings.Contains("RateLimit")) { $RateLimitCombo.Text = [string]$Settings.RateLimit }
+    foreach ($entry in @(
+        @($ThreadsBox,"Threads"), @($FilenameTemplateBox,"FilenameTemplate"),
+        @($OutputBox,"Output"), @($CookiesBox,"Cookies"), @($SubtitleLangsBox,"SubtitleLangs")
+    )) {
+        if ($Settings.Contains($entry[1])) { $entry[0].Text = [string]$Settings[$entry[1]] }
+    }
+    foreach ($entry in @(
+        @($WriteSubsCheck,"WriteSubs"), @($AutoSubsCheck,"AutoSubs"),
+        @($EmbedSubsCheck,"EmbedSubs"), @($EmbedThumbnailCheck,"EmbedThumbnail"),
+        @($EmbedMetadataCheck,"EmbedMetadata"), @($EmbedChaptersCheck,"EmbedChapters"),
+        @($ArchiveCheck,"Archive"), @($SponsorCheck,"Sponsor"),
+        @($AudioOnlyCheck,"AudioOnly"), @($WatchClipboardCheck,"WatchClipboard")
+    )) {
+        if ($Settings.Contains($entry[1]) -and $Settings[$entry[1]] -is [bool]) {
+            $entry[0].IsChecked = $Settings[$entry[1]]
+        }
+    }
+}
+
+function Get-SessionSnapshot {
+    $items = @(
+        foreach ($item in $script:queue) {
+            $status = [string]$item.Status
+            if ($status -notin @("Queued","Running","Completed","Failed","Interrupted")) { $status = "Queued" }
+            [ordered]@{
+                Url = [string]$item.Url
+                Status = $status
+                # Frequent progress percentages are UI-only; a recovered active item is interrupted.
+                DisplayState = if ($status -eq "Running") { "Interrupted" } else { [string]$item.State }
+                Path = [string]$item.Path
+            }
+        }
+    )
+    $engineInfo = if ($script:activeEngine) { $script:activeEngine } else { $script:recoveredEngine }
+    return [ordered]@{ Queue=$items; Settings=(Get-SessionSettings); Engine=$engineInfo }
+}
+
+function Save-SessionCheckpoint {
+    if ($script:restoringSession -or $script:checkpointReadOnly) { return }
+    $snapshot = Get-SessionSnapshot
+    $fingerprint = ConvertTo-Json -InputObject $snapshot -Compress -Depth 12
+    if ($fingerprint -eq $script:lastSessionSnapshot) { return }
+    try {
+        Write-VdSessionCheckpoint -Path $script:sessionPath -Session $snapshot
+        $script:lastSessionSnapshot = $fingerprint
+        $script:lastSessionError = ""
+    } catch {
+        $message = "Cannot save session checkpoint: " + $_.Exception.Message
+        if ($message -ne $script:lastSessionError) { Log-Line $message; $script:lastSessionError = $message }
+    }
+}
+
+function Sync-RecoveredEngine {
+    if (-not $script:recoveredEngine) { return $true }
+    if (Test-VdSessionEngineAlive -Engine $script:recoveredEngine) { return $false }
+    $checkpoint = Get-SessionSnapshot
+    $checkpoint = Merge-VdSessionResultEvents -Session $checkpoint -EventsPath ([string]$script:recoveredEngine.EventsPath)
+    $script:restoringSession = $true
+    try {
+        $script:queue.Clear()
+        foreach ($item in @(Get-VdRestoredQueue -Session $checkpoint)) { $script:queue.Add($item) }
+        $script:failedUrls.Clear()
+        foreach ($item in $script:queue) {
+            if ($item.Status -eq "Failed") { [void]$script:failedUrls.Add([string]$item.Url) }
+        }
+        $script:recoveredEngine = $null
+        Reindex-Queue
+    } finally { $script:restoringSession = $false }
+    Save-SessionCheckpoint
+    return $true
+}
+
+function Restore-PreviousSession {
+    $checkpoint = $null
+    try {
+        $checkpoint = Read-VdSessionCheckpoint -Path $script:sessionPath
+    } catch {
+        # Retain broken checkpoints for manual recovery instead of overwriting them.
+        $backup = $script:sessionPath + ".invalid-" + (Get-Date -Format "yyyyMMddHHmmss")
+        $errorText = $_.Exception.Message
+        try { Move-Item -LiteralPath $script:sessionPath -Destination $backup -ErrorAction Stop } catch {
+            $script:checkpointReadOnly = $true
+            $backup = "Could not back up corrupt checkpoint; automatic saves disabled: " + $_.Exception.Message
+        }
+        [System.Windows.MessageBox]::Show("Saved session cannot be read. Backup: $backup" + [Environment]::NewLine + $errorText,
+            "Video Downloader", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Warning) | Out-Null
+        return
+    }
+    if (-not $checkpoint) { return }
+    $items = @(Get-VdRestoredQueue -Session $checkpoint)
+    if (-not (Test-VdSessionHasPending -Queue $items)) {
+        # A detached worker also needs to be guarded when there is no pending queue.
+        if (Test-VdSessionEngineAlive -Engine $checkpoint.Engine) {
+            $script:recoveredEngine = $checkpoint.Engine
+            Log-Line "An earlier downloader is still running. Start is blocked until it finishes."
+        }
+        return
+    }
+    $answer = [System.Windows.MessageBox]::Show(
+        "An unfinished session with $($items.Count) URL(s) was found. Restore its queue, statuses and download settings? Downloads will NOT start automatically.",
+        "Video Downloader", [System.Windows.MessageBoxButton]::YesNo, [System.Windows.MessageBoxImage]::Question)
+    if ($answer -ne [System.Windows.MessageBoxResult]::Yes) {
+        if (Test-VdSessionEngineAlive -Engine $checkpoint.Engine) {
+            $script:recoveredEngine = $checkpoint.Engine
+            Log-Line "Queue discarded; previous downloader is still running. New downloads are blocked until it finishes."
+        }
+        try { Remove-Item -LiteralPath $script:sessionPath -Force -ErrorAction Stop } catch {
+            $script:checkpointReadOnly = $true
+            [System.Windows.MessageBox]::Show("Could not discard previous session. Automatic checkpoint saving is disabled to protect it: $($_.Exception.Message)", "Video Downloader") | Out-Null
+        }
+        Save-SessionCheckpoint
+        return
+    }
+    $script:restoringSession = $true
+    try {
+        Restore-SessionSettings $checkpoint.Settings
+        foreach ($item in $items) {
+            $script:queue.Add($item)
+            Queue-PreviewPrefetch -Url ([string]$item.Url)
+            if ($item.Status -eq "Failed") { [void]$script:failedUrls.Add([string]$item.Url) }
+        }
+        $script:recoveredEngine = $checkpoint.Engine
+        Reindex-Queue
+    } finally { $script:restoringSession = $false }
+    if (-not (Sync-RecoveredEngine)) {
+        Log-Line "An engine from the previous GUI instance is still active. New downloads are blocked until it finishes."
+    }
+    Save-SessionCheckpoint
+}
+
 function Reindex-Queue {
     for ($i=0; $i -lt $script:queue.Count; $i++) {
         $script:queue[$i].Order = $i + 1
@@ -159,6 +344,7 @@ function Reindex-Queue {
     $QueueGrid.Items.Refresh()
     $QueueCount.Text = "$($script:queue.Count) URLs"
     Update-StartState
+    Save-SessionCheckpoint
 }
 
 function Find-QueueItem([string]$Url) {
@@ -171,12 +357,14 @@ function Find-QueueItem([string]$Url) {
     return $null
 }
 
-function Set-QueueState([string]$Url,[string]$State) {
+function Set-QueueState([string]$Url,[string]$State,[string]$Status="") {
     $item = Find-QueueItem $Url
     if (-not $item) { return }
-    if ([string]$item.State -eq $State) { return }
+    if ([string]$item.State -eq $State -and (-not $Status -or $item.Status -eq $Status)) { return }
     $item.State = $State
+    if ($Status) { $item.Status = $Status }
     $QueueGrid.Items.Refresh()
+    if ($Status -in @("Completed","Failed")) { Save-SessionCheckpoint }
 }
 
 function Add-Urls([string[]]$Urls) {
@@ -192,6 +380,8 @@ function Add-Urls([string[]]$Urls) {
             Order = $script:queue.Count + 1
             Url = $u
             State = "Queued"
+            Status = "Queued"
+            Path = ""
         })
         $existing[$u] = $true
         Queue-PreviewPrefetch -Url $u
@@ -281,14 +471,14 @@ function Set-Download {
 
 function Update-StartState {
     $running = $script:proc -and -not $script:proc.HasExited
-    $StartButton.IsEnabled = (-not $running -and $script:queue.Count -gt 0)
+    $StartButton.IsEnabled = (-not $running -and (Test-VdSessionHasPending -Queue @($script:queue | ForEach-Object { $_ })))
     $StopButton.IsEnabled = [bool]$running
     $PauseButton.IsEnabled = [bool]$running
     $RetryFailedButton.IsEnabled = (-not $running -and $script:failedUrls.Count -gt 0)
 }
 
 function Set-Running([bool]$Running) {
-    $StartButton.IsEnabled = (-not $Running -and $script:queue.Count -gt 0)
+    $StartButton.IsEnabled = (-not $Running -and (Test-VdSessionHasPending -Queue @($script:queue | ForEach-Object { $_ })))
     $StopButton.IsEnabled = $Running
     $PauseButton.IsEnabled = $Running
 
@@ -415,7 +605,9 @@ function Tail-Events {
                 $script:sessionBytes += $size
                 $u = [string]$event.Url
                 Set-Download -Slot $slot -State "Done" -Url $u -Path $path
-                Set-QueueState $u "Done"
+                $completedItem = Find-QueueItem $u
+                if ($completedItem) { $completedItem.Path = $path }
+                Set-QueueState $u "Done" "Completed"
             } else {
                 $script:sessionFailed++
                 $u = [string]$event.Url
@@ -423,7 +615,7 @@ function Tail-Events {
                 $friendly = [string]$event.FriendlyError
                 if (-not $friendly) { $friendly = Get-FriendlyDownloadError ([string]$event.Error) }
                 Set-Download -Slot $slot -State $friendly -Url $u -RawError ([string]$event.Error)
-                Set-QueueState $u $friendly
+                Set-QueueState $u $friendly "Failed"
             }
 
             $done = $script:sessionSuccess + $script:sessionFailed
@@ -515,8 +707,12 @@ function Resume-ProcessTree {
 function Start-Download([string[]]$OverrideUrls=$null) {
     if ($script:proc -and -not $script:proc.HasExited) { return }
 
+    if (-not (Sync-RecoveredEngine)) {
+        [System.Windows.MessageBox]::Show("The downloader from the previous session is still running. Wait until it exits before starting more downloads.","Video Downloader") | Out-Null
+        return
+    }
     $items = $OverrideUrls
-    if ($null -eq $items) { $items = @(Get-QueueUrls) }
+    if ($null -eq $items) { $items = @(Get-VdResumeUrls -Queue @($script:queue | ForEach-Object { $_ })) }
     if ($items.Count -eq 0) { return }
 
     foreach ($u in $items) { Queue-PreviewPrefetch -Url ([string]$u) }
@@ -538,6 +734,12 @@ function Start-Download([string[]]$OverrideUrls=$null) {
     $threadCount = 4
     [void][int]::TryParse($ThreadsBox.Text,[ref]$threadCount)
     $threadCount = [Math]::Max(1,[Math]::Min(32,$threadCount))
+
+    $cookie = $CookiesBox.Text.Trim()
+    if ($cookie -and -not (Test-Path $cookie -PathType Leaf)) {
+        [System.Windows.MessageBox]::Show("Cookies file not found.","Video Downloader") | Out-Null
+        return
+    }
 
     Clean-Temp
     $script:runDir = Join-Path ([IO.Path]::GetTempPath()) ("ytdl-gui-" + [guid]::NewGuid().ToString("N"))
@@ -567,7 +769,8 @@ function Start-Download([string[]]$OverrideUrls=$null) {
     $script:sessionBytes = [int64]0
     $script:sessionTotal = $items.Count
     $OverallProgress.Value = 0
-    foreach ($u in $items) { Set-QueueState ([string]$u) "Starting" }
+    foreach ($u in $items) { Set-QueueState ([string]$u) "Starting" "Running" }
+    Save-SessionCheckpoint
     Update-LiveStats
 
     $pwsh = Join-Path $PSHOME "pwsh.exe"
@@ -602,14 +805,7 @@ function Start-Download([string[]]$OverrideUrls=$null) {
     if ($SponsorCheck.IsChecked) { $args += "-SponsorBlock" }
     if ($AudioOnlyCheck.IsChecked) { $args += "-AudioOnly" }
 
-    $cookie = $CookiesBox.Text.Trim()
-    if ($cookie) {
-        if (-not (Test-Path $cookie)) {
-            [System.Windows.MessageBox]::Show("Cookies file not found.","Video Downloader") | Out-Null
-            return
-        }
-        $args += @("-Cookies",(Resolve-Path $cookie).Path)
-    }
+    if ($cookie) { $args += @("-Cookies",(Resolve-Path $cookie).Path) }
 
     if ($WriteSubsCheck.IsChecked) { $args += "-WriteSubtitles" }
     if ($AutoSubsCheck.IsChecked) { $args += "-WriteAutoSubtitles" }
@@ -623,10 +819,15 @@ function Start-Download([string[]]$OverrideUrls=$null) {
 
     try {
         $script:proc = [Diagnostics.Process]::Start($psi)
+        $script:activeEngine = [ordered]@{ Pid=$script:proc.Id; StartedUtc=$script:proc.StartTime.ToUniversalTime().ToString("o"); EventsPath=$script:runEvents }
+        Save-SessionCheckpoint
         Set-Running $true
         Log-Line "Started $($items.Count) URL(s) into $dest"
     } catch {
         $script:proc = $null
+        $script:activeEngine = $null
+        foreach ($u in $items) { Set-QueueState ([string]$u) "Interrupted" "Interrupted" }
+        Save-SessionCheckpoint
         Set-Running $false
         Clean-Temp
         [System.Windows.MessageBox]::Show("Failed to start downloader: $($_.Exception.Message)","Video Downloader") | Out-Null
@@ -676,6 +877,11 @@ function Finish-Download {
     $SessionStats.Text = "Session: $summary"
     $RetryFailedButton.IsEnabled = $script:failedUrls.Count -gt 0
     $script:stopping = $false
+    foreach ($item in $script:queue) {
+        if ($item.Status -eq "Running") { Set-QueueState ([string]$item.Url) "Interrupted" "Interrupted" }
+    }
+    $script:activeEngine = $null
+    Save-SessionCheckpoint
     Clean-Temp
 }
 
@@ -1314,7 +1520,10 @@ $RegisterProtocolButton.Add_Click({ Register-Protocol })
 $tray.Add_DoubleClick({ $window.Show(); $window.WindowState=[System.Windows.WindowState]::Normal; $window.Activate() })
 $trayShow.Add_Click({ $window.Show(); $window.WindowState=[System.Windows.WindowState]::Normal; $window.Activate() })
 $trayFolder.Add_Click({ if (Test-Path $OutputBox.Text) { Start-Process explorer.exe -ArgumentList @($OutputBox.Text) } })
-$trayExit.Add_Click({ $script:allowClose=$true; $window.Close() })
+$trayExit.Add_Click({
+    $script:exitFromTray = $true
+    try { $window.Close() } finally { $script:exitFromTray = $false }
+})
 $TrayButton.Add_Click({ $window.Hide() })
 $window.Add_StateChanged({ if ($window.WindowState -eq [System.Windows.WindowState]::Minimized) { $window.Hide() } })
 
@@ -1328,6 +1537,11 @@ $timer.Add_Tick({
 
     if ($script:proc) {
         try { if ($script:proc.HasExited) { Finish-Download } } catch {}
+    }
+    if (((Get-Date) - $script:lastSessionCheck).TotalSeconds -ge 1) {
+        $script:lastSessionCheck = Get-Date
+        [void](Sync-RecoveredEngine)
+        Save-SessionCheckpoint
     }
 })
 
@@ -1354,15 +1568,43 @@ $clipboardTimer.Add_Tick({
 
 $window.Add_Closing({
     param($s,$e)
-    if (-not $script:allowClose -and $script:proc -and -not $script:proc.HasExited) {
+    if (-not $script:exitFromTray) {
+        $choice = [System.Windows.MessageBox]::Show(
+            "Hide Video Downloader in the tray?`n`nYes — hide in tray`nNo — exit application`nCancel — keep window open",
+            "Video Downloader", [System.Windows.MessageBoxButton]::YesNoCancel, [System.Windows.MessageBoxImage]::Question)
+        if ($choice -eq [System.Windows.MessageBoxResult]::Yes) {
+            $e.Cancel = $true
+            $window.Hide()
+            return
+        }
+        if ($choice -ne [System.Windows.MessageBoxResult]::No) {
+            $e.Cancel = $true
+            return
+        }
+    }
+    # The engine may have finished since the last timer tick; collect its final
+    # Result events before saving the last checkpoint and deleting temp files.
+    if ($script:proc) { Tail-Events }
+    if ($script:proc -and -not $script:proc.HasExited) {
         $answer = [System.Windows.MessageBox]::Show("A download is running. Stop it and exit?","Video Downloader",[System.Windows.MessageBoxButton]::YesNo,[System.Windows.MessageBoxImage]::Warning)
         if ($answer -ne [System.Windows.MessageBoxResult]::Yes) {
             $e.Cancel = $true
             return
         }
         if ($script:isPaused) { Resume-ProcessTree }
-        try { $script:proc.Kill($true) } catch {}
+        Tail-Events
+        try { $script:proc.Kill($true); [void]$script:proc.WaitForExit(1500) } catch {}
+        Tail-Events
     }
+
+    foreach ($item in $script:queue) {
+        if ($item.Status -eq "Running") { Set-QueueState ([string]$item.Url) "Interrupted" "Interrupted" }
+    }
+    # If a failed kill left the worker alive, keep its PID guard and event file.
+    $workerSurvived = ($script:proc -and -not $script:proc.HasExited)
+    if ($workerSurvived) { $script:recoveredEngine = $script:activeEngine }
+    $script:activeEngine = $null
+    Save-SessionCheckpoint
 
     try {
         if ($script:previewPrefetchJob) { Stop-Job $script:previewPrefetchJob -ErrorAction SilentlyContinue; Remove-Job $script:previewPrefetchJob -Force -ErrorAction SilentlyContinue }
@@ -1373,12 +1615,21 @@ $window.Add_Closing({
     $tray.Dispose()
     $timer.Stop()
     $clipboardTimer.Stop()
-    Clean-Temp
+    if (-not $workerSurvived) { Clean-Temp }
 })
 
+$script:restoringSession = $true
 Reindex-Queue
+$script:restoringSession = $false
+Restore-PreviousSession
 Refresh-Dependencies
 Handle-StartupArgs
 $timer.Start()
 $clipboardTimer.Start()
-Start-VdGuiMessageLoop -Window $window
+try { Start-VdGuiMessageLoop -Window $window }
+finally {
+    if ($script:guiMutex) {
+        try { $script:guiMutex.ReleaseMutex() } catch {}
+        $script:guiMutex.Dispose()
+    }
+}

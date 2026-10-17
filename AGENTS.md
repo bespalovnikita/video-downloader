@@ -82,6 +82,14 @@ Fetch/cache логика находится в <code>lib/VideoDownloader.Preview
 
 Максимальная задержка — 60 секунд.
 
+## Session checkpoint
+
+- Очередь, конечные статусы и параметры сохраняются атомарно в `%LOCALAPPDATA%\\VideoDownloader\\session.json`, не в `%TEMP%`.
+- Ни в коем случае не перезапускай успешно завершённые URL обычной кнопкой Start; ручной Retry допускается.
+- При запуске восстановление требует явного подтверждения пользователя и никогда не начинает загрузку автоматически.
+- Не перезапускай задания, пока ещё жив старый engine, сопоставляй PID с StartTime, чтобы защититься от PID reuse.
+- При изменении checkpoint logic дополняй `tests/session-checkpoint-tests.ps1`.
+
 ## WPF
 
 - основной UI framework — WPF/XAML;
@@ -156,6 +164,7 @@ Fetch/cache логика находится в <code>lib/VideoDownloader.Preview
 pwsh -File .\tests\core-tests.ps1
 pwsh -File .\tests\smoke.ps1
 pwsh -STA -File .\tests\tray-lifecycle-tests.ps1
+pwsh -File .\tests\session-checkpoint-tests.ps1
 ~~~
 
 Если менялась упаковка:
