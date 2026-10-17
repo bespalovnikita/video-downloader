@@ -37,6 +37,10 @@ $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $coreModule = Join-Path $root "lib\VideoDownloader.Core.psm1"
 if (-not (Test-Path $coreModule)) { throw "Missing core module: $coreModule" }
 Import-Module $coreModule -Force
+$historyModule = Join-Path $root "lib\VideoDownloader.DownloadHistory.psm1"
+if (-not (Test-Path $historyModule)) { throw "Missing download history module: $historyModule" }
+Import-Module $historyModule -Force
+$historyPath = Join-Path $env:LOCALAPPDATA "VideoDownloader\successful-downloads.jsonl"
 
 $ytDlpExe = Join-Path $root "yt-dlp.exe"
 if (-not (Test-Path $ytDlpExe)) { throw "Missing yt-dlp.exe: $ytDlpExe" }
@@ -185,6 +189,13 @@ function Handle-Message {
         [void]$Completed.Add([string]$Message.Url)
 
         if ($Message.Success) {
+            try {
+                Add-VdSuccessfulDownloadUrl -Path $historyPath -Url ([string]$Message.Url)
+            } catch {
+                $historyError = "WARNING: successful URL could not be saved in global history: " + $_.Exception.Message
+                Write-Log $historyError Red
+                Write-EventFile ([pscustomobject]@{ Kind="Event"; EventType="HistoryError"; Text=$historyError; Url=[string]$Message.Url })
+            }
             Add-Content $SuccessFile ([string]$Message.Url) -Encoding UTF8
         } else {
             Add-Content $ErrorFile ([string]$Message.Url) -Encoding UTF8
@@ -196,6 +207,9 @@ function Handle-Message {
     }
 }
 
+# Refuse to append to a damaged history file rather than silently lose old successes.
+# DryRun never writes history.
+if (-not $DryRun) { [void](Read-VdDownloadHistory -Path $historyPath) }
 $urls = @(Get-Content $ListFile -Encoding UTF8 | ForEach-Object { $_.Trim() } | Where-Object { $_ } | Select-Object -Unique)
 Write-Log ("Started. URLs={0}; parallel={1}; quality={2}; codec={3}; container={4}" -f $urls.Count,$Threads,$Quality,$VideoCodec,$Container) Cyan
 Write-Log ("Output: {0}" -f $ResolvedOut) Cyan
