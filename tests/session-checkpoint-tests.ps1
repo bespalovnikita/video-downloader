@@ -86,6 +86,11 @@ try {
         $selfProcess = Get-Process -Id $PID
         $selfEngine = @{ Pid=$PID; StartedUtc=$selfProcess.StartTime.ToUniversalTime().ToString("o") }
         Assert-Vd (Test-VdSessionEngineAlive -Engine $selfEngine) "Running pwsh process with matching creation timestamp must be detected"
+        $session.Engine = $selfEngine
+        Write-VdSessionCheckpoint -Path $path -Session $session
+        $roundtrip = Read-VdSessionCheckpoint -Path $path
+        Assert-Vd (Test-VdSessionEngineAlive -Engine $roundtrip.Engine) "JSON date conversion must preserve the worker PID guard across restart"
+        $selfProcess.Dispose()
     }
 
     [IO.File]::WriteAllText($path,'{"Version":999,"Queue":[],"Settings":{}}')

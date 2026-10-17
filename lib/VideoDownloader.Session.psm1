@@ -76,6 +76,10 @@ function Get-VdRestoredQueue {
             State = $display
             Status = $status
             Path = [string]$item.Path
+            Progress = if ($status -eq "Completed") { 100.0 } else { 0.0 }
+            Speed = ""
+            Downloaded = ""
+            ETA = ""
         }
     }
 }
@@ -97,7 +101,7 @@ function Test-VdSessionEngineAlive {
     try {
         $proc = Get-Process -Id ([int]$Engine.Pid) -ErrorAction Stop
         if ($proc.ProcessName -ne "pwsh") { return $false }
-        $recorded = [DateTime]::Parse([string]$Engine.StartedUtc,[Globalization.CultureInfo]::InvariantCulture,[Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
+        $recorded = ([DateTimeOffset]$Engine.StartedUtc).UtcDateTime
         return [Math]::Abs(($proc.StartTime.ToUniversalTime() - $recorded).TotalSeconds) -lt 3
     } catch { return $false }
     finally { if ($proc) { $proc.Dispose() } }

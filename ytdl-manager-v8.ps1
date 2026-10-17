@@ -316,6 +316,7 @@ while ($pending.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
                     [string]$ETA="",
                     [int64]$DownloadedBytes=0,
                     [int64]$TotalBytes=0,
+                    [int64]$TransferredBytes=0,
                     [string]$Height="",
                     [string]$Title=""
                 )
@@ -330,6 +331,7 @@ while ($pending.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
                     ETA=$ETA
                     DownloadedBytes=$DownloadedBytes
                     TotalBytes=$TotalBytes
+                    TransferredBytes=$TransferredBytes
                     Height=$Height
                     Title=$Title
                     Timestamp=(Get-Date).ToString("o")
@@ -371,12 +373,12 @@ while ($pending.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
 
                 $a = @(
                     "--encoding","utf-8",
-                    "--newline",
+                    "--newline","--progress",
                     "--no-color",
                     "--impersonate","chrome",
                     "-N",[string]$effectiveFragments,
                     "-o",$outputTemplate,
-                    "--progress-template","download:__VD_PROGRESS__|%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s|%(progress.downloaded_bytes)s|%(progress.total_bytes,progress.total_bytes_estimate)s",
+                    "--progress-template","download:__VD_PROGRESS__|%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s|%(progress.downloaded_bytes)s|%(progress.total_bytes,progress.total_bytes_estimate)s|%(info.id)s:%(info.format_id)s",
                     "--print","before_dl:__VD_TITLE__:%(title)s",
                     "--print","after_move:__VD_FILE__:%(filepath)s"
                 )
@@ -394,8 +396,8 @@ while ($pending.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
 
                 if ($writeSubtitles -or $embedSubtitles) {
                     $a += "--write-subs"
-                    if ($subtitleLangs) { $a += @("--sub-langs",$subtitleLangs) }
                 }
+                if (($writeSubtitles -or $embedSubtitles -or $writeAutoSubtitles) -and $subtitleLangs) { $a += @("--sub-langs",$subtitleLangs) }
                 if ($writeAutoSubtitles) { $a += "--write-auto-subs" }
                 if ($embedSubtitles) { $a += "--embed-subs" }
                 if ($embedThumbnail) { $a += @("--write-thumbnail","--embed-thumbnail") }
@@ -411,6 +413,7 @@ while ($pending.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
             $finalPath = ""
             $finalHeight = ""
             $stopAll = $false
+            $transferState = @{}
 
             foreach ($height in $qualities) {
                 if ($stopAll) { break }
@@ -426,7 +429,8 @@ while ($pending.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
                         if ($line.StartsWith("__VD_PROGRESS__|")) {
                             $p = Parse-VdProgressLine $line
                             if ($p) {
-                                Emit -Type "Progress" -Percent $p.Percent -Speed $p.Speed -ETA $p.ETA -DownloadedBytes $p.DownloadedBytes -TotalBytes $p.TotalBytes -Height $finalHeight
+                                $transferred = Add-VdTransferSample -State $transferState -StreamId $p.StreamId -DownloadedBytes $p.DownloadedBytes
+                                Emit -Type "Progress" -Percent $p.Percent -Speed $p.Speed -ETA $p.ETA -DownloadedBytes $p.DownloadedBytes -TotalBytes $p.TotalBytes -TransferredBytes $transferred -Height $finalHeight
                             }
                             return
                         }
@@ -483,8 +487,8 @@ while ($pending.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
 
             if ($success) {
                 $fileSize = [int64]0
-                if ($finalPath -and (Test-Path $finalPath -PathType Leaf)) {
-                    try { $fileSize = (Get-Item $finalPath).Length } catch {}
+                if ($finalPath -and (Test-Path -LiteralPath $finalPath -PathType Leaf)) {
+                    try { $fileSize = (Get-Item -LiteralPath $finalPath).Length } catch {}
                 }
 
                 Emit -Type "Done" -Text ("T{0} DONE #{1}/{2} q={3}" -f $slot,$index,$totalUrls,$finalHeight) -Height $finalHeight
@@ -498,6 +502,7 @@ while ($pending.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
                     Height=$finalHeight
                     Path=$finalPath
                     FileSize=$fileSize
+                    TransferredBytes=[long]$transferState.Bytes
                 }
             } else {
                 $friendly = Get-FriendlyDownloadError $finalError
@@ -512,6 +517,7 @@ while ($pending.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
                     Height=$finalHeight
                     Path=""
                     FileSize=[int64]0
+                    TransferredBytes=[long]$transferState.Bytes
                 }
             }
         }
