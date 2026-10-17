@@ -303,7 +303,8 @@ function Restore-PreviousSession {
         "Video Downloader", [System.Windows.MessageBoxButton]::YesNo, [System.Windows.MessageBoxImage]::Question)
     if ($answer -ne [System.Windows.MessageBoxResult]::Yes) {
         try { Remove-Item -LiteralPath $script:sessionPath -Force -ErrorAction Stop } catch {
-            [System.Windows.MessageBox]::Show("Could not discard previous session: $($_.Exception.Message)", "Video Downloader") | Out-Null
+            $script:checkpointReadOnly = $true
+            [System.Windows.MessageBox]::Show("Could not discard previous session. Automatic checkpoint saving is disabled to protect it: $($_.Exception.Message)", "Video Downloader") | Out-Null
         }
         return
     }
@@ -1584,8 +1585,9 @@ $window.Add_Closing({
     foreach ($item in $script:queue) {
         if ($item.Status -eq "Running") { Set-QueueState ([string]$item.Url) "Interrupted" "Interrupted" }
     }
-    # If the worker survived an unsuccessful kill, keep its PID/start time guard.
-    if ($script:proc -and -not $script:proc.HasExited) { $script:recoveredEngine = $script:activeEngine }
+    # If a failed kill left the worker alive, keep its PID guard and event file.
+    $workerSurvived = ($script:proc -and -not $script:proc.HasExited)
+    if ($workerSurvived) { $script:recoveredEngine = $script:activeEngine }
     $script:activeEngine = $null
     Save-SessionCheckpoint
 
@@ -1598,7 +1600,7 @@ $window.Add_Closing({
     $tray.Dispose()
     $timer.Stop()
     $clipboardTimer.Stop()
-    Clean-Temp
+    if (-not $workerSurvived) { Clean-Temp }
 })
 
 $script:restoringSession = $true
