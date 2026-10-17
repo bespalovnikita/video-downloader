@@ -32,19 +32,27 @@ function Read-VdDownloadHistory {
     Invoke-VdHistoryLocked {
         if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return }
         $lineNumber = 0
-        foreach ($line in [IO.File]::ReadLines($Path,[Text.Encoding]::UTF8)) {
-            $lineNumber++
-            if ([string]::IsNullOrWhiteSpace($line)) { continue }
-            try {
-                $entry = ConvertFrom-Json -InputObject $line -AsHashtable -ErrorAction Stop
-                if ($entry.Version -ne 1 -or -not (Test-VdHistoryUrl ([string]$entry.Url))) {
-                    throw "Invalid success history record"
+        # Always dispose reader/stream, including when parsing an invalid record.
+        $stream = [IO.FileStream]::new($Path,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::ReadWrite)
+        $reader = [IO.StreamReader]::new($stream,[Text.Encoding]::UTF8,$true)
+        try {
+            while (-not $reader.EndOfStream) {
+                $line = $reader.ReadLine()
+                $lineNumber++
+                if ([string]::IsNullOrWhiteSpace($line)) { continue }
+                try {
+                    $entry = ConvertFrom-Json -InputObject $line -AsHashtable -ErrorAction Stop
+                    if ($entry.Version -ne 1 -or -not (Test-VdHistoryUrl ([string]$entry.Url))) {
+                        throw "Invalid success history record"
+                    }
+                    [void]$known.Add([string]$entry.Url)
+                } catch {
+                    # Fail closed: never silently continue with an incomplete history.
+                    throw "Success history is damaged at line $lineNumber in '$Path': $($_.Exception.Message)"
                 }
-                [void]$known.Add([string]$entry.Url)
-            } catch {
-                # Fail closed: never silently continue with an incomplete history.
-                throw "Success history is damaged at line $lineNumber in '$Path': $($_.Exception.Message)"
             }
+        } finally {
+            $reader.Dispose()
         }
     }
     return ,$known
