@@ -55,14 +55,16 @@ Fetch/cache логика находится в <code>lib/VideoDownloader.Preview
 - смотреть preview;
 - open/copy URL.
 
-Но mutation текущей Queue блокируется до завершения сессии:
+Во время активной сессии операции **remove / reorder / drag/drop / download selected** остаются заблокированными, но **добавление через Paste, + Add или Watch clipboard разрешено**.
 
-- remove;
-- reorder;
-- drag/drop;
-- download selected.
+- Перед передачей нового URL проверяется общая история успехов; Cancel не меняет очередь.
+- Новые ссылки отправляются в отдельный append-only `incoming.txt` через `Add-VdLiveQueueUrls` с межпроцессной синхронизацией.
+- Engine читает `-LiveQueueFile` и dedup по точному URL (без перезаписи рабочего `queue.txt`).
+- Добавление после завершения движка сохраняется как `Queued` до следующего Start.
+- Статус `Running` для новой ссылки выставляется только после `Started` event от engine.
+- Новые URL сохраняются в session checkpoint, а история успешных скачиваний продолжает пополняться из engine.
 
-Причина: engine работает со snapshot очереди.
+Причина: engine по-прежнему использует snapshot собственного рабочего `queue.txt`; live ingress отделён от него.
 
 ### 4. Codec — preference, не strict lock
 
@@ -176,6 +178,7 @@ pwsh -File .\tests\smoke.ps1
 pwsh -STA -File .\tests\tray-lifecycle-tests.ps1
 pwsh -File .\tests\session-checkpoint-tests.ps1
 pwsh -File .\tests\download-history-tests.ps1
+pwsh -File .\tests\live-queue-tests.ps1
 ~~~
 
 Если менялась упаковка:
