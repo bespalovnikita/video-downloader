@@ -7,6 +7,7 @@ param(
     [switch]$AutoFragments,
     [switch]$Watch,
     [int]$WatchInterval = 2,
+    [string]$LiveQueueFile,
     [switch]$Archive,
     [string]$Cookies,
     [switch]$SponsorBlock,
@@ -40,6 +41,9 @@ Import-Module $coreModule -Force
 $historyModule = Join-Path $root "lib\VideoDownloader.DownloadHistory.psm1"
 if (-not (Test-Path $historyModule)) { throw "Missing download history module: $historyModule" }
 Import-Module $historyModule -Force
+$liveQueueModule = Join-Path $root "lib\VideoDownloader.LiveQueue.psm1"
+if (-not (Test-Path $liveQueueModule)) { throw "Missing live queue module: $liveQueueModule" }
+Import-Module $liveQueueModule -Force
 $historyPath = Join-Path $env:LOCALAPPDATA "VideoDownloader\successful-downloads.jsonl"
 
 $ytDlpExe = Join-Path $root "yt-dlp.exe"
@@ -241,6 +245,7 @@ $titles = @{}
 $startedCount = 0
 $totalUrls = $known.Count
 $lastWatchCheck = Get-Date
+$lastLiveQueueCheck = [DateTime]::MinValue
 
 while ($pending.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
     if ($Watch -and ((Get-Date)-$lastWatchCheck).TotalSeconds -ge $WatchInterval) {
@@ -252,6 +257,22 @@ while ($pending.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
                 $totalUrls = $known.Count
                 Write-Log ("NEW URL queued: " + (Shorten $u 100)) Cyan
             }
+        }
+    }
+
+    if ($LiveQueueFile -and ((Get-Date)-$lastLiveQueueCheck).TotalMilliseconds -ge 500) {
+        $lastLiveQueueCheck = Get-Date
+        try {
+            foreach ($u in @(Read-VdLiveQueueUrls -Path $LiveQueueFile)) {
+                if ($known.Add($u)) {
+                    $pending.Enqueue($u)
+                    $urls += $u
+                    $totalUrls = $known.Count
+                    Write-Log ("LIVE URL queued: " + (Shorten $u 100)) Cyan
+                }
+            }
+        } catch {
+            Write-Log ("Unable to read live queue: " + $_.Exception.Message) Red
         }
     }
 
@@ -272,6 +293,7 @@ while ($pending.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
         )
 
         Write-Log ("T{0} START #{1}/{2} {3}" -f $slot,$index,$totalUrls,(Shorten $url 100)) Cyan
+        Write-EventFile ([pscustomobject]@{Kind="Event";EventType="Started";Slot=$slot;Url=$url})
 
         $jobs += Start-ThreadJob -Name ([string]$slot) -ArgumentList $jobArgs -ScriptBlock {
             param(
