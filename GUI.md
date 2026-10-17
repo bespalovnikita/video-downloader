@@ -136,7 +136,7 @@ Stop сначала возобновляет paused tree, если это тре
 | Music MP3 | audio-only MP3 + metadata/thumbnail |
 | Subtitles archive | MKV + subtitles/auto-subs/embed |
 
-Пользовательские profiles и сохранение settings между запусками пока не реализованы.
+Пользовательские profiles пока не реализованы. Настройки очереди/загрузки сохраняются как часть session checkpoint и восстанавливаются после подтверждения пользователя; это не глобальные presets.
 
 ## Format settings
 
@@ -285,7 +285,7 @@ Single-instance IPC пока нет, поэтому protocol handler может 
 
 ## Tray и notifications
 
-При minimize окно скрывается в tray, но **приложение продолжает работать**: фоновые загрузки, preview prefetch и уведомления не останавливаются. Окно можно вернуть через двойной клик по значку или пункт Open; только Exit из меню трея (либо обычное закрытие окна) завершает приложение.
+При minimize окно скрывается в tray, но **приложение продолжает работать**: фоновые загрузки, preview prefetch и уведомления не останавливаются. Двойной клик по значку или Open возвращает окно. При нажатии **X** спрашиваем: Yes — спрятать в трей, No — выйти, Cancel — остаться. Exit в меню трея завершает приложение (и отдельно подтверждает остановку активных загрузок).
 
 Tray menu:
 
@@ -294,6 +294,16 @@ Tray menu:
 - Exit.
 
 После завершения сессии GUI показывает системное уведомление или balloon fallback и проигрывает звуковой сигнал.
+
+## Session checkpoint / восстановление
+
+- При изменениях очереди, статусов и настроек GUI сохраняет атомарный checkpoint в `%LOCALAPPDATA%\\VideoDownloader\\session.json`. Это отдельный файл от `%TEMP%` engine.
+- При следующем запуске, если остались `Queued`, `Interrupted` или `Failed` элементы, GUI спрашивает, восстановить ли список и настройки. Отказ удаляет checkpoint; скачивание **не** стартует автоматически.
+- `Running` из предыдущего процесса становится `Interrupted`. `Completed` не перекачивается при обычном Start; явное Download selected / Retry URL позволяет вручную повторить.
+- При аварии GUI, пока старый yt-dlp/PowerShell engine ещё работает, новый запуск загрузок блокируется до его завершения. После этого приложение сверяет итоговые Result-события JSONL перед возобновлением очереди (если event-файл сохранился).
+- Для защиты одного checkpoint действует запрет второго экземпляра Windows GUI в текущей пользовательской сессии. Открыть URL в уже работающем экземпляре из второй protocol invocation пока нельзя (single-instance IPC не реализован).
+- Хранится путь к cookies-файлу, но не его содержимое. Скачанные media и `.part` не переносятся; докачка зависит от yt-dlp/сервера.
+- Битый checkpoint сохраняется как `.invalid-<timestamp>`, восстановление пропускается с предупреждением.
 
 ## Session stats
 
@@ -325,6 +335,7 @@ Tray menu:
 pwsh -File .\tests\core-tests.ps1
 pwsh -File .\tests\smoke.ps1
 pwsh -STA -File .\tests\tray-lifecycle-tests.ps1
+pwsh -File .\tests\session-checkpoint-tests.ps1
 pwsh -File .\build-exe.ps1
 ~~~
 
