@@ -57,7 +57,17 @@ Fetch/cache логика находится в <code>lib/VideoDownloader.Preview
 - смотреть preview;
 - open/copy URL.
 
-Во время активной сессии операции **remove / reorder / drag/drop / download selected** остаются заблокированными, но **добавление через Paste, + Add или Watch clipboard разрешено**.
+Во время активной сессии **Remove разрешён**: пользователь может убрать URL из очереди, а для уже начатого/законченного задания — после подтверждения отменить конкретный native yt-dlp и удалить его собственные файлы. Другая очередь и процессы остаются активными.
+
+Reorder / drag/drop / download selected остаются заблокированными, добавление через Paste, + Add или Watch clipboard по-прежнему разрешено.
+
+- На каждую удаляемую активную ссылку GUI атомарно выставляет маркер в `-CancelDir`; engine проверяет его до запуска, пока читает stdout/stderr yt-dlp и перед публикацией результата.
+- Каждый cancellable job пишет файлы в **отдельную staging-директорию**. Отменённый URL теряет только собственные частичные файлы; успешные результаты публикуются с `OwnedPaths`.
+- Удаление готового медиа использует **точный путь из результата/чекпоинта**, без wildcard, с проверкой принадлежности каталогу вывода. Соседние и существовавшие ранее файлы не затрагиваются.
+- Результат отмены — `Cancelled`, это не `Failed` и не `Completed`; в постоянную историю успехов он не пишется.
+- Event для уже удалённого URL не должен снова добавлять строку в GUI.
+- Любой недостаток прав при удалении — явное предупреждение, строка остаётся для повторной попытки.
+- Визуальное подтверждение требуется перед удалением начатых или завершённых файлов.
 
 - Перед передачей нового URL проверяется общая история успехов; Cancel не меняет очередь.
 - Новые ссылки отправляются в отдельный append-only `incoming.txt` через `Add-VdLiveQueueUrls` с межпроцессной синхронизацией.
@@ -183,6 +193,7 @@ pwsh -STA -File .\tests\tray-lifecycle-tests.ps1
 pwsh -File .\tests\session-checkpoint-tests.ps1
 pwsh -File .\tests\download-history-tests.ps1
 pwsh -File .\tests\live-queue-tests.ps1
+pwsh -File .\tests\cancellation-tests.ps1
 pwsh -STA -File .\tests\windows-regression-tests.ps1
 pwsh -File .\tests\engine-integration-tests.ps1
 ~~~
