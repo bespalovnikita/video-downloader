@@ -8,6 +8,7 @@ param(
     [switch]$Watch,
     [int]$WatchInterval = 2,
     [string]$LiveQueueFile,
+    [string]$CancelDir,
     [switch]$Archive,
     [string]$Cookies,
     [switch]$SponsorBlock,
@@ -44,6 +45,9 @@ Import-Module $historyModule -Force
 $liveQueueModule = Join-Path $root "lib\VideoDownloader.LiveQueue.psm1"
 if (-not (Test-Path $liveQueueModule)) { throw "Missing live queue module: $liveQueueModule" }
 Import-Module $liveQueueModule -Force
+$cancelModule = Join-Path $root "lib\VideoDownloader.Cancellation.psm1"
+if (-not (Test-Path -LiteralPath $cancelModule)) { throw "Missing cancellation module: $cancelModule" }
+Import-Module $cancelModule -Force
 $historyPath = Join-Path $env:LOCALAPPDATA "VideoDownloader\successful-downloads.jsonl"
 
 $ytDlpExe = Join-Path $root "yt-dlp.exe"
@@ -192,7 +196,9 @@ function Handle-Message {
         [void]$Results.Add($Message)
         [void]$Completed.Add([string]$Message.Url)
 
-        if ($Message.Success) {
+        if ($Message.Cancelled -eq $true) {
+            Write-Log ("Cancelled URL: " + [string]$Message.Url) Yellow
+        } elseif ($Message.Success) {
             try {
                 Add-VdSuccessfulDownloadUrl -Path $historyPath -Url ([string]$Message.Url)
             } catch {
@@ -279,6 +285,15 @@ while ($pending.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
     while ($pending.Count -gt 0 -and $freeSlots.Count -gt 0) {
         $slot = $freeSlots.Dequeue()
         $url = $pending.Dequeue()
+        if ($CancelDir -and (Test-VdCancellation -Directory $CancelDir -Url $url)) {
+            $cancelEvent = [pscustomobject]@{
+                Kind="Result"; Slot=$slot; Url=$url; Success=$false; Cancelled=$true
+                Path=""; OwnedPaths=@(); FileSize=[int64]0; TransferredBytes=[long]0
+            }
+            Handle-Message -Message $cancelEvent -Results $results -Completed $completed -Urls $urls -Titles $titles
+            $freeSlots.Enqueue($slot)
+            continue
+        }
         $startedCount++
         $index = $startedCount
 
@@ -289,7 +304,8 @@ while ($pending.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
             $RateLimit,$Container,$VideoCodec,
             [bool]$WriteSubtitles,[bool]$WriteAutoSubtitles,$SubtitleLangs,[bool]$EmbedSubtitles,
             [bool]$EmbedThumbnail,[bool]$EmbedMetadata,[bool]$EmbedChapters,
-            $Retries,$RetryDelaySeconds,$ytDlpExe,$coreModule
+            $Retries,$RetryDelaySeconds,$ytDlpExe,$coreModule,
+            $CancelDir,$cancelModule,$ResolvedOut,$FilenameTemplate
         )
 
         Write-Log ("T{0} START #{1}/{2} {3}" -f $slot,$index,$totalUrls,(Shorten $url 100)) Cyan
@@ -302,10 +318,19 @@ while ($pending.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
                 [string]$rateLimit,[string]$container,[string]$videoCodec,
                 [bool]$writeSubtitles,[bool]$writeAutoSubtitles,[string]$subtitleLangs,[bool]$embedSubtitles,
                 [bool]$embedThumbnail,[bool]$embedMetadata,[bool]$embedChapters,
-                [int]$retries,[int]$retryDelaySeconds,[string]$ytDlpExe,[string]$coreModule
+                [int]$retries,[int]$retryDelaySeconds,[string]$ytDlpExe,[string]$coreModule,
+                [string]$cancelDir,[string]$cancelModule,[string]$outputRoot,[string]$filenameTemplate
             )
 
             Import-Module $coreModule -Force
+            if ($cancelDir) { Import-Module $cancelModule -Force }
+            $stageDir = ''
+            $workerOutputTemplate = $outputTemplate
+            if ($cancelDir) {
+                $stageDir = Join-Path (Split-Path -Parent $cancelDir) ("download-" + $index + "-" + [guid]::NewGuid().ToString("N"))
+                [void][IO.Directory]::CreateDirectory($stageDir)
+                $workerOutputTemplate = Join-Path $stageDir $filenameTemplate
+            }
 
             function Emit {
                 param(
@@ -377,7 +402,7 @@ while ($pending.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
                     "--no-color",
                     "--impersonate","chrome",
                     "-N",[string]$effectiveFragments,
-                    "-o",$outputTemplate,
+                    "-o",$workerOutputTemplate,
                     "--progress-template","download:__VD_PROGRESS__|%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s|%(progress.downloaded_bytes)s|%(progress.total_bytes,progress.total_bytes_estimate)s|%(info.id)s:%(info.format_id)s",
                     "--print","before_dl:__VD_TITLE__:%(title)s",
                     "--print","after_move:__VD_FILE__:%(filepath)s"
@@ -413,6 +438,7 @@ while ($pending.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
             $finalPath = ""
             $finalHeight = ""
             $stopAll = $false
+            $cancelled = $false
             $transferState = @{}
 
             foreach ($height in $qualities) {
@@ -423,9 +449,8 @@ while ($pending.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
                     $errorLines = [Collections.Generic.List[string]]::new()
                     $args = Build-Args $height
 
-                    & $ytDlpExe @args 2>&1 | ForEach-Object {
-                        $line = $_.ToString()
-
+                    $onLine = {
+                        param([string]$line)
                         if ($line.StartsWith("__VD_PROGRESS__|")) {
                             $p = Parse-VdProgressLine $line
                             if ($p) {
@@ -456,7 +481,55 @@ while ($pending.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
                         }
                     }
 
-                    $exitCode = $LASTEXITCODE
+                    # Native child belongs to this URL, so cancelling it cannot kill
+                    # yt-dlp subprocesses of other concurrent thread jobs.
+                    $startInfo = [Diagnostics.ProcessStartInfo]::new()
+                    $startInfo.FileName = $ytDlpExe
+                    $startInfo.UseShellExecute = $false
+                    $startInfo.CreateNoWindow = $true
+                    $startInfo.RedirectStandardOutput = $true
+                    $startInfo.RedirectStandardError = $true
+                    $startInfo.StandardOutputEncoding = [Text.Encoding]::UTF8
+                    $startInfo.StandardErrorEncoding = [Text.Encoding]::UTF8
+                    foreach ($argument in $args) { [void]$startInfo.ArgumentList.Add([string]$argument) }
+                    $native = [Diagnostics.Process]::new()
+                    $native.StartInfo = $startInfo
+                    $exitCode = -1
+                    try {
+                        if ($cancelDir -and (Test-VdCancellation -Directory $cancelDir -Url $url)) {
+                            $cancelled = $true
+                            $stopAll = $true
+                            break
+                        }
+                        [void]$native.Start()
+                        $stdout = $native.StandardOutput.ReadLineAsync()
+                        $stderr = $native.StandardError.ReadLineAsync()
+                        while ($null -ne $stdout -or $null -ne $stderr) {
+                            if ($cancelDir -and -not $cancelled -and (Test-VdCancellation -Directory $cancelDir -Url $url)) {
+                                $cancelled = $true
+                                try { $native.Kill($true) } catch {}
+                            }
+                            if ($stdout -and $stdout.IsCompleted) {
+                                $line = $stdout.GetAwaiter().GetResult()
+                                if ($null -eq $line) { $stdout = $null }
+                                else { . $onLine $line; $stdout = $native.StandardOutput.ReadLineAsync() }
+                            }
+                            if ($stderr -and $stderr.IsCompleted) {
+                                $line = $stderr.GetAwaiter().GetResult()
+                                if ($null -eq $line) { $stderr = $null }
+                                else { . $onLine $line; $stderr = $native.StandardError.ReadLineAsync() }
+                            }
+                            if ($stdout -or $stderr) { Start-Sleep -Milliseconds 50 }
+                        }
+                        $native.WaitForExit()
+                        $exitCode = $native.ExitCode
+                    } finally {
+                        if (-not $native.HasExited) {
+                            try { $native.Kill($true); $native.WaitForExit() } catch {}
+                        }
+                        $native.Dispose()
+                    }
+                    if ($cancelled) { $stopAll = $true; break }
                     if ($exitCode -eq 0) {
                         $success = $true
                         $stopAll = $true
@@ -485,7 +558,34 @@ while ($pending.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
                 }
             }
 
-            if ($success) {
+            $ownedPaths = @()
+            if ($cancelDir -and (Test-VdCancellation -Directory $cancelDir -Url $url)) { $cancelled = $true }
+            if ($success -and -not $cancelled -and $stageDir) {
+                try {
+                    $publish = Publish-VdStagedFiles -StageDir $stageDir -OutputRoot $outputRoot -MediaPath $finalPath
+                    $ownedPaths = @($publish.OwnedPaths)
+                    $finalPath = [string]$publish.Path
+                } catch {
+                    $success = $false
+                    $finalError = "Could not publish staged download: " + $_.Exception.Message
+                }
+            }
+            if ($cancelDir -and (Test-VdCancellation -Directory $cancelDir -Url $url)) { $cancelled = $true }
+            if ($cancelled -and $ownedPaths.Count -gt 0) {
+                [void](Remove-VdOwnedFiles -OutputRoot $outputRoot -Paths $ownedPaths)
+                $ownedPaths = @()
+            }
+            if ($stageDir -and (Test-Path -LiteralPath $stageDir)) {
+                Remove-Item -LiteralPath $stageDir -Recurse -Force -ErrorAction SilentlyContinue
+            }
+
+            if ($cancelled) {
+                [pscustomobject]@{
+                    Kind="Result"; Slot=$slot; Url=$url; Success=$false; Cancelled=$true
+                    Error=""; FriendlyError=""; Height=$finalHeight; Path=""
+                    OwnedPaths=@(); FileSize=[int64]0; TransferredBytes=[long]$transferState.Bytes
+                }
+            } elseif ($success) {
                 $fileSize = [int64]0
                 if ($finalPath -and (Test-Path -LiteralPath $finalPath -PathType Leaf)) {
                     try { $fileSize = (Get-Item -LiteralPath $finalPath).Length } catch {}
@@ -501,6 +601,7 @@ while ($pending.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
                     FriendlyError=""
                     Height=$finalHeight
                     Path=$finalPath
+                    OwnedPaths=@($ownedPaths)
                     FileSize=$fileSize
                     TransferredBytes=[long]$transferState.Bytes
                 }
@@ -516,6 +617,7 @@ while ($pending.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
                     FriendlyError=$friendly
                     Height=$finalHeight
                     Path=""
+                    OwnedPaths=@()
                     FileSize=[int64]0
                     TransferredBytes=[long]$transferState.Bytes
                 }
@@ -546,7 +648,7 @@ while ($pending.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
 }
 
 $successCount = @($results | Where-Object { $_.Success }).Count
-$errorCount = @($results | Where-Object { -not $_.Success }).Count
+$errorCount = @($results | Where-Object { -not $_.Success -and -not $_.Cancelled }).Count
 $remaining = 0
 if (Test-Path $ListFile) { $remaining = @(Get-Content $ListFile -Encoding UTF8 | Where-Object { $_ }).Count }
 Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successCount,$errorCount,$remaining) Cyan
