@@ -241,6 +241,7 @@ public sealed partial class NativeWindow : IDisposable
             if (AppPersistence.LegacyEngineIsAlive(previous.Engine))
             {
                 _checkpointReadOnly=true;
+                _legacyEngineBlocked=true;
                 MessageBox.Show(_window,
                     "The previous PowerShell download engine is still running.\n"+
                     "Stop the old downloader first, then restart the C# version to restore its latest results.\n"+
@@ -266,6 +267,7 @@ public sealed partial class NativeWindow : IDisposable
         }
     }
     private bool _checkpointReadOnly;
+    private bool _legacyEngineBlocked;
     private void SaveCheckpoint()
     {
         if (_checkpointReadOnly || _disposed) return;
@@ -436,6 +438,13 @@ public sealed partial class NativeWindow : IDisposable
     }
     private async Task StartAsync(IEnumerable<DownloadItem>? custom=null)
     {
+        if (_legacyEngineBlocked)
+        {
+            MessageBox.Show(_window,
+                "The previous PowerShell downloader is still active. Stop it and restart this app before starting a new session.",
+                "Native migration blocked",MessageBoxButton.OK,MessageBoxImage.Warning);
+            return;
+        }
         if(_session?.IsRunning==true) return;
         var pending=(custom??_queue.Where(i=>i.Status!="Completed")).Distinct().ToList();
         if(pending.Count==0)return;
