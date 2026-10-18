@@ -26,12 +26,16 @@ jobs:
           dotnet-version: '8.0.x'
       - name: Build native C# WPF app
         run: dotnet build native/VideoDownloader.Native.csproj -c Release
+      - name: Native WPF window startup smoke
+        shell: pwsh
+        timeout-minutes: 2
+        run: pwsh -NoProfile -STA -File ./native-tests/gui-startup.ps1
       - name: Native unit and filesystem security tests
         run: dotnet run --project native-tests/VideoDownloader.NativeTests.csproj -c Release
       - name: Publish native portable EXE
         shell: pwsh
         run: |
-          dotnet publish native/VideoDownloader.Native.csproj -c Release -r win-x64 --self-contained true -o dist/native
+          dotnet publish native/VideoDownloader.Native.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -o dist/native
           if ($LASTEXITCODE -ne 0) { throw "Native publish failed" }
           if (Get-ChildItem dist/native -Recurse -File -Include pwsh.exe,*.ps1,*.psm1) { throw "Native package unexpectedly includes PowerShell runtime/scripts" }
           Compress-Archive -Path dist/native/* -DestinationPath dist/VideoDownloader-native.zip -Force
