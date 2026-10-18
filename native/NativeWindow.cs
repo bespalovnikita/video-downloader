@@ -270,7 +270,6 @@ public sealed partial class NativeWindow : IDisposable
         using var reader=XmlReader.Create(stream);
         var dialog=(Window)XamlReader.Load(reader);
         dialog.Owner=_window;
-        dialog.FindName("CounterLabel") is TextBlock counterLabel = false;
         return DisplayDuplicate(dialog,url,completed,i,total);
     }
     private static DuplicateChoice DisplayDuplicate(Window dialog,string url,DateTimeOffset? completed,int index,int count)
