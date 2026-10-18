@@ -113,6 +113,13 @@ function Publish-VdStagedFiles {
     $owned=[Collections.Generic.List[string]]::new()
     $publishedMedia=''
     try {
+        # A junction directory may be skipped by -File -Recurse, so reject
+        # reparse directories explicitly before enumerating media files.
+        foreach ($subdir in @(Get-ChildItem -LiteralPath $StageDir -Directory -Recurse -Force)) {
+            if (($subdir.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "Staging contains a symlink or junction directory: $($subdir.FullName)"
+            }
+        }
         $files=@(Get-ChildItem -LiteralPath $StageDir -File -Recurse -Force)
         $planned=[Collections.Generic.List[object]]::new()
         # Preflight the *entire* batch before moving anything, including
