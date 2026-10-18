@@ -511,7 +511,6 @@ function Add-Urls([string[]]$Urls,[switch]$FromClipboard,[switch]$ShowPreview) {
         })
         # Clipboard links should not sit behind a long backlog of older
         # previews while the engine is already downloading.
-        Complete-PreviewPrefetch
         Queue-PreviewPrefetch -Url $u -Priority ([bool]$FromClipboard -and [bool]$running)
     }
     $script:lastAddedCount = $toAdd.Count
