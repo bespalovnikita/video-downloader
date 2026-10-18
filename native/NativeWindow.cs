@@ -428,6 +428,7 @@ public sealed partial class NativeWindow : IDisposable
                 throw new FileNotFoundException("Cookie file is missing.",options.Cookies);
             if(string.IsNullOrWhiteSpace(options.Output))throw new ArgumentException("Choose an output directory.");
             OwnedFiles.ValidateTemplate(options.FilenameTemplate);
+            options.PinOutputDirectory();
             OwnedFiles.NoReparseAncestors(Path.Combine(options.OutputDirectory,"__validation__"));
             Directory.CreateDirectory(options.OutputDirectory);
             _sessionOptions=options;
@@ -476,9 +477,14 @@ public sealed partial class NativeWindow : IDisposable
             try
             {
                 CancelRow(row);
-                if(row.Status=="Completed" && (row.OwnedPaths.Count>0 || row.Path.Length>0))
-                    OwnedFiles.DeleteOwned(_sessionOptions.OutputDirectory,
-                        row.OwnedPaths.Count>0?row.OwnedPaths: [row.Path]);
+                if(row.Status=="Completed")
+                {
+                    // Never delete an old checkpoint path without the owned-file manifest.
+                    if(row.OwnedPaths.Count==0 && row.Path.Length>0)
+                        throw new IOException("This restored download has no ownership manifest. Remove the file manually; the application will not risk deleting an unrelated file.");
+                    if(row.OwnedPaths.Count>0)
+                        OwnedFiles.DeleteOwned(_sessionOptions.OutputDirectory,row.OwnedPaths);
+                }
                 _queue.Remove(row);
                 _downloads.Remove(row);
             }
