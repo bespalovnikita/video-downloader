@@ -2,7 +2,7 @@
 # WinForms NotifyIcon.Text is limited to 63 visible characters on older shells.
 function Format-VdTraySpeed {
     param([double]$BytesPerSecond)
-    $speed=[Math]::Max(0,$BytesPerSecond)
+    $speed=[Math]::Max([double]0,$BytesPerSecond)
     if ($speed -ge 1GB) { return ("{0:0.#} GB/s" -f ($speed/1GB)) }
     if ($speed -ge 1MB) { return ("{0:0.#} MB/s" -f ($speed/1MB)) }
     if ($speed -ge 1KB) { return ("{0:0.#} KB/s" -f ($speed/1KB)) }
