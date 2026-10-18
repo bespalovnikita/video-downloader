@@ -71,7 +71,7 @@ try {
     try {
         $observed=$false
         $deadline=(Get-Date).AddSeconds(30)
-        while ((Get-Date) -lt $deadline -and $run.State -eq 'Running') {
+        while ((Get-Date) -lt $deadline -and $run.State -in @('NotStarted','Running')) {
             if (Test-Path -LiteralPath $cancelEvents) {
                 $seen=@(Get-Content $cancelEvents -ErrorAction SilentlyContinue | Where-Object { $_ -match '"EventType":"Started"' -and $_ -match 'to-cancel' })
                 if ($seen.Count -gt 0) { $observed=$true; break }
