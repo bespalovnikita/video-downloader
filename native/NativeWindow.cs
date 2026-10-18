@@ -28,6 +28,7 @@ public sealed partial class NativeWindow : IDisposable
     private readonly Forms.NotifyIcon _tray=new();
     private readonly string _ytDlp=DependencyCenter.Executable("yt-dlp.exe");
     private readonly Dictionary<string,string> _finalStates=new(StringComparer.Ordinal);
+    private readonly HashSet<string> _sessionUrls=new(StringComparer.Ordinal);
     private readonly Dictionary<string,long> _transferred=new(StringComparer.Ordinal);
     private DownloadCoordinator? _session;
     private Task? _sessionTask;
@@ -125,14 +126,19 @@ public sealed partial class NativeWindow : IDisposable
     private void UpdateState()
     {
         if (_disposed) return;
-        int active=_queue.Count(x=>x.Status=="Running");
-        int left=_queue.Count(x=>x.Status is not ("Completed" or "Failed"));
-        _ok=_queue.Count(x=>x.Status=="Completed");
-        _failed=_queue.Count(x=>x.Status=="Failed");
-        double speed=_queue.Where(x=>x.Status=="Running").Sum(x=>DownloadCoordinator.ParseSize(x.Speed));
-        long downloaded=_queue.Sum(x=>x.TransferredBytes);
-        int total=_queue.Count;
-        double progress=total==0 ? 0 : _queue.Sum(x=>x.Status=="Completed"||x.Status=="Failed"?100:x.Progress)/(double)total;
+        // Do not count successful downloads from a previous session again.
+        // Live additions join this set; removed URLs leave it.
+        var sessionRows=_sessionStart.HasValue
+            ? _queue.Where(x=>_sessionUrls.Contains(x.Url)).ToArray()
+            : _queue.ToArray();
+        int active=sessionRows.Count(x=>x.Status=="Running");
+        int left=sessionRows.Count(x=>x.Status is not ("Completed" or "Failed"));
+        _ok=sessionRows.Count(x=>x.Status=="Completed");
+        _failed=sessionRows.Count(x=>x.Status=="Failed");
+        double speed=sessionRows.Where(x=>x.Status=="Running").Sum(x=>DownloadCoordinator.ParseSize(x.Speed));
+        long downloaded=sessionRows.Sum(x=>x.TransferredBytes);
+        int total=sessionRows.Length;
+        double progress=total==0 ? 0 : sessionRows.Sum(x=>x.Status=="Completed"||x.Status=="Failed"?100:x.Progress)/(double)total;
         bool running=_session?.IsRunning==true;
         bool paused=running && _session!.IsPaused;
         T("HeaderStats").Text=$"{active} active · {DownloadFormat.Speed(speed)} · {_ok}/{total}";
@@ -356,7 +362,11 @@ public sealed partial class NativeWindow : IDisposable
         {
             _queue.Add(row);
             _previews.Request(row.Url,clipboard&&active);
-            if(active && !_session!.Add(row)) Log("Session finished; URL stays queued for next Start: "+row.Url);
+            if(active)
+            {
+                if(_session!.Add(row)) _sessionUrls.Add(row.Url);
+                else Log("Session finished; URL stays queued for next Start: "+row.Url);
+            }
         }
         if(selectNew && rows.Count>0)
         {
@@ -434,6 +444,8 @@ public sealed partial class NativeWindow : IDisposable
             Directory.CreateDirectory(options.OutputDirectory);
             _sessionOptions=options;
             _stopping=false;_sessionStart=DateTime.Now;_finalStates.Clear();_downloads.Clear();
+            _sessionUrls.Clear();
+            foreach(var row in approved) _sessionUrls.Add(row.Url);
             foreach(var row in approved)
             {
                 row.Status="Queued";row.State="Queued";row.RawError="";row.Progress=0;
@@ -502,6 +514,7 @@ public sealed partial class NativeWindow : IDisposable
                 }
                 _queue.Remove(row);
                 _downloads.Remove(row);
+                _sessionUrls.Remove(row.Url);
             }
             catch(Exception e)
             {
