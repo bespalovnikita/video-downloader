@@ -70,6 +70,36 @@ try
     Assert(!AppPersistence.LegacyEngineIsAlive(legacyRecovered.Engine),
            "Nonexistent old PowerShell engine must not block native migration");
 
+    // A genuine legacy PowerShell process must block concurrent native
+    // recovery; a PID alone is insufficient because Windows reuses PIDs.
+    if (OperatingSystem.IsWindows())
+    {
+        var start=new System.Diagnostics.ProcessStartInfo("pwsh.exe")
+        {
+            UseShellExecute=false,CreateNoWindow=true
+        };
+        foreach(var arg in new[]{"-NoProfile","-NonInteractive","-Command","Start-Sleep -Seconds 20"})
+            start.ArgumentList.Add(arg);
+        using var oldWorker=System.Diagnostics.Process.Start(start)!;
+        try
+        {
+            var active=JsonSerializer.SerializeToElement(new {
+                Pid=oldWorker.Id,
+                StartedUtc=oldWorker.StartTime.ToUniversalTime().ToString("O"),
+                EventsPath=eventsFile
+            });
+            Assert(AppPersistence.LegacyEngineIsAlive(active),
+                "Running legacy PowerShell process with matching PID and start time must block migration");
+            var mismatched=JsonSerializer.SerializeToElement(new {
+                Pid=oldWorker.Id,
+                StartedUtc=oldWorker.StartTime.AddDays(-1).ToUniversalTime().ToString("O")
+            });
+            Assert(!AppPersistence.LegacyEngineIsAlive(mismatched),
+                "Wrong process start time must prevent PID reuse false positives");
+        }
+        finally { if(!oldWorker.HasExited)oldWorker.Kill(true);oldWorker.WaitForExit(); }
+    }
+
     var output=Path.Combine(temp,"output");
     var outside=Path.Combine(temp,"outside");
     var stage=Path.Combine(temp,"stage");
