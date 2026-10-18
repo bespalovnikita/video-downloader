@@ -76,6 +76,7 @@ function Get-VdRestoredQueue {
             State = $display
             Status = $status
             Path = [string]$item.Path
+            OwnedPaths = @($item.OwnedPaths | Where-Object { $_ })
             Progress = if ($status -eq "Completed") { 100.0 } else { 0.0 }
             Speed = ""
             Downloaded = ""
@@ -129,6 +130,10 @@ function Merge-VdSessionResultEvents {
             $item.Status = "Completed"
             $item.DisplayState = "Done"
             $item.Path = [string]$event.Path
+            $item.OwnedPaths = @($event.OwnedPaths | Where-Object { $_ })
+        } elseif ($event.Cancelled -eq $true) {
+            $item.Status = "Interrupted"
+            $item.DisplayState = "Cancelled"
         } elseif ($item.Status -ne "Completed") {
             $item.Status = "Failed"
             $item.DisplayState = if ($event.FriendlyError) { [string]$event.FriendlyError } else { "Failed" }
