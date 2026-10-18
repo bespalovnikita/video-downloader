@@ -14,7 +14,7 @@ Expected portable package: VideoDownloader.exe, yt-dlp.exe, ui/*.xaml and assets
 
 ## Reuse of existing data
 
-- Session: %LOCALAPPDATA%\VideoDownloader\session.json, version 1. Queue and settings are read from the old GUI. Running becomes Interrupted and no downloads resume automatically.
+- Session: %LOCALAPPDATA%\VideoDownloader\session.json, version 1. Queue and settings are read from the old GUI. The old engine `EventsPath` is replayed for completed/failed/cancelled URLs after a crash, then any remaining Running rows become Interrupted. No downloads resume automatically; a still-live legacy `pwsh` engine blocks native recovery/start and leaves the checkpoint unchanged.
 - History: %LOCALAPPDATA%\VideoDownloader\successful-downloads.jsonl, version 1. Full append-only URL history and optional CompletedAtUtc are preserved, with the same named Local\VideoDownloader.SuccessHistory mutex.
 - Preview: %LOCALAPPDATA%\VideoDownloader\preview-cache, SHA-256(URL) filenames and 72-hour TTL are retained.
 
@@ -44,12 +44,12 @@ The native command-line parser is not an exact alias for old PowerShell paramete
 
 ## Safety and limitations
 
-Every downloaded URL uses its own staging folder. Publishing does not overwrite existing media. File removal is restricted to exact owned filenames inside the chosen output folder, with rejection of parent symlinks, junctions and reparse points. No wildcard deletion.
+Every downloaded URL uses its own staging folder. Publishing does not overwrite existing media. File removal requires a known `OwnedPaths` manifest (a bare `Path` from an old checkpoint is insufficient) and is restricted to exact owned filenames inside the session's pinned output folder, with rejection of parent symlinks, junctions and reparse points. No wildcard deletion. Cancellation uses durable in-memory tombstones and result-finalization synchronization to cover the pending-to-running and publish-to-done race windows.
 
 Filesystem tests include NTFS junctions and outside-root sentinel files. As with the preceding version, determined hostile processes that swap paths between validation and operation may exploit a TOCTOU race; only handle-relative Win32 filesystem operations can fully eliminate that class of attack.
 
 ## Release gate
 
-Before replacing the default Windows release: C# compilation, actual WPF startup smoke, offline real yt-dlp completion/cancellation/live-add/pause tests, compatible session/history tests, boundary security tests, self-contained ZIP without PowerShell, plus manual UX validation of drag, duplicate modal, clipboard preview, tray and dependencies.
+Before replacing the default Windows release: C# compilation, actual WPF startup and Add/Remove/clipboard-preview/.url/checkpoint interaction smoke, offline real yt-dlp completion/cancellation/live-add/pause tests, legacy result-event reconciliation, boundary security tests, and self-contained ZIP without PowerShell. Manual UX validation of drag, duplicate modal, live clipboard preview, tray actions and dependency management remains required before switching the default Windows package.
 
 Workflow: .github/workflows/native-windows.yml. The prior PowerShell implementation remains in source as a rollback path until release is accepted.
