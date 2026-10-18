@@ -379,13 +379,18 @@ public sealed class DownloadCoordinator : IAsyncDisposable
                                 if (!double.TryParse(percentText,NumberStyles.Float,CultureInfo.InvariantCulture,out double pct)) pct=0;
                                 long.TryParse(segments[4],NumberStyles.Integer,CultureInfo.InvariantCulture,out long bytes);
                                 long.TryParse(segments[5],NumberStyles.Integer,CultureInfo.InvariantCulture,out long total);
-                                var key=segments[6];
-                                streamed.TryGetValue(key,out long previous);
-                                if (bytes>previous) { transferred+=bytes-previous;streamed[key]=bytes; }
-                                item.Progress=Math.Clamp(pct,0,100);item.Speed=segments[2].Trim();
-                                item.Downloaded=DownloadFormat.Bytes(bytes)+(total>0 ? " / "+DownloadFormat.Bytes(total) : "");
-                                item.ETA=segments[3].Trim();item.TransferredBytes=transferred;
-                                if (item.Progress>0) item.State=$"{item.Progress:0.0}%";
+                                // stdout and stderr are consumed by independent async
+                                // tasks. Progress samples must not race each other.
+                                lock(streamed)
+                                {
+                                    var key=segments[6];
+                                    streamed.TryGetValue(key,out long previous);
+                                    if (bytes>previous) { transferred+=bytes-previous;streamed[key]=bytes; }
+                                    item.Progress=Math.Clamp(pct,0,100);item.Speed=segments[2].Trim();
+                                    item.Downloaded=DownloadFormat.Bytes(bytes)+(total>0 ? " / "+DownloadFormat.Bytes(total) : "");
+                                    item.ETA=segments[3].Trim();item.TransferredBytes=transferred;
+                                    if (item.Progress>0) item.State=$"{item.Progress:0.0}%";
+                                }
                                 _changed(item);
                             }
                             return;
