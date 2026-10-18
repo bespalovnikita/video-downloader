@@ -93,7 +93,7 @@ function Add-VdSuccessfulDownloadUrl {
 function Resolve-VdDuplicateDownloadPlan {
     param(
         [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$Urls,
-        [Parameter(Mandatory)][Collections.Generic.HashSet[string]]$Known,
+        [Parameter(Mandatory)][AllowEmptyCollection()][Collections.Generic.HashSet[string]]$Known,
         [Parameter(Mandatory)][scriptblock]$Prompt,
         [Collections.Generic.Dictionary[string,object]]$LastDownloads
     )
