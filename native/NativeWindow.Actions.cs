@@ -218,10 +218,14 @@ public sealed partial class NativeWindow
     }
     private void OnClosing(object? sender,System.ComponentModel.CancelEventArgs e)
     {
-        if(_session?.IsRunning==true && !_exitFromTray)
+        if (_disposed) return; // internal test shutdown, not a user window close
+        if (!_exitFromTray)
         {
+            var active=_session?.IsRunning==true;
             var answer=MessageBox.Show(_window,
-                "A download is still running.\nYes: minimize to tray\nNo: cancel all downloads and exit\nCancel: stay in app",
+                active
+                    ? "A download is still running.\nYes: minimize to tray (downloads continue)\nNo: stop downloads and exit\nCancel: stay in the app"
+                    : "Close Video Downloader?\nYes: minimize to tray\nNo: exit\nCancel: stay in the app",
                 "Video Downloader",MessageBoxButton.YesNoCancel,MessageBoxImage.Question);
             if(answer==MessageBoxResult.Yes){e.Cancel=true;_window.Hide();return;}
             if(answer==MessageBoxResult.Cancel){e.Cancel=true;return;}
