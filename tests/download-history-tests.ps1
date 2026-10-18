@@ -17,6 +17,34 @@ $path = Join-Path $dir "success.jsonl"
 try {
     $known = Read-VdDownloadHistory -Path $path
     Assert ($known.Count -eq 0) "Missing history should start empty"
+
+    # Regression: a brand-new installation has no success-history file.
+    # GUI creates an empty HashSet and passes an empty timestamp dictionary.
+    # PowerShell must bind both values without rejecting the new download.
+    $script:unexpectedHistoryPrompts = 0
+    $freshUrls = @("https://example.com/first", "https://example.com/second")
+    $emptyRecords = Read-VdDownloadHistory -Path $path -IncludeTimestamps
+    Assert ($emptyRecords.Count -eq 0) "Missing timestamp history should be empty"
+    $firstRun = Resolve-VdDuplicateDownloadPlan -Urls $freshUrls -Known $known -LastDownloads $emptyRecords -Prompt {
+        $script:unexpectedHistoryPrompts++
+        throw "The first download must not prompt for duplicates"
+    }
+    Assert (-not $firstRun.Cancelled -and $firstRun.Selected.Count -eq 2 -and $firstRun.Remove.Count -eq 0) "Fresh installation must allow all downloads"
+    Assert ($firstRun.Selected[0] -eq $freshUrls[0] -and $firstRun.Selected[1] -eq $freshUrls[1]) "First download must preserve URL order"
+    Assert ($script:unexpectedHistoryPrompts -eq 0) "Empty history must never show a duplicate confirmation"
+    $emptyFirstRun = Resolve-VdDuplicateDownloadPlan -Urls @() -Known $known -LastDownloads $emptyRecords -Prompt {
+        throw "An empty queue must not trigger a duplicate confirmation"
+    }
+    Assert (-not $emptyFirstRun.Cancelled -and $emptyFirstRun.Selected.Count -eq 0) "Empty history and empty queue must be accepted"
+
+    # Existing but empty history file exercises the same GUI call path.
+    [IO.File]::WriteAllText($path, "")
+    $knownFromEmptyFile = Read-VdDownloadHistory -Path $path
+    $recordsFromEmptyFile = Read-VdDownloadHistory -Path $path -IncludeTimestamps
+    $withEmptyFile = Resolve-VdDuplicateDownloadPlan -Urls @("https://example.com/fresh") -Known $knownFromEmptyFile -LastDownloads $recordsFromEmptyFile -Prompt {
+        throw "Empty history file must not prompt"
+    }
+    Assert ($withEmptyFile.Selected.Count -eq 1 -and $withEmptyFile.Remove.Count -eq 0) "Empty history file must allow a download"
     $upper = "https://example.com/Video?q=a%20b"
     $lower = "https://example.com/video?q=a%20b"
     $another = "https://example.com/another"
