@@ -771,7 +771,7 @@ function Tail-Events {
         if ([string]::IsNullOrWhiteSpace($lines[$i])) { continue }
         try { $event = $lines[$i] | ConvertFrom-Json -ErrorAction Stop } catch { continue }
 
-        if ($event.Url -and $script:removedUrls.Contains([string]$event.Url)) {
+        if ($event.Url -and $null -ne $script:removedUrls -and $script:removedUrls.Contains([string]$event.Url)) {
             if ($event.Kind -eq "Result" -and $event.OwnedPaths) {
                 try { [void](Remove-VdOwnedFiles -OutputRoot $OutputBox.Text.Trim() -Paths @($event.OwnedPaths)) }
                 catch { Log-Line ("Could not clean late result for removed URL: " + $_.Exception.Message) }
