@@ -1,5 +1,15 @@
 # Video Downloader
 
+> **Новая версия на C# (экспериментальная):** полная перепись GUI и движка ведётся в
+> [PR #20](https://github.com/bespalovnikita/video-downloader/pull/20).
+> Отдельный Windows workflow **Native C# Windows build** публикует артефакт
+> `VideoDownloader-native-windows`, которому **не нужен PowerShell 7**:
+> `VideoDownloader.exe` сам управляет WPF, очередью, yt-dlp и треем.
+> Пока это draft PR, а обычный `VideoDownloader-windows` из main остаётся
+> стабильной PowerShell-сборкой. Форматы истории/очереди совместимы, но не
+> запускай обе версии одновременно. Подробности в [NATIVE_MIGRATION.md](NATIVE_MIGRATION.md).
+
+
 [![Build Windows EXE](https://github.com/bespalovnikita/video-downloader/actions/workflows/build-windows.yml/badge.svg)](https://github.com/bespalovnikita/video-downloader/actions/workflows/build-windows.yml)
 ![Windows](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D4)
 ![PowerShell](https://img.shields.io/badge/PowerShell-7%2B-5391FE)
