@@ -36,6 +36,10 @@ jobs:
         shell: pwsh
         run: pwsh -NoProfile -File ./tests/live-queue-tests.ps1
 
+      - name: Per-URL cancellation tests
+        shell: pwsh
+        run: pwsh -NoProfile -File ./tests/cancellation-tests.ps1
+
       - name: WPF and engine smoke checks
         shell: pwsh
         run: ./tests/smoke.ps1
