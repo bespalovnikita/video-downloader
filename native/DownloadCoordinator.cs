@@ -23,6 +23,9 @@ public sealed class DownloadCoordinator : IAsyncDisposable
     private readonly Action<string> _log;
     private readonly string _stageRoot=Path.Combine(Path.GetTempPath(),"vd-native-"+Guid.NewGuid().ToString("N"));
     private volatile bool _paused;
+    private readonly object _pauseGuard=new();
+    private readonly Dictionary<int,DateTime> _suspended=new();
+
     private int _outstanding;
     private int _completed;
     private readonly object _resultGate=new();
@@ -34,6 +37,74 @@ public sealed class DownloadCoordinator : IAsyncDisposable
 
     [DllImport("ntdll.dll")] private static extern int NtSuspendProcess(IntPtr handle);
     [DllImport("ntdll.dll")] private static extern int NtResumeProcess(IntPtr handle);
+    private const uint SnapshotProcess=0x00000002;
+    [DllImport("kernel32.dll",SetLastError=true)]
+    private static extern IntPtr CreateToolhelp32Snapshot(uint flags,uint pid);
+    [DllImport("kernel32.dll",CharSet=CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool Process32FirstW(IntPtr snapshot,ref ProcessEntry entry);
+    [DllImport("kernel32.dll",CharSet=CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool Process32NextW(IntPtr snapshot,ref ProcessEntry entry);
+    [DllImport("kernel32.dll")] [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CloseHandle(IntPtr handle);
+    [StructLayout(LayoutKind.Sequential,CharSet=CharSet.Unicode)]
+    private struct ProcessEntry
+    {
+        public uint Size,Usage,ProcessId;
+        public IntPtr DefaultHeapId;
+        public uint ModuleId,Threads,ParentId;
+        public int BasePriority;
+        public uint Flags;
+        [MarshalAs(UnmanagedType.ByValTStr,SizeConst=260)] public string ExeFile;
+    }
+    private static IReadOnlyList<int> ProcessTree(int root)
+    {
+        var parents=new Dictionary<int,int>();
+        var snapshot=CreateToolhelp32Snapshot(SnapshotProcess,0);
+        if (snapshot!=new IntPtr(-1))
+        {
+            try
+            {
+                var item=new ProcessEntry{Size=(uint)Marshal.SizeOf<ProcessEntry>(),ExeFile=""};
+                if(Process32FirstW(snapshot,ref item))
+                    do { parents[(int)item.ProcessId]=(int)item.ParentId; } while(Process32NextW(snapshot,ref item));
+            }
+            finally {CloseHandle(snapshot);}
+        }
+        var discovered=new List<int>{root};
+        var seen=new HashSet<int>{root};
+        for(int i=0;i<discovered.Count;i++)
+        {
+            foreach(var (pid,parent) in parents)
+                if(parent==discovered[i]&&seen.Add(pid))discovered.Add(pid);
+        }
+        return discovered;
+    }
+    private void SuspendProcess(int pid)
+    {
+        try
+        {
+            using var process=Process.GetProcessById(pid);
+            if(!process.HasExited && NtSuspendProcess(process.Handle)==0)
+                _suspended[pid]=process.StartTime.ToUniversalTime();
+        }
+        catch(ArgumentException){}catch(InvalidOperationException){}catch(System.ComponentModel.Win32Exception){}
+    }
+    private void ResumeSuspended()
+    {
+        foreach(var (pid,started) in _suspended)
+        {
+            try
+            {
+                using var process=Process.GetProcessById(pid);
+                if(!process.HasExited && Math.Abs((process.StartTime.ToUniversalTime()-started).TotalSeconds)<2)
+                    NtResumeProcess(process.Handle);
+            }
+            catch(ArgumentException){}catch(InvalidOperationException){}catch(System.ComponentModel.Win32Exception){}
+        }
+        _suspended.Clear();
+    }
     public DownloadCoordinator(string ytDlp,AppPersistence data,DownloadOptions options,
         Action<DownloadItem> changed,Action<string> log)
     {
@@ -60,12 +131,21 @@ public sealed class DownloadCoordinator : IAsyncDisposable
     }
     public void Pause(bool pause)
     {
-        if (_paused==pause) return;
-        _paused=pause;
-        foreach(var proc in _processes.Values)
+        lock(_pauseGuard)
         {
-            try { if (!proc.HasExited) { if (pause) NtSuspendProcess(proc.Handle); else NtResumeProcess(proc.Handle); } }
-            catch (InvalidOperationException) { }
+            if (_paused==pause)return;
+            _paused=pause;
+            if(!pause){ResumeSuspended();return;}
+            foreach(var process in _processes.Values)
+            {
+                try
+                {
+                    if(process.HasExited)continue;
+                    foreach(int pid in ProcessTree(process.Id))
+                        if(!_suspended.ContainsKey(pid)) SuspendProcess(pid);
+                }
+                catch(InvalidOperationException){}
+            }
         }
     }
     public void Stop()
@@ -335,10 +415,14 @@ public sealed class DownloadCoordinator : IAsyncDisposable
             WorkingDirectory=AppContext.BaseDirectory
         };
         foreach(string arg in args) psi.ArgumentList.Add(arg);
+        while(_paused) await Task.Delay(100,token).ConfigureAwait(false);
         using var process=new Process{StartInfo=psi};
         if (!process.Start()) throw new IOException("Failed to start yt-dlp");
         _processes[url]=process;
-        if (_paused) { try { NtSuspendProcess(process.Handle); } catch {} }
+        lock(_pauseGuard)
+        {
+            if(_paused) SuspendProcess(process.Id);
+        }
         using var reg=token.Register(()=>
         {
             try { if (!process.HasExited) { if (_paused) NtResumeProcess(process.Handle); process.Kill(true); } }
