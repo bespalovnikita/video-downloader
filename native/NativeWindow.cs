@@ -107,8 +107,13 @@ public sealed partial class NativeWindow : IDisposable
             if (_session?.IsRunning==true) return;
             if (e.Data.GetDataPresent(typeof(DownloadItem)) && e.Data.GetData(typeof(DownloadItem)) is DownloadItem item)
             {
-                var target=Q.SelectedItem as DownloadItem;
-                if (target!=null && item!=target) MoveItem(item,_queue.IndexOf(target));
+                // Selection normally remains on the dragged item. Resolve the
+                // actual row under the drop pointer, not Q.SelectedItem.
+                System.Windows.DependencyObject? visual=e.OriginalSource as System.Windows.DependencyObject;
+                while(visual!=null && visual is not DataGridRow)
+                    visual=System.Windows.Media.VisualTreeHelper.GetParent(visual);
+                var target=(visual as DataGridRow)?.Item as DownloadItem;
+                if(target!=null && item!=target)MoveItem(item,_queue.IndexOf(target));
                 e.Handled=true;
             }
         };
@@ -570,8 +575,15 @@ public sealed partial class NativeWindow : IDisposable
     }
     private static IReadOnlyList<string> ReadInputFile(string file)
     {
+        if(new FileInfo(file).Length>16*1024*1024)
+            throw new InvalidDataException("URL list is larger than 16 MiB.");
         if(Path.GetExtension(file).Equals(".url",StringComparison.OrdinalIgnoreCase))
-            return ParseUrls(File.ReadAllText(file));
+        {
+            // Windows InternetShortcut files use URL=https://... rather than
+            // a bare URL and must not be mistaken for ordinary text lists.
+            return File.ReadLines(file).Where(line=>line.TrimStart().StartsWith("URL=",StringComparison.OrdinalIgnoreCase))
+                .SelectMany(line=>ParseUrls(line[(line.IndexOf('=')+1)..])).ToArray();
+        }
         if(Path.GetExtension(file).Equals(".txt",StringComparison.OrdinalIgnoreCase))
             return ParseUrls(File.ReadAllText(file));
         return [];
