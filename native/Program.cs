@@ -13,6 +13,11 @@ public static class Program
     [STAThread]
     public static void Main(string[] args)
     {
+        if(args.Contains("--ui-self-test",StringComparer.OrdinalIgnoreCase))
+        {
+            NativeUiSelfTest.Run();
+            return;
+        }
         if(args.Contains("--cli",StringComparer.OrdinalIgnoreCase))
         {
             NativeCli.RunAsync(args).GetAwaiter().GetResult();
