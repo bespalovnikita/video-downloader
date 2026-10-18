@@ -1,3 +1,5 @@
+global using System.IO;
+global using Application = System.Windows.Application;
 global using TextBox = System.Windows.Controls.TextBox;
 global using ComboBox = System.Windows.Controls.ComboBox;
 global using CheckBox = System.Windows.Controls.CheckBox;
