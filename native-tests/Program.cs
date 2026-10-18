@@ -136,6 +136,45 @@ try
     Assert(keepRow.Status=="Completed","Other parallel URL must continue and finish");
     Assert(cancelRow.OwnedPaths.Count==0 && File.Exists(keepRow.Path),"Cancelled job must leave no owned output files");
     Assert(File.ReadAllText(sentinel)=="NEVER DELETE","No download or cancellation may affect files outside output");
-    Console.WriteLine("Native C# status/history/checkpoint/owned-file safety and real offline yt-dlp integration tests passed.");
+    Assert(Directory.GetFiles(realOptions.Output,"VideoDownloader-*-success.txt").Length>0,
+        "Successful native downloads must write durable per-session success lists");
+
+    // A queued row removed before a free slot becomes available must not download.
+    var skipRow=new DownloadItem{Url=new Uri(inputA).AbsoluteUri};
+    var keepQueued=new DownloadItem{Url=new Uri(inputB).AbsoluteUri};
+    await using(var engine=new DownloadCoordinator(ytDlp,data,new DownloadOptions {
+        Output=Path.Combine(temp,"queued-removal-output"),Threads="1",
+        EmbedMetadata=false,EmbedChapters=false
+    },_=>{},_=>{}))
+    {
+        engine.Add(skipRow);engine.Add(keepQueued);
+        engine.Cancel(skipRow);
+        await engine.RunAsync();
+    }
+    Assert(skipRow.Status=="Interrupted"&&skipRow.Path=="",
+        "A URL removed while Queued must never start downloading");
+    Assert(keepQueued.Status=="Completed","Removing a pending URL must not block next item");
+
+    // The running C# coordinator can ingest clipboard-equivalent links
+    // without restarting the worker or writing a shared queue.txt.
+    var liveBase=new DownloadItem{Url=new Uri(inputA).AbsoluteUri};
+    var liveAdded=new DownloadItem{Url=new Uri(inputB).AbsoluteUri};
+    await using(var engine=new DownloadCoordinator(ytDlp,data,new DownloadOptions {
+        Output=Path.Combine(temp,"live-add-output"),Threads="1",
+        RateLimit="100K",EmbedMetadata=false,EmbedChapters=false
+    },_=>{},_=>{}))
+    {
+        engine.Add(liveBase);
+        var task=engine.RunAsync();
+        var until=DateTime.UtcNow.AddSeconds(20);
+        while(liveBase.Status!="Running" && DateTime.UtcNow<until)await Task.Delay(100);
+        Assert(liveBase.Status=="Running","Base download must be active before live addition");
+        Assert(engine.Add(liveAdded),"Live URL must be accepted by the active C# engine");
+        await task.WaitAsync(TimeSpan.FromSeconds(60));
+    }
+    Assert(liveBase.Status=="Completed"&&liveAdded.Status=="Completed",
+        "Both initial and dynamically enqueued URLs must finish");
+    Assert(File.ReadAllText(sentinel)=="NEVER DELETE","All native flows must keep external sentinel unchanged");
+    Console.WriteLine("Native C# session/history/owned-file and live/cancel/parallel yt-dlp integration tests passed.");
 }
 finally{try{Directory.Delete(temp,true);}catch(IOException){}}
