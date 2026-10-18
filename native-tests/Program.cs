@@ -1,4 +1,5 @@
 using System.IO;
+using System.Text.Json;
 using VideoDownloader.Native;
 
 static void Assert(bool value,string why)
@@ -37,6 +38,37 @@ try
     Assert(restored.Queue.Count==2 && restored.Queue[0].Status=="Interrupted" && restored.Queue[1].Status=="Completed",
         "Existing checkpoint must recover safely without restarting completed rows");
     Assert(restored.Settings.Quality=="1080","Settings preserved");
+
+    // A crashed legacy GUI can leave a stale Running checkpoint even after
+    // its engine wrote a final Result event. Preserve that completed download.
+    var eventsFile=Path.Combine(temp,"old-events.jsonl");
+    string recoveredUrl="https://example.com/recovered";
+    string unfinishedUrl="https://example.com/unfinished";
+    var recoveredPath=Path.Combine(temp,"completed-before-crash.mp4");
+    File.WriteAllText(recoveredPath,"OLD COMPLETE FILE");
+    File.WriteAllText(eventsFile,
+        JsonSerializer.Serialize(new {
+            Kind="Result",Url=recoveredUrl,Success=true,Path=recoveredPath,
+            OwnedPaths=new[]{recoveredPath}
+        })+"\n"+ "{partially written json\n");
+    var oldSnapshot=new {
+        Version=1, SavedAtUtc=DateTime.UtcNow,
+        Queue=new[] {
+            new {Order=1,Url=recoveredUrl,Status="Running",DisplayState="67%",Path=""},
+            new {Order=2,Url=unfinishedUrl,Status="Running",DisplayState="20%",Path=""}
+        },
+        Settings=new {Output=opts.Output,Quality="1080",Threads="4"},
+        Engine=new {Pid=int.MaxValue,StartedUtc=DateTime.UtcNow.ToString("O"),EventsPath=eventsFile}
+    };
+    AppPersistence.AtomicWrite(data.SessionPath,JsonSerializer.Serialize(oldSnapshot));
+    var legacyRecovered=data.Restore()!;
+    Assert(legacyRecovered.Queue[0].Status=="Completed" && legacyRecovered.Queue[0].Path==recoveredPath &&
+           legacyRecovered.Queue[0].OwnedPaths.SequenceEqual(new[]{recoveredPath}),
+           "Completed legacy result must win over stale Running checkpoint");
+    Assert(legacyRecovered.Queue[1].Status=="Interrupted",
+           "Still unfinished legacy download must become Interrupted");
+    Assert(!AppPersistence.LegacyEngineIsAlive(legacyRecovered.Engine),
+           "Nonexistent old PowerShell engine must not block native migration");
 
     var output=Path.Combine(temp,"output");
     var outside=Path.Combine(temp,"outside");
