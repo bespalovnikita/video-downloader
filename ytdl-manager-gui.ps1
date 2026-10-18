@@ -645,10 +645,14 @@ function Set-Download {
     )
 
     $item = Find-Download -Slot $Slot -Url $Url
+    $stableStatus = if ($State -eq "Done") { "Completed" }
+                    elseif ($RawError -or $State -eq "Error") { "Failed" }
+                    else { "Running" }
     if (-not $item) {
         $item = [pscustomobject]@{
             Slot = "T$Slot"
             State = $State
+            Status = $stableStatus
             Title = $Title
             Url = $Url
             Path = $Path
@@ -661,6 +665,7 @@ function Set-Download {
         $script:downloads.Add($item)
     } else {
         $item.State = $State
+        $item | Add-Member -NotePropertyName Status -NotePropertyValue $stableStatus -Force
         $item.Slot = "T$Slot"
         if ($Title) { $item.Title = $Title }
         if ($Url) { $item.Url = $Url }
