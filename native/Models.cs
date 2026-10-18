@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
+using System.Text.Json.Serialization;
 
 namespace VideoDownloader.Native;
 
@@ -67,7 +68,12 @@ public sealed class DownloadOptions
     public bool WatchClipboard { get; set; }
     public int Parallel => int.TryParse(Threads, out int n) ? Math.Clamp(n,1,32) : 4;
     public int FragmentCount => int.TryParse(Fragments, out int n) ? Math.Clamp(n,1,8) : Math.Min(8,Math.Max(1,Parallel));
-    public string OutputDirectory => Archive ? System.IO.Path.Combine(Output, DateTime.Now.ToString("yyyy-MM-dd")) : Output;
+    // Resolve exactly once per run. A session spanning midnight must not change
+    // its output folder while worker jobs are still publishing and deleting.
+    [JsonIgnore] private string? PinnedOutputDirectory { get; set; }
+    [JsonIgnore] public string OutputDirectory => PinnedOutputDirectory ??
+        (Archive ? System.IO.Path.Combine(Output, DateTime.Now.ToString("yyyy-MM-dd")) : Output);
+    public void PinOutputDirectory() => PinnedOutputDirectory=OutputDirectory;
 }
 
 public sealed class SessionSnapshot
