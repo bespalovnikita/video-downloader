@@ -21,7 +21,7 @@ public sealed partial class NativeWindow : IDisposable
     private readonly Window _window;
     private readonly ObservableCollection<DownloadItem> _queue=new();
     private readonly ObservableCollection<DownloadItem> _downloads=new();
-    private readonly AppPersistence _storage=new();
+    private readonly AppPersistence _storage;
     private readonly PreviewService _previews;
     private readonly DispatcherTimer _tick=new(){Interval=TimeSpan.FromMilliseconds(400)};
     private readonly DispatcherTimer _clipboardTick=new(){Interval=TimeSpan.FromMilliseconds(950)};
@@ -56,9 +56,10 @@ public sealed partial class NativeWindow : IDisposable
     private static bool Check(CheckBox c)=>c.IsChecked==true;
     private static string Pick(ComboBox c)=>c.SelectedItem?.ToString()??c.Text;
 
-    public NativeWindow(Window window)
+    public NativeWindow(Window window,AppPersistence? persistence=null)
     {
         _window=window;
+        _storage=persistence??new AppPersistence();
         Q.ItemsSource=_queue;
         D.ItemsSource=_downloads;
         foreach(var (control,values) in new (string,string[])[]{
