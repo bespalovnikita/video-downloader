@@ -373,3 +373,6 @@ pwsh -File .\ytdl-manager-v8.ps1 -In .\music.txt -Out D:\Music -AudioOnly -Embed
 ~~~powershell
 pwsh -File .\ytdl-manager-v8.ps1 -In .\queue.txt -Watch -Threads 4 -AutoFragments
 ~~~
+## Worker completion
+
+The ThreadJob concurrency limit follows `-Threads`. Waiting workers remain scheduled until they finish. An incomplete run (remaining URLs or workers without results) returns exit code 2 instead of reporting success.

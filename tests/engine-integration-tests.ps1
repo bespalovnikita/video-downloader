@@ -33,6 +33,19 @@ try {
         Assert ($result.TransferredBytes -eq 2MB) 'Repeated final progress must not double-count transferred bytes'
     }
     # The file:// fixture is intentionally outside supported history URLs.
+    $parallelSources=@()
+    foreach ($index in 1..8) {
+        $path=Join-Path $dir "parallel$index.mp4"
+        [IO.File]::WriteAllBytes($path,[byte[]]::new(256KB))
+        $parallelSources+=([uri]$path).AbsoluteUri
+    }
+    Set-Content $queue $parallelSources
+    $parallelEvents=Join-Path $dir 'parallel.jsonl'
+    & pwsh -NoProfile -File (Join-Path $dir 'ytdl-manager-v8.ps1') -In $queue -Out $out -Threads 8 -RateLimit 100K -NoProgress -Retries 0 -EventFile $parallelEvents
+    Assert ($LASTEXITCODE -eq 0) 'Eight-worker download failed'
+    $parallelResults=@(Get-Content $parallelEvents | Where-Object {$_} | ConvertFrom-Json | Where-Object Kind -eq Result)
+    Assert ($parallelResults.Count -eq 8 -and @($parallelResults | Where-Object { -not $_.Success }).Count -eq 0) 'Every scheduled URL must complete above the default ThreadJob throttle'
+    Assert (@(Get-Content $queue | Where-Object {$_}).Count -eq 0) 'Successful engine exit must leave no pending URLs'
     Assert (-not (Test-Path (Join-Path $env:LOCALAPPDATA 'VideoDownloader/successful-downloads.jsonl'))) 'Local test fixtures must not enter real URL history'
 } finally {
     $env:LOCALAPPDATA=$oldLocalAppData

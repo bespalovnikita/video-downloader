@@ -1,5 +1,6 @@
 #requires -Version 7.0
 $ErrorActionPreference = "Stop"
+$root = Split-Path -Parent $PSScriptRoot
 Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) "lib/VideoDownloader.Session.psm1") -Force
 
 function Assert-Vd([bool]$Value,[string]$Message) {
@@ -101,6 +102,33 @@ try {
     Assert-Throws { Read-VdSessionCheckpoint -Path $path | Out-Null } "Duplicate URL must fail"
     [IO.File]::WriteAllText($path,'{"Version":1,"Queue":[],"Settings":{}}')
     Assert-Vd ($null -ne (Read-VdSessionCheckpoint -Path $path)) "Empty valid session must load"
+    # Retry can start from Downloads after the user cleared Queue. Exercise the
+    # same insertion/state/snapshot functions used before engine launch.
+    $tokens=$null; $parseErrors=$null
+    $guiAst=[Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'ytdl-manager-gui.ps1'),[ref]$tokens,[ref]$parseErrors)
+    foreach ($name in @('Add-Urls','Find-QueueItem','Set-QueueState','Get-SessionSnapshot')) {
+        $node=$guiAst.Find({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name},$true)
+        . ([scriptblock]::Create($node.Extent.Text))
+    }
+    function Is-ValidUrl($url) { return $url -like 'https://*' }
+    function Queue-PreviewPrefetch {}
+    function Reindex-Queue {}
+    function Get-SessionSettings { return @{} }
+    function Save-SessionCheckpoint {}
+    $gridItems=[pscustomobject]@{}; $gridItems | Add-Member ScriptMethod Refresh {}
+    $QueueGrid=[pscustomobject]@{Items=$gridItems}
+    $script:queue=[Collections.ObjectModel.ObservableCollection[object]]::new()
+    $script:proc=$null; $script:activeEngine=$null; $script:recoveredEngine=$null
+    Add-Urls @('https://example.com/retry')
+    Add-Urls @('https://example.com/retry')
+    Set-QueueState 'https://example.com/retry' 'Starting' 'Running'
+    Write-VdSessionCheckpoint -Path $path -Session (Get-SessionSnapshot)
+    $retrySession=Read-VdSessionCheckpoint -Path $path
+    Assert-Vd ($retrySession.Queue.Count -eq 1 -and $retrySession.Queue[0].Status -eq 'Running') 'Retry must be checkpointed exactly once after queue removal'
+    Assert-Vd (@(Get-VdResumeUrls -Queue (Get-VdRestoredQueue -Session $retrySession)).Count -eq 1) 'Retry must be resumable after restart'
+    $startNode=$guiAst.Find({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Start-Download'},$true)
+    Assert-Vd ($startNode.Extent.Text.IndexOf('Add-Urls $items') -gt $startNode.Extent.Text.IndexOf('if ($plan.Cancelled) { return }')) 'Queue insertion must follow duplicate confirmation'
+
     [IO.File]::WriteAllText($path,'truncated json')
     Assert-Throws { Read-VdSessionCheckpoint -Path $path | Out-Null } "Corrupt checkpoint must fail, not silently reset"
 }

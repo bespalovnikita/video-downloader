@@ -958,6 +958,9 @@ function Start-Download([string[]]$OverrideUrls=$null) {
     $script:transferredByUrl.Clear()
     $script:sessionTotal = $items.Count
     $OverallProgress.Value = 0
+    # Explicit retry may refer to a Downloads row removed from Queue.
+    # History confirmation has already succeeded; persist every selected URL.
+    Add-Urls $items
     foreach ($u in $items) { Set-QueueState ([string]$u) "Starting" "Running" }
     Save-SessionCheckpoint
     Update-LiveStats
@@ -1086,11 +1089,7 @@ function Get-CachedPreview([string]$Url) {
     if ($script:previewMemoryCache.ContainsKey($Url)) {
         $entry = $script:previewMemoryCache[$Url]
         try {
-            $savedAt = [DateTime]::Parse(
-                [string]$entry.SavedAtUtc,
-                [Globalization.CultureInfo]::InvariantCulture,
-                [Globalization.DateTimeStyles]::RoundtripKind
-            ).ToUniversalTime()
+            $savedAt = ([DateTimeOffset]$entry.SavedAtUtc).UtcDateTime
 
             if (([DateTime]::UtcNow - $savedAt).TotalHours -lt $script:previewCacheTtlHours) {
                 return $entry
