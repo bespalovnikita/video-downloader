@@ -18,7 +18,13 @@ public sealed class DownloadItem : INotifyPropertyChanged
     private string _slot = "";
     private string _url = "";
     public event PropertyChangedEventHandler? PropertyChanged;
-    private void Changed([CallerMemberName] string? name = null) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+    private void Changed([CallerMemberName] string? name = null)
+    {
+        var dispatcher=System.Windows.Application.Current?.Dispatcher;
+        if (dispatcher!=null && !dispatcher.CheckAccess())
+            _=dispatcher.BeginInvoke(() => PropertyChanged?.Invoke(this,new PropertyChangedEventArgs(name)));
+        else PropertyChanged?.Invoke(this,new PropertyChangedEventArgs(name));
+    }
     public int Order { get => _order; set { _order = value; Changed(); } }
     public string Url { get => _url; set { _url = value; Changed(); } }
     public string State { get => _state; set { _state = value; Changed(); } }
