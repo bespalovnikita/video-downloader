@@ -457,7 +457,7 @@ function Set-QueueState([string]$Url,[string]$State,[string]$Status="") {
     if ($Status -in @("Completed","Failed")) { Save-SessionCheckpoint }
 }
 
-function Add-Urls([string[]]$Urls,[switch]$FromClipboard) {
+function Add-Urls([string[]]$Urls,[switch]$FromClipboard,[switch]$ShowPreview) {
     $script:lastAddedCount = 0
     $existing = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     foreach ($item in $script:queue) { [void]$existing.Add([string]$item.Url) }
@@ -522,6 +522,13 @@ function Add-Urls([string[]]$Urls,[switch]$FromClipboard) {
         Log-Line ("Added $($toAdd.Count) URL(s) to the active download queue.")
     }
     Reindex-Queue
+    if ($FromClipboard -and $ShowPreview -and $toAdd.Count -gt 0) {
+        $newSelection = Find-QueueItem ([string]$toAdd[0])
+        if ($newSelection) {
+            $QueueGrid.SelectedItem = $newSelection
+            Start-Preview ([string]$newSelection.Url)
+        }
+    }
 }
 
 function Add-FileToQueue([string]$Path) {
@@ -1663,7 +1670,7 @@ $PasteClipboardButton.Add_Click({
             $ClipboardHint.Text = "Clipboard contains no valid HTTP/HTTPS URLs."
             return
         }
-        Add-Urls $urls -FromClipboard
+        Add-Urls $urls -FromClipboard -ShowPreview
         $ClipboardHint.Text = if ($script:lastAddedCount -gt 0) {
             "Added $($script:lastAddedCount) URL(s) from clipboard."
         } else { "No new URLs added." }
