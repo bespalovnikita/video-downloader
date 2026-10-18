@@ -256,7 +256,7 @@ public sealed partial class NativeWindow : IDisposable
         {
             // Save on meaningful changes, not every progress tick.
             var fingerprint=string.Join("|",_queue.Select(i=>$"{i.Url}:{i.Status}:{i.Path}:{i.Order}"))+
-                ":"+ReadOptions().Output+":"+_queue.Count;
+                ":"+System.Text.Json.JsonSerializer.Serialize(ReadOptions(),AppPersistence.Json)+":"+_queue.Count;
             if (fingerprint==_lastSavedSnapshot) return;
             _storage.Save(_queue,ReadOptions());_lastSavedSnapshot=fingerprint;
         }
@@ -462,7 +462,7 @@ public sealed partial class NativeWindow : IDisposable
     }
     private void CancelRow(DownloadItem row)
     {
-        if (_session?.IsRunning==true && row.Status is "Queued" or "Running")_session.Cancel(row);
+        if (_session?.IsRunning==true && (row.Status=="Queued" || row.Status=="Running"))_session.Cancel(row);
     }
     private void RemoveRows(IEnumerable<DownloadItem> rows)
     {
