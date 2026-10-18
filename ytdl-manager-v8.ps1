@@ -495,6 +495,7 @@ while ($pending.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
                     $native = [Diagnostics.Process]::new()
                     $native.StartInfo = $startInfo
                     $exitCode = -1
+                    $nativeStarted = $false
                     try {
                         if ($cancelDir -and (Test-VdCancellation -Directory $cancelDir -Url $url)) {
                             $cancelled = $true
@@ -502,6 +503,7 @@ while ($pending.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
                             break
                         }
                         [void]$native.Start()
+                        $nativeStarted = $true
                         $stdout = $native.StandardOutput.ReadLineAsync()
                         $stderr = $native.StandardError.ReadLineAsync()
                         while ($null -ne $stdout -or $null -ne $stderr) {
@@ -524,8 +526,10 @@ while ($pending.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
                         $native.WaitForExit()
                         $exitCode = $native.ExitCode
                     } finally {
-                        if (-not $native.HasExited) {
-                            try { $native.Kill($true); $native.WaitForExit() } catch {}
+                        if ($nativeStarted) {
+                            try {
+                                if (-not $native.HasExited) { $native.Kill($true); $native.WaitForExit() }
+                            } catch {}
                         }
                         $native.Dispose()
                     }
