@@ -111,6 +111,8 @@ public sealed partial class NativeWindow : IDisposable
             }
         };
         TryRestore();
+        _sessionOptions=ReadOptions();
+        Reindex();
         RefreshDependencyLabel();
         UpdateState();
     }
@@ -460,7 +462,7 @@ public sealed partial class NativeWindow : IDisposable
     }
     private void CancelRow(DownloadItem row)
     {
-        if (_session?.IsRunning==true && row.Status=="Running")_session.Cancel(row);
+        if (_session?.IsRunning==true && row.Status is "Queued" or "Running")_session.Cancel(row);
     }
     private void RemoveRows(IEnumerable<DownloadItem> rows)
     {
