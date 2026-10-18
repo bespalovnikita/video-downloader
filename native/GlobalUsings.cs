@@ -1,3 +1,5 @@
+global using ProgressBar = System.Windows.Controls.ProgressBar;
+global using Brushes = System.Windows.Media.Brushes;
 global using System.IO;
 global using Application = System.Windows.Application;
 global using TextBox = System.Windows.Controls.TextBox;
