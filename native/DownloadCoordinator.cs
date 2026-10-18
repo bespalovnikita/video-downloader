@@ -17,6 +17,8 @@ public sealed class DownloadCoordinator : IAsyncDisposable
     private readonly ConcurrentDictionary<string,CancellationTokenSource> _itemCancels=new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string,Process> _processes=new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string,byte> _queued=new(StringComparer.Ordinal);
+    // Tombstones outlive a worker's CTS registration and prevent cancellation races.
+    private readonly ConcurrentDictionary<string,byte> _cancelled=new(StringComparer.Ordinal);
     private readonly CancellationTokenSource _stop=new();
     private readonly DownloadOptions _options;
     private readonly Action<DownloadItem> _changed;
@@ -126,8 +128,12 @@ public sealed class DownloadCoordinator : IAsyncDisposable
     }
     public void Cancel(DownloadItem item)
     {
-        if (_itemCancels.TryGetValue(item.Url,out var cts)) cts.Cancel();
-        else item.Status="Interrupted"; // queued URL will be skipped by worker
+        _cancelled[item.Url]=0; // must precede reading the worker CTS
+        if (_itemCancels.TryGetValue(item.Url,out var cts))
+        {
+            try { cts.Cancel(); } catch (ObjectDisposedException) { }
+        }
+        else if (item.Status=="Queued") { item.Status="Interrupted"; item.State="Cancelled"; _changed(item); }
     }
     public void Pause(bool pause)
     {
@@ -190,11 +196,19 @@ public sealed class DownloadCoordinator : IAsyncDisposable
             _itemCancels[item.Url]=linked;
             try
             {
-                if (item.Status=="Interrupted") continue;
-                item.Slot="T"+slot;item.Status="Running";item.State="Starting";_changed(item);
-                var result=await DownloadAsync(item,linked.Token).ConfigureAwait(false);
-                if (result.Cancelled || linked.IsCancellationRequested)
+                if (_cancelled.ContainsKey(item.Url) || linked.IsCancellationRequested)
                 {
+                    item.Status="Interrupted";item.State="Cancelled";_changed(item);continue;
+                }
+                item.Slot="T"+slot;item.Status="Running";item.State="Starting";_changed(item);
+                // Cancellation can arrive between the previous check and CTS registration.
+                if (_cancelled.ContainsKey(item.Url)) linked.Cancel();
+                var result=await DownloadAsync(item,linked.Token).ConfigureAwait(false);
+                bool cancelled=result.Cancelled || linked.IsCancellationRequested || _cancelled.ContainsKey(item.Url);
+                if (cancelled)
+                {
+                    if (result.OwnedPaths.Count>0)
+                        OwnedFiles.DeleteOwned(_options.OutputDirectory,result.OwnedPaths);
                     item.Status="Interrupted";item.State="Cancelled";
                 }
                 else if(result.Success)
@@ -370,12 +384,13 @@ public sealed class DownloadCoordinator : IAsyncDisposable
                     ct.ThrowIfCancellationRequested();
                     if (exitCode==0)
                     {
+                        ct.ThrowIfCancellationRequested();
                         var published=OwnedFiles.Publish(stage,_options.OutputDirectory,
                             mediaPath.Length>0 ? mediaPath : null);
-                        if (ct.IsCancellationRequested)
+                        if (ct.IsCancellationRequested || _cancelled.ContainsKey(item.Url))
                         {
                             OwnedFiles.DeleteOwned(_options.OutputDirectory,published.OwnedPaths);
-                            ct.ThrowIfCancellationRequested();
+                            return new DownloadResult(false,true,"",[],"",transferred);
                         }
                         return new DownloadResult(true,false,published.Path,published.OwnedPaths,"",transferred);
                     }
