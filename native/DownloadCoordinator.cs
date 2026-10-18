@@ -25,6 +25,8 @@ public sealed class DownloadCoordinator : IAsyncDisposable
     private volatile bool _paused;
     private int _outstanding;
     private int _completed;
+    private readonly object _resultGate=new();
+    private readonly string _runStamp=DateTime.Now.ToString("yyyyMMdd-HHmmss",CultureInfo.InvariantCulture);
     public int Outstanding=>Volatile.Read(ref _outstanding);
     public int Completed=>Volatile.Read(ref _completed);
     public bool IsPaused=>_paused;
@@ -36,6 +38,7 @@ public sealed class DownloadCoordinator : IAsyncDisposable
         Action<DownloadItem> changed,Action<string> log)
     {
         _ytDlp=ytDlp;_data=data;_options=options;_changed=changed;_log=log;
+        OwnedFiles.NoReparseAncestors(Path.Combine(_options.OutputDirectory,"__check__"));
         Directory.CreateDirectory(_stageRoot);
     }
     public bool Add(DownloadItem item)
@@ -122,11 +125,13 @@ public sealed class DownloadCoordinator : IAsyncDisposable
                     try { _data.AppendSuccess(item.Url); }
                     catch(Exception e) { _log($"WARNING: Could not append successful URL to history: {e.Message}"); }
                     Interlocked.Increment(ref _completed);
+                    WriteResult("success",$"{item.Url} | {item.Path}");
                 }
                 else
                 {
                     item.Status="Failed";item.State="Failed";
                     item.RawError=result.Error;item.Speed="";item.ETA="";
+                    WriteResult("error",$"{item.Url} | {result.Error}");
                 }
                 _changed(item);
             }
@@ -137,6 +142,7 @@ public sealed class DownloadCoordinator : IAsyncDisposable
             catch(Exception ex)
             {
                 item.Status="Failed";item.State="Failed";item.RawError=ex.Message;_changed(item);
+                WriteResult("error",$"{item.Url} | {ex.Message}");
                 _log($"ERROR {item.Url}: {ex.Message}");
             }
             finally
@@ -147,6 +153,19 @@ public sealed class DownloadCoordinator : IAsyncDisposable
         }
     }
 
+    private void WriteResult(string kind,string line)
+    {
+        try
+        {
+            lock(_resultGate)
+            {
+                Directory.CreateDirectory(_options.OutputDirectory);
+                var path=Path.Combine(_options.OutputDirectory,$"VideoDownloader-{_runStamp}-{kind}.txt");
+                File.AppendAllText(path,line+Environment.NewLine,new System.Text.UTF8Encoding(false));
+            }
+        }
+        catch(Exception e) { _log("Cannot write download result log: "+e.Message); }
+    }
     private static readonly Regex Transfer = new(@"^\s*(?<value>\d+(?:\.\d+)?)\s*(?<unit>KiB|MiB|GiB|TiB|KB|MB|GB|B)?(?:/s)?\s*$",RegexOptions.IgnoreCase|RegexOptions.Compiled);
     public static double ParseSize(string raw)
     {
