@@ -181,7 +181,14 @@ public sealed class PreviewService : IDisposable
     }
     public void Dispose()
     {
-        _stop.Cancel();_signal.Release();
-        _http.Dispose();_signal.Dispose();_stop.Dispose();
+        _stop.Cancel();
+        // The worker is still allowed to observe cancellation. Do not dispose
+        // the semaphore/HTTP client underneath an in-flight prefetch.
+        _signal.Release();
+        _= _worker.ContinueWith(_=>{
+            _http.Dispose();
+            _signal.Dispose();
+            _stop.Dispose();
+        },CancellationToken.None,TaskContinuationOptions.ExecuteSynchronously,TaskScheduler.Default);
     }
 }
