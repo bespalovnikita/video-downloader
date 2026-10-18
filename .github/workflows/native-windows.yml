@@ -38,7 +38,10 @@ jobs:
           $exe = (Resolve-Path 'native/bin/Release/net8.0-windows/win-x64/VideoDownloader.exe').Path
           $app = Start-Process -FilePath $exe -ArgumentList '--ui-self-test' -Wait -PassThru
           if ($app.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $env:VD_NATIVE_UI_TEST_RESULT)) {
-            throw "Native WPF interaction regression failed: exit code $($app.ExitCode)"
+            $lastStage = if (Test-Path -LiteralPath $env:VD_NATIVE_UI_TEST_RESULT) {
+              Get-Content -LiteralPath $env:VD_NATIVE_UI_TEST_RESULT -Raw
+            } else { '(no stage marker written)' }
+            throw "Native WPF interaction regression failed: exit code $($app.ExitCode); last stage=$lastStage"
           }
           if ((Get-Content -LiteralPath $env:VD_NATIVE_UI_TEST_RESULT -Raw).Trim() -ne 'PASS') {
             throw 'Native WPF interaction regression did not pass'
