@@ -78,7 +78,12 @@ try {
             }
             Start-Sleep -Milliseconds 100
         }
-        Assert $observed 'Engine did not begin targeted download before cancellation'
+        if (-not $observed) {
+            $jobOutput=@(Receive-Job $run -Keep -ErrorAction SilentlyContinue | Out-String)
+            $jobError=@($run.ChildJobs | ForEach-Object { $_.Error | Out-String })
+            $seenEvents=if (Test-Path $cancelEvents) { (Get-Content -LiteralPath $cancelEvents -Raw) } else { '(missing events file)' }
+            throw ("Engine did not begin targeted download. Job state: $($run.State). Output: $jobOutput; Error: $jobError; Events: $seenEvents")
+        }
         Request-VdCancellation -Directory $cancelSignals -Url $cancelUrl
         [void]($run | Wait-Job -Timeout 90)
         Assert ($run.State -eq 'Completed') 'Cancelling one URL should not stall the engine'
