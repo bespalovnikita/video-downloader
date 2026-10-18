@@ -39,6 +39,7 @@ URL должен попадать в preview-prefetch queue сразу посл�
 Контракт:
 
 - один независимый background preview worker;
+- Clipboard URLs во время загрузки получают приоритет в очереди prefetch, а ручной Paste сразу показывает выбранную ссылку в preview панели; Watch clipboard не крадёт текущее выделение;
 - metadata + thumbnail запрашиваются заранее;
 - клик по строке читает cache;
 - если preview ещё не готов, клик только повышает приоритет URL;
@@ -63,7 +64,10 @@ Reorder / drag/drop / download selected остаются заблокирова�
 
 - На каждую удаляемую активную ссылку GUI атомарно выставляет маркер в `-CancelDir`; engine проверяет его до запуска, пока читает stdout/stderr yt-dlp и перед публикацией результата.
 - Каждый cancellable job пишет файлы в **отдельную staging-директорию**. Отменённый URL теряет только собственные частичные файлы; успешные результаты публикуются с `OwnedPaths`.
-- Удаление готового медиа использует **точный путь из результата/чекпоинта**, без wildcard, с проверкой принадлежности каталогу вывода. Соседние и существовавшие ранее файлы не затрагиваются.
+- Удаление готового медиа использует **точный путь из результата/чекпоинта**, без wildcard, с проверкой принадлежности каталогу вывода. Любой симлинк/junction/reparse point в пути к root, его родителях или вложенных каталогах означает отказ операции.
+- Публикация из staging запрещена при существующем целевом файле (иначе чужой файл можно ошибочно принять за скачанный и удалить при Remove). Предварительно проверяется весь batch и ссылки в staging. Никакой overwrite чужих файлов.
+- Независимый security suite `file-boundary-safety-tests.ps1` проверяет реальные NTFS junction, обход `../`, соседние каталоги, preexisting и сохраняет контрольные файлы снаружи неизменными.
+- Оговорка безопасности: проверки выполняются непосредственно перед файловой операцией; при намеренной параллельной подмене путей остаётся класс TOCTOU. Если нужна полная защита от враждебной подмены directory handles, необходима отдельно реализованная handle-based Windows FS layer.
 - Результат отмены — `Cancelled`, это не `Failed` и не `Completed`; в постоянную историю успехов он не пишется.
 - Event для уже удалённого URL не должен снова добавлять строку в GUI.
 - Любой недостаток прав при удалении — явное предупреждение, строка остаётся для повторной попытки.
@@ -114,6 +118,12 @@ Reorder / drag/drop / download selected остаются заблокирова�
 - Не записывай failed/dry-run URL как успешные; UI проверяет историю *до* запуска engine.
 - Файл историй может пополняться из нескольких CLI процессов. Используй межпроцессную синхронизацию и не проглатывай ошибки при чтении повреждённой истории.
 - При изменениях запускай `tests/download-history-tests.ps1` вместе с остальным CI.
+
+## Tray status / state colors
+
+- Tooltip NotifyIcon.Text обновляется из session stats, содержит OK/Err/Left и скорость при активном скачивании; длина ограничена 63 символами.
+- Queue и Downloads статусы раскрашиваются WPF DataTriggers по стабильному `Status`, а не по тексту ошибок или процентам.
+- Цвета доступны в тёмной теме: completed=green, queued=grey, running=cyan, interrupted=amber, failed=red.
 
 ## WPF
 
@@ -194,6 +204,8 @@ pwsh -File .\tests\session-checkpoint-tests.ps1
 pwsh -File .\tests\download-history-tests.ps1
 pwsh -File .\tests\live-queue-tests.ps1
 pwsh -File .\tests\cancellation-tests.ps1
+pwsh -File .\tests\file-boundary-safety-tests.ps1
+pwsh -File .\tests\tray-preview-tests.ps1
 pwsh -STA -File .\tests\windows-regression-tests.ps1
 pwsh -File .\tests\engine-integration-tests.ps1
 ~~~
