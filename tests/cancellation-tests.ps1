@@ -48,8 +48,7 @@ try {
     Assert (([IO.File]::ReadAllText($previousFile)) -eq "PREVIOUS") "Existing outputs must remain untouched"
     [IO.File]::WriteAllText($stageMedia,"MUST-NOT-OVERWRITE")
     [IO.File]::WriteAllText((Join-Path $output "new.mp4"),"ALREADY HERE")
-    $collision=Publish-VdStagedFiles -StageDir $stage -OutputRoot $output -MediaPath $stageMedia
-    Assert ($collision.OwnedPaths.Count -eq 0) "Existing final file cannot be considered owned"
+    Expect-Throw { Publish-VdStagedFiles -StageDir $stage -OutputRoot $output -MediaPath $stageMedia } "Collision must fail closed: never claim a pre-existing file as owned"
     Assert (([IO.File]::ReadAllText((Join-Path $output "new.mp4"))) -eq "ALREADY HERE") "Existing media must never be overwritten"
 
     $outside=Join-Path $dir "unrelated.mp4"

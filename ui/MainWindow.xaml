@@ -278,6 +278,31 @@
             <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
         </Style>
 
+        <!-- Status colors follow stable Status rather than transient text/percent. -->
+        <Style x:Key="QueueStatusTextStyle" TargetType="TextBlock" BasedOn="{StaticResource GridTextStyle}">
+            <Setter Property="Foreground" Value="#67D7FD"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding Status}" Value="Completed">
+                    <Setter Property="Foreground" Value="#4ADE80"/>
+                </DataTrigger>
+                <DataTrigger Binding="{Binding Status}" Value="Queued">
+                    <Setter Property="Foreground" Value="#A7B0C1"/>
+                </DataTrigger>
+                <DataTrigger Binding="{Binding Status}" Value="Running">
+                    <Setter Property="Foreground" Value="#67D7FD"/>
+                </DataTrigger>
+                <DataTrigger Binding="{Binding Status}" Value="Interrupted">
+                    <Setter Property="Foreground" Value="#FBBF24"/>
+                </DataTrigger>
+                <DataTrigger Binding="{Binding Status}" Value="Failed">
+                    <Setter Property="Foreground" Value="#FB7185"/>
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+
+        <Style x:Key="DownloadStatusTextStyle" TargetType="TextBlock" BasedOn="{StaticResource QueueStatusTextStyle}"/>
+
         <Style TargetType="Expander">
             <Setter Property="Foreground" Value="#EEF1F8"/>
         </Style>
@@ -394,7 +419,7 @@
                                     </DataTemplate>
                                 </DataGridTemplateColumn.CellTemplate>
                             </DataGridTemplateColumn>
-                            <DataGridTextColumn Header="State" Binding="{Binding State}" Width="90" ElementStyle="{StaticResource GridTextStyle}"/>
+                            <DataGridTextColumn Header="State" Binding="{Binding State}" Width="90" ElementStyle="{StaticResource QueueStatusTextStyle}"/>
                         </DataGrid.Columns>
                     </DataGrid>
 
@@ -419,7 +444,7 @@
                     <DataGrid x:Name="DownloadGrid" Grid.Row="1" SelectionMode="Single">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="Slot" Binding="{Binding Slot}" Width="52" ElementStyle="{StaticResource GridTextStyle}"/>
-                            <DataGridTextColumn Header="State" Binding="{Binding State}" Width="110" ElementStyle="{StaticResource GridTextStyle}"/>
+                            <DataGridTextColumn Header="State" Binding="{Binding State}" Width="110" ElementStyle="{StaticResource DownloadStatusTextStyle}"/>
                             <DataGridTemplateColumn Header="Video / progress" Width="*" MinWidth="220">
                                 <DataGridTemplateColumn.CellTemplate>
                                     <DataTemplate>
