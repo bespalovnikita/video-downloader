@@ -9,13 +9,14 @@ $lifecycle = Join-Path $root "lib\VideoDownloader.WindowLifecycle.psm1"
 $sessionModule = Join-Path $root "lib\VideoDownloader.Session.psm1"
 $historyModule = Join-Path $root "lib\VideoDownloader.DownloadHistory.psm1"
 $liveQueueModule = Join-Path $root "lib\VideoDownloader.LiveQueue.psm1"
+$cancelModule = Join-Path $root "lib\VideoDownloader.Cancellation.psm1"
 $ipcModule = Join-Path $root "lib\VideoDownloader.Ipc.psm1"
 $duplicateDialogXaml = Join-Path $root "ui\DuplicateDownloadDialog.xaml"
 $xaml = Join-Path $root "ui\MainWindow.xaml"
 $icon = Join-Path $root "assets\app.ico"
 $launcher = Join-Path $root "launcher\VideoDownloader.csproj"
 
-foreach ($file in @($gui,$engine,$core,$previewCache,$lifecycle,$sessionModule,$historyModule,$liveQueueModule,$ipcModule)) {
+foreach ($file in @($gui,$engine,$core,$previewCache,$lifecycle,$sessionModule,$historyModule,$liveQueueModule,$cancelModule,$ipcModule)) {
     $tokens = $null
     $errors = $null
     [void][System.Management.Automation.Language.Parser]::ParseFile($file,[ref]$tokens,[ref]$errors)
@@ -50,6 +51,11 @@ $guiMarkers = @(
     "PresentationFramework",
     "Restore-PreviousSession",
     "Confirm-DuplicateDownloads",
+    "function Remove-SelectedQueueEntries",
+    "Request-VdCancellation",
+    "Remove-VdOwnedFiles",
+    '$queueRemove.IsEnabled = $true',
+    '$RemoveQueueButton.IsEnabled = $true',
     "Add-VdLiveQueueUrls",
     '$script:liveQueuePath',
     '$script:sessionTotal += $toAdd.Count',
@@ -155,6 +161,11 @@ $engineMarkers = @(
     "Test-TransientDownloadError",
     "LiveQueueFile",
     "Read-VdLiveQueueUrls",
+    "CancelDir",
+    "Test-VdCancellation",
+    "Publish-VdStagedFiles",
+    "RedirectStandardOutput",
+    "RedirectStandardError",
     'EventType="Started"',
     "Add-VdSuccessfulDownloadUrl",
     "Read-VdDownloadHistory"
@@ -170,7 +181,8 @@ try {
     Set-Content -Path $queue -Value "https://example.com/video" -Encoding UTF8
 
     $liveQueue = Join-Path $temp "incoming.txt"
-    & $engine -In $queue -LiveQueueFile $liveQueue -Out $temp -DryRun -Quality 1080 -RateLimit 5M -ResultDir $temp -Container MP4 -VideoCodec H264 -WriteSubtitles -SubtitleLangs "ru.*,en.*" -EmbedMetadata -EmbedChapters -FilenameTemplate "%(uploader)s - %(title)s.%(ext)s" -NoProgress
+    $cancelDir = Join-Path $temp "cancel"
+    & $engine -In $queue -LiveQueueFile $liveQueue -CancelDir $cancelDir -Out $temp -DryRun -Quality 1080 -RateLimit 5M -ResultDir $temp -Container MP4 -VideoCodec H264 -WriteSubtitles -SubtitleLangs "ru.*,en.*" -EmbedMetadata -EmbedChapters -FilenameTemplate "%(uploader)s - %(title)s.%(ext)s" -NoProgress
     if ($LASTEXITCODE -ne 0) { throw "Engine dry-run failed with exit code $LASTEXITCODE" }
 }
 finally {
