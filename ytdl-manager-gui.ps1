@@ -849,7 +849,10 @@ function Tail-Events {
                 $u = [string]$event.Url
                 Set-Download -Slot $slot -State "Done" -Url $u -Path $path
                 $completedItem = Find-QueueItem $u
-                if ($completedItem) { $completedItem.Path = $path; $completedItem.OwnedPaths = @($event.OwnedPaths) }
+                if ($completedItem) {
+                    $completedItem.Path = $path
+                    $completedItem | Add-Member -NotePropertyName OwnedPaths -NotePropertyValue @($event.OwnedPaths) -Force
+                }
                 Set-QueueState $u "Done" "Completed"
             } else {
                 $script:sessionFailed++
