@@ -49,11 +49,12 @@ $previewCacheModule = Join-Path $root "lib\VideoDownloader.PreviewCache.psm1"
 $sessionModule = Join-Path $root "lib\VideoDownloader.Session.psm1"
 $historyModule = Join-Path $root "lib\VideoDownloader.DownloadHistory.psm1"
 $liveQueueModule = Join-Path $root "lib\VideoDownloader.LiveQueue.psm1"
+$cancelModule = Join-Path $root "lib\VideoDownloader.Cancellation.psm1"
 $duplicateDialogXaml = Join-Path $root "ui\DuplicateDownloadDialog.xaml"
 $lifecycleModule = Join-Path $root "lib\VideoDownloader.WindowLifecycle.psm1"
 $xamlPath = Join-Path $root "ui\MainWindow.xaml"
 
-foreach ($required in @($engine,$ytDlp,$coreModule,$previewCacheModule,$lifecycleModule,$sessionModule,$historyModule,$liveQueueModule,$duplicateDialogXaml,$xamlPath)) {
+foreach ($required in @($engine,$ytDlp,$coreModule,$previewCacheModule,$lifecycleModule,$sessionModule,$historyModule,$liveQueueModule,$cancelModule,$duplicateDialogXaml,$xamlPath)) {
     if (-not (Test-Path $required)) { throw "Missing required file: $required" }
 }
 Import-Module $coreModule -Force
@@ -62,6 +63,7 @@ Import-Module $lifecycleModule -Force
 Import-Module $sessionModule -Force
 Import-Module $historyModule -Force
 Import-Module $liveQueueModule -Force
+Import-Module $cancelModule -Force
 
 function Remove-StaleGuiTempDirs {
     $cutoff = (Get-Date).AddHours(-24)
@@ -109,6 +111,9 @@ $script:runDir = $null
 $script:runLog = $null
 $script:runEvents = $null
 $script:liveQueuePath = $null
+$script:cancelDir = $null
+$script:removedUrls = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+$script:runUrls = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
 $script:logLines = 0
 $script:eventLines = 0
 $script:eventCursor = @{ Offset=0L }
@@ -311,6 +316,7 @@ function Get-SessionSnapshot {
                 # Frequent progress percentages are UI-only; a recovered active item is interrupted.
                 DisplayState = if ($status -eq "Running") { "Interrupted" } else { [string]$item.State }
                 Path = [string]$item.Path
+                OwnedPaths = @($item.OwnedPaths)
             }
         }
     )
@@ -495,6 +501,7 @@ function Add-Urls([string[]]$Urls) {
             State = "Queued"
             Status = "Queued"
             Path = ""
+            OwnedPaths = @()
             Progress = 0.0
             Speed = ""
             Downloaded = ""
@@ -504,6 +511,7 @@ function Add-Urls([string[]]$Urls) {
     }
     $script:lastAddedCount = $toAdd.Count
     if ($running) {
+        foreach ($u in $toAdd) { [void]$script:runUrls.Add([string]$u) }
         $script:sessionTotal += $toAdd.Count
         Update-LiveStats
         Log-Line ("Added $($toAdd.Count) URL(s) to the active download queue.")
@@ -524,6 +532,65 @@ function Add-FileToQueue([string]$Path) {
         $message = "Cannot read file: " + $Path + [Environment]::NewLine + $_.Exception.Message
         [System.Windows.MessageBox]::Show($message,"Video Downloader") | Out-Null
     }
+}
+
+function Remove-SelectedQueueEntries([object[]]$Items) {
+    $rows = @($Items | Where-Object { $null -ne $_ -and $script:queue.Contains($_) })
+    if ($rows.Count -eq 0) { return }
+
+    $running = $script:proc -and -not $script:proc.HasExited
+    $hasStarted = @($rows | Where-Object {
+        $_.Status -in @("Running","Completed","Failed","Interrupted") -or $_.Path
+    }).Count -gt 0
+    if ($hasStarted) {
+        $answer = [System.Windows.MessageBox]::Show(
+            "Remove $($rows.Count) selected URL(s) from the queue? Any active downloads for these URLs will be cancelled, and their partial or finished files will be permanently deleted. Other downloads will continue.",
+            "Delete downloads", [System.Windows.MessageBoxButton]::YesNo,
+            [System.Windows.MessageBoxImage]::Warning)
+        if ($answer -ne [System.Windows.MessageBoxResult]::Yes) { return }
+    }
+
+    # Explicit output paths are from this URL's Result event or checkpoint.
+    # No wildcard/glob deletion; never remove files outside the output root.
+    $rootPath = $OutputBox.Text.Trim()
+    foreach ($row in $rows) {
+        $url = [string]$row.Url
+        $paths = @($row.OwnedPaths | Where-Object { $_ })
+        if ($paths.Count -eq 0 -and $row.Status -eq "Completed" -and $row.Path) {
+            # Backward compatibility: older checkpoints only recorded the media path.
+            $paths = @([string]$row.Path)
+        }
+        try {
+            if ($running -and $script:cancelDir) {
+                Request-VdCancellation -Directory $script:cancelDir -Url $url
+            }
+            if ($paths.Count -gt 0) {
+                [void](Remove-VdOwnedFiles -OutputRoot $rootPath -Paths $paths)
+            }
+        } catch {
+            [System.Windows.MessageBox]::Show(
+                "Could not cancel or delete files for this URL. The row was kept: " + $_.Exception.Message,
+                "Remove download failed", [System.Windows.MessageBoxButton]::OK,
+                [System.Windows.MessageBoxImage]::Warning) | Out-Null
+            continue
+        }
+
+        if ($running) {
+            [void]$script:removedUrls.Add($url)
+            if ($script:runUrls.Remove($url)) {
+                $script:sessionTotal = [Math]::Max(0,$script:sessionTotal-1)
+                if ($row.Status -eq "Completed") { $script:sessionSuccess = [Math]::Max(0,$script:sessionSuccess-1) }
+                if ($row.Status -eq "Failed") { $script:sessionFailed = [Math]::Max(0,$script:sessionFailed-1) }
+            }
+        }
+        [void]$script:failedUrls.Remove($url)
+        $download = Find-Download -Slot 0 -Url $url
+        if ($download) { [void]$script:downloads.Remove($download) }
+        [void]$script:queue.Remove($row)
+        [void]$script:transferredByUrl.Remove($url)
+    }
+    Reindex-Queue
+    Update-LiveStats
 }
 
 function Get-QueueUrls {
@@ -612,7 +679,7 @@ function Set-Running([bool]$Running) {
     $PauseButton.IsEnabled = $Running
 
     foreach ($c in @(
-        $OpenListButton,$RemoveQueueButton,$ClearQueueButton,$MoveUpButton,$MoveDownButton,
+        $OpenListButton,$ClearQueueButton,$MoveUpButton,$MoveDownButton,
         $ProfileCombo,$QualityCombo,$CodecCombo,$ContainerCombo,$RateLimitCombo,$ThreadsBox,
         $FragmentsCombo,$FilenameTemplateBox,$WriteSubsCheck,$AutoSubsCheck,$EmbedSubsCheck,$SubtitleLangsBox,
         $EmbedThumbnailCheck,$EmbedMetadataCheck,$EmbedChaptersCheck,$ArchiveCheck,$SponsorCheck,$AudioOnlyCheck,
@@ -625,7 +692,8 @@ function Set-Running([bool]$Running) {
     # but freeze queue mutations until the active session finishes.
     $QueueGrid.IsEnabled = $true
     $QueueGrid.AllowDrop = -not $Running
-    $queueRemove.IsEnabled = -not $Running
+    $queueRemove.IsEnabled = $true
+    $RemoveQueueButton.IsEnabled = $true
     $queueRetry.IsEnabled = -not $Running
 
     if ($Running) {
@@ -645,6 +713,7 @@ function Clean-Temp {
     $script:runLog = $null
     $script:runEvents = $null
     $script:liveQueuePath = $null
+    $script:cancelDir = $null
 }
 
 function Update-LiveStats {
@@ -702,6 +771,13 @@ function Tail-Events {
         if ([string]::IsNullOrWhiteSpace($lines[$i])) { continue }
         try { $event = $lines[$i] | ConvertFrom-Json -ErrorAction Stop } catch { continue }
 
+        if ($event.Url -and $script:removedUrls.Contains([string]$event.Url)) {
+            if ($event.Kind -eq "Result" -and $event.OwnedPaths) {
+                try { [void](Remove-VdOwnedFiles -OutputRoot $OutputBox.Text.Trim() -Paths @($event.OwnedPaths)) }
+                catch { Log-Line ("Could not clean late result for removed URL: " + $_.Exception.Message) }
+            }
+            continue
+        }
         if ($event.Kind -eq "Event") {
             $slot = [int]$event.Slot
             switch ($event.EventType) {
@@ -756,6 +832,7 @@ function Tail-Events {
                 }
             }
         } elseif ($event.Kind -eq "Result") {
+            if ($event.Cancelled -eq $true) { continue }
             $slot = [int]$event.Slot
             $script:speeds[$slot] = 0
             Update-TransferBytes -Url ([string]$event.Url) -Bytes ([long]$event.TransferredBytes)
@@ -772,7 +849,7 @@ function Tail-Events {
                 $u = [string]$event.Url
                 Set-Download -Slot $slot -State "Done" -Url $u -Path $path
                 $completedItem = Find-QueueItem $u
-                if ($completedItem) { $completedItem.Path = $path }
+                if ($completedItem) { $completedItem.Path = $path; $completedItem.OwnedPaths = @($event.OwnedPaths) }
                 Set-QueueState $u "Done" "Completed"
             } else {
                 $script:sessionFailed++
@@ -935,6 +1012,8 @@ function Start-Download([string[]]$OverrideUrls=$null) {
     $script:runLog = Join-Path $script:runDir "run.log"
     $script:runEvents = Join-Path $script:runDir "events.jsonl"
     $script:liveQueuePath = Join-Path $script:runDir "incoming.txt"
+    $script:cancelDir = Join-Path $script:runDir "cancel"
+    [void][IO.Directory]::CreateDirectory($script:cancelDir)
     [IO.File]::WriteAllText($script:liveQueuePath, "")
     Set-Content $queuePath $items -Encoding UTF8
 
@@ -945,6 +1024,9 @@ function Start-Download([string[]]$OverrideUrls=$null) {
     $script:speeds.Clear()
     $script:lastFiles.Clear()
     $script:downloads.Clear()
+    $script:removedUrls.Clear()
+    $script:runUrls.Clear()
+    foreach ($u in $items) { [void]$script:runUrls.Add([string]$u) }
     $LogBox.Clear()
     $script:stopping = $false
     $script:isPaused = $false
@@ -979,7 +1061,7 @@ function Start-Download([string[]]$OverrideUrls=$null) {
     $args = @(
         "-NoProfile","-ExecutionPolicy","Bypass","-File",$engine,
         "-In",$queuePath,"-Out",$dest,"-Threads",[string]$threadCount,
-        "-NoProgress","-Log",$script:runLog,"-EventFile",$script:runEvents,"-LiveQueueFile",$script:liveQueuePath,"-ResultDir",$resultDir,
+        "-NoProgress","-Log",$script:runLog,"-EventFile",$script:runEvents,"-LiveQueueFile",$script:liveQueuePath,"-CancelDir",$script:cancelDir,"-ResultDir",$resultDir,
         "-Quality",[string]$QualityCombo.SelectedItem,
         "-Container",[string]$ContainerCombo.SelectedItem,
         "-VideoCodec",[string]$CodecCombo.SelectedItem,
@@ -1592,10 +1674,7 @@ $OpenListButton.Add_Click({
     if ($fileDialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Add-FileToQueue $fileDialog.FileName }
 })
 
-$RemoveQueueButton.Add_Click({
-    foreach ($item in @($QueueGrid.SelectedItems)) { [void]$script:queue.Remove($item) }
-    Reindex-Queue
-})
+$RemoveQueueButton.Add_Click({ Remove-SelectedQueueEntries -Items @($QueueGrid.SelectedItems) })
 
 $ClearQueueButton.Add_Click({ $script:queue.Clear(); Reindex-Queue })
 
@@ -1710,9 +1789,8 @@ $queueOpen.Add_Click({ $item=$QueueGrid.SelectedItem; if ($item -and (Is-ValidUr
 $queueCopy.Add_Click({ $item=$QueueGrid.SelectedItem; if ($item) { [System.Windows.Clipboard]::SetText([string]$item.Url) } })
 $queueRetry.Add_Click({ $item=$QueueGrid.SelectedItem; if ($item) { Start-Download @([string]$item.Url) } })
 $queueRemove.Add_Click({
-    if ($script:proc -and -not $script:proc.HasExited) { return }
     $item=$QueueGrid.SelectedItem
-    if ($item) { [void]$script:queue.Remove($item); Reindex-Queue }
+    if ($item) { Remove-SelectedQueueEntries -Items @($item) }
 })
 
 $dlOpenFile.Add_Click({ Open-SelectedFile })
