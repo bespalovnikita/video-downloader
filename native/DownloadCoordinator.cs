@@ -190,6 +190,10 @@ public sealed class DownloadCoordinator : IAsyncDisposable
             "--print","before_dl:__VD_TITLE__:%(title)s",
             "--print","after_move:__VD_FILE__:%(filepath)s"];
         var args=new List<string>(standard);
+        // Explicitly enable file:// only for local offline integration fixtures;
+        // GUI URL validation still restricts user-entered links to HTTP/HTTPS.
+        if (Uri.TryCreate(url,UriKind.Absolute,out var source) && source.Scheme=="file")
+            args.Add("--enable-file-urls");
         if (File.Exists(_options.Cookies)) args.AddRange(["--cookies",_options.Cookies]);
         if (_options.RateLimit.Length>0 && _options.RateLimit!="Unlimited") args.AddRange(["--limit-rate",_options.RateLimit]);
         if (_options.Sponsor) args.AddRange(["--sponsorblock-remove","sponsor"]);
