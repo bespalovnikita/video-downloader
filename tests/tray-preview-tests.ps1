@@ -42,7 +42,8 @@ Assert ($script:previewPrefetchQueue.Count -eq 3) "Priority prefetch cannot crea
 Assert ($script:previewPrefetchQueue[0] -eq "https://example.com/clipboard") "Duplicate priority must preserve clipboard priority"
 
 $text=[IO.File]::ReadAllText($gui)
-Assert ($text.Contains('Add-Urls $urls -FromClipboard')) "Manual Paste must mark links as clipboard-derived"
+Assert ($text.Contains('Add-Urls $urls -FromClipboard -ShowPreview')) "Manual Paste must prioritize and immediately select clipboard preview"
+Assert ($text.Contains('Start-Preview ([string]$newSelection.Url)')) "Manual Paste must immediately display its new link preview"
 Assert ($text.Contains('Add-Urls $values -FromClipboard')) "Watch clipboard must mark links as clipboard-derived"
 Assert ($text.Contains('Queue-PreviewPrefetch -Url $u -Priority ([bool]$FromClipboard -and [bool]$running)')) "Clipboard additions must request high-priority prefetch during downloads"
 Assert ($text.Contains('Complete-PreviewPrefetch')) "GUI must process completed background prefetch while downloading"
