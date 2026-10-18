@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <EnableDefaultApplicationDefinition>false</EnableDefaultApplicationDefinition>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>VideoDownloader</AssemblyName>
+    <RootNamespace>VideoDownloader.Native</RootNamespace>
+    <ApplicationIcon>..\assets\app.ico</ApplicationIcon>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <Version>2.0.0</Version>
+  </PropertyGroup>
+  <ItemGroup>
+    <Content Include="..\ui\MainWindow.xaml" Link="ui\MainWindow.xaml" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\ui\DuplicateDownloadDialog.xaml" Link="ui\DuplicateDownloadDialog.xaml" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\assets\app.ico" Link="assets\app.ico" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\yt-dlp.exe" Link="yt-dlp.exe" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>
