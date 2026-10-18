@@ -361,3 +361,6 @@ pwsh -File .\build-exe.ps1
 ~~~
 
 GitHub Actions выполняет тесты перед сборкой portable ZIP.
+## Reliability of retries and previews
+
+Retry URL restores a removed Downloads item to Queue before saving the session, so it remains recoverable after a restart. Cancelling the duplicate prompt leaves Queue unchanged. Preview cache expires after 72 elapsed hours regardless of the local timezone.

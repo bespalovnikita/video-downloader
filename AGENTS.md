@@ -134,6 +134,7 @@ Fetch/cache логика находится в <code>lib/VideoDownloader.Preview
 Важные свойства:
 
 - URL parallelism через Start-ThreadJob;
+- ThrottleLimit соответствует Threads; NotStarted нельзя удалять как завершённый job. Незавершённый запуск возвращает ненулевой exit code;
 - fragment concurrency через yt-dlp <code>-N</code>;
 - input file — рабочая очередь и переписывается по мере завершения URL;
 - success/error files относятся к текущему запуску;

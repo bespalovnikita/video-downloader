@@ -295,7 +295,7 @@ while ($pending.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
         Write-Log ("T{0} START #{1}/{2} {3}" -f $slot,$index,$totalUrls,(Shorten $url 100)) Cyan
         Write-EventFile ([pscustomobject]@{Kind="Event";EventType="Started";Slot=$slot;Url=$url})
 
-        $jobs += Start-ThreadJob -Name ([string]$slot) -ArgumentList $jobArgs -ScriptBlock {
+        $jobs += Start-ThreadJob -ThrottleLimit $Threads -Name ([string]$slot) -ArgumentList $jobArgs -ScriptBlock {
             param(
                 $slot,$index,$totalUrls,$url,$qualities,$outputTemplate,$cookies,
                 [bool]$sponsorBlock,[bool]$audioOnly,[int]$fragments,[bool]$autoFragments,
@@ -531,7 +531,7 @@ while ($pending.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
         }
     }
 
-    foreach ($j in @($jobs | Where-Object { $_.State -ne "Running" })) {
+    foreach ($j in @($jobs | Where-Object { $_.State -in @("Completed","Failed","Stopped") })) {
         foreach ($msg in @(Receive-Job $j -ErrorAction SilentlyContinue)) {
             Handle-Message -Message $msg -Results $results -Completed $completed -Urls $urls -Titles $titles
         }
@@ -550,5 +550,5 @@ $errorCount = @($results | Where-Object { -not $_.Success }).Count
 $remaining = 0
 if (Test-Path $ListFile) { $remaining = @(Get-Content $ListFile -Encoding UTF8 | Where-Object { $_ }).Count }
 Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successCount,$errorCount,$remaining) Cyan
-if ($errorCount -gt 0) { exit 2 }
+if ($errorCount -gt 0 -or $remaining -gt 0 -or $results.Count -lt $startedCount) { exit 2 }
 exit 0

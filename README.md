@@ -222,3 +222,6 @@ CI на PR и push в main выполняет:
 - [GUI.md](GUI.md) — интерфейс и GUI behavior;
 - [ytdl-manager-v8-manual.md](ytdl-manager-v8-manual.md) — полный CLI contract;
 - [AGENTS.md](AGENTS.md) — архитектурные правила для automated coding.
+## Recovery and parallel downloads
+
+Parallel downloads preserve waiting workers up to the configured thread count. Explicit retries restore removed items to the saved queue, and preview cache lifetime is measured in elapsed UTC time.

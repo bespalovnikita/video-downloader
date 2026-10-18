@@ -4,10 +4,26 @@ $root = Split-Path -Parent $PSScriptRoot
 Import-Module (Join-Path $root 'lib/VideoDownloader.Core.psm1') -Force
 Import-Module (Join-Path $root 'lib/VideoDownloader.DownloadHistory.psm1') -Force
 Import-Module (Join-Path $root 'lib/VideoDownloader.Ipc.psm1') -Force
+Import-Module (Join-Path $root 'lib/VideoDownloader.PreviewCache.psm1') -Force
 function Assert([bool]$value,[string]$message) { if (-not $value) { throw $message } }
 $dir = Join-Path ([IO.Path]::GetTempPath()) ('vd-windows-regression-'+[guid]::NewGuid().ToString('N'))
 [void][IO.Directory]::CreateDirectory($dir)
 try {
+    $cache=Join-Path $dir 'preview-cache'
+    $cacheUrl='https://example.com/cache'
+    [void](Write-VdPreviewCache -CacheDir $cache -Url $cacheUrl -Preview ([pscustomobject]@{Title='Fresh'}))
+    Assert ($null -ne (Read-VdPreviewCache -CacheDir $cache -Url $cacheUrl -TtlHours 1)) 'Fresh JSON cache must preserve UTC on read'
+    $cachePath=Get-VdPreviewCachePath -CacheDir $cache -Url $cacheUrl
+    foreach ($offset in @(-7,6)) {
+        foreach ($age in @(71,73)) {
+            $record=Get-Content $cachePath -Raw | ConvertFrom-Json
+            $record.SavedAtUtc=[DateTimeOffset]::UtcNow.AddHours(-$age).ToOffset([TimeSpan]::FromHours($offset)).ToString('o')
+            $record | ConvertTo-Json -Depth 12 | Set-Content $cachePath
+            $cached=Read-VdPreviewCache -CacheDir $cache -Url $cacheUrl -TtlHours 72
+            Assert (($null -ne $cached) -eq ($age -lt 72)) "TTL must use absolute time: offset=$offset age=$age"
+            [void](Write-VdPreviewCache -CacheDir $cache -Url $cacheUrl -Preview ([pscustomobject]@{Title='Fresh'}))
+        }
+    }
     # Split a UTF-8 character as well as a JSON record across reads.
     $path = Join-Path $dir 'events.jsonl'
     $bytes = [Text.Encoding]::UTF8.GetBytes('{"title":"Видео","value":1}'+"`n")

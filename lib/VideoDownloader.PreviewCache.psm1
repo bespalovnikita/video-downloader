@@ -95,11 +95,7 @@ function Read-VdPreviewCache {
             return $null
         }
 
-        $savedAt = [DateTime]::Parse(
-            [string]$record.SavedAtUtc,
-            [Globalization.CultureInfo]::InvariantCulture,
-            [Globalization.DateTimeStyles]::RoundtripKind
-        ).ToUniversalTime()
+        $savedAt = ([DateTimeOffset]$record.SavedAtUtc).UtcDateTime
 
         if (([DateTime]::UtcNow - $savedAt).TotalHours -ge $TtlHours) {
             Remove-Item $path -Force -ErrorAction SilentlyContinue
