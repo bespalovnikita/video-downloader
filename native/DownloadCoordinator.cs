@@ -26,6 +26,7 @@ public sealed class DownloadCoordinator : IAsyncDisposable
     private readonly string _stageRoot=Path.Combine(Path.GetTempPath(),"vd-native-"+Guid.NewGuid().ToString("N"));
     private volatile bool _paused;
     private readonly object _pauseGuard=new();
+    private readonly object _completionGate=new();
     private readonly Dictionary<int,DateTime> _suspended=new();
 
     private int _outstanding;
@@ -128,12 +129,21 @@ public sealed class DownloadCoordinator : IAsyncDisposable
     }
     public void Cancel(DownloadItem item)
     {
-        _cancelled[item.Url]=0; // must precede reading the worker CTS
-        if (_itemCancels.TryGetValue(item.Url,out var cts))
+        // Serializes cancellation with the final success/ownership transition.
+        // If success wins, the GUI sees Completed and deletes OwnedPaths.
+        // If cancellation wins, the worker must not mark it Completed.
+        lock (_completionGate)
         {
-            try { cts.Cancel(); } catch (ObjectDisposedException) { }
+            _cancelled[item.Url]=0;
+            if (_itemCancels.TryGetValue(item.Url,out var cts))
+            {
+                try { cts.Cancel(); } catch (ObjectDisposedException) { }
+            }
+            else if (item.Status=="Queued")
+            {
+                item.Status="Interrupted"; item.State="Cancelled"; _changed(item);
+            }
         }
-        else if (item.Status=="Queued") { item.Status="Interrupted"; item.State="Cancelled"; _changed(item); }
     }
     public void Pause(bool pause)
     {
@@ -205,27 +215,33 @@ public sealed class DownloadCoordinator : IAsyncDisposable
                 if (_cancelled.ContainsKey(item.Url)) linked.Cancel();
                 var result=await DownloadAsync(item,linked.Token).ConfigureAwait(false);
                 bool cancelled=result.Cancelled || linked.IsCancellationRequested || _cancelled.ContainsKey(item.Url);
-                if (cancelled)
+                lock (_completionGate)
                 {
-                    if (result.OwnedPaths.Count>0)
-                        OwnedFiles.DeleteOwned(_options.OutputDirectory,result.OwnedPaths);
-                    item.Status="Interrupted";item.State="Cancelled";
-                }
-                else if(result.Success)
-                {
-                    item.Path=result.Path;item.OwnedPaths=result.OwnedPaths.ToList();
-                    item.Progress=100;item.Speed="";item.ETA="";
-                    item.Status="Completed";item.State="Done";
-                    try { _data.AppendSuccess(item.Url); }
-                    catch(Exception e) { _log($"WARNING: Could not append successful URL to history: {e.Message}"); }
-                    Interlocked.Increment(ref _completed);
-                    WriteResult("success",$"{item.Url} | {item.Path}");
-                }
-                else
-                {
-                    item.Status="Failed";item.State="Failed";
-                    item.RawError=result.Error;item.Speed="";item.ETA="";
-                    WriteResult("error",$"{item.Url} | {result.Error}");
+                    // A cancellation issued after Publish but before this lock
+                    // must still clean the published files.
+                    cancelled |= _cancelled.ContainsKey(item.Url) || linked.IsCancellationRequested;
+                    if (cancelled)
+                    {
+                        if (result.OwnedPaths.Count>0)
+                            OwnedFiles.DeleteOwned(_options.OutputDirectory,result.OwnedPaths);
+                        item.Status="Interrupted";item.State="Cancelled";
+                    }
+                    else if (result.Success)
+                    {
+                        item.Path=result.Path;item.OwnedPaths=result.OwnedPaths.ToList();
+                        item.Progress=100;item.Speed="";item.ETA="";
+                        item.Status="Completed";item.State="Done";
+                        try { _data.AppendSuccess(item.Url); }
+                        catch(Exception e) { _log($"WARNING: Could not append successful URL to history: {e.Message}"); }
+                        Interlocked.Increment(ref _completed);
+                        WriteResult("success",$"{item.Url} | {item.Path}");
+                    }
+                    else
+                    {
+                        item.Status="Failed";item.State="Failed";
+                        item.RawError=result.Error;item.Speed="";item.ETA="";
+                        WriteResult("error",$"{item.Url} | {result.Error}");
+                    }
                 }
                 _changed(item);
             }
