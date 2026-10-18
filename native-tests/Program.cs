@@ -82,6 +82,60 @@ try
         Assert(File.ReadAllText(sentinel)=="NEVER DELETE","Protected sentinel must survive junction attacks");
         Directory.Delete(junction);
     }
-    Console.WriteLine("Native C# status/history/checkpoint/owned-file safety tests passed.");
+    // End-to-end test with the bundled yt-dlp.exe, no public network and no pwsh.exe.
+    string ytDlp=Path.GetFullPath("yt-dlp.exe");
+    Assert(File.Exists(ytDlp),"Bundled yt-dlp.exe is available for native integration tests");
+    var inputA=Path.Combine(temp,"source-A.mp4");
+    var inputB=Path.Combine(temp,"source-B.mp4");
+    File.WriteAllBytes(inputA,new byte[192*1024]);
+    File.WriteAllBytes(inputB,new byte[256*1024]);
+    var urlA=new Uri(inputA).AbsoluteUri;
+    var urlB=new Uri(inputB).AbsoluteUri;
+    var realOptions=new DownloadOptions {
+        Output=Path.Combine(temp,"real-downloads"),
+        Threads="2",RateLimit="100K",Quality="Best",
+        EmbedChapters=false,EmbedMetadata=false
+    };
+    var one=new DownloadItem{Url=urlA};
+    var two=new DownloadItem{Url=urlB};
+    await using(var engine=new DownloadCoordinator(ytDlp,data,realOptions,_=>{},_=>{}))
+    {
+        Assert(engine.Add(one)&&engine.Add(two),"Native engine must accept two parallel URLs");
+        await engine.RunAsync();
+    }
+    Assert(one.Status=="Completed"&&two.Status=="Completed","Native engine must successfully download two local files");
+    Assert(one.Progress==100 && two.Progress==100,"Native progress must reach 100%");
+    Assert(File.Exists(one.Path) && File.Exists(two.Path),"Successful URLs must publish real media");
+    Assert(one.OwnedPaths.Count>0 && two.OwnedPaths.Count>0,"Native results must record owned files");
+    Assert(new FileInfo(one.Path).Length==192*1024 && new FileInfo(two.Path).Length==256*1024,
+        "Native download must preserve transferred file bytes");
+    OwnedFiles.DeleteOwned(realOptions.Output,one.OwnedPaths);
+    Assert(!File.Exists(one.Path) && File.Exists(two.Path),"Deleting one native download must leave another untouched");
+
+    var longInput=Path.Combine(temp,"slow-cancel.mp4");
+    var shortInput=Path.Combine(temp,"short-keep.mp4");
+    File.WriteAllBytes(longInput,new byte[2*1024*1024]);
+    File.WriteAllBytes(shortInput,new byte[96*1024]);
+    var cancelRow=new DownloadItem{Url=new Uri(longInput).AbsoluteUri};
+    var keepRow=new DownloadItem{Url=new Uri(shortInput).AbsoluteUri};
+    await using(var engine=new DownloadCoordinator(ytDlp,data,new DownloadOptions {
+        Output=Path.Combine(temp,"cancel-output"),Threads="2",RateLimit="100K",
+        EmbedMetadata=false,EmbedChapters=false
+    },_=>{},_=>{}))
+    {
+        engine.Add(cancelRow);engine.Add(keepRow);
+        var task=engine.RunAsync();
+        var until=DateTime.UtcNow.AddSeconds(25);
+        while(cancelRow.Status!="Running" && DateTime.UtcNow<until)await Task.Delay(100);
+        Assert(cancelRow.Status=="Running","Target download must start before cancellation");
+        await Task.Delay(1300);
+        engine.Cancel(cancelRow);
+        await task.WaitAsync(TimeSpan.FromSeconds(60));
+    }
+    Assert(cancelRow.Status=="Interrupted","Cancelling one URL must mark just that row Interrupted");
+    Assert(keepRow.Status=="Completed","Other parallel URL must continue and finish");
+    Assert(cancelRow.OwnedPaths.Count==0 && File.Exists(keepRow.Path),"Cancelled job must leave no owned output files");
+    Assert(File.ReadAllText(sentinel)=="NEVER DELETE","No download or cancellation may affect files outside output");
+    Console.WriteLine("Native C# status/history/checkpoint/owned-file safety and real offline yt-dlp integration tests passed.");
 }
 finally{try{Directory.Delete(temp,true);}catch(IOException){}}
