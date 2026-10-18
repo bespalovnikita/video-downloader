@@ -102,6 +102,7 @@ public sealed class AppPersistence
                 }
             }
             catch(JsonException){} // a partial JSONL tail after a crash
+            catch(InvalidOperationException){} // malformed event property types
         }
     }
 
