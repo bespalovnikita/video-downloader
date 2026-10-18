@@ -20,12 +20,16 @@ public static class OwnedFiles
         string? dir=Path.GetDirectoryName(Path.GetFullPath(path));
         while (!string.IsNullOrEmpty(dir))
         {
-            if (Directory.Exists(dir) || File.Exists(dir))
+            try
             {
+                // File.Exists can return false for dangling reparse points;
+                // GetAttributes reports the link itself where Windows supports it.
                 var attrs=File.GetAttributes(dir);
                 if ((attrs & FileAttributes.ReparsePoint)!=0) throw new IOException($"Unsafe junction or symlink ancestor: {dir}");
                 if ((attrs & FileAttributes.Directory)==0) throw new IOException($"Not a folder: {dir}");
             }
+            catch (FileNotFoundException) { }
+            catch (DirectoryNotFoundException) { }
             string? parent=Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(dir));
             if (string.IsNullOrEmpty(parent) || string.Equals(parent,dir,Comparison)) break;
             dir=parent;
@@ -35,10 +39,14 @@ public static class OwnedFiles
     public static void RegularOrAbsent(string path)
     {
         NoReparseAncestors(path);
-        if (!File.Exists(path) && !Directory.Exists(path)) return;
-        var attr=File.GetAttributes(path);
-        if ((attr & FileAttributes.ReparsePoint)!=0 || (attr & FileAttributes.Directory)!=0)
-            throw new IOException($"Refusing reparse point or directory as an output file: {path}");
+        try
+        {
+            var attr=File.GetAttributes(path);
+            if ((attr & FileAttributes.ReparsePoint)!=0 || (attr & FileAttributes.Directory)!=0)
+                throw new IOException($"Refusing reparse point or directory as an output file: {path}");
+        }
+        catch (FileNotFoundException) { }
+        catch (DirectoryNotFoundException) { }
     }
 
     public static IReadOnlyList<string> DeleteOwned(string root,IEnumerable<string> paths)
