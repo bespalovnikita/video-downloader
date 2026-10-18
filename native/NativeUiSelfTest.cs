@@ -11,8 +11,15 @@ internal static class NativeUiSelfTest
 {
     public static void Run()
     {
+        static void Stage(string status)
+        {
+            var location=Environment.GetEnvironmentVariable("VD_NATIVE_UI_TEST_RESULT");
+            if(!string.IsNullOrWhiteSpace(location))File.WriteAllText(location,status);
+        }
+        Stage("creating temp folder");
         string root=Path.Combine(Path.GetTempPath(),"vd-native-ui-"+Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
+        Stage("creating WPF application");
         var app=new Application{ShutdownMode=ShutdownMode.OnExplicitShutdown};
         NativeWindow? controller=null;
         Window? window=null;
@@ -21,8 +28,11 @@ internal static class NativeUiSelfTest
             using var input=File.OpenRead(Path.Combine(AppContext.BaseDirectory,"ui","MainWindow.xaml"));
             using var reader=XmlReader.Create(input);
             window=(Window)XamlReader.Load(reader);
+            Stage("XAML loaded");
             controller=new NativeWindow(window,new AppPersistence(Path.Combine(root,"profile")));
+            Stage("controller constructed");
             window.Show();
+            Stage("window shown");
             TextBox urlField=(TextBox)window.FindName("UrlInput")!;
             Button add=(Button)window.FindName("AddUrlButton")!;
             Button remove=(Button)window.FindName("RemoveQueueButton")!;
@@ -35,6 +45,7 @@ internal static class NativeUiSelfTest
 
             urlField.Text="https://example.com/one https://example.com/two";
             add.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Stage("Add clicked");
             Require(queue.Items.Count==2,"Add button must place both pasted URLs in the queue");
             Require(urlField.Text=="","Add button must clear the URL text field");
             Require((queue.Items[0] as DownloadItem)?.Url=="https://example.com/one","First URL must retain its order");
@@ -44,9 +55,11 @@ internal static class NativeUiSelfTest
 
             queue.SelectedItem=queue.Items[0];
             remove.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Stage("Remove clicked");
             Require(queue.Items.Count==1,"Remove button must delete only the selected queued URL");
             Require((queue.Items[0] as DownloadItem)?.Url=="https://example.com/two","Remove must preserve other entries");
 
+            Stage("testing tray");
             var trayField=typeof(NativeWindow).GetField("_tray",
                 System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance);
             var tray=(System.Windows.Forms.NotifyIcon?)trayField?.GetValue(controller);
@@ -57,18 +70,24 @@ internal static class NativeUiSelfTest
             // the user's actual %LOCALAPPDATA% directory.
             string checkpoint=Path.Combine(root,"profile","session.json");
             Require(File.Exists(checkpoint),"Queue actions must write a native v1 checkpoint");
+            Stage("testing checkpoint");
             var restored=new AppPersistence(Path.Combine(root,"profile")).Restore();
             Require(restored?.Queue.Count==1,"New session checkpoint must restore the surviving queue row");
 
-            string? destination=Environment.GetEnvironmentVariable("VD_NATIVE_UI_TEST_RESULT");
-            if(!string.IsNullOrWhiteSpace(destination))File.WriteAllText(destination,"PASS");
+            Stage("testing shutdown");
+            // PASS is set after the finally cleanup to catch shutdown crashes.
         }
         finally
         {
+            Stage("dispose controller");
             controller?.Dispose();
+            Stage("close WPF window");
             window?.Close();
+            Stage("shutdown dispatcher");
             app.Shutdown();
+            Stage("delete isolated test profile");
             try {Directory.Delete(root,true);}catch(IOException){}
+            Stage("PASS");
         }
     }
 }
