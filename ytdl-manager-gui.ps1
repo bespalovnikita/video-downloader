@@ -50,11 +50,12 @@ $sessionModule = Join-Path $root "lib\VideoDownloader.Session.psm1"
 $historyModule = Join-Path $root "lib\VideoDownloader.DownloadHistory.psm1"
 $liveQueueModule = Join-Path $root "lib\VideoDownloader.LiveQueue.psm1"
 $cancelModule = Join-Path $root "lib\VideoDownloader.Cancellation.psm1"
+$trayStatusModule = Join-Path $root "lib\VideoDownloader.TrayStatus.psm1"
 $duplicateDialogXaml = Join-Path $root "ui\DuplicateDownloadDialog.xaml"
 $lifecycleModule = Join-Path $root "lib\VideoDownloader.WindowLifecycle.psm1"
 $xamlPath = Join-Path $root "ui\MainWindow.xaml"
 
-foreach ($required in @($engine,$ytDlp,$coreModule,$previewCacheModule,$lifecycleModule,$sessionModule,$historyModule,$liveQueueModule,$cancelModule,$duplicateDialogXaml,$xamlPath)) {
+foreach ($required in @($engine,$ytDlp,$coreModule,$previewCacheModule,$lifecycleModule,$sessionModule,$historyModule,$liveQueueModule,$cancelModule,$trayStatusModule,$duplicateDialogXaml,$xamlPath)) {
     if (-not (Test-Path $required)) { throw "Missing required file: $required" }
 }
 Import-Module $coreModule -Force
@@ -64,6 +65,7 @@ Import-Module $sessionModule -Force
 Import-Module $historyModule -Force
 Import-Module $liveQueueModule -Force
 Import-Module $cancelModule -Force
+Import-Module $trayStatusModule -Force
 
 function Remove-StaleGuiTempDirs {
     $cutoff = (Get-Date).AddHours(-24)
@@ -455,7 +457,7 @@ function Set-QueueState([string]$Url,[string]$State,[string]$Status="") {
     if ($Status -in @("Completed","Failed")) { Save-SessionCheckpoint }
 }
 
-function Add-Urls([string[]]$Urls) {
+function Add-Urls([string[]]$Urls,[switch]$FromClipboard) {
     $script:lastAddedCount = 0
     $existing = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     foreach ($item in $script:queue) { [void]$existing.Add([string]$item.Url) }
@@ -507,7 +509,10 @@ function Add-Urls([string[]]$Urls) {
             Downloaded = ""
             ETA = ""
         })
-        Queue-PreviewPrefetch -Url $u
+        # Clipboard links should not sit behind a long backlog of older
+        # previews while the engine is already downloading.
+        Complete-PreviewPrefetch
+        Queue-PreviewPrefetch -Url $u -Priority ([bool]$FromClipboard -and [bool]$running)
     }
     $script:lastAddedCount = $toAdd.Count
     if ($running) {
@@ -724,6 +729,14 @@ function Update-LiveStats {
         if ([double]$v -gt 0) { $active++ }
     }
     if ($script:isPaused) { $sum = 0; $active = 0 }
+    $remaining = @($script:queue | Where-Object { $_.Status -notin @("Completed","Failed") }).Count
+    if ($null -ne $tray -and -not $tray.IsDisposed) {
+        $running = $script:proc -and -not $script:proc.HasExited
+        $tooltip = Get-VdTrayStatusText -Success $script:sessionSuccess -Failed $script:sessionFailed `
+            -Remaining $remaining -SpeedBytes $sum -Running ([bool]$running) `
+            -Paused ([bool]$script:isPaused) -HasSession ($null -ne $script:sessionStarted) -Stopped ([bool]$script:stopping)
+        if ($tray.Text -cne $tooltip) { $tray.Text = $tooltip }
+    }
     $done = $script:sessionSuccess + $script:sessionFailed
     $HeaderStats.Text = "$active active · $(Format-Speed $sum) · $done/$($script:sessionTotal)"
 
@@ -1588,7 +1601,7 @@ if (Test-Path $appIcon) {
 } else {
     $tray.Icon = [Drawing.SystemIcons]::Application
 }
-$tray.Text = "Video Downloader"
+$tray.Text = Get-VdTrayStatusText
 $tray.Visible = $true
 $trayMenu = [System.Windows.Forms.ContextMenuStrip]::new()
 $trayShow = $trayMenu.Items.Add("Open")
@@ -1645,7 +1658,7 @@ $PasteClipboardButton.Add_Click({
             $ClipboardHint.Text = "Clipboard contains no valid HTTP/HTTPS URLs."
             return
         }
-        Add-Urls $urls
+        Add-Urls $urls -FromClipboard
         $ClipboardHint.Text = if ($script:lastAddedCount -gt 0) {
             "Added $($script:lastAddedCount) URL(s) from clipboard."
         } else { "No new URLs added." }
@@ -1861,7 +1874,7 @@ $clipboardTimer.Add_Tick({
         if ($values.Count -gt 0) {
             $script:lastClipboardText = $text
             if ($WatchClipboardCheck.IsChecked) {
-                Add-Urls $values
+                Add-Urls $values -FromClipboard
                 $ClipboardHint.Text = if ($script:lastAddedCount -gt 0) {
                     "Auto-added $($script:lastAddedCount) URL(s) from clipboard."
                 } else { "No new URLs added from clipboard." }
