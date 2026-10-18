@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using System.Diagnostics;
 
 namespace VideoDownloader.Native;
 
@@ -34,7 +35,74 @@ public sealed class AppPersistence
             if (row.Status == "Completed") { row.State="Done"; row.Progress=100; }
             row.OwnedPaths ??= new List<string>();
         }
+        MergeLegacyResultEvents(session);
         return session;
+    }
+
+    public static bool LegacyEngineIsAlive(object? engine)
+    {
+        if (engine is not JsonElement record || record.ValueKind!=JsonValueKind.Object ||
+            !record.TryGetProperty("Pid",out var pidToken) || !pidToken.TryGetInt32(out int pid) ||
+            pid<=0 || !record.TryGetProperty("StartedUtc",out var startedToken) ||
+            startedToken.ValueKind!=JsonValueKind.String ||
+            !DateTimeOffset.TryParse(startedToken.GetString(),out var recorded))
+            return false;
+        try
+        {
+            using var process=Process.GetProcessById(pid);
+            return process.ProcessName.Equals("pwsh",StringComparison.OrdinalIgnoreCase) &&
+                Math.Abs((process.StartTime.ToUniversalTime()-recorded.UtcDateTime).TotalSeconds)<3;
+        }
+        catch(ArgumentException){return false;}
+        catch(InvalidOperationException){return false;}
+        catch(System.ComponentModel.Win32Exception){return false;}
+    }
+
+    private static void MergeLegacyResultEvents(SessionSnapshot session)
+    {
+        if (session.Engine is not JsonElement engine || engine.ValueKind!=JsonValueKind.Object ||
+            !engine.TryGetProperty("EventsPath",out var eventsProp) ||
+            eventsProp.ValueKind!=JsonValueKind.String) return;
+        var path=eventsProp.GetString();
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return;
+        // An old append-only events file can contain a truncated tail line.
+        // Ignore malformed event lines, but never infer success from progress.
+        if (new FileInfo(path).Length>128*1024*1024) return;
+        var rows=session.Queue.ToDictionary(row=>row.Url,StringComparer.Ordinal);
+        foreach(var line in File.ReadLines(path,Encoding.UTF8))
+        {
+            if (string.IsNullOrWhiteSpace(line))continue;
+            try
+            {
+                using var document=JsonDocument.Parse(line);
+                var ev=document.RootElement;
+                if (ev.ValueKind!=JsonValueKind.Object ||
+                    !ev.TryGetProperty("Kind",out var kind) || kind.GetString()!="Result" ||
+                    !ev.TryGetProperty("Url",out var urlValue) ||
+                    !rows.TryGetValue(urlValue.GetString()??"",out var row))
+                    continue;
+                if (ev.TryGetProperty("Success",out var success) && success.ValueKind==JsonValueKind.True)
+                {
+                    row.Status="Completed";row.State="Done";row.Progress=100;
+                    if (ev.TryGetProperty("Path",out var media) && media.ValueKind==JsonValueKind.String)
+                        row.Path=media.GetString()??"";
+                    if (ev.TryGetProperty("OwnedPaths",out var owned) && owned.ValueKind==JsonValueKind.Array)
+                        row.OwnedPaths=owned.EnumerateArray()
+                            .Where(v=>v.ValueKind==JsonValueKind.String)
+                            .Select(v=>v.GetString()??"")
+                            .Where(v=>!string.IsNullOrWhiteSpace(v)).ToList();
+                }
+                else if (ev.TryGetProperty("Cancelled",out var cancelled) && cancelled.ValueKind==JsonValueKind.True)
+                {
+                    if (row.Status!="Completed") {row.Status="Interrupted";row.State="Cancelled";}
+                }
+                else if (row.Status!="Completed")
+                {
+                    row.Status="Failed";row.State="Failed";
+                }
+            }
+            catch(JsonException){} // a partial JSONL tail after a crash
+        }
     }
 
     public void Save(IReadOnlyCollection<DownloadItem> queue, DownloadOptions settings)
