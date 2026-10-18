@@ -454,6 +454,20 @@ public sealed partial class NativeWindow : IDisposable
                 // Results are already on row objects; do not touch other session rows.
                 UpdateState();SaveCheckpoint();
                 Log($"Session complete: {_queue.Count(x=>x.Status=="Completed")} OK, {_queue.Count(x=>x.Status=="Failed")} failed.");
+                if(!_stopping && !_disposed)
+                {
+                    var done=_queue.Count(x=>x.Status=="Completed");
+                    var bad=_queue.Count(x=>x.Status=="Failed");
+                    var remaining=_queue.Count(x=>x.Status=="Queued"||x.Status=="Interrupted");
+                    try
+                    {
+                        (bad>0?System.Media.SystemSounds.Hand:System.Media.SystemSounds.Asterisk).Play();
+                        _tray.ShowBalloonTip(4000,"Video Downloader",
+                            $"OK {done} · Left {remaining} · Err {bad}",
+                            bad>0?Forms.ToolTipIcon.Warning:Forms.ToolTipIcon.Info);
+                    }
+                    catch(InvalidOperationException){}
+                }
             }
         }
         catch(Exception e)
