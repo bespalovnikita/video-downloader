@@ -238,6 +238,16 @@ public sealed partial class NativeWindow : IDisposable
         {
             var previous=_storage.Restore();
             if (previous==null || previous.Queue.Count==0) return;
+            if (AppPersistence.LegacyEngineIsAlive(previous.Engine))
+            {
+                _checkpointReadOnly=true;
+                MessageBox.Show(_window,
+                    "The previous PowerShell download engine is still running.\n"+
+                    "Stop the old downloader first, then restart the C# version to restore its latest results.\n"+
+                    "The existing checkpoint has been left unchanged.",
+                    "Old download process still active",MessageBoxButton.OK,MessageBoxImage.Warning);
+                return;
+            }
             if (MessageBox.Show(_window,$"Restore previous queue ({previous.Queue.Count} URLs)?\nCompleted downloads will not restart automatically.",
                     "Restore previous session",MessageBoxButton.YesNo,MessageBoxImage.Question)!=MessageBoxResult.Yes) return;
             ApplyOptions(previous.Settings);
