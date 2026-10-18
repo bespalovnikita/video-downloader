@@ -1,3 +1,4 @@
+using System.IO;
 using VideoDownloader.Native;
 
 static void Assert(bool value,string why)
