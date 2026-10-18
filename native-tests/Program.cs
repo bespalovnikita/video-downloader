@@ -175,6 +175,28 @@ try
     Assert(liveBase.Status=="Completed"&&liveAdded.Status=="Completed",
         "Both initial and dynamically enqueued URLs must finish");
     Assert(File.ReadAllText(sentinel)=="NEVER DELETE","All native flows must keep external sentinel unchanged");
-    Console.WriteLine("Native C# session/history/owned-file and live/cancel/parallel yt-dlp integration tests passed.");
+    // Exercise suspend/resume on a real yt-dlp process tree without freezing the UI.
+    var pauseSource=Path.Combine(temp,"pause-resume.mp4");
+    File.WriteAllBytes(pauseSource,new byte[384*1024]);
+    var pauseRow=new DownloadItem{Url=new Uri(pauseSource).AbsoluteUri};
+    await using(var engine=new DownloadCoordinator(ytDlp,data,new DownloadOptions {
+        Output=Path.Combine(temp,"pause-output"),Threads="1",RateLimit="100K",
+        EmbedMetadata=false,EmbedChapters=false
+    },_=>{},_=>{}))
+    {
+        engine.Add(pauseRow);
+        var task=engine.RunAsync();
+        var until=DateTime.UtcNow.AddSeconds(20);
+        while(pauseRow.Status!="Running" && DateTime.UtcNow<until)await Task.Delay(100);
+        Assert(pauseRow.Status=="Running","Pause fixture must have started");
+        engine.Pause(true);
+        Assert(engine.IsPaused,"Native engine must mark a suspended session paused");
+        await Task.Delay(700);
+        engine.Pause(false);
+        Assert(!engine.IsPaused,"Native resume must clear paused state");
+        await task.WaitAsync(TimeSpan.FromSeconds(60));
+    }
+    Assert(pauseRow.Status=="Completed","Paused and resumed download must complete successfully");
+    Console.WriteLine("Native C# session/history/filesystem and live/cancel/pause/parallel yt-dlp integration tests passed.");
 }
 finally{try{Directory.Delete(temp,true);}catch(IOException){}}
