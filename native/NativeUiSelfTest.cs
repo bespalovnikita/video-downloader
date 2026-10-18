@@ -74,6 +74,39 @@ internal static class NativeUiSelfTest
             var restored=new AppPersistence(Path.Combine(root,"profile")).Restore();
             Require(restored?.Queue.Count==1,"New session checkpoint must restore the surviving queue row");
 
+            Stage("testing live clipboard preview selection");
+            var addUrls=typeof(NativeWindow).GetMethod("AddUrls",
+                System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance)!;
+            addUrls.Invoke(controller,new object[]{new[]{"https://example.com/clipboard"},true,true});
+            Require(queue.Items.Count==2,"Clipboard addition must enqueue one new URL");
+            Require((queue.SelectedItem as DownloadItem)?.Url=="https://example.com/clipboard",
+                "Manual clipboard Paste must immediately select its new preview");
+            Require(((TextBlock)window.FindName("PreviewTitle")!).Text=="Preparing preview...",
+                "New clipboard URL must show preview loading state immediately");
+
+            Stage("testing Windows shortcut import");
+            string shortcut=Path.Combine(root,"example.url");
+            File.WriteAllText(shortcut,"[InternetShortcut]\r\nURL=https://example.com/shortcut\r\n");
+            var readInput=typeof(NativeWindow).GetMethod("ReadInputFile",
+                System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Static)!;
+            var imported=(IReadOnlyList<string>)readInput.Invoke(null,new object[]{shortcut})!;
+            Require(imported.SequenceEqual(new[]{"https://example.com/shortcut"}),
+                "Windows .url shortcut must import the URL= field");
+
+            Stage("testing native tray field order");
+            var startField=typeof(NativeWindow).GetField("_sessionStart",
+                System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance)!;
+            startField.SetValue(controller,DateTime.Now);
+            var currentField=typeof(NativeWindow).GetField("_sessionUrls",
+                System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance)!;
+            var sessionUrls=(HashSet<string>)currentField.GetValue(controller)!;
+            sessionUrls.Add("https://example.com/clipboard");
+            typeof(NativeWindow).GetMethod("UpdateState",
+                System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance)!
+                .Invoke(controller,null);
+            Require(tray.Text.Contains("OK 0 Left 1 Err 0"),
+                "Tray counts must be current-session only, ordered OK Left Err");
+
             Stage("testing shutdown");
             // PASS is set after the finally cleanup to catch shutdown crashes.
         }
