@@ -294,9 +294,15 @@ public sealed class DownloadCoordinator : IAsyncDisposable
         };
         return v*factor;
     }
-    private static bool IsTransient(string s) =>
-        Regex.IsMatch(s,@"timeout|timed out|connection reset|connection aborted|429|502|503|504|server error|temporarily unavailable",
-            RegexOptions.IgnoreCase|RegexOptions.CultureInvariant);
+    private static bool IsTransient(string s)
+    {
+        const RegexOptions flags=RegexOptions.IgnoreCase|RegexOptions.CultureInvariant;
+        // Permanent/auth errors win even if the diagnostic includes a network
+        // phrase or an unrelated video ID containing e.g. "503".
+        if (Regex.IsMatch(s,@"http(?:\s+error)?\s+(400|401|403|404|405|410|451)\b|private video|sign in|login required|video unavailable|video has been removed|requested format is not available",flags))
+            return false;
+        return Regex.IsMatch(s,@"timeout|timed out|temporary failure|connection reset|connection aborted|connection refused|remote host|network is unreachable|dns|http(?:\s+error)?\s+(429|5\d\d)\b|too many requests|server error|temporarily unavailable|tls|ssl",flags);
+    }
     private static bool FormatUnavailable(string s) =>
         s.Contains("Requested format is not available",StringComparison.OrdinalIgnoreCase);
     private string FormatSelector(string quality)
@@ -389,7 +395,12 @@ public sealed class DownloadCoordinator : IAsyncDisposable
                                 {
                                     var key=segments[6];
                                     streamed.TryGetValue(key,out long previous);
-                                    if (bytes>previous) { transferred+=bytes-previous;streamed[key]=bytes; }
+                                    bytes=Math.Max(0,bytes);
+                                    // A retry can reset a component counter. Keep
+                                    // its new baseline and count the retried bytes;
+                                    // identical final samples still contribute zero.
+                                    transferred+=bytes<previous ? bytes : bytes-previous;
+                                    streamed[key]=bytes;
                                     item.Progress=Math.Clamp(pct,0,100);item.Speed=segments[2].Trim();
                                     item.Downloaded=DownloadFormat.Bytes(bytes)+(total>0 ? " / "+DownloadFormat.Bytes(total) : "");
                                     item.ETA=segments[3].Trim();item.TransferredBytes=transferred;
@@ -410,8 +421,10 @@ public sealed class DownloadCoordinator : IAsyncDisposable
                     if (exitCode==0)
                     {
                         ct.ThrowIfCancellationRequested();
-                        var published=OwnedFiles.Publish(stage,_options.OutputDirectory,
-                            mediaPath.Length>0 ? mediaPath : null);
+                        if (string.IsNullOrWhiteSpace(mediaPath))
+                            return new DownloadResult(false,false,"",[],
+                                "yt-dlp finished without reporting a downloaded media file.",transferred);
+                        var published=OwnedFiles.Publish(stage,_options.OutputDirectory,mediaPath);
                         if (ct.IsCancellationRequested || _cancelled.ContainsKey(item.Url))
                         {
                             OwnedFiles.DeleteOwned(_options.OutputDirectory,published.OwnedPaths);

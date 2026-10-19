@@ -15,9 +15,9 @@ Expected portable package: VideoDownloader.exe, yt-dlp.exe, ui/*.xaml and assets
 ## Reuse of existing data
 
 - Session: %LOCALAPPDATA%\VideoDownloader\session.json, version 1. Queue and settings are read from the old GUI. The old engine `EventsPath` is replayed for completed/failed/cancelled URLs after a crash, then any remaining Running rows become Interrupted. No downloads resume automatically; a still-live legacy `pwsh` engine blocks native recovery/start and leaves the checkpoint unchanged.
-- History: %LOCALAPPDATA%\VideoDownloader\successful-downloads.jsonl, version 1. Full append-only URL history and optional CompletedAtUtc are preserved, with the same named Local\VideoDownloader.SuccessHistory mutex.
+- History: %LOCALAPPDATA%\VideoDownloader\successful-downloads.jsonl, version 1. Full append-only URL history and optional CompletedAtUtc are preserved, with the same named Local\VideoDownloader.SuccessHistory mutex. A dated success upgrades an undated legacy record; older or undated entries never replace the latest known success time.
 - New v1 session rows retain `OutputRoot` alongside `OwnedPaths`, so removal uses the original publication folder after changing output or restoring an older archive date. Rows from older checkpoints use the saved base output folder as their boundary; paths outside it are still refused.
-- Preview: %LOCALAPPDATA%\VideoDownloader\preview-cache, SHA-256(URL) filenames and 72-hour TTL are retained.
+- Preview: %LOCALAPPDATA%\VideoDownloader\preview-cache, SHA-256(URL) filenames and 72-hour TTL are retained. Offset timestamps are normalized to UTC; incomplete cache records are evicted before rendering.
 
 Do not run the old and new GUIs simultaneously during migration: they have distinct single-instance mutex names and cannot coordinate previous worker ownership.
 
@@ -46,6 +46,10 @@ The native command-line parser is not an exact alias for old PowerShell paramete
 ## Safety and limitations
 
 Every downloaded URL uses its own staging folder. Publishing does not overwrite existing media. File removal requires a known `OwnedPaths` manifest (a bare `Path` from an old checkpoint is insufficient) and is restricted to exact owned filenames inside the session's pinned output folder, with rejection of parent symlinks, junctions and reparse points. No wildcard deletion. Cancellation uses durable in-memory tombstones and result-finalization synchronization to cover the pending-to-running and publish-to-done race windows.
+
+A zero yt-dlp exit code alone is insufficient for success: the engine requires an `after_move:__VD_FILE__` media path validated against staging before publishing or appending history. Metadata-only/skipped downloads are failures. Transfer totals include reset counters during retries without adding repeated final samples twice. Permanent HTTP/auth errors take precedence over retry hints. Session completion logs and tray notifications use the same current-session rows as live metrics.
+
+Recovery does not read a still-running legacy worker's event file, which may be locked by its writer. Malformed terminal flags, paths or ownership fields in legacy JSONL are ignored atomically, leaving unfinished rows recoverable instead of manufacturing a final result.
 
 Filesystem tests include NTFS junctions and outside-root sentinel files. As with the preceding version, determined hostile processes that swap paths between validation and operation may exploit a TOCTOU race; only handle-relative Win32 filesystem operations can fully eliminate that class of attack.
 

@@ -38,14 +38,21 @@ public sealed class PreviewService : IDisposable
             using var doc=JsonDocument.Parse(File.ReadAllText(path,Encoding.UTF8));
             var root=doc.RootElement;
             if (root.GetProperty("CacheVersion").GetInt32()!=1 ||
-                root.GetProperty("Url").GetString()!=url) return null;
+                root.GetProperty("Url").GetString()!=url) throw new InvalidDataException("Invalid preview cache identity");
             var entry=JsonSerializer.Deserialize<PreviewData>(root.GetRawText(),AppPersistence.Json);
-            if (entry!=null && DateTime.UtcNow-entry.SavedAtUtc<TimeSpan.FromHours(72)) {
+            if (entry!=null)
+                entry=entry with { SavedAtUtc=entry.SavedAtUtc.Kind==DateTimeKind.Unspecified
+                    ? DateTime.SpecifyKind(entry.SavedAtUtc,DateTimeKind.Utc)
+                    : entry.SavedAtUtc.ToUniversalTime() };
+            if (entry is { Title:not null, Uploader:not null, PlaylistTitle:not null,
+                Extractor:not null, Codecs:not null, DynamicRange:not null, ThumbnailBase64:not null } &&
+                entry.Duration>=0 && entry.Duration<TimeSpan.MaxValue.TotalSeconds &&
+                DateTime.UtcNow-entry.SavedAtUtc<TimeSpan.FromHours(72)) {
                 _cache[url]=entry;return entry;
             }
         }
         catch(Exception) { }
-        try { File.Delete(path); } catch(IOException){}
+        try { File.Delete(path); } catch(IOException){} catch(UnauthorizedAccessException){}
         return null;
     }
     public void Request(string url,bool priority=false)

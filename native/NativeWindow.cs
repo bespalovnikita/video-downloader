@@ -133,14 +133,15 @@ public sealed partial class NativeWindow : IDisposable
         UpdateState();
         if ((DateTime.UtcNow.Second%2)==0) SaveCheckpoint();
     }
+    private DownloadItem[] CurrentSessionRows() => _sessionStart.HasValue
+        ? _queue.Where(x=>_sessionUrls.Contains(x.Url)).ToArray()
+        : _queue.ToArray();
     private void UpdateState()
     {
         if (_disposed) return;
         // Do not count successful downloads from a previous session again.
         // Live additions join this set; removed URLs leave it.
-        var sessionRows=_sessionStart.HasValue
-            ? _queue.Where(x=>_sessionUrls.Contains(x.Url)).ToArray()
-            : _queue.ToArray();
+        var sessionRows=CurrentSessionRows();
         int active=sessionRows.Count(x=>x.Status=="Running");
         int left=sessionRows.Count(x=>x.Status is not ("Completed" or "Failed"));
         _ok=sessionRows.Count(x=>x.Status=="Completed");
@@ -247,8 +248,8 @@ public sealed partial class NativeWindow : IDisposable
         try
         {
             var previous=_storage.Restore();
-            if (previous==null || previous.Queue.Count==0) return;
-            if (AppPersistence.LegacyEngineIsAlive(previous.Engine))
+            if (previous==null) return;
+            if (previous.LegacyEngineWasActive || AppPersistence.LegacyEngineIsAlive(previous.Engine))
             {
                 _checkpointReadOnly=true;
                 _legacyEngineBlocked=true;
@@ -259,6 +260,7 @@ public sealed partial class NativeWindow : IDisposable
                     "Old download process still active",MessageBoxButton.OK,MessageBoxImage.Warning);
                 return;
             }
+            if (previous.Queue.Count==0) return;
             if (MessageBox.Show(_window,$"Restore previous queue ({previous.Queue.Count} URLs)?\nCompleted downloads will not restart automatically.",
                     "Restore previous session",MessageBoxButton.YesNo,MessageBoxImage.Question)!=MessageBoxResult.Yes) return;
             ApplyOptions(previous.Settings);
@@ -480,7 +482,7 @@ public sealed partial class NativeWindow : IDisposable
             foreach(var row in approved)
             {
                 row.Status="Queued";row.State="Queued";row.RawError="";row.Progress=0;
-                row.Speed="";row.Downloaded="";row.ETA="";
+                row.Speed="";row.Downloaded="";row.ETA="";row.TransferredBytes=0;
             }
             var session=new DownloadCoordinator(_ytDlp,_storage,options,OnRowChanged,
                 line=>Dispatcher.BeginInvoke(()=>Log(line)));
@@ -496,12 +498,13 @@ public sealed partial class NativeWindow : IDisposable
                 if(ReferenceEquals(_session,session)) _session=null;
                 // Results are already on row objects; do not touch other session rows.
                 UpdateState();SaveCheckpoint();
-                Log($"Session complete: {_queue.Count(x=>x.Status=="Completed")} OK, {_queue.Count(x=>x.Status=="Failed")} failed.");
+                var finishedRows=CurrentSessionRows();
+                var done=finishedRows.Count(x=>x.Status=="Completed");
+                var bad=finishedRows.Count(x=>x.Status=="Failed");
+                var remaining=finishedRows.Count(x=>x.Status is not ("Completed" or "Failed"));
+                Log($"Session complete: {done} OK, {bad} failed.");
                 if(!_stopping && !_disposed)
                 {
-                    var done=_queue.Count(x=>x.Status=="Completed");
-                    var bad=_queue.Count(x=>x.Status=="Failed");
-                    var remaining=_queue.Count(x=>x.Status=="Queued"||x.Status=="Interrupted");
                     try
                     {
                         (bad>0?System.Media.SystemSounds.Hand:System.Media.SystemSounds.Asterisk).Play();

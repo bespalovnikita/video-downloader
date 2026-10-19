@@ -2,6 +2,9 @@ using System.IO;
 using System.Text.Json;
 using VideoDownloader.Native;
 
+if (ReviewRegressionTests.TryRunFixture(args)) return;
+await ReviewRegressionTests.RunAsync();
+
 static void Assert(bool value,string why)
 {
     if (!value) throw new Exception(why);

@@ -35,7 +35,11 @@ public sealed class AppPersistence
             if (row.Status == "Completed") { row.State="Done"; row.Progress=100; }
             row.OwnedPaths ??= new List<string>();
         }
-        MergeLegacyResultEvents(session);
+        // A live legacy worker still owns its checkpoint and may hold the
+        // append-only event stream open. Let the GUI see its identity without
+        // racing that writer or turning a sharing violation into a missed guard.
+        session.LegacyEngineWasActive=LegacyEngineIsAlive(session.Engine);
+        if (!session.LegacyEngineWasActive) MergeLegacyResultEvents(session);
         foreach (var row in session.Queue)
         {
             // Older v1 snapshots have no per-result root. The saved base output
@@ -49,7 +53,8 @@ public sealed class AppPersistence
     public static bool LegacyEngineIsAlive(object? engine)
     {
         if (engine is not JsonElement record || record.ValueKind!=JsonValueKind.Object ||
-            !record.TryGetProperty("Pid",out var pidToken) || !pidToken.TryGetInt32(out int pid) ||
+            !record.TryGetProperty("Pid",out var pidToken) || pidToken.ValueKind!=JsonValueKind.Number ||
+            !pidToken.TryGetInt32(out int pid) ||
             pid<=0 || !record.TryGetProperty("StartedUtc",out var startedToken) ||
             startedToken.ValueKind!=JsonValueKind.String ||
             !DateTimeOffset.TryParse(startedToken.GetString(),out var recorded))
@@ -84,22 +89,33 @@ public sealed class AppPersistence
                 using var document=JsonDocument.Parse(line);
                 var ev=document.RootElement;
                 if (ev.ValueKind!=JsonValueKind.Object ||
-                    !ev.TryGetProperty("Kind",out var kind) || kind.GetString()!="Result" ||
-                    !ev.TryGetProperty("Url",out var urlValue) ||
+                    !ev.TryGetProperty("Kind",out var kind) || kind.ValueKind!=JsonValueKind.String || kind.GetString()!="Result" ||
+                    !ev.TryGetProperty("Url",out var urlValue) || urlValue.ValueKind!=JsonValueKind.String ||
                     !rows.TryGetValue(urlValue.GetString()??"",out var row))
                     continue;
-                if (ev.TryGetProperty("Success",out var success) && success.ValueKind==JsonValueKind.True)
+                // Validate terminal fields before changing the row. A partial
+                // or malformed Result is not proof of success, failure or cancel.
+                if (!ev.TryGetProperty("Success",out var success) ||
+                    success.ValueKind is not (JsonValueKind.True or JsonValueKind.False)) continue;
+                bool hasCancelled=ev.TryGetProperty("Cancelled",out var cancelled);
+                if (hasCancelled && cancelled.ValueKind is not (JsonValueKind.True or JsonValueKind.False)) continue;
+                if (success.ValueKind==JsonValueKind.True && hasCancelled && cancelled.ValueKind==JsonValueKind.True) continue;
+                if (ev.TryGetProperty("Path",out var media) && media.ValueKind!=JsonValueKind.String) continue;
+                bool hasOwned=ev.TryGetProperty("OwnedPaths",out var owned);
+                if (hasOwned && (owned.ValueKind!=JsonValueKind.Array ||
+                    owned.EnumerateArray().Any(v=>v.ValueKind!=JsonValueKind.String))) continue;
+                if (success.ValueKind==JsonValueKind.True)
                 {
                     row.Status="Completed";row.State="Done";row.Progress=100;
-                    if (ev.TryGetProperty("Path",out var media) && media.ValueKind==JsonValueKind.String)
+                    if (media.ValueKind==JsonValueKind.String)
                         row.Path=media.GetString()??"";
-                    if (ev.TryGetProperty("OwnedPaths",out var owned) && owned.ValueKind==JsonValueKind.Array)
+                    if (hasOwned)
                         row.OwnedPaths=owned.EnumerateArray()
                             .Where(v=>v.ValueKind==JsonValueKind.String)
                             .Select(v=>v.GetString()??"")
                             .Where(v=>!string.IsNullOrWhiteSpace(v)).ToList();
                 }
-                else if (ev.TryGetProperty("Cancelled",out var cancelled) && cancelled.ValueKind==JsonValueKind.True)
+                else if (hasCancelled && cancelled.ValueKind==JsonValueKind.True)
                 {
                     if (row.Status!="Completed") {row.Status="Interrupted";row.State="Cancelled";}
                 }
@@ -168,7 +184,9 @@ public sealed class AppPersistence
                 DateTimeOffset? timestamp=null;
                 if (item.TryGetProperty("CompletedAtUtc",out var at) && at.ValueKind==JsonValueKind.String)
                     timestamp=DateTimeOffset.Parse(at.GetString()!,System.Globalization.CultureInfo.InvariantCulture);
-                if (!seen.ContainsKey(url) || timestamp>seen[url]) seen[url]=timestamp;
+                if (!seen.TryGetValue(url,out var previous) ||
+                    timestamp.HasValue && (!previous.HasValue || timestamp.Value>previous.Value))
+                    seen[url]=timestamp;
             }
             catch(Exception e) { throw new InvalidDataException($"Damaged download history at line {line}. No changes made.",e); }
         }

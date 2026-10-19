@@ -116,6 +116,12 @@ internal static class NativeUiSelfTest
                 System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance)!;
             var sessionUrls=(HashSet<string>)currentField.GetValue(controller)!;
             sessionUrls.Add("https://example.com/clipboard");
+            ((DownloadItem)queue.Items[0]).Status="Completed";
+            var currentRows=(DownloadItem[])typeof(NativeWindow).GetMethod("CurrentSessionRows",
+                System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance)!
+                .Invoke(controller,null)!;
+            Require(currentRows.Length==1 && currentRows[0].Url=="https://example.com/clipboard",
+                "Completion notifications and live metrics must share the current-session subset, excluding old successes");
             typeof(NativeWindow).GetMethod("UpdateState",
                 System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance)!
                 .Invoke(controller,null);

@@ -85,6 +85,9 @@ public sealed class SessionSnapshot
     public List<DownloadItem> Queue { get; set; } = new();
     public DownloadOptions Settings { get; set; } = new();
     public object? Engine { get; set; }
+    // A live worker observed during Restore must keep migration blocked even
+    // if it exits before the GUI handles this snapshot. This is not saved state.
+    [JsonIgnore] public bool LegacyEngineWasActive { get; set; }
 }
 
 public sealed record DownloadProgress(double Percent, double SpeedBytes, long DownloadedBytes, long TotalBytes, long TransferredBytes, string Eta, string? Title = null);

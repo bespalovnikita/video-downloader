@@ -30,6 +30,10 @@ Video Downloader — Windows-приложение поверх yt-dlp:
   queued/running cancellation, late live Add, pause/resume.
 - При отмене URL используй tombstone и синхронизацию конечного результата:
   публикация и удаление файлов должны быть согласованы, без оставшихся media.
+- Успех требует валидного `after_move:__VD_FILE__` media path из staging;
+  код 0 без медиа не должен публиковать sidecars или пополнять историю.
+- Счётчики transfer учитывают сброс при retry; постоянная HTTP/auth ошибка
+  имеет приоритет над transient-подсказками в том же diagnostic.
 - Операции удаления разрешены только с известным `OwnedPaths`; неизвестный
   путь из старого checkpoint сам по себе **не является доказательством владения**.
 - Относись к C# `session.json`, `successful-downloads.jsonl`, preview cache
