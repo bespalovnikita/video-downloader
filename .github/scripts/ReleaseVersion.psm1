@@ -25,14 +25,18 @@ function Get-VdNextReleaseTag {
 
     # A rerun of a workflow on the same SHA must target its existing release,
     # not create a second tag and release for the same commit.
+    # Force array type after sorting: PowerShell unwraps empty/single pipelines
+    # into $null or a scalar, which breaks .Count under StrictMode.
     $sameCommit = @(
-        foreach ($tag in $HeadTags) {
-            $parsed = & $parseTag $tag
-            if ($null -ne $parsed -and $parsed -ge $baseline) {
-                [pscustomobject]@{ Version = $parsed; Tag = $tag }
+        @(
+            foreach ($tag in $HeadTags) {
+                $parsed = & $parseTag $tag
+                if ($null -ne $parsed -and $parsed -ge $baseline) {
+                    [pscustomobject]@{ Version = $parsed; Tag = $tag }
+                }
             }
-        }
-    ) | Sort-Object Version -Descending
+        ) | Sort-Object Version -Descending
+    )
     if ($sameCommit.Count -gt 0) { return [string]$sameCommit[0].Tag }
 
     $highest = $null
