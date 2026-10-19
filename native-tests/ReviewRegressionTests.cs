@@ -15,6 +15,18 @@ internal static class ReviewRegressionTests
     {
         string? url = args.LastOrDefault();
         if (url?.StartsWith(FixtureBase, StringComparison.Ordinal) != true) return false;
+        if (args.Contains("--dump-single-json", StringComparer.Ordinal))
+        {
+            if (url != FixtureBase + "preview-metadata")
+                throw new InvalidOperationException("Unexpected offline preview URL.");
+            Console.WriteLine(JsonSerializer.Serialize(new {
+                id = "offline-preview", title = "Native preview works",
+                uploader = "Offline fixture", extractor = "fixture",
+                duration = 123.0, thumbnail = "",
+                formats = new[] { new { vcodec = "avc1.640028", height = 1080, fps = 60.0, dynamic_range = "SDR" } }
+            }));
+            return true;
+        }
         int outputIndex = Array.IndexOf(args, "-o");
         if (outputIndex < 0 || outputIndex + 1 >= args.Length) throw new Exception("Missing fixture output path");
         string stage = Path.GetDirectoryName(args[outputIndex + 1])!;
@@ -174,6 +186,43 @@ internal static class ReviewRegressionTests
                 }
                 Require(row.Status == "Completed" && File.Exists(row.Path), "Progress fixture must complete a real subprocess and publication");
                 Require(row.TransferredBytes == 220, "100 video + 50 audio + 70 retried video bytes must total 220");
+            });
+
+            await Check("background yt-dlp preview fetch, callback and cache work without WPF thread access", async directory =>
+            {
+                var data = new AppPersistence(directory);
+                const string url = FixtureBase + "preview-metadata";
+                var ready = new TaskCompletionSource<PreviewData>(TaskCreationOptions.RunContinuationsAsynchronously);
+                var logs = new System.Collections.Concurrent.ConcurrentQueue<string>();
+                int ownerThread = Environment.CurrentManagedThreadId;
+                int credentialReads = 0;
+                using (var previews = new PreviewService(TestExecutable(), data,
+                    () => {
+                        if (Environment.CurrentManagedThreadId == ownerThread)
+                            throw new InvalidOperationException("Preview metadata did not execute on a worker thread.");
+                        Interlocked.Increment(ref credentialReads);
+                        return "";
+                    }, preview => ready.TrySetResult(preview), log => logs.Enqueue(log)))
+                {
+                    previews.Request(url);
+                    var result = await ready.Task.WaitAsync(TimeSpan.FromSeconds(20));
+                    Require(result.Url == url && result.Title == "Native preview works" &&
+                            result.Uploader == "Offline fixture" && result.MaxHeight == 1080 &&
+                            result.MaxFps == 60 && result.Codecs.Contains("H264"),
+                        "Async yt-dlp metadata must reach the preview panel callback.");
+                    Require(Volatile.Read(ref credentialReads) == 1,
+                        "Worker must read credential snapshot exactly once for the preview.");
+                    Require(previews.Get(url)?.Title == result.Title,
+                        "Successful async previews must be cached immediately.");
+                    Require(logs.IsEmpty,
+                        "Successful preview prefetch must not log an unrelated background-thread error.");
+                }
+                using (var newService = new PreviewService("nonexistent", data, () => "",
+                    _ => throw new Exception("Already cached preview must not refetch"), _ => { }))
+                {
+                    Require(newService.Get(url)?.Title == "Native preview works",
+                        "Cached metadata must survive a service restart for 72 hours.");
+                }
             });
 
             await Check("incomplete cached preview is rejected before it reaches WPF", directory =>
