@@ -53,6 +53,12 @@ Recovery does not read a still-running legacy worker's event file, which may be 
 
 Filesystem tests include NTFS junctions and outside-root sentinel files. As with the preceding version, determined hostile processes that swap paths between validation and operation may exploit a TOCTOU race; only handle-relative Win32 filesystem operations can fully eliminate that class of attack.
 
+## Automatic stable GitHub Releases
+
+Each successful push to `main` triggers an automatic, stable GitHub Release. The C# CI job validates WPF, native yt-dlp, persistence, filesystem safety, and produces a temporary test ZIP. The main-only release job serially selects the next stable `v2.0.N` Git tag, rebuilds the EXE with matching version, uploads `VideoDownloader-Windows-x64.zip` plus `SHA256SUMS.txt`, and generates release notes.
+
+PRs never publish a release, and failed CI prevents publication. The previously created `v1.0.0` draft is untouched. Refer to [RELEASING.md](RELEASING.md).
+
 ## Release gate
 
 Normal exit stops ingestion, waits for download cancellation/publication rollback and staging cleanup, then saves the final checkpoint before closing the WPF window.

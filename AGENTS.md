@@ -14,6 +14,17 @@ Video Downloader — Windows-приложение поверх yt-dlp:
 
 Не считай VideoDownloader.exe полноценной заменой PowerShell runtime: текущая архитектура требует установленный <code>pwsh.exe</code>.
 
+## Автоматические стабильные GitHub Releases
+
+Любой коммит в `main` после успешного native Windows CI публикуется как **стабильный GitHub Release**. Отдельный job `release` в `.github/workflows/native-windows.yml` автоматически создаёт следующий Git-тег `v2.0.N`, готовый Windows ZIP и SHA-256, генерирует Release Notes. Публикация для PR **запрещена**: минимальные permissions по умолчанию `contents: read`, запись только в main-only release job.
+
+- Нумерация `.github/scripts/ReleaseVersion.psm1`; перед merge выполняй `tests/release-version-tests.ps1`.
+- Публикуемые EXE и Git-тег должны иметь одинаковый номер версии; параметры publish переопределяют версию проекта.
+- Release никогда не должен публиковаться, если падают native unit/integration/UI/security tests.
+- Не изменяй и не удаляй чужие / ранее опубликованные релизы, существующий draft `v1.0.0` не трогай.
+- Main означает релизную готовность: перед merge требуется проверка API и интерфейсной совместимости.
+- Политика выпуска: [RELEASING.md](RELEASING.md).
+
 ## Экспериментальная перепись на C# / .NET 8
 
 В ветке `feature/native-csharp-rewrite` существует draft PR #20.
