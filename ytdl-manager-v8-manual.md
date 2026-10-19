@@ -1,6 +1,6 @@
-# YT-DLP Download Manager v8 — CLI manual
+# Руководство по командной строке: старый PowerShell-движок
 
-<code>ytdl-manager-v8.ps1</code> — PowerShell 7 engine для пакетной загрузки URL через bundled <code>yt-dlp.exe</code>.
+**`ytdl-manager-v8.ps1`** — резервный движок Video Downloader на **PowerShell 7**, использующий `yt-dlp.exe`. Основное Windows-приложение теперь написано на C#; PowerShell-движок оставлен в исходниках для совместимости с прежними сценариями и расширенными параметрами командной строки.
 
 ## Быстрый пример
 
@@ -8,371 +8,249 @@
 pwsh -File .\ytdl-manager-v8.ps1 -In .\list.txt -Out D:\Videos -Threads 4 -AutoFragments -Quality 1080 -VideoCodec H264 -Container MP4
 ~~~
 
-## Важная модель работы
+`start-gui.cmd` запускает C# EXE, если он найден рядом или в `dist/`; только при его отсутствии запускается старая PowerShell GUI-версия. В обеих версиях GUI доступны русские профили, кнопка открытия папки загрузок возле `↻ Failed` и кнопка открытия `%LOCALAPPDATA%\VideoDownloader` возле `Register protocol`. Эти кнопки не являются CLI-аргументами.
 
-Входной <code>-In</code> файл — **рабочая очередь**, а не immutable source.
+## Принцип обработки входного списка
 
-После завершения каждого URL engine переписывает input file и оставляет в нём только незавершённые элементы. Если исходный список нужен как архив, сохрани копию отдельно.
+Файл, переданный через `-In`, — **рабочая очередь**, а не неизменяемый архив. После окончания URL движок переписывает файл, оставляя в нём только незавершённые ссылки. Если нужно сохранить оригинал, сначала сделай копию.
 
-Для <code>list.txt</code> создаются:
+Для `list.txt` создаются файлы `list-success.txt` и `list-error.txt` с результатами текущего запуска. Параметр `-ResultDir` позволяет перенести эти файлы в другой каталог.
 
-~~~text
-list-success.txt
-list-error.txt
-~~~
+## Справочник параметров
 
-По умолчанию они лежат рядом с input file. Параметр <code>-ResultDir</code> меняет эту папку.
-
-Перед обычным запуском старые success/error files текущего имени удаляются.
-
-## Параметры
-
-| Параметр | Default | Назначение |
+| Параметр | По умолчанию | Значение |
 | --- | --- | --- |
-| -In | .\list.txt | входной файл с URL |
-| -Out | текущая папка | media output directory |
-| -Threads | 4 | число URL, обрабатываемых параллельно |
-| -Fragments | 1 | yt-dlp -N, значение clamp 1..8 |
-| -AutoFragments | off | автоматический выбор 1/2/4 fragments |
-| -Watch | off | продолжать следить за input file |
-| -WatchInterval | 2 | период проверки input file в секундах |
-| -LiveQueueFile | — | append-only файл новых URL; опрашивается ~раз в 0.5 секунды пока engine работает |
-| -Archive | off | добавить к output подпапку yyyy-MM-dd |
-| -Cookies | — | cookies.txt для yt-dlp |
-| -SponsorBlock | off | удалить SponsorBlock category sponsor |
-| -AudioOnly | off | extract MP3 |
-| -NoProgress | off | не рисовать PowerShell progress bars |
-| -DryRun | off | проверить очередь без media download |
-| -Log | — | текстовый log file |
-| -EventFile | — | JSONL events для внешнего UI |
-| -ResultDir | рядом с input | папка success/error files |
-| -Quality | Best | Best / 2160 / 1440 / 1080 / 720 |
-| -RateLimit | — | значение для yt-dlp --limit-rate |
-| -Container | Auto | Auto / MP4 / MKV / WebM |
-| -VideoCodec | Auto | Auto / H264 / VP9 / AV1 preference |
-| -WriteSubtitles | off | write regular subtitles |
-| -WriteAutoSubtitles | off | write auto-generated subtitles |
-| -SubtitleLangs | all,-live_chat | yt-dlp subtitle language selector |
-| -EmbedSubtitles | off | write + embed subtitles |
-| -EmbedThumbnail | off | write + embed thumbnail |
-| -EmbedMetadata | off | embed metadata |
-| -EmbedChapters | off | embed chapters |
-| -FilenameTemplate | %(title)s [%(id)s].%(ext)s | yt-dlp output template |
-| -Retries | 3 | дополнительные transient retries, диапазон 0..10 |
-| -RetryDelaySeconds | 5 | стартовая retry delay, диапазон 1..120 |
+| `-In` | `.\list.txt` | Входной список ссылок |
+| `-Out` | Текущая папка | Каталог готовых медиафайлов |
+| `-Threads` | 4 | Параллельные URL |
+| `-Fragments` | 1 | Число фрагментов `yt-dlp -N`, ограничение 1–8 |
+| `-AutoFragments` | Выключено | Автоматически выбрать 1, 2 или 4 фрагмента |
+| `-Watch` | Выключено | Продолжать отслеживать файл очереди |
+| `-WatchInterval` | 2 секунды | Интервал проверки очереди |
+| `-LiveQueueFile` | Не задано | Добавление ссылок в запущенный движок |
+| `-Archive` | Выключено | Подпапка с датой `yyyy-MM-dd` |
+| `-Cookies` | Не задано | Файл `cookies.txt` |
+| `-SponsorBlock` | Выключено | Удалять спонсорские фрагменты |
+| `-AudioOnly` | Выключено | Извлечение MP3 |
+| `-NoProgress` | Выключено | Не рисовать консольные индикаторы PowerShell |
+| `-DryRun` | Выключено | Проверка очереди без скачивания |
+| `-Log` | Не задано | Файл текстового лога |
+| `-EventFile` | Не задано | События JSONL для интерфейса |
+| `-ResultDir` | Рядом с `-In` | Куда записывать файлы успехов и ошибок |
+| `-Quality` | `Best` | `Best` / 2160 / 1440 / 1080 / 720 |
+| `-RateLimit` | Нет ограничения | Значение для `yt-dlp --limit-rate` |
+| `-Container` | `Auto` | `Auto` / `MP4` / `MKV` / `WebM` |
+| `-VideoCodec` | `Auto` | `Auto` / `H264` / `VP9` / `AV1` |
+| `-WriteSubtitles` | Выключено | Сохранить обычные субтитры |
+| `-WriteAutoSubtitles` | Выключено | Сохранить автоматически созданные субтитры |
+| `-SubtitleLangs` | `all,-live_chat` | Языки субтитров |
+| `-EmbedSubtitles` | Выключено | Встроить субтитры в медиа |
+| `-EmbedThumbnail` | Выключено | Добавить обложку |
+| `-EmbedMetadata` | Выключено | Добавить метаданные |
+| `-EmbedChapters` | Выключено | Добавить главы |
+| `-FilenameTemplate` | `%(title)s [%(id)s].%(ext)s` | Шаблон имени файла |
+| `-Retries` | 3 | Число дополнительных попыток при временных ошибках |
+| `-RetryDelaySeconds` | 5 секунд | Начальная пауза перед повтором |
 
-## Input и output
+Точные имена параметров оставлены английскими — это часть программного интерфейса и менять их переводом нельзя.
 
-### -In
+## Входные и выходные файлы
+
+### Входной список `-In`
 
 ~~~powershell
 pwsh -File .\ytdl-manager-v8.ps1 -In .\anime.txt
 ~~~
 
-Пустые строки игнорируются. URL дедуплицируются.
+Пустые строки игнорируются, повторяющиеся URL исключаются. Содержимое файла в процессе работы может изменяться.
 
-### -Out
+### Каталог `-Out`
 
 ~~~powershell
 pwsh -File .\ytdl-manager-v8.ps1 -Out D:\Videos
 ~~~
 
-Если параметр не указан, используется текущая рабочая директория.
+Если `-Out` не задан, используется текущая рабочая папка.
 
-### -Archive
+### Архивирование `-Archive`
 
 ~~~powershell
 pwsh -File .\ytdl-manager-v8.ps1 -Out D:\Videos -Archive
 ~~~
 
-Фактический output:
+Готовые файлы попадают в подпапку с датой, например `D:\Videos\2026-10-20\`.
 
-~~~text
-D:\Videos\2026-10-07\
-~~~
+## Параллельность и фрагменты
 
-## Параллелизм
+`-Threads` задаёт число одновременно выполняющихся URL через PowerShell `ThreadJob`. Графический интерфейс ограничивает значение диапазоном 1–32.
 
-### -Threads
+`-Fragments` передаётся `yt-dlp` как `-N` и ограничивается диапазоном 1–8.
 
-Число URL, одновременно выполняемых как PowerShell ThreadJob.
+`-AutoFragments` оценивает размер файла и выбирает число фрагментов:
 
-~~~powershell
--Threads 8
-~~~
+| Предполагаемый размер | Фрагменты |
+| --- | ---: |
+| Меньше 100 МБ | 1 |
+| 100–500 МБ | 2 |
+| 500 МБ и больше | 4 |
 
-Engine не задаёт отдельный upper ValidateRange для Threads. GUI ограничивает пользовательское значение диапазоном 1..32.
+Если `-Fragments` задан явно, он имеет приоритет перед `-AutoFragments`.
 
-### -Fragments
+## Качество, кодеки и контейнер
 
-Передаётся в yt-dlp как <code>-N</code>.
+Качество не обязательно означает точное разрешение. Параметр `-Quality 1080` ограничивает максимальную высоту `height<=1080`. При отсутствии доступного формата выбирается более низкое качество:
 
-~~~powershell
--Fragments 4
-~~~
-
-Engine clamp-ит значение в 1..8.
-
-### -AutoFragments
-
-Перед стартом URL выполняется filesize probe.
-
-| Оценка размера | Fragments |
-| ---: | ---: |
-| < 100 MB | 1 |
-| 100–500 MB | 2 |
-| >= 500 MB | 4 |
-
-Если <code>-Fragments</code> был указан явно, он имеет приоритет над <code>-AutoFragments</code>.
-
-## Quality fallback
-
-<code>-Quality 2160</code> не означает exact 2160. Selector использует ограничение <code>height<=2160</code>.
-
-При ошибке Requested format is not available последовательность fallback:
-
-| Requested | Последовательность |
+| Запрошено | Последовательность |
 | --- | --- |
-| 2160 | 2160 -> 1440 -> 1080 -> 720 |
-| 1440 | 1440 -> 1080 -> 720 |
-| 1080 | 1080 -> 720 |
+| 2160 | 2160 → 1440 → 1080 → 720 |
+| 1440 | 1440 → 1080 → 720 |
+| 1080 | 1080 → 720 |
 | 720 | 720 |
-| Best | best |
+| Best | Лучшее доступное |
 
-## Codec preference
+Кодек — **предпочтение**, а не строгое требование:
 
-Mapping:
-
-| Значение | yt-dlp prefix |
+| Значение | Соответствующий префикс yt-dlp |
 | --- | --- |
-| H264 | avc1 |
-| VP9 | vp9 |
-| AV1 | av01 |
+| H264 | `avc1` |
+| VP9 | `vp9` |
+| AV1 | `av01` |
 
-Codec не является strict lock.
+Если поток с выбранным кодеком не найден, движок допускает альтернативный поток с тем же ограничением по разрешению.
 
-Например H264 selector сначала пробует H264 streams, затем допускает generic fallback с тем же ограничением height.
+Контейнер `MP4`, `MKV` или `WebM` передаётся через `--merge-output-format`. Для объединения и перекодирования часто требуется FFmpeg.
 
-## Container
+## Аудио, субтитры и метаданные
 
-Для MP4/MKV/WebM добавляется:
-
-~~~text
---merge-output-format <container>
-~~~
-
-Для merge/remux обычно требуется FFmpeg.
-
-В AudioOnly video format/container selection не используется.
-
-## Audio only
-
-~~~powershell
--AudioOnly
-~~~
-
-Эквивалентная часть yt-dlp:
-
-~~~text
--x --audio-format mp3
-~~~
-
-## Subtitles
-
-Пример:
-
-~~~powershell
-pwsh -File .\ytdl-manager-v8.ps1 -WriteSubtitles -WriteAutoSubtitles -SubtitleLangs "ru.*,en.*" -EmbedSubtitles
-~~~
-
-<code>-EmbedSubtitles</code> автоматически включает write regular subtitles.
-
-## Metadata
-
-~~~powershell
--EmbedThumbnail -EmbedMetadata -EmbedChapters
-~~~
-
-Соответствующие yt-dlp operations:
-
-~~~text
---write-thumbnail --embed-thumbnail
---embed-metadata
---embed-chapters
-~~~
-
-Некоторые postprocessors требуют FFmpeg.
-
-## Filename template
-
-~~~powershell
--FilenameTemplate "%(uploader)s - %(title)s.%(ext)s"
-~~~
-
-Template объединяется с <code>-Out</code> и передаётся yt-dlp через output template.
-
-## Rate limit
-
-~~~powershell
--RateLimit 5M
-~~~
-
-Передаётся как:
-
-~~~text
---limit-rate 5M
-~~~
-
-## Cookies
-
-~~~powershell
--Cookies .\cookies.txt
-~~~
-
-Файл проверяется до запуска.
-
-## SponsorBlock
-
-~~~powershell
--SponsorBlock
-~~~
-
-Сейчас удаляется только category:
-
-~~~text
-sponsor
-~~~
-
-## Retry
-
-Retry выполняется приложением поверх полного запуска yt-dlp для URL.
-
-~~~powershell
--Retries 3 -RetryDelaySeconds 5
-~~~
-
-Default schedule после transient failures:
-
-~~~text
-1st failure -> 5s
-2nd failure -> 10s
-3rd failure -> 20s
-~~~
-
-Задержка capped на 60 секунд.
-
-Permanent ошибки вроде unavailable/auth не относятся к transient и не должны retry-иться этим механизмом.
-
-## Machine-readable events
-
-При <code>-EventFile</code> engine дописывает JSON object на строку.
-
-GUI использует эти события для progress/state.
-
-Основные EventType:
-
-~~~text
-Title
-Progress
-File
-Merge
-Retry
-Fallback
-Error
-Done
-~~~
-
-Финальный result object содержит:
-
-~~~text
-Slot
-Url
-Success
-Error
-FriendlyError
-Height
-Path
-FileSize
-TransferredBytes
-~~~
-
-Progress формируется из machine-readable yt-dlp progress-template, а не из regex по обычной строке [download].
-
-Engine включает `--progress` явно, независимо от quiet-режима `--print`. Progress events содержат `DownloadedBytes`, `TotalBytes` текущего media-компонента и накопленный `TransferredBytes` URL; отдельные streams учитываются независимо. Result повторяет итоговый `TransferredBytes`, а `FileSize` описывает размер готового файла. `-NoProgress` выключает только PowerShell progress bars и не выключает machine-readable events. GUI не прибавляет `FileSize` к уже учтённым progress-байтам.
-
-`-SubtitleLangs` применяется также при одном `-WriteAutoSubtitles`, без обязательного `-WriteSubtitles`/`-EmbedSubtitles`.
-
-## Log
-
-~~~powershell
--Log .\run.log
-~~~
-
-Создаёт или очищает log file перед запуском и пишет основные engine messages.
-
-## ResultDir
-
-~~~powershell
--ResultDir D:\Videos\_results
-~~~
-
-Меняет расположение success/error txt, но не media output.
-
-## LiveQueueFile
-
-Windows GUI передаёт движку отдельный append-only файл `-LiveQueueFile` (например `%TEMP%\\ytdl-gui-<id>\\incoming.txt`). Новые ссылки добавляются через `lib/VideoDownloader.LiveQueue.psm1` с межпроцессной блокировкой. Engine читает файл во время выполнения, дедуплицирует URL и ставит их на скачивание; рабочий `-In` из GUI не модифицируется. В отличие от `-Watch`, `-LiveQueueFile` не удерживает engine после исчерпания задач. Если он завершился, новые ссылки остаются в GUI Queue для следующего запуска.
-
-## Watch
-
-~~~powershell
-pwsh -File .\ytdl-manager-v8.ps1 -Watch -WatchInterval 3
-~~~
-
-После опустошения pending queue engine продолжает проверять input file и добавляет новые неизвестные URL.
-
-Остановка: Ctrl+C.
-
-## DryRun
-
-~~~powershell
-pwsh -File .\ytdl-manager-v8.ps1 -In .\list.txt -DryRun
-~~~
-
-Печатает DRY entries и выходит без скачивания media.
-
-DryRun используется smoke tests для проверки CLI mapping.
-
-## Exit codes
-
-- 0 — запуск завершился без failed results;
-- 2 — были failed results;
-- другие non-zero значения возможны при PowerShell/runtime setup errors.
-
-## Практические примеры
-
-### 1080p MP4 с H264 preference
-
-~~~powershell
-pwsh -File .\ytdl-manager-v8.ps1 -In .\list.txt -Out D:\Videos -Quality 1080 -VideoCodec H264 -Container MP4
-~~~
-
-### Архив с metadata и субтитрами
-
-~~~powershell
-pwsh -File .\ytdl-manager-v8.ps1 -In .\list.txt -Out D:\Archive -Archive -Quality Best -Container MKV -WriteSubtitles -WriteAutoSubtitles -SubtitleLangs "ru.*,en.*" -EmbedSubtitles -EmbedMetadata -EmbedChapters -EmbedThumbnail
-~~~
-
-### Музыка
+Только MP3:
 
 ~~~powershell
 pwsh -File .\ytdl-manager-v8.ps1 -In .\music.txt -Out D:\Music -AudioOnly -EmbedMetadata -EmbedThumbnail
 ~~~
 
-### Watch queue
+`-AudioOnly` соответствует настройкам `-x --audio-format mp3`.
+
+Субтитры:
+
+~~~powershell
+pwsh -File .\ytdl-manager-v8.ps1 -WriteSubtitles -WriteAutoSubtitles -SubtitleLangs "ru.*,en.*" -EmbedSubtitles
+~~~
+
+`-EmbedSubtitles` автоматически включает сохранение обычных субтитров. `-SubtitleLangs` применяется и при одном `-WriteAutoSubtitles`.
+
+Метаданные и главы:
+
+~~~powershell
+-EmbedThumbnail -EmbedMetadata -EmbedChapters
+~~~
+
+Часть таких операций выполняет FFmpeg.
+
+## Шаблоны имён и ограничение скорости
+
+~~~powershell
+-FilenameTemplate "%(uploader)s - %(title)s.%(ext)s"
+-RateLimit 5M
+~~~
+
+Шаблон объединяется с `-Out` и передаётся в `yt-dlp`. Ограничение скорости передаётся как `--limit-rate 5M`.
+
+## Cookies и SponsorBlock
+
+~~~powershell
+-Cookies .\cookies.txt
+-SponsorBlock
+~~~
+
+Файл cookies проверяется до запуска. SponsorBlock удаляет фрагменты категории `sponsor`.
+
+## Повторные попытки
+
+`-Retries` задаёт дополнительные попытки при временных сетевых ошибках, а `-RetryDelaySeconds` — стартовую задержку.
+
+Обычный график при `-Retries 3 -RetryDelaySeconds 5`:
+
+~~~text
+Ошибка 1 → ожидание 5 секунд
+Ошибка 2 → ожидание 10 секунд
+Ошибка 3 → ожидание 20 секунд
+~~~
+
+Максимальная пауза — 60 секунд. Постоянные ошибки доступа и недоступности контента не относятся к временным и не должны повторяться бесконечно.
+
+## События и прогресс для GUI
+
+При `-EventFile` движок дописывает по одному JSON-объекту на строку. Основные виды событий: `Title`, `Progress`, `File`, `Merge`, `Retry`, `Fallback`, `Error`, `Done`.
+
+Финальный результат содержит поля `Slot`, `Url`, `Success`, `Error`, `FriendlyError`, `Height`, `Path`, `FileSize` и `TransferredBytes`.
+
+Прогресс берётся из машинного шаблона `--progress-template`, а не из анализа обычной строки `[download]`. Поля `DownloadedBytes` и `TotalBytes` описывают текущую часть видео/аудио, а `TransferredBytes` — накопленные переданные байты по URL. Размер итогового файла не прибавляется второй раз к сетевому трафику.
+
+Параметр `-NoProgress` отключает только отображение прогресса в PowerShell, но не машинные события.
+
+## Логи и списки результатов
+
+~~~powershell
+-Log .\run.log
+-ResultDir D:\Videos\_results
+~~~
+
+`-Log` создаёт или очищает текстовый лог текущего запуска. `-ResultDir` задаёт папку файлов успехов и ошибок, но **не** меняет `-Out`, где лежат медиафайлы.
+
+## Добавление ссылок во время работы
+
+~~~powershell
+-LiveQueueFile .\incoming.txt
+~~~
+
+PowerShell GUI записывает новые URL в отдельный входящий файл и движок периодически считывает его, не меняя исходный `-In`. Это не заставляет движок бесконечно работать после завершения всех заданий: ссылки, которые не успели попасть в текущую сессию, остаются в GUI-очереди для следующего запуска.
+
+Режим непрерывного наблюдения за основным списком:
+
+~~~powershell
+pwsh -File .\ytdl-manager-v8.ps1 -In .\queue.txt -Watch -WatchInterval 3
+~~~
+
+В этом режиме процесс ждёт новые URL даже после завершения текущих заданий. Остановка — `Ctrl+C`.
+
+## Пробный запуск и коды завершения
+
+~~~powershell
+pwsh -File .\ytdl-manager-v8.ps1 -In .\list.txt -DryRun
+~~~
+
+`-DryRun` выводит найденные задания, не скачивая медиа. Используется в smoke-тестах для проверки параметров движка.
+
+- Код `0` — выполнено без ошибок загрузки.
+- Код `2` — есть ошибки или незавершённые задания.
+- Другие ненулевые коды — ошибки запуска или среды.
+
+Ожидающие задачи не должны пропускаться из-за ограничения числа потоков.
+
+## Готовые примеры
+
+**1080p в MP4 с предпочтением H.264:**
+
+~~~powershell
+pwsh -File .\ytdl-manager-v8.ps1 -In .\list.txt -Out D:\Videos -Quality 1080 -VideoCodec H264 -Container MP4
+~~~
+
+**Архив с субтитрами и метаданными:**
+
+~~~powershell
+pwsh -File .\ytdl-manager-v8.ps1 -In .\list.txt -Out D:\Archive -Archive -Quality Best -Container MKV -WriteSubtitles -WriteAutoSubtitles -SubtitleLangs "ru.*,en.*" -EmbedSubtitles -EmbedMetadata -EmbedChapters -EmbedThumbnail
+~~~
+
+**Музыка MP3:**
+
+~~~powershell
+pwsh -File .\ytdl-manager-v8.ps1 -In .\music.txt -Out D:\Music -AudioOnly -EmbedMetadata -EmbedThumbnail
+~~~
+
+**Наблюдение за очередью:**
 
 ~~~powershell
 pwsh -File .\ytdl-manager-v8.ps1 -In .\queue.txt -Watch -Threads 4 -AutoFragments
 ~~~
-## Worker completion
 
-The ThreadJob concurrency limit follows `-Threads`. Waiting workers remain scheduled until they finish. An incomplete run (remaining URLs or workers without results) returns exit code 2 instead of reporting success.
+Подробности пользовательского интерфейса — [GUI.md](GUI.md). Актуальные C#-релизы доступны в разделе [Releases](https://github.com/bespalovnikita/video-downloader/releases/latest).
