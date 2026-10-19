@@ -40,6 +40,16 @@ jobs:
         shell: pwsh
         run: pwsh -NoProfile -File ./tests/cancellation-tests.ps1
 
+      - name: Engine review regressions
+        shell: pwsh
+        run: pwsh -NoProfile -File ./tests/engine-review-regression-tests.ps1
+        timeout-minutes: 3
+
+      - name: GUI removal, recovery and settings regressions
+        shell: pwsh
+        run: pwsh -NoProfile -File ./tests/gui-review-regression-tests.ps1
+        timeout-minutes: 2
+
       - name: File boundary security tests
         shell: pwsh
         run: pwsh -NoProfile -File ./tests/file-boundary-safety-tests.ps1

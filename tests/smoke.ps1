@@ -62,7 +62,7 @@ $guiMarkers = @(
     '$RemoveQueueButton.IsEnabled = $true',
     "Add-VdLiveQueueUrls",
     '$script:liveQueuePath',
-    '$script:sessionTotal += $toAdd.Count',
+    '$script:sessionTotal += $liveUrls.Count',
     '$PasteClipboardButton.Add_Click({',
     "Show-DuplicateDownloadDialog",
     "Import-CompletedUrlsToHistory",
