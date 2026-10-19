@@ -4,15 +4,15 @@
 
 ## Цель проекта
 
-Video Downloader — Windows-приложение поверх yt-dlp:
+Video Downloader — Windows-приложение с основной реализацией **C# / .NET 8 / WPF** и резервной реализацией на **PowerShell 7**.
 
-- WPF UI: <code>ui/MainWindow.xaml</code>;
-- GUI orchestration: <code>ytdl-manager-gui.ps1</code>;
-- download engine: <code>ytdl-manager-v8.ps1</code>;
-- общие helper-функции: <code>lib/</code>;
-- launcher: небольшой .NET 8 WinExe, который запускает GUI через PowerShell 7.
+- Общая разметка WPF: `ui/MainWindow.xaml`.
+- Основной интерфейс и движок загрузки: `native/`. **В нативном релизном EXE нет зависимости от `pwsh.exe`**.
+- Резервный интерфейс и движок: `ytdl-manager-gui.ps1`, `ytdl-manager-v8.ps1` и `lib/`.
+- `start-gui.cmd` предпочитает соседний `VideoDownloader.exe` и только при его отсутствии запускает резервный PowerShell GUI.
+- Нативные тесты: `native-tests/`. Тесты PowerShell: `tests/`.
 
-Не считай VideoDownloader.exe полноценной заменой PowerShell runtime: текущая архитектура требует установленный <code>pwsh.exe</code>.
+Обе версии используют общие файлы в `%LOCALAPPDATA%\VideoDownloader`. Не запускай их одновременно.
 
 ## Автоматические стабильные GitHub Releases
 
@@ -25,14 +25,12 @@ Video Downloader — Windows-приложение поверх yt-dlp:
 - Main означает релизную готовность: перед merge требуется проверка API и интерфейсной совместимости.
 - Политика выпуска: [RELEASING.md](RELEASING.md).
 
-## Экспериментальная перепись на C# / .NET 8
+## Основная C#-архитектура
 
-В ветке `feature/native-csharp-rewrite` существует draft PR #20.
-Новая WPF GUI и движок расположены в `native/`, тесты в `native-tests/`,
-пакет создаётся workflow `native-windows.yml`. **Не смешивай** два runtime:
-новая сборка не должна включать PowerShell-скрипты или запускать `pwsh.exe`.
-Основные ранее описанные ниже `lib/*.psm1` и `ytdl-manager-v8.ps1`
-применяются только к стабильной старой реализации.
+Основной WPF-интерфейс и движок расположены в `native/`, тесты — в
+`native-tests/`, релизный ZIP создаётся workflow `native-windows.yml`.
+Нативная сборка не должна включать PowerShell-скрипты или запускать `pwsh.exe`.
+`lib/*.psm1` и `ytdl-manager-v8.ps1` используются только в резервной реализации.
 
 При изменениях в `native/`:
 - Запускай native Windows CI: сборка, открытие окна WPF, реальные Add/Remove,
@@ -58,8 +56,18 @@ Video Downloader — Windows-приложение поверх yt-dlp:
   handle-based Win32 реализация; текущая проверка reparse/junction не даёт
   такой абсолютной гарантии.
 
-До окончания ручного UX-ревью native PR не мержить поверх стабильного main.
-См. [NATIVE_MIGRATION.md](NATIVE_MIGRATION.md).
+См. [NATIVE_MIGRATION.md](NATIVE_MIGRATION.md) для полной схемы перехода и
+[RELEASING.md](RELEASING.md) для политики выпуска.
+
+## Русификация интерфейса и документации
+
+- Все **пользовательские Markdown-руководства** веди на русском языке: `README.md`, `GUI.md`, `NATIVE_MIGRATION.md`, `ytdl-manager-v8-manual.md`, `RELEASING.md`.
+- Названия встроенных профилей **локализуются только для отображения**. Идентификаторы `Universal`, `4K archive`, `MP4 compatibility`, `Music MP3`, `Subtitles archive` в `session.json` неизменны.
+- В C# маппинг находится в `native/ProfileCatalog.cs`, в резервном PowerShell GUI — в `lib/VideoDownloader.Profiles.psm1`.
+- Общая WPF-разметка должна содержать две кнопки: `OpenOutputDirectoryButton` возле `RetryFailedButton` и `OpenAppSettingsButton` возле `RegisterProtocolButton`. Обработчики обязательны **в обоих** GUI.
+- Для настроек используется **`%LOCALAPPDATA%\VideoDownloader`**, не `%APPDATA%` (Roaming). В C# путь нужно получать из фактического экземпляра `AppPersistence`, чтобы поддерживался тестовый профиль.
+- Папка загрузок берётся из UI, а во время активной C#-сессии — из зафиксированного `DownloadOptions.OutputDirectory`; архивирование добавляет подкаталог даты.
+- Перед merge обязательно проверь `pwsh -NoProfile -File tests/russian-ui-tests.ps1` и `NativeUiSelfTest` в Windows CI. Изменения в общем XAML проверяй в обоих runtimes.
 
 ## Архитектурные инварианты
 
