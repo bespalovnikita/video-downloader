@@ -76,6 +76,27 @@ public sealed partial class NativeWindow
                 "Открыть папку загрузок",MessageBoxButton.OK,MessageBoxImage.Warning);
         }
     }
+    private void OpenAppSettingsFolder()
+    {
+        try
+        {
+            // Use the actual persistence directory rather than guessing AppData
+            // or depending on whether the user has changed their downloads path.
+            var path=Path.GetDirectoryName(_storage.SessionPath)!;
+            Directory.CreateDirectory(path);
+            Process.Start(new ProcessStartInfo("explorer.exe")
+            {
+                UseShellExecute=true,
+                ArgumentList={path}
+            });
+        }
+        catch(Exception e) when (e is IOException or ArgumentException or
+                                System.ComponentModel.Win32Exception or UnauthorizedAccessException)
+        {
+            MessageBox.Show(_window, "Не удалось открыть папку настроек:\n" + e.Message,
+                "Открыть папку настроек",MessageBoxButton.OK,MessageBoxImage.Warning);
+        }
+    }
     private void ShowFileInFolder(DownloadItem? row)
     {
         if(row==null || row.Path.Length==0 || !File.Exists(row.Path))return;
@@ -133,6 +154,7 @@ public sealed partial class NativeWindow
         F<Button>("UpdateYtDlpButton").Click+=async(_,_)=>await DependencyOperation("Updating yt-dlp...",DependencyCenter.UpdateYtDlpAsync);
         F<Button>("InstallFfmpegButton").Click+=async(_,_)=>await DependencyOperation("Installing FFmpeg...",
             async cancel=>{ await DependencyCenter.InstallFfmpegAsync(cancel);return "FFmpeg installed next to VideoDownloader.exe.";});
+        F<Button>("OpenAppSettingsButton").Click+=(_,_)=>OpenAppSettingsFolder();
         F<Button>("RegisterProtocolButton").Click+=(_,_)=>
         {
             try { DependencyCenter.RegisterProtocol();MessageBox.Show(_window,"videodownloader:// registered for this Windows user.","Protocol registered");}
