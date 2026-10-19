@@ -1,68 +1,95 @@
-# Video Downloader — native C# migration
+# Переход Video Downloader с PowerShell на C# / .NET 8
 
-## Runtime and packaging
+## Архитектура новой версии
 
-The WPF GUI, download engine, queue, history, session recovery, preview, cancellation and tray are now implemented in **C# / .NET 8**. The new Windows portable package has **no PowerShell 7 runtime dependency** and does not launch pwsh.exe or a PowerShell console window. yt-dlp.exe and FFmpeg (when necessary) remain separate executables.
+Основное приложение работает на **C# / .NET 8** под Windows. Интерфейс остаётся **WPF** и загружает общую разметку `ui/MainWindow.xaml`. Очередь, работа с `yt-dlp`, история, кеш, отмена и трей реализованы внутри процесса `VideoDownloader.exe`.
 
-Build with .NET 8 SDK on Windows:
+Нативная версия **не использует `pwsh.exe`**, не открывает чёрное окно PowerShell и не требует установленного PowerShell 7. Внешними процессами остаются `yt-dlp.exe` и при необходимости FFmpeg.
+
+Сборка для Windows x64:
 
 ~~~powershell
 dotnet publish native/VideoDownloader.Native.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -o dist/native
 ~~~
 
-Expected portable package: VideoDownloader.exe, yt-dlp.exe, ui/*.xaml and assets/app.ico. No PowerShell scripts or runtime.
+В `dist/native` входят `VideoDownloader.exe`, `yt-dlp.exe`, XAML и иконка. Не нужно копировать туда `.ps1`, `.psm1` или `pwsh.exe`.
 
-## Reuse of existing data
+## Что осталось от PowerShell
 
-- Session: %LOCALAPPDATA%\VideoDownloader\session.json, version 1. Queue and settings are read from the old GUI. The old engine `EventsPath` is replayed for completed/failed/cancelled URLs after a crash, then any remaining Running rows become Interrupted. No downloads resume automatically; a still-live legacy `pwsh` engine blocks native recovery/start and leaves the checkpoint unchanged.
-- History: %LOCALAPPDATA%\VideoDownloader\successful-downloads.jsonl, version 1. Full append-only URL history and optional CompletedAtUtc are preserved, with the same named Local\VideoDownloader.SuccessHistory mutex. A dated success upgrades an undated legacy record; older or undated entries never replace the latest known success time.
-- New v1 session rows retain `OutputRoot` alongside `OwnedPaths`, so removal uses the original publication folder after changing output or restoring an older archive date. Rows from older checkpoints use the saved base output folder as their boundary; paths outside it are still refused.
-- Preview: %LOCALAPPDATA%\VideoDownloader\preview-cache, SHA-256(URL) filenames and 72-hour TTL are retained. Offset timestamps are normalized to UTC; incomplete cache records are evicted before rendering.
+В репозитории сохранены `start-gui.cmd`, `ytdl-manager-gui.ps1`, `ytdl-manager-v8.ps1` и библиотеки `lib/`. Они служат резервным вариантом, инструментом совместимости и старым CLI.
 
-Do not run the old and new GUIs simultaneously during migration: they have distinct single-instance mutex names and cannot coordinate previous worker ownership.
+Если `start-gui.cmd` находит `VideoDownloader.exe` рядом или в `dist/`, запускает именно C#-приложение. При отсутствии EXE запускает PowerShell GUI; в таком случае нужен PowerShell 7.
 
-## Feature mapping
+В обеих версиях общий файл XAML. Поэтому добавлены одинаковые элементы: кнопки открытия папки загрузок и папки настроек, русские названия профилей. Файлы данных при этом общие. **Не запускай обе версии одновременно.**
 
-| Previously in PowerShell | Native C# |
+## Соответствие возможностей
+
+| Возможность | Реализация на C# |
 | --- | --- |
-| Dark WPF GUI | Reuses existing ui/MainWindow.xaml |
-| Queue, reorder, file import, drag/drop | C# ObservableCollection and WPF events |
-| Paste and clipboard watcher during downloads | Channel-based live queue; no shared text files |
-| Parallel downloads | Bounded async worker pool; native yt-dlp subprocesses |
-| Progress and speeds | Structured stdout progress parsing, aggregate speed |
-| Per-URL cancellation, global Stop | CancellationToken + kill process tree |
-| Pause/resume | Windows process-tree suspend/resume |
-| Partial cleanup | Per-job staging, explicit OwnedPaths and no-overwrite move |
-| Preview and cached thumbnail | Single asynchronous preview worker; cache TTL 72 hours |
-| Success-history prompt | Same WPF dialog with Yes/No/YesAll/NoAll/Cancel |
-| Recovery | Compatible v1 session.json and settings |
-| Tray | WinForms NotifyIcon; OK → Left → Err |
-| Video format, codec, subtitles, audio, metadata | Native yt-dlp arguments, fallback and transient retry |
-| Dependency installs and protocol | C# .NET services and user registry |
-| CLI | VideoDownloader.exe --cli --input list.txt --out D:\Videos --threads 4 |
+| Очередь и изменение порядка | `ObservableCollection`, обработчики WPF |
+| Добавление ссылок на лету | Канал задач и асинхронный пул работников |
+| Несколько загрузок одновременно | Отдельные процессы `yt-dlp` и ограниченная параллельность |
+| Прогресс, скорость и время | Разбор структурированного вывода `yt-dlp --progress-template` |
+| Отмена и остановка | `CancellationToken`, завершение дерева процессов |
+| Пауза | Приостановка/возобновление дерева процессов Windows |
+| Безопасное удаление | Индивидуальная staging-папка и список `OwnedPaths` |
+| Превью | Фоновый процесс метаданных, загрузка изображения, кеш на 72 часа |
+| История | Совместимый журнал JSONL, диалог повторной загрузки |
+| Восстановление | `session.json` версии 1 и старые `events.jsonl` |
+| Трей | `NotifyIcon`, статистика `OK → Left → Err` |
+| Настройки профилей | Русские подписи, прежние английские идентификаторы |
+| Протокол браузера | Регистрация `videodownloader://` для текущего пользователя |
+| Командный режим | `VideoDownloader.exe --cli --input list.txt --out D:\Videos` |
 
-The native command-line parser is not an exact alias for old PowerShell parameters. The C# GUI supports the full current settings UI; native --cli currently supports core input/output/thread/quality/codec/container/rate/cookies options. Legacy PowerShell CLI source remains for unusual -Watch and script-only workflows.
+Нативный `--cli` поддерживает основные параметры, но **не является полной заменой** всех старых аргументов PowerShell, включая `-Watch`. Для таких сценариев оставлен оригинальный скрипт.
 
-## Safety and limitations
+## Совместимость сохранённых данных
 
-Every downloaded URL uses its own staging folder. Publishing does not overwrite existing media. File removal requires a known `OwnedPaths` manifest (a bare `Path` from an old checkpoint is insufficient) and is restricted to exact owned filenames inside the session's pinned output folder, with rejection of parent symlinks, junctions and reparse points. No wildcard deletion. Cancellation uses durable in-memory tombstones and result-finalization synchronization to cover the pending-to-running and publish-to-done race windows.
+Каталог пользовательских данных:
 
-A zero yt-dlp exit code alone is insufficient for success: the engine requires an `after_move:__VD_FILE__` media path validated against staging before publishing or appending history. Metadata-only/skipped downloads are failures. Transfer totals include reset counters during retries without adding repeated final samples twice. Permanent HTTP/auth errors take precedence over retry hints. Session completion logs and tray notifications use the same current-session rows as live metrics.
+~~~text
+%LOCALAPPDATA%\VideoDownloader
+~~~
 
-Recovery does not read a still-running legacy worker's event file, which may be locked by its writer. Malformed terminal flags, paths or ownership fields in legacy JSONL are ignored atomically, leaving unfinished rows recoverable instead of manufacturing a final result.
+Он доступен по кнопке **«📁 Открыть папку настроек»** рядом с `Register protocol` в обеих версиях.
 
-Filesystem tests include NTFS junctions and outside-root sentinel files. As with the preceding version, determined hostile processes that swap paths between validation and operation may exploit a TOCTOU race; only handle-relative Win32 filesystem operations can fully eliminate that class of attack.
+| Данные | Путь | Совместимость |
+| --- | --- | --- |
+| Очередь и параметры | `session.json` | Формат версии 1, одинаковый для C# и PowerShell |
+| История успешных URL | `successful-downloads.jsonl` | Прежний append-only JSONL; сохраняется время загрузки |
+| Кеш превью | `preview-cache\` | SHA-256 URL, TTL 72 часа |
+| Результаты старого движка | Путь `Engine.EventsPath` из checkpoint | C# считывает финальные результаты после закрытия старого движка |
 
-## Automatic stable GitHub Releases
+Профили хранят прежние значения `Universal`, `4K archive`, `MP4 compatibility`, `Music MP3` и `Subtitles archive`, хотя пользователь видит русские названия. Это **не требует миграции JSON** и сохраняет совместимость со старыми сессиями.
 
-Each successful push to `main` triggers an automatic, stable GitHub Release. The C# CI job validates WPF, native yt-dlp, persistence, filesystem safety, and produces a temporary test ZIP. The main-only release job serially selects the next stable `v2.0.N` Git tag, rebuilds the EXE with matching version, uploads `VideoDownloader-Windows-x64.zip` plus `SHA256SUMS.txt`, and generates release notes.
+При восстановлении активная ранее загрузка становится `Interrupted`, а завершённая не запускается повторно автоматически. Если старый процесс `pwsh` всё ещё выполняет загрузки, C#-приложение блокирует начало новой сессии, чтобы не повредить историю.
 
-PRs never publish a release, and failed CI prevents publication. The previously created `v1.0.0` draft is untouched. Refer to [RELEASING.md](RELEASING.md).
+## Безопасность скачанных файлов
 
-## Release gate
+Каждый URL получает отдельную временную папку. Готовые файлы публикуются в папку назначения без перезаписи существующих файлов. При удалении используется только явно известный список `OwnedPaths`: одного пути из старого checkpoint недостаточно.
 
-Normal exit stops ingestion, waits for download cancellation/publication rollback and staging cleanup, then saves the final checkpoint before closing the WPF window.
+Проверяются границы каталога, выход через `..` и NTFS junction/symlink/reparse point. Папка назначения в режиме архивирования фиксируется на всю сессию, чтобы переход через полночь не менял место удаления и публикации.
 
-Before replacing the default Windows release: C# compilation, actual WPF startup and Add/Remove/clipboard-preview/.url/checkpoint interaction smoke, offline real yt-dlp completion/cancellation/live-add/pause tests, legacy result-event reconciliation, boundary security tests, and self-contained ZIP without PowerShell. Manual UX validation of drag, duplicate modal, live clipboard preview, tray actions and dependency management remains required before switching the default Windows package.
+Отмена URL согласована с публикацией результата и не должна затрагивать соседние задания. Проверки выполняются перед файловыми операциями, но они не дают абсолютной гарантии против намеренной одновременной подмены каталогов (TOCTOU). Для полной защиты от такого противника нужен Win32 API с операциями по открытым дескрипторам файлов.
 
-Workflow: .github/workflows/native-windows.yml. The prior PowerShell implementation remains in source as a rollback path until release is accepted.
+## Тестирование
+
+Workflow `.github/workflows/native-windows.yml` выполняет на Windows:
+
+- компиляцию C# и фактический запуск WPF-окна;
+- проверку добавления/удаления URL и восстановления checkpoint;
+- проверку русских профилей и новых кнопок в общем XAML;
+- тесты фонового превью и кеша;
+- реальные локальные загрузки через `yt-dlp`, параллельность, отмену и паузу;
+- проверки файловой безопасности, NTFS junction и контрольных файлов вне папки;
+- сборку автономного ZIP без PowerShell.
+
+Отдельный workflow `build-windows.yml` проверяет резервный PowerShell-интерфейс и CMD-сценарий.
+
+## Выпуск обновлений
+
+**Каждый успешно протестированный коммит в `main` считается релизным**. GitHub Actions выбирает версию `v2.0.N`, формирует ZIP с готовой программой и `SHA256SUMS.txt` и публикует GitHub Release.
+
+Страница загрузок: https://github.com/bespalovnikita/video-downloader/releases/latest
+
+Полные правила описаны в [RELEASING.md](RELEASING.md). Резервная PowerShell-версия остаётся в исходниках и не включается в архив нативного релиза.
