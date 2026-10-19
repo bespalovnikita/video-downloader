@@ -404,6 +404,7 @@
                         <Button x:Name="MoveUpButton" Content="↑"/>
                         <Button x:Name="MoveDownButton" Content="↓"/>
                         <Button x:Name="RetryFailedButton" Content="↻ Failed" Background="{StaticResource WarnBrush}" IsEnabled="False"/>
+                        <Button x:Name="OpenOutputDirectoryButton" Content="📂 Открыть папку загрузок" ToolTip="Открыть настроенную папку назначения в Проводнике"/>
                     </WrapPanel>
 
                     <DataGrid x:Name="QueueGrid" Grid.Row="3" AllowDrop="True">
