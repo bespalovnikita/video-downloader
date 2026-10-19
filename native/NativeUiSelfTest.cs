@@ -85,13 +85,21 @@ internal static class NativeUiSelfTest
             archive.IsChecked=false;
             var outputPath=typeof(NativeWindow).GetMethod("ConfiguredOutputDirectory",
                 System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance)!;
-            Require((string)outputPath.Invoke(controller,null)!=outputBox.Text,
+            Require((string)outputPath.Invoke(controller,null)==outputBox.Text,
                 "Open folder must resolve the configured output even before first download.");
             archive.IsChecked=true;
-            Require((string)outputPath.Invoke(controller,null)!=
+            Require((string)outputPath.Invoke(controller,null)==
                     Path.Combine(outputBox.Text,DateTime.Now.ToString("yyyy-MM-dd")),
                 "Archive mode must point into the dated output subfolder.");
             archive.IsChecked=false;
+
+            Stage("testing AppData settings directory button");
+            var appSettings=(Button)window.FindName("OpenAppSettingsButton")!;
+            Require(appSettings.IsEnabled && (string)appSettings.Content=="📁 Открыть папку настроек",
+                "The settings button must be visible beside Register protocol.");
+            var realSettingsPath=Path.GetDirectoryName(new AppPersistence(Path.Combine(root,"profile")).SessionPath)!;
+            Require(realSettingsPath==Path.Combine(root,"profile") && Directory.Exists(realSettingsPath),
+                "Native settings action should open the actual persistence folder, not the download output.");
 
             // Exercise the actual callback on a worker thread: reading a WPF
             // TextBox here used to throw before any metadata request could start.
