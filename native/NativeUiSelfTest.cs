@@ -53,6 +53,46 @@ internal static class NativeUiSelfTest
             Require(window.Resources.Contains("QueueStatusTextStyle"),"Queue state colors must be present");
             Require(window.Resources.Contains("DownloadStatusTextStyle"),"Download state colors must be present");
 
+            Stage("testing Russian profile labels and legacy ID mapping");
+            var profile=(ComboBox)window.FindName("ProfileCombo")!;
+            Require(profile.Items.Count==5 &&
+                    profile.Items.Cast<string>().SequenceEqual(ProfileCatalog.DisplayNames),
+                "All five profiles must show localized Russian captions.");
+            foreach(var id in new[]{"Universal","4K archive","MP4 compatibility","Music MP3","Subtitles archive"})
+            {
+                var caption=ProfileCatalog.Display(id);
+                Require(ProfileCatalog.ToId(caption)==id,
+                    "Russian profile captions must round-trip back to the saved English ID: "+id);
+            }
+            var applyOptions=typeof(NativeWindow).GetMethod("ApplyOptions",
+                System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance)!;
+            applyOptions.Invoke(controller, new object[]{new DownloadOptions{Profile="Music MP3"}});
+            Require((string)profile.SelectedItem=="Музыка MP3",
+                "Old English checkpoint profile must restore with Russian label.");
+            var readOptions=typeof(NativeWindow).GetMethod("ReadOptions",
+                System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance)!;
+            var options=(DownloadOptions)readOptions.Invoke(controller,null)!;
+            Require(options.Profile=="Music MP3" && options.AudioOnly,
+                "Russian music profile must preserve the canonical ID and audio-only preset.");
+
+            Stage("testing configured output directory");
+            var outputButton=(Button)window.FindName("OpenOutputDirectoryButton")!;
+            Require(outputButton.IsEnabled && (string)outputButton.Content=="📂 Открыть папку загрузок",
+                "Output folder button must be visible and enabled without selecting a download.");
+            var outputBox=(TextBox)window.FindName("OutputBox")!;
+            outputBox.Text=Path.Combine(root,"my-downloads");
+            var archive=(CheckBox)window.FindName("ArchiveCheck")!;
+            archive.IsChecked=false;
+            var outputPath=typeof(NativeWindow).GetMethod("ConfiguredOutputDirectory",
+                System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance)!;
+            Require((string)outputPath.Invoke(controller,null)!==outputBox.Text,
+                "Open folder must resolve the configured output even before first download.");
+            archive.IsChecked=true;
+            Require((string)outputPath.Invoke(controller,null)!==
+                    Path.Combine(outputBox.Text,DateTime.Now.ToString("yyyy-MM-dd")),
+                "Archive mode must point into the dated output subfolder.");
+            archive.IsChecked=false;
+
             // Exercise the actual callback on a worker thread: reading a WPF
             // TextBox here used to throw before any metadata request could start.
             Stage("testing background preview cookies");
