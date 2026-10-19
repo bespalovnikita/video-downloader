@@ -14,6 +14,42 @@ Video Downloader — Windows-приложение поверх yt-dlp:
 
 Не считай VideoDownloader.exe полноценной заменой PowerShell runtime: текущая архитектура требует установленный <code>pwsh.exe</code>.
 
+## Экспериментальная перепись на C# / .NET 8
+
+В ветке `feature/native-csharp-rewrite` существует draft PR #20.
+Новая WPF GUI и движок расположены в `native/`, тесты в `native-tests/`,
+пакет создаётся workflow `native-windows.yml`. **Не смешивай** два runtime:
+новая сборка не должна включать PowerShell-скрипты или запускать `pwsh.exe`.
+Основные ранее описанные ниже `lib/*.psm1` и `ytdl-manager-v8.ps1`
+применяются только к стабильной старой реализации.
+
+При изменениях в `native/`:
+- Запускай native Windows CI: сборка, открытие окна WPF, реальные Add/Remove,
+  clipboard-preview, .url import и checkpoint через изолированный UI-тест.
+- Запускай офлайн тесты реального `yt-dlp.exe`: параллельная загрузка,
+  queued/running cancellation, late live Add, pause/resume.
+- При отмене URL используй tombstone и синхронизацию конечного результата:
+  публикация и удаление файлов должны быть согласованы, без оставшихся media.
+- Успех требует валидного `after_move:__VD_FILE__` media path из staging;
+  код 0 без медиа не должен публиковать sidecars или пополнять историю.
+- Счётчики transfer учитывают сброс при retry; постоянная HTTP/auth ошибка
+  имеет приоритет над transient-подсказками в том же diagnostic.
+- Операции удаления разрешены только с известным `OwnedPaths`; неизвестный
+  путь из старого checkpoint сам по себе **не является доказательством владения**.
+- Относись к C# `session.json`, `successful-downloads.jsonl`, preview cache
+  как к совместимым с ранее использованными форматами.
+- Из старого `Engine.EventsPath` читай финальные Result-события: старый GUI
+  мог умереть до сохранения checkpoint. Активный legacy `pwsh` блокирует
+  восстановление и новые native sessions.
+- При `Archive` фиксируй каталог назначения на всю сессию; ночной переход
+  даты не должен менять место публикации и удаления.
+- Для полной защиты от намеренной TOCTOU-подмены каталогов понадобится
+  handle-based Win32 реализация; текущая проверка reparse/junction не даёт
+  такой абсолютной гарантии.
+
+До окончания ручного UX-ревью native PR не мержить поверх стабильного main.
+См. [NATIVE_MIGRATION.md](NATIVE_MIGRATION.md).
+
 ## Архитектурные инварианты
 
 ### 1. Progress должен оставаться machine-readable

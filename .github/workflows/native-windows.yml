@@ -1,0 +1,62 @@
+name: Native C# Windows build
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'native/**'
+      - 'native-tests/**'
+      - 'ui/**'
+      - '.github/workflows/native-windows.yml'
+      - 'yt-dlp.exe'
+      - 'assets/**'
+  push:
+    branches: [main]
+    paths:
+      - 'native/**'
+      - 'native-tests/**'
+
+jobs:
+  native:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Build native C# WPF app
+        run: dotnet build native/VideoDownloader.Native.csproj -c Release
+      - name: Native WPF window startup smoke
+        shell: pwsh
+        timeout-minutes: 2
+        run: pwsh -NoProfile -STA -File ./native-tests/gui-startup.ps1
+      - name: Native WPF controls and checkpoint regression
+        shell: pwsh
+        timeout-minutes: 2
+        run: |
+          $env:VD_NATIVE_UI_TEST_RESULT = Join-Path $env:RUNNER_TEMP 'native-ui-result.txt'
+          $exe = (Resolve-Path 'native/bin/Release/net8.0-windows/win-x64/VideoDownloader.exe').Path
+          $app = Start-Process -FilePath $exe -ArgumentList '--ui-self-test' -Wait -PassThru
+          if ($app.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $env:VD_NATIVE_UI_TEST_RESULT)) {
+            $lastStage = if (Test-Path -LiteralPath $env:VD_NATIVE_UI_TEST_RESULT) {
+              Get-Content -LiteralPath $env:VD_NATIVE_UI_TEST_RESULT -Raw
+            } else { '(no stage marker written)' }
+            throw "Native WPF interaction regression failed: exit code $($app.ExitCode); last stage=$lastStage"
+          }
+          if ((Get-Content -LiteralPath $env:VD_NATIVE_UI_TEST_RESULT -Raw).Trim() -ne 'PASS') {
+            throw 'Native WPF interaction regression did not pass'
+          }
+      - name: Native unit and filesystem security tests
+        run: dotnet run --project native-tests/VideoDownloader.NativeTests.csproj -c Release
+      - name: Publish native portable EXE
+        shell: pwsh
+        run: |
+          dotnet publish native/VideoDownloader.Native.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -o dist/native
+          if ($LASTEXITCODE -ne 0) { throw "Native publish failed" }
+          if (Get-ChildItem dist/native -Recurse -File -Include pwsh.exe,*.ps1,*.psm1) { throw "Native package unexpectedly includes PowerShell runtime/scripts" }
+          Compress-Archive -Path dist/native/* -DestinationPath dist/VideoDownloader-native.zip -Force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VideoDownloader-native-windows
+          path: dist/VideoDownloader-native.zip
+          if-no-files-found: error
