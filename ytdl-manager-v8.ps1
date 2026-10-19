@@ -65,6 +65,14 @@ if ($Fragments -gt 8) { $Fragments = 8 }
 if ($WatchInterval -lt 1) { $WatchInterval = 1 }
 $FragmentsWasSpecified = $PSBoundParameters.ContainsKey("Fragments")
 
+# A cancellable job must never write outside its private staging directory.
+# Check both separators even when validation runs on a non-Windows host.
+if ([string]::IsNullOrWhiteSpace($FilenameTemplate) -or
+    [IO.Path]::IsPathRooted($FilenameTemplate) -or $FilenameTemplate -match '^[\\/]|^[A-Za-z]:' -or
+    @($FilenameTemplate -split '[\\/]' | Where-Object { ($_ -replace ' ','') -match '^\.{2,}$' }).Count -gt 0) {
+    throw "FilenameTemplate must be a relative path without parent-directory traversal."
+}
+
 if ($Out) {
     $ResolvedOut = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Out)
 } else {
@@ -194,7 +202,7 @@ function Handle-Message {
 
     if ($Message.Kind -eq "Result") {
         [void]$Results.Add($Message)
-        [void]$Completed.Add([string]$Message.Url)
+        if ($Message.Success -or $Message.Cancelled -eq $true) { [void]$Completed.Add([string]$Message.Url) }
 
         if ($Message.Cancelled -eq $true) {
             Write-Log ("Cancelled URL: " + [string]$Message.Url) Yellow
@@ -289,6 +297,7 @@ while ($pending.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
             $cancelEvent = [pscustomobject]@{
                 Kind="Result"; Slot=$slot; Url=$url; Success=$false; Cancelled=$true
                 Path=""; OwnedPaths=@(); FileSize=[int64]0; TransferredBytes=[long]0
+                OutputRoot=$ResolvedOut; CleanupError=""; CleanupPaths=@(); StageDir=""
             }
             Handle-Message -Message $cancelEvent -Results $results -Completed $completed -Urls $urls -Titles $titles
             $freeSlots.Enqueue($slot)
@@ -360,21 +369,71 @@ while ($pending.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
                     Height=$Height
                     Title=$Title
                     Timestamp=(Get-Date).ToString("o")
+                    OutputRoot=$outputRoot
                 }
             }
 
+            if ($stageDir) { Emit -Type "Staging" -Text $stageDir }
+
             function Get-AutoFragments {
-                $a = @("--encoding","utf-8","--skip-download","--print","%(filesize,filesize_approx)s")
+                $a = @("--ignore-config","--encoding","utf-8","--impersonate","chrome","--skip-download","--print","%(filesize,filesize_approx)s")
                 if ($cookies) { $a += @("--cookies",$cookies) }
                 $a += $url
+                $probe = [pscustomobject]@{ Fragments=1; Cancelled=$false; TimedOut=$false }
+                $process = [Diagnostics.Process]::new()
+                $process.StartInfo = [Diagnostics.ProcessStartInfo]::new($ytDlpExe)
+                $process.StartInfo.UseShellExecute = $false
+                $process.StartInfo.CreateNoWindow = $true
+                $process.StartInfo.RedirectStandardOutput = $true
+                $process.StartInfo.RedirectStandardError = $true
+                $process.StartInfo.StandardOutputEncoding = [Text.Encoding]::UTF8
+                $process.StartInfo.StandardErrorEncoding = [Text.Encoding]::UTF8
+                foreach ($argument in $a) { [void]$process.StartInfo.ArgumentList.Add([string]$argument) }
+                $started = $false
+                $firstLine = $null
                 try {
-                    $v = (& $ytDlpExe @a 2>$null | Select-Object -First 1)
+                    if ($cancelDir -and (Test-VdCancellation -Directory $cancelDir -Url $url)) {
+                        $probe.Cancelled = $true
+                        return $probe
+                    }
+                    [void]$process.Start()
+                    $started = $true
+                    $deadline = [DateTime]::UtcNow.AddSeconds(30)
+                    $stdout = $process.StandardOutput.ReadLineAsync()
+                    $stderr = $process.StandardError.ReadLineAsync()
+                    while ($null -ne $stdout -or $null -ne $stderr -or -not $process.HasExited) {
+                        if ($cancelDir -and (Test-VdCancellation -Directory $cancelDir -Url $url)) { $probe.Cancelled = $true }
+                        if ([DateTime]::UtcNow -ge $deadline) { $probe.TimedOut = $true }
+                        if ($probe.Cancelled -or $probe.TimedOut) { break }
+                        if ($stdout -and $stdout.IsCompleted) {
+                            $line = $stdout.GetAwaiter().GetResult()
+                            if ($null -eq $line) { $stdout = $null }
+                            else {
+                                if ($null -eq $firstLine) { $firstLine = $line }
+                                $stdout = $process.StandardOutput.ReadLineAsync()
+                            }
+                        }
+                        if ($stderr -and $stderr.IsCompleted) {
+                            $line = $stderr.GetAwaiter().GetResult()
+                            if ($null -eq $line) { $stderr = $null }
+                            else { $stderr = $process.StandardError.ReadLineAsync() }
+                        }
+                        if ($stdout -or $stderr -or -not $process.HasExited) { Start-Sleep -Milliseconds 50 }
+                    }
+                    if ($probe.Cancelled -or $probe.TimedOut -or $process.ExitCode -ne 0) { return $probe }
                     $bytes = [int64]0
-                    [void][int64]::TryParse(([string]$v).Trim(),[ref]$bytes)
-                    if ($bytes -ge 500MB) { return 4 }
-                    if ($bytes -ge 100MB) { return 2 }
-                } catch {}
-                return 1
+                    [void][int64]::TryParse(([string]$firstLine).Trim(),[ref]$bytes)
+                    if ($bytes -ge 500MB) { $probe.Fragments = 4 }
+                    elseif ($bytes -ge 100MB) { $probe.Fragments = 2 }
+                } catch {
+                    # Size estimation is optional; the download still works with one fragment.
+                } finally {
+                    if ($started) {
+                        try { if (-not $process.HasExited) { $process.Kill($true); $process.WaitForExit() } } catch {}
+                    }
+                    $process.Dispose()
+                }
+                return $probe
             }
 
             function Get-FormatSelector([object]$Height) {
@@ -391,12 +450,8 @@ while ($pending.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
             }
 
             function Build-Args([object]$Height) {
-                $effectiveFragments = $fragments
-                if ($autoFragments) { $effectiveFragments = Get-AutoFragments }
-                if ($effectiveFragments -lt 1) { $effectiveFragments = 1 }
-                if ($effectiveFragments -gt 8) { $effectiveFragments = 8 }
-
                 $a = @(
+                    "--ignore-config",
                     "--encoding","utf-8",
                     "--newline","--progress",
                     "--no-color",
@@ -440,6 +495,13 @@ while ($pending.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
             $stopAll = $false
             $cancelled = $false
             $transferState = @{}
+            $effectiveFragments = [Math]::Min(8,[Math]::Max(1,$fragments))
+            if ($autoFragments) {
+                $probe = Get-AutoFragments
+                $effectiveFragments = $probe.Fragments
+                if ($probe.Cancelled) { $cancelled = $true; $stopAll = $true }
+                if ($probe.TimedOut) { Emit -Type "Fallback" -Text "Metadata size estimate timed out after 30s; using one fragment." }
+            }
 
             foreach ($height in $qualities) {
                 if ($stopAll) { break }
@@ -447,6 +509,7 @@ while ($pending.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
 
                 for ($attempt=1; $attempt -le ($retries+1); $attempt++) {
                     $errorLines = [Collections.Generic.List[string]]::new()
+                    $finalPath = ""
                     $args = Build-Args $height
 
                     $onLine = {
@@ -506,7 +569,7 @@ while ($pending.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
                         $nativeStarted = $true
                         $stdout = $native.StandardOutput.ReadLineAsync()
                         $stderr = $native.StandardError.ReadLineAsync()
-                        while ($null -ne $stdout -or $null -ne $stderr) {
+                        while ($null -ne $stdout -or $null -ne $stderr -or -not $native.HasExited) {
                             if ($cancelDir -and -not $cancelled -and (Test-VdCancellation -Directory $cancelDir -Url $url)) {
                                 $cancelled = $true
                                 try { $native.Kill($true) } catch {}
@@ -521,10 +584,12 @@ while ($pending.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
                                 if ($null -eq $line) { $stderr = $null }
                                 else { . $onLine $line; $stderr = $native.StandardError.ReadLineAsync() }
                             }
-                            if ($stdout -or $stderr) { Start-Sleep -Milliseconds 50 }
+                            if ($stdout -or $stderr -or -not $native.HasExited) { Start-Sleep -Milliseconds 50 }
                         }
                         $native.WaitForExit()
                         $exitCode = $native.ExitCode
+                    } catch {
+                        [void]$errorLines.Add($_.Exception.Message)
                     } finally {
                         if ($nativeStarted) {
                             try {
@@ -535,7 +600,11 @@ while ($pending.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
                     }
                     if ($cancelled) { $stopAll = $true; break }
                     if ($exitCode -eq 0) {
-                        $success = $true
+                        if ($finalPath -and (Test-Path -LiteralPath $finalPath -PathType Leaf)) {
+                            $success = $true
+                        } else {
+                            $finalError = "yt-dlp finished without a media file; no completed download was produced."
+                        }
                         $stopAll = $true
                         break
                     }
@@ -553,7 +622,16 @@ while ($pending.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
                     if ($transient -and $attempt -le $retries) {
                         $delay = [Math]::Min(60,$retryDelaySeconds * [Math]::Pow(2,$attempt-1))
                         Emit -Type "Retry" -Text ("T{0} RETRY {1}/{2} in {3}s: {4}" -f $slot,$attempt,$retries,[int]$delay,(Get-FriendlyDownloadError $finalError)) -Height $finalHeight
-                        Start-Sleep -Seconds ([int]$delay)
+                        $retryDeadline = [DateTime]::UtcNow.AddSeconds($delay)
+                        while ([DateTime]::UtcNow -lt $retryDeadline) {
+                            if ($cancelDir -and (Test-VdCancellation -Directory $cancelDir -Url $url)) {
+                                $cancelled = $true
+                                $stopAll = $true
+                                break
+                            }
+                            Start-Sleep -Milliseconds 100
+                        }
+                        if ($cancelled) { break }
                         continue
                     }
 
@@ -563,6 +641,9 @@ while ($pending.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
             }
 
             $ownedPaths = @()
+            $cleanupErrors = [Collections.Generic.List[string]]::new()
+            $cleanupPaths = [Collections.Generic.List[string]]::new()
+            $remainingStageDir = ""
             if ($cancelDir -and (Test-VdCancellation -Directory $cancelDir -Url $url)) { $cancelled = $true }
             if ($success -and -not $cancelled -and $stageDir) {
                 try {
@@ -572,22 +653,48 @@ while ($pending.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
                 } catch {
                     $success = $false
                     $finalError = "Could not publish staged download: " + $_.Exception.Message
+                    if ($_.Exception.Data.Contains('OwnedPaths')) {
+                        $ownedPaths = @($_.Exception.Data['OwnedPaths'])
+                        [void]$cleanupErrors.Add("Could not roll back published files: " + $_.Exception.Message)
+                    }
                 }
             }
             if ($cancelDir -and (Test-VdCancellation -Directory $cancelDir -Url $url)) { $cancelled = $true }
             if ($cancelled -and $ownedPaths.Count -gt 0) {
-                [void](Remove-VdOwnedFiles -OutputRoot $outputRoot -Paths $ownedPaths)
-                $ownedPaths = @()
+                foreach ($ownedPath in $ownedPaths) {
+                    try { [void](Remove-VdOwnedFiles -OutputRoot $outputRoot -Paths @($ownedPath)) }
+                    catch {
+                        [void]$cleanupErrors.Add($_.Exception.Message)
+                        [void]$cleanupPaths.Add($ownedPath)
+                    }
+                }
+                $ownedPaths = @($cleanupPaths.ToArray())
             }
             if ($stageDir -and (Test-Path -LiteralPath $stageDir)) {
-                Remove-Item -LiteralPath $stageDir -Recurse -Force -ErrorAction SilentlyContinue
+                try { Remove-VdStagingDirectory -StageDir $stageDir -RunDir (Split-Path -Parent $cancelDir) }
+                catch {
+                    [void]$cleanupErrors.Add($_.Exception.Message)
+                    $remainingStageDir = $stageDir
+                }
+            }
+            $cleanupError = $cleanupErrors -join " | "
+            if ($cleanupError) {
+                $success = $false
+                $finalError = (@($finalError,"Cleanup failed: $cleanupError") | Where-Object { $_ }) -join " | "
+                if (-not $cancelled) {
+                    foreach ($ownedPath in $ownedPaths) {
+                        if (-not $cleanupPaths.Contains($ownedPath)) { [void]$cleanupPaths.Add($ownedPath) }
+                    }
+                }
+                Emit -Type "CleanupError" -Text $cleanupError
             }
 
             if ($cancelled) {
                 [pscustomobject]@{
                     Kind="Result"; Slot=$slot; Url=$url; Success=$false; Cancelled=$true
-                    Error=""; FriendlyError=""; Height=$finalHeight; Path=""
-                    OwnedPaths=@(); FileSize=[int64]0; TransferredBytes=[long]$transferState.Bytes
+                    Error=$cleanupError; FriendlyError=$cleanupError; Height=$finalHeight; Path=""
+                    OwnedPaths=@($ownedPaths); FileSize=[int64]0; TransferredBytes=[long]$transferState.Bytes
+                    OutputRoot=$outputRoot; CleanupError=$cleanupError; CleanupPaths=@($cleanupPaths.ToArray()); StageDir=$remainingStageDir
                 }
             } elseif ($success) {
                 $fileSize = [int64]0
@@ -608,6 +715,7 @@ while ($pending.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
                     OwnedPaths=@($ownedPaths)
                     FileSize=$fileSize
                     TransferredBytes=[long]$transferState.Bytes
+                    OutputRoot=$outputRoot; CleanupError=$cleanupError; CleanupPaths=@($cleanupPaths.ToArray()); StageDir=$remainingStageDir
                 }
             } else {
                 $friendly = Get-FriendlyDownloadError $finalError
@@ -621,9 +729,10 @@ while ($pending.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
                     FriendlyError=$friendly
                     Height=$finalHeight
                     Path=""
-                    OwnedPaths=@()
+                    OwnedPaths=@($ownedPaths)
                     FileSize=[int64]0
                     TransferredBytes=[long]$transferState.Bytes
+                    OutputRoot=$outputRoot; CleanupError=$cleanupError; CleanupPaths=@($cleanupPaths.ToArray()); StageDir=$remainingStageDir
                 }
             }
         }
@@ -653,8 +762,9 @@ while ($pending.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
 
 $successCount = @($results | Where-Object { $_.Success }).Count
 $errorCount = @($results | Where-Object { -not $_.Success -and -not $_.Cancelled }).Count
+$cleanupErrorCount = @($results | Where-Object { $_.CleanupError }).Count
 $remaining = 0
 if (Test-Path $ListFile) { $remaining = @(Get-Content $ListFile -Encoding UTF8 | Where-Object { $_ }).Count }
 Write-Log ("Finished. Success={0}, Errors={1}, Remaining={2}" -f $successCount,$errorCount,$remaining) Cyan
-if ($errorCount -gt 0 -or $remaining -gt 0 -or $results.Count -lt $startedCount) { exit 2 }
+if ($errorCount -gt 0 -or $cleanupErrorCount -gt 0 -or $remaining -gt 0 -or $results.Count -lt $startedCount) { exit 2 }
 exit 0
