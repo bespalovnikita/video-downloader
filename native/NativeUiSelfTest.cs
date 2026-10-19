@@ -66,7 +66,7 @@ internal static class NativeUiSelfTest
             }
             var applyOptions=typeof(NativeWindow).GetMethod("ApplyOptions",
                 System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance)!;
-            applyOptions.Invoke(controller, new object[]{new DownloadOptions{Profile="Music MP3"}});
+            applyOptions.Invoke(controller, new object[]{new DownloadOptions{Profile="Music MP3",AudioOnly=true}});
             Require((string)profile.SelectedItem=="Музыка MP3",
                 "Old English checkpoint profile must restore with Russian label.");
             var readOptions=typeof(NativeWindow).GetMethod("ReadOptions",
