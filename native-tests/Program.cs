@@ -39,6 +39,30 @@ try
         "Existing checkpoint must recover safely without restarting completed rows");
     Assert(restored.Settings.Quality=="1080","Settings preserved");
 
+    // Results keep their own deletion boundary across sessions and archive dates.
+    string firstRoot=Path.Combine(temp,"first-output","2000-01-01");
+    string secondRoot=Path.Combine(temp,"second-output");
+    Directory.CreateDirectory(firstRoot);Directory.CreateDirectory(secondRoot);
+    string firstFile=Path.Combine(firstRoot,"first.mp4");
+    string secondFile=Path.Combine(secondRoot,"second.mp4");
+    File.WriteAllText(firstFile,"FIRST");File.WriteAllText(secondFile,"SECOND");
+    data.Save([
+        new DownloadItem {Url="https://example.com/first",Status="Completed",Path=firstFile,
+            OutputRoot=firstRoot,OwnedPaths=[firstFile]},
+        new DownloadItem {Url="https://example.com/second",Status="Completed",Path=secondFile,
+            OutputRoot=secondRoot,OwnedPaths=[secondFile]}
+    ],new DownloadOptions {Output=secondRoot,Archive=true});
+    var mixed=data.Restore()!;
+    OwnedFiles.DeleteOwned(mixed.Queue[0].OutputRoot,mixed.Queue[0].OwnedPaths);
+    Assert(!File.Exists(firstFile)&&File.Exists(secondFile),
+        "Restored results must delete inside their original output, preserving later sessions");
+    data.Save([new DownloadItem {Url="https://example.com/old-archive",Status="Completed",
+        Path=firstFile,OwnedPaths=[firstFile]}],
+        new DownloadOptions {Output=Path.Combine(temp,"first-output"),Archive=true});
+    var oldArchive=data.Restore()!;
+    Assert(OwnedFiles.Inside(oldArchive.Queue[0].OutputRoot,firstFile),
+        "Old v1 archive manifests must use the saved base folder, not today's dated folder");
+
     // A crashed legacy GUI can leave a stale Running checkpoint even after
     // its engine wrote a final Result event. Preserve that completed download.
     var eventsFile=Path.Combine(temp,"old-events.jsonl");
@@ -169,6 +193,8 @@ try
     Assert(one.Progress==100 && two.Progress==100,"Native progress must reach 100%");
     Assert(File.Exists(one.Path) && File.Exists(two.Path),"Successful URLs must publish real media");
     Assert(one.OwnedPaths.Count>0 && two.OwnedPaths.Count>0,"Native results must record owned files");
+    Assert(one.OutputRoot==realOptions.OutputDirectory && two.OutputRoot==realOptions.OutputDirectory,
+        "Successful results must retain their publication root");
     Assert(new FileInfo(one.Path).Length==192*1024 && new FileInfo(two.Path).Length==256*1024,
         "Native download must preserve transferred file bytes");
     OwnedFiles.DeleteOwned(realOptions.Output,one.OwnedPaths);
@@ -259,6 +285,30 @@ try
         await task.WaitAsync(TimeSpan.FromSeconds(60));
     }
     Assert(pauseRow.Status=="Completed","Paused and resumed download must complete successfully");
+
+    // Disposing must drain cancellation and cleanup before application exit.
+    var shutdownRow=new DownloadItem {Url=new Uri(longInput).AbsoluteUri};
+    var shutdownOptions=new DownloadOptions {Output=Path.Combine(temp,"shutdown-output"),
+        Threads="1",RateLimit="10K",EmbedMetadata=false,EmbedChapters=false};
+    var shutdownEngine=new DownloadCoordinator(ytDlp,data,shutdownOptions,_=>{},_=>{});
+    var stageField=typeof(DownloadCoordinator).GetField("_stageRoot",
+        System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance)!;
+    string shutdownStage=(string)stageField.GetValue(shutdownEngine)!;
+    shutdownEngine.Add(shutdownRow);
+    var shutdownTask=shutdownEngine.RunAsync();
+    try
+    {
+        var until=DateTime.UtcNow.AddSeconds(25);
+        while(shutdownRow.TransferredBytes==0 && DateTime.UtcNow<until)await Task.Delay(100);
+        Assert(shutdownRow.TransferredBytes>0,"Shutdown fixture must be transferring before exit");
+    }
+    finally { await shutdownEngine.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(30)); }
+    Assert(shutdownTask.IsCompleted && shutdownRow.Status=="Interrupted",
+        "Shutdown must await the final cancelled result");
+    Assert(!Directory.Exists(shutdownStage),"Shutdown must delete staging before returning");
+    Assert(!Directory.Exists(shutdownOptions.Output) ||
+        Directory.GetFiles(shutdownOptions.Output,"*.mp4",SearchOption.AllDirectories).Length==0,
+        "Shutdown must leave no cancelled published media");
     Console.WriteLine("Native C# session/history/filesystem and live/cancel/pause/parallel yt-dlp integration tests passed.");
 }
 finally{try{Directory.Delete(temp,true);}catch(IOException){}}

@@ -36,6 +36,13 @@ public sealed class AppPersistence
             row.OwnedPaths ??= new List<string>();
         }
         MergeLegacyResultEvents(session);
+        foreach (var row in session.Queue)
+        {
+            // Older v1 snapshots have no per-result root. The saved base output
+            // also contains dated archive folders, regardless of today's date.
+            if (string.IsNullOrWhiteSpace(row.OutputRoot))
+                row.OutputRoot=Path.GetFullPath(session.Settings.Output);
+        }
         return session;
     }
 

@@ -39,6 +39,8 @@ public sealed class DownloadItem : INotifyPropertyChanged
     public string RawError { get => _rawError; set { _rawError = value; Changed(); } }
     public string Slot { get => _slot; set { _slot = value; Changed(); } }
     public List<string> OwnedPaths { get; set; } = new();
+    // The publication boundary belongs to the result, not the next session.
+    public string OutputRoot { get; set; } = "";
     public long TransferredBytes { get; set; }
     public string DisplayState { get => State; set => State = value; }
 }
@@ -73,7 +75,7 @@ public sealed class DownloadOptions
     [JsonIgnore] private string? PinnedOutputDirectory { get; set; }
     [JsonIgnore] public string OutputDirectory => PinnedOutputDirectory ??
         (Archive ? System.IO.Path.Combine(Output, DateTime.Now.ToString("yyyy-MM-dd")) : Output);
-    public void PinOutputDirectory() => PinnedOutputDirectory=OutputDirectory;
+    public void PinOutputDirectory() => PinnedOutputDirectory=System.IO.Path.GetFullPath(OutputDirectory);
 }
 
 public sealed class SessionSnapshot

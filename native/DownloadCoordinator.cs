@@ -31,6 +31,7 @@ public sealed class DownloadCoordinator : IAsyncDisposable
 
     private int _outstanding;
     private int _completed;
+    private Task? _runTask;
     private readonly object _resultGate=new();
     private readonly string _runStamp=DateTime.Now.ToString("yyyyMMdd-HHmmss",CultureInfo.InvariantCulture);
     public int Outstanding=>Volatile.Read(ref _outstanding);
@@ -112,6 +113,7 @@ public sealed class DownloadCoordinator : IAsyncDisposable
         Action<DownloadItem> changed,Action<string> log)
     {
         _ytDlp=ytDlp;_data=data;_options=options;_changed=changed;_log=log;
+        _options.PinOutputDirectory();
         OwnedFiles.NoReparseAncestors(Path.Combine(_options.OutputDirectory,"__check__"));
         Directory.CreateDirectory(_stageRoot);
     }
@@ -171,7 +173,8 @@ public sealed class DownloadCoordinator : IAsyncDisposable
         foreach(var src in _itemCancels.Values) { try { src.Cancel(); } catch(ObjectDisposedException){} }
         _queue.Writer.TryComplete();
     }
-    public async Task RunAsync()
+    public Task RunAsync() => _runTask ??= RunCoreAsync();
+    private async Task RunCoreAsync()
     {
         var workers=Enumerable.Range(1,_options.Parallel)
             .Select(i=>Task.Run(()=>WorkerAsync(i),CancellationToken.None)).ToArray();
@@ -229,6 +232,7 @@ public sealed class DownloadCoordinator : IAsyncDisposable
                     else if (result.Success)
                     {
                         item.Path=result.Path;item.OwnedPaths=result.OwnedPaths.ToList();
+                        item.OutputRoot=_options.OutputDirectory;
                         item.Progress=100;item.Speed="";item.ETA="";
                         item.Status="Completed";item.State="Done";
                         try { _data.AppendSuccess(item.Url); }
@@ -480,7 +484,10 @@ public sealed class DownloadCoordinator : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         Stop();
-        _stop.Dispose();
-        await Task.CompletedTask;
+        try
+        {
+            if (_runTask!=null) await _runTask.ConfigureAwait(false);
+        }
+        finally { _stop.Dispose(); }
     }
 }

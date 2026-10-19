@@ -216,9 +216,11 @@ public sealed partial class NativeWindow
             RefreshDependencyLabel();
         }
     }
-    private void OnClosing(object? sender,System.ComponentModel.CancelEventArgs e)
+    private async void OnClosing(object? sender,System.ComponentModel.CancelEventArgs e)
     {
         if (_disposed) return; // internal test shutdown, not a user window close
+        if (_closeReady) return;
+        if (_closing) { e.Cancel=true; return; }
         if (!_exitFromTray)
         {
             var active=_session?.IsRunning==true;
@@ -230,11 +232,27 @@ public sealed partial class NativeWindow
             if(answer==MessageBoxResult.Yes){e.Cancel=true;_window.Hide();return;}
             if(answer==MessageBoxResult.Cancel){e.Cancel=true;return;}
         }
-        SaveCheckpoint();
-        _session?.Stop();
+        // Keep the dispatcher and process alive until cancellation has rolled
+        // back publication and removed staging files. A second Close is issued
+        // only after the final ownership/status checkpoint has been written.
+        e.Cancel=true;
+        _closing=true;
+        _stopping=true;
         _tick.Stop();_clipboardTick.Stop();
+        _window.IsEnabled=false;
+        try
+        {
+            _session?.Stop();
+            if (_sessionTask!=null) await _sessionTask;
+        }
+        catch(Exception error) { Log("Shutdown cleanup failed: "+error.Message); }
+        SaveCheckpoint();
         _tray.Visible=false;
         _tray.Dispose();
+        _closeReady=true;
+        // Even an idle/completed task may finish synchronously inside Closing.
+        // WPF forbids a recursive Close until the current event has returned.
+        _=Dispatcher.BeginInvoke(()=>_window.Close());
     }
     public void Dispose()
     {

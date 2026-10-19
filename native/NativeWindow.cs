@@ -37,6 +37,9 @@ public sealed partial class NativeWindow : IDisposable
     private bool _stopping;
     private bool _exitFromTray;
     private bool _disposed;
+    private bool _closing;
+    private bool _closeReady;
+    private string _previewCookies="";
     private string _previewUrl="";
     private string _lastClipboard="";
     private string _lastSavedSnapshot="";
@@ -75,7 +78,9 @@ public sealed partial class NativeWindow : IDisposable
             C(control).SelectedIndex=0;
         }
         B("OutputBox").Text=new DownloadOptions().Output;
-        _previews=new PreviewService(_ytDlp,_storage,()=>B("CookiesBox").Text,
+        _previewCookies=B("CookiesBox").Text;
+        B("CookiesBox").TextChanged+=(_,_)=>Volatile.Write(ref _previewCookies,B("CookiesBox").Text);
+        _previews=new PreviewService(_ytDlp,_storage,()=>Volatile.Read(ref _previewCookies),
             data=>_window.Dispatcher.BeginInvoke(()=>OnPreviewReady(data)),
             message=>_window.Dispatcher.BeginInvoke(()=>Log(message)));
         SetupTray();
@@ -364,6 +369,7 @@ public sealed partial class NativeWindow : IDisposable
     }
     private void AddUrls(IEnumerable<string> urls,bool clipboard=false,bool selectNew=false)
     {
+        if (_closing || _disposed) return;
         var rows=urls.Where(AppPersistence.ValidUrl).Distinct(StringComparer.Ordinal)
             .Where(url=>!_queue.Any(i=>string.Equals(i.Url,url,StringComparison.Ordinal)))
             .Select(url=>new DownloadItem{Url=url}).ToList();
@@ -443,6 +449,7 @@ public sealed partial class NativeWindow : IDisposable
     }
     private async Task StartAsync(IEnumerable<DownloadItem>? custom=null)
     {
+        if (_closing || _disposed) return;
         if (_legacyEngineBlocked)
         {
             MessageBox.Show(_window,
@@ -534,7 +541,7 @@ public sealed partial class NativeWindow : IDisposable
                     if(row.OwnedPaths.Count==0 && row.Path.Length>0)
                         throw new IOException("This restored download has no ownership manifest. Remove the file manually; the application will not risk deleting an unrelated file.");
                     if(row.OwnedPaths.Count>0)
-                        OwnedFiles.DeleteOwned(_sessionOptions.OutputDirectory,row.OwnedPaths);
+                        OwnedFiles.DeleteOwned(row.OutputRoot,row.OwnedPaths);
                 }
                 _queue.Remove(row);
                 _downloads.Remove(row);

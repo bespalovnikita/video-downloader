@@ -16,6 +16,7 @@ Expected portable package: VideoDownloader.exe, yt-dlp.exe, ui/*.xaml and assets
 
 - Session: %LOCALAPPDATA%\VideoDownloader\session.json, version 1. Queue and settings are read from the old GUI. The old engine `EventsPath` is replayed for completed/failed/cancelled URLs after a crash, then any remaining Running rows become Interrupted. No downloads resume automatically; a still-live legacy `pwsh` engine blocks native recovery/start and leaves the checkpoint unchanged.
 - History: %LOCALAPPDATA%\VideoDownloader\successful-downloads.jsonl, version 1. Full append-only URL history and optional CompletedAtUtc are preserved, with the same named Local\VideoDownloader.SuccessHistory mutex.
+- New v1 session rows retain `OutputRoot` alongside `OwnedPaths`, so removal uses the original publication folder after changing output or restoring an older archive date. Rows from older checkpoints use the saved base output folder as their boundary; paths outside it are still refused.
 - Preview: %LOCALAPPDATA%\VideoDownloader\preview-cache, SHA-256(URL) filenames and 72-hour TTL are retained.
 
 Do not run the old and new GUIs simultaneously during migration: they have distinct single-instance mutex names and cannot coordinate previous worker ownership.
@@ -49,6 +50,8 @@ Every downloaded URL uses its own staging folder. Publishing does not overwrite 
 Filesystem tests include NTFS junctions and outside-root sentinel files. As with the preceding version, determined hostile processes that swap paths between validation and operation may exploit a TOCTOU race; only handle-relative Win32 filesystem operations can fully eliminate that class of attack.
 
 ## Release gate
+
+Normal exit stops ingestion, waits for download cancellation/publication rollback and staging cleanup, then saves the final checkpoint before closing the WPF window.
 
 Before replacing the default Windows release: C# compilation, actual WPF startup and Add/Remove/clipboard-preview/.url/checkpoint interaction smoke, offline real yt-dlp completion/cancellation/live-add/pause tests, legacy result-event reconciliation, boundary security tests, and self-contained ZIP without PowerShell. Manual UX validation of drag, duplicate modal, live clipboard preview, tray actions and dependency management remains required before switching the default Windows package.
 

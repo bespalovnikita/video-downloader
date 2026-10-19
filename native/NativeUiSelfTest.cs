@@ -53,6 +53,21 @@ internal static class NativeUiSelfTest
             Require(window.Resources.Contains("QueueStatusTextStyle"),"Queue state colors must be present");
             Require(window.Resources.Contains("DownloadStatusTextStyle"),"Download state colors must be present");
 
+            // Exercise the actual callback on a worker thread: reading a WPF
+            // TextBox here used to throw before any metadata request could start.
+            Stage("testing background preview cookies");
+            var cookies=(TextBox)window.FindName("CookiesBox")!;
+            cookies.Text=Path.Combine(root,"cookies.txt");
+            var previews=(PreviewService)typeof(NativeWindow).GetField("_previews",
+                System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance)!.GetValue(controller)!;
+            var readCookies=(Func<string>)typeof(PreviewService).GetField("_cookiePath",
+                System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance)!.GetValue(previews)!;
+            Require(Task.Run(readCookies).GetAwaiter().GetResult()==cookies.Text,
+                "Preview worker must read the current cookies without accessing WPF controls");
+            cookies.Text="";
+            Require(Task.Run(readCookies).GetAwaiter().GetResult()=="",
+                "Preview worker must observe cookies being cleared");
+
             queue.SelectedItem=queue.Items[0];
             remove.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             Stage("Remove clicked");
@@ -108,6 +123,37 @@ internal static class NativeUiSelfTest
                 "Tray counts must be current-session only, ordered OK Left Err");
 
             Stage("testing shutdown");
+            // Hold the worker completion task open, then exercise real window
+            // Close events and dispatcher continuations. The first Close must
+            // leave the app alive until the final result has been checkpointed.
+            var cleanup=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            typeof(NativeWindow).GetField("_sessionTask",
+                System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance)!
+                .SetValue(controller,cleanup.Task);
+            typeof(NativeWindow).GetField("_exitFromTray",
+                System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance)!
+                .SetValue(controller,true);
+            bool closed=false;
+            var frame=new System.Windows.Threading.DispatcherFrame();
+            window.Closed+=(_,_)=>{closed=true;frame.Continue=false;};
+            window.Close();
+            Require(!closed && window.IsVisible && !window.IsEnabled,
+                "Exit must keep the window alive while worker cleanup is pending");
+            var finalRow=(DownloadItem)queue.Items[0];
+            finalRow.Status="Interrupted";finalRow.State="Cancelled";
+            cleanup.SetResult();
+            var timeout=new System.Windows.Threading.DispatcherTimer {
+                Interval=TimeSpan.FromSeconds(10)
+            };
+            timeout.Tick+=(_,_)=>frame.Continue=false;
+            timeout.Start();
+            try { System.Windows.Threading.Dispatcher.PushFrame(frame); }
+            finally { timeout.Stop(); }
+            Require(closed,"Exit must close the window after cleanup completes");
+            var finalSnapshot=new AppPersistence(Path.Combine(root,"profile")).Restore()!;
+            Require(finalSnapshot.Queue[0].Status=="Interrupted" &&
+                finalSnapshot.Queue[0].State=="Cancelled",
+                "Exit must checkpoint the final cancelled result before closing");
             // PASS is set after the finally cleanup to catch shutdown crashes.
         }
         finally
