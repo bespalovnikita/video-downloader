@@ -39,6 +39,7 @@ namespace VideoDownloader.Tests {
                 }
             } catch (ObjectDisposedException) { }
               catch (SocketException) { if (!stop.IsCancellationRequested) throw; }
+              catch (InvalidOperationException) { if (!stop.IsCancellationRequested) throw; }
         }
 
         static Task HeaderAsync(NetworkStream stream, string status, long length, string extra = "") {
