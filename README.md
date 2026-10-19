@@ -1,23 +1,18 @@
 # Video Downloader
 
-> **Новая версия на C# (экспериментальная):** полная перепись GUI и движка ведётся в
-> [PR #20](https://github.com/bespalovnikita/video-downloader/pull/20).
-> Отдельный Windows workflow **Native C# Windows build** публикует артефакт
-> `VideoDownloader-native-windows`, которому **не нужен PowerShell 7**:
-> `VideoDownloader.exe` сам управляет WPF, очередью, yt-dlp и треем.
-> Пока это draft PR, а обычный `VideoDownloader-windows` из main остаётся
-> стабильной PowerShell-сборкой. Форматы истории/очереди совместимы, но не
-> запускай обе версии одновременно. Подробности в [NATIVE_MIGRATION.md](NATIVE_MIGRATION.md).
+**Стабильная версия в `main` — нативный C# / .NET 8 WPF Video Downloader, без PowerShell 7.** Начиная с `v2.0.0`, каждый коммит в `main` после успешного Native Windows CI автоматически публикуется как **GitHub Release** с готовым portable ZIP и контрольной суммой SHA-256.
+
+Скачать готовую программу: **[Releases](https://github.com/bespalovnikita/video-downloader/releases/latest)**. Подробности сборки и перехода с PowerShell — [NATIVE_MIGRATION.md](NATIVE_MIGRATION.md).
 
 
-[![Build Windows EXE](https://github.com/bespalovnikita/video-downloader/actions/workflows/build-windows.yml/badge.svg)](https://github.com/bespalovnikita/video-downloader/actions/workflows/build-windows.yml)
+[![Native C# Windows build](https://github.com/bespalovnikita/video-downloader/actions/workflows/native-windows.yml/badge.svg)](https://github.com/bespalovnikita/video-downloader/actions/workflows/native-windows.yml)
 ![Windows](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D4)
-![PowerShell](https://img.shields.io/badge/PowerShell-7%2B-5391FE)
+![Runtime](https://img.shields.io/badge/runtime-.NET%208-512BD4)
 ![UI](https://img.shields.io/badge/UI-WPF-512BD4)
 
 Windows GUI и CLI-движок поверх **yt-dlp** для пакетной загрузки видео: очередь, параллельные загрузки, retry, выбор качества/кодека/контейнера, субтитры, metadata, preview, pause/resume и machine-readable progress.
 
-Проект состоит из WPF GUI на PowerShell 7, отдельного download engine и небольшого self-contained .NET launcher.
+Основное приложение состоит из нативного C# WPF-интерфейса и C# download engine, управляющего `yt-dlp.exe`. Прежняя версия на PowerShell сохранена в исходниках как резервный вариант.
 
 ## Возможности
 
@@ -41,26 +36,18 @@ Windows GUI и CLI-движок поверх **yt-dlp** для пакетной 
 
 ### Готовая Windows-сборка
 
-Открой успешный workflow **Build Windows EXE**, скачай artifact <code>VideoDownloader-windows</code>, распакуй ZIP и запусти:
+Открой **[GitHub Releases](https://github.com/bespalovnikita/video-downloader/releases/latest)**, скачай `VideoDownloader-Windows-x64.zip`, распакуй его в папку и запусти `VideoDownloader.exe`.
 
-~~~text
-VideoDownloader.exe
-~~~
-
-или:
-
-~~~text
-start-gui.cmd
-~~~
+Рядом с архивом опубликован `SHA256SUMS.txt` для проверки целостности. Каждый успешно протестированный коммит в `main` получает отдельную стабильную версию `v2.0.0`, `v2.0.1` и т. д. Архивы из Actions остаются доступными для тестирования PR, но официальное скачивание идёт через Releases.
 
 ### Требования
 
 - Windows 10/11 x64;
-- **PowerShell 7 (pwsh.exe)** — нужен даже при запуске через VideoDownloader.exe;
+- **PowerShell 7 не требуется** для нативной сборки из Releases;
 - yt-dlp.exe уже входит в portable package;
 - FFmpeg/ffprobe нужны для merge/extract/embed и могут быть установлены через **Dependency Center**.
 
-> VideoDownloader.exe — self-contained .NET launcher, но GUI и engine пока остаются PowerShell-скриптами. Это portable ZIP, а не автономный single-EXE runtime.
+> Прежний PowerShell GUI и CLI доступны в исходниках для отката, но не входят в новый релизный ZIP.
 
 ## Preview без ожидания клика
 
@@ -88,7 +75,7 @@ Preview-worker один и работает независимо от download t
 
 ## Статус в трее
 
-Наведи курсор на значок Video Downloader в трее: tooltip покажет OK / Err / Left (сколько успешно, сколько ошибок, сколько осталось), а во время работы — текущую скорость. Статусы Queue и Downloads выделены цветом: Done — зелёный, Queued — серый, Running — голубой, Interrupted — жёлтый, Failed — красный. Превью новых ссылок из буфера при работающем движке ставится в приоритет; ручной Paste сразу показывает панель превью новой ссылки.
+Наведи курсор на значок Video Downloader в трее: tooltip покажет OK / Left / Err (сколько успешно, сколько ошибок, сколько осталось), а во время работы — текущую скорость. Статусы Queue и Downloads выделены цветом: Done — зелёный, Queued — серый, Running — голубой, Interrupted — жёлтый, Failed — красный. Превью новых ссылок из буфера при работающем движке ставится в приоритет; ручной Paste сразу показывает панель превью новой ссылки.
 
 ## Queue во время загрузки
 
@@ -114,23 +101,13 @@ Preset применяет комбинацию quality / codec / container / sub
 
 ## CLI
 
-GUI использует тот же engine, который можно запускать напрямую:
+Нативная сборка поддерживает базовый командный режим:
 
 ~~~powershell
-pwsh -File .\ytdl-manager-v8.ps1 ^
-  -In .\list.txt ^
-  -Out D:\Videos ^
-  -Threads 4 ^
-  -AutoFragments ^
-  -Quality 1080 ^
-  -VideoCodec H264 ^
-  -Container MP4 ^
-  -Retries 3
+.\VideoDownloader.exe --cli --input .\list.txt --out D:\Videos --threads 4 --quality 1080
 ~~~
 
-> В PowerShell вместо символа ^ для переноса команды используй backtick или запиши команду одной строкой.
-
-Полный справочник параметров: [ytdl-manager-v8-manual.md](ytdl-manager-v8-manual.md).
+Расширенные параметры прежнего PowerShell CLI пока доступны только через `ytdl-manager-v8.ps1` из исходников. Его справочник: [ytdl-manager-v8-manual.md](ytdl-manager-v8-manual.md).
 
 ## Machine-readable progress
 
@@ -168,27 +145,13 @@ Codec selector — **предпочтение**, а не жёсткий lock: п
 
 ## Сборка
 
-Нужны PowerShell 7 и .NET 8 SDK:
+Нужен .NET 8 SDK на Windows:
 
 ~~~powershell
-pwsh -File .\build-exe.ps1
+dotnet publish native/VideoDownloader.Native.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -o dist/native
 ~~~
 
-Результат:
-
-~~~text
-dist/
-+-- VideoDownloader.exe
-+-- VideoDownloader-portable.zip
-+-- ytdl-manager-gui.ps1
-+-- ytdl-manager-v8.ps1
-+-- yt-dlp.exe
-+-- ui/
-+-- lib/
-+-- assets/
-~~~
-
-Launcher публикуется как self-contained win-x64 .NET 8 приложение.
+`dist/native` содержит `VideoDownloader.exe`, `yt-dlp.exe` и UI-ресурсы. GitHub Actions автоматически создаёт релизный архив из этой папки. Подробная политика тегов и публикации — [RELEASING.md](RELEASING.md).
 
 ## Тесты
 
