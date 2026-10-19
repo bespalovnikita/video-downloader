@@ -12,7 +12,7 @@ pwsh -File .\ytdl-manager-v8.ps1 -In .\list.txt -Out D:\Videos -Threads 4 -AutoF
 
 Входной <code>-In</code> файл — **рабочая очередь**, а не immutable source.
 
-После завершения каждого URL engine переписывает input file и оставляет в нём только незавершённые элементы. Если исходный список нужен как архив, сохрани копию отдельно.
+После завершения каждого URL engine переписывает input file: успешные и отменённые URL удаляются, неуспешные остаются для следующего явного запуска и также записываются в error file. Если исходный список нужен как архив, сохрани копию отдельно.
 
 Для <code>list.txt</code> создаются:
 
@@ -37,6 +37,7 @@ list-error.txt
 | -Watch | off | продолжать следить за input file |
 | -WatchInterval | 2 | период проверки input file в секундах |
 | -LiveQueueFile | — | append-only файл новых URL; опрашивается ~раз в 0.5 секунды пока engine работает |
+| -CancelDir | — | каталог маркеров отмены отдельных URL; включает изолированный staging и точное владение файлами |
 | -Archive | off | добавить к output подпапку yyyy-MM-dd |
 | -Cookies | — | cookies.txt для yt-dlp |
 | -SponsorBlock | off | удалить SponsorBlock category sponsor |
@@ -211,6 +212,8 @@ pwsh -File .\ytdl-manager-v8.ps1 -WriteSubtitles -WriteAutoSubtitles -SubtitleLa
 
 Template объединяется с <code>-Out</code> и передаётся yt-dlp через output template.
 
+Разрешены относительные подпапки. Абсолютные пути и компоненты `..` запрещены: проверка выполняется до запуска yt-dlp, включая DryRun. В режиме `-CancelDir` тот же относительный шаблон используется внутри отдельной staging-папки задания.
+
 ## Rate limit
 
 ~~~powershell
@@ -261,6 +264,8 @@ Default schedule после transient failures:
 
 Задержка capped на 60 секунд.
 
+При `-CancelDir` отмена проверяется и во время ожидания backoff, и во время предварительного filesize probe для AutoFragments. Проба имеет ограничение времени и при неудаче использует один fragment.
+
 Permanent ошибки вроде unavailable/auth не относятся к transient и не должны retry-иться этим механизмом.
 
 ## Machine-readable events
@@ -292,11 +297,21 @@ Error
 FriendlyError
 Height
 Path
+OutputRoot
+OwnedPaths
+Cancelled
+CleanupError
+CleanupPaths
+StageDir
 FileSize
 TransferredBytes
 ~~~
 
 Progress формируется из machine-readable yt-dlp progress-template, а не из regex по обычной строке [download].
+
+`Success=true` требует существующего итогового media-файла, полученного через `after_move:__VD_FILE__`. Код yt-dlp `0` без такого файла считается ошибкой и не записывается в историю. Внешние конфиги yt-dlp игнорируются, чтобы `--simulate`, фильтры и сторонние output-настройки не меняли контракт приложения.
+
+При отмене непустой `CleanupError` означает, что очистка не завершена. `CleanupPaths` содержит оставшиеся опубликованные файлы внутри `OutputRoot`, а `StageDir` — оставшуюся staging-папку для повторной очистки. GUI сохраняет этот контекст и предлагает повторить Remove. Успешная отмена имеет `Cancelled=true`, `Success=false` и пустой `CleanupError`.
 
 Engine включает `--progress` явно, независимо от quiet-режима `--print`. Progress events содержат `DownloadedBytes`, `TotalBytes` текущего media-компонента и накопленный `TransferredBytes` URL; отдельные streams учитываются независимо. Result повторяет итоговый `TransferredBytes`, а `FileSize` описывает размер готового файла. `-NoProgress` выключает только PowerShell progress bars и не выключает machine-readable events. GUI не прибавляет `FileSize` к уже учтённым progress-байтам.
 
@@ -344,8 +359,8 @@ DryRun используется smoke tests для проверки CLI mapping.
 
 ## Exit codes
 
-- 0 — запуск завершился без failed results;
-- 2 — были failed results;
+- 0 — запуск завершился без failed results и незавершённой очистки; успешная отмена сама по себе не является ошибкой;
+- 2 — были failed results, незавершённые задания или ошибки очистки;
 - другие non-zero значения возможны при PowerShell/runtime setup errors.
 
 ## Практические примеры

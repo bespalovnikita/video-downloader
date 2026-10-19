@@ -105,6 +105,9 @@ Reorder / drag/drop / download selected остаются заблокирова�
 - Независимый security suite `file-boundary-safety-tests.ps1` проверяет реальные NTFS junction, обход `../`, соседние каталоги, preexisting и сохраняет контрольные файлы снаружи неизменными.
 - Оговорка безопасности: проверки выполняются непосредственно перед файловой операцией; при намеренной параллельной подмене путей остаётся класс TOCTOU. Если нужна полная защита от враждебной подмены directory handles, необходима отдельно реализованная handle-based Windows FS layer.
 - Результат отмены — `Cancelled`, это не `Failed` и не `Completed`; в постоянную историю успехов он не пишется.
+- Пока очистка не подтверждена Result-событием либо GUI после подтверждённого завершения engine, строка сохраняет `PendingRemoval`. `CleanupError`, `CleanupPaths`, `StageDir` и исходный `RunDir` сохраняются в checkpoint; при ошибке очистки Remove должен оставаться доступен для повторной попытки. Нельзя удалять runDir, пока там есть неочищенные задания.
+- Контекст engine хранит `CancelDir`, `OutputRoot`, `RunDir` и `EventsPath`. Remove учитывает восстановленный engine и непрочитанные финальные события завершившегося процесса. Старый checkpoint без контекста отмены не разрешает молча удалить строку живого задания.
+- Каждый результат/строка хранит исходный `OutputRoot`: изменение поля Output не меняет границы удаления старых результатов. Повторное добавление удалённого URL при том же engine сохраняется для следующего Start и не отправляется повторно в ingress.
 - Event для уже удалённого URL не должен снова добавлять строку в GUI.
 - Любой недостаток прав при удалении — явное предупреждение, строка остаётся для повторной попытки.
 - Визуальное подтверждение требуется перед удалением начатых или завершённых файлов.
@@ -152,6 +155,8 @@ Reorder / drag/drop / download selected остаются заблокирова�
 - Сравнение URL точное (ordinal), без сомнительной нормализации параметров.
 - Перед **каждым** download start/explicit retry проверяй кандидатов в истории и применяй Yes/No/YesAll/NoAll. No удаляет соответствующий URL из Queue. Cancel/X не запускает процесс и не меняет очередь.
 - Не записывай failed/dry-run URL как успешные; UI проверяет историю *до* запуска engine.
+- Код завершения yt-dlp 0 недостаточен: успех требует существующего media path из `after_move:__VD_FILE__`. Внешние конфиги yt-dlp не должны менять параметры движка. Filename template проверяется до native launch: только относительные пути без компонентов `..`.
+- Append истории под mutex поддерживает корректный последний JSON record без LF, но не изменяет повреждённый хвост.
 - Файл историй может пополняться из нескольких CLI процессов. Используй межпроцессную синхронизацию и не проглатывай ошибки при чтении повреждённой истории.
 - При изменениях запускай `tests/download-history-tests.ps1` вместе с остальным CI.
 
@@ -238,6 +243,8 @@ pwsh -File .\tests\smoke.ps1
 pwsh -STA -File .\tests\tray-lifecycle-tests.ps1
 pwsh -File .\tests\session-checkpoint-tests.ps1
 pwsh -File .\tests\download-history-tests.ps1
+pwsh -File .\tests\engine-review-regression-tests.ps1
+pwsh -File .\tests\gui-review-regression-tests.ps1
 pwsh -File .\tests\live-queue-tests.ps1
 pwsh -File .\tests\cancellation-tests.ps1
 pwsh -File .\tests\file-boundary-safety-tests.ps1
