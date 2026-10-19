@@ -69,8 +69,22 @@ Import-Module $trayStatusModule -Force
 
 function Remove-StaleGuiTempDirs {
     $cutoff = (Get-Date).AddHours(-24)
+    $protectedRuns = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    try {
+        $saved = Read-VdSessionCheckpoint -Path (Join-Path $env:LOCALAPPDATA 'VideoDownloader\session.json')
+        if ($saved) {
+            if ($saved.Engine.RunDir) { [void]$protectedRuns.Add([IO.Path]::GetFullPath([string]$saved.Engine.RunDir)) }
+            elseif ($saved.Engine.EventsPath) { [void]$protectedRuns.Add([IO.Path]::GetDirectoryName([IO.Path]::GetFullPath([string]$saved.Engine.EventsPath))) }
+            foreach ($row in $saved.Queue) {
+                if ($row.RunDir -and ($row.StageDir -or $row.PendingRemoval -or $row.CleanupError)) {
+                    [void]$protectedRuns.Add([IO.Path]::GetFullPath([string]$row.RunDir))
+                }
+            }
+        }
+    } catch { return } # Preserve possible recovery files when the checkpoint cannot be inspected.
     foreach ($dir in @(Get-ChildItem ([IO.Path]::GetTempPath()) -Directory -Filter "ytdl-gui-*" -ErrorAction SilentlyContinue)) {
         if ($dir.LastWriteTime -gt $cutoff) { continue }
+        if ($protectedRuns.Contains($dir.FullName)) { continue }
         $owner = Join-Path $dir.FullName "owner.pid"
         if (Test-Path $owner) {
             try {
@@ -153,6 +167,7 @@ $script:lastSessionSnapshot = ""
 $script:lastSessionCheck = [DateTime]::MinValue
 $script:activeEngine = $null
 $script:recoveredEngine = $null
+$script:recoveredEventCursor = @{ Offset=0L }
 $script:lastSessionError = ""
 $script:checkpointReadOnly = $false
 $script:lastAddedCount = 0
@@ -319,6 +334,15 @@ function Get-SessionSnapshot {
                 DisplayState = if ($status -eq "Running") { "Interrupted" } else { [string]$item.State }
                 Path = [string]$item.Path
                 OwnedPaths = @($item.OwnedPaths)
+                OutputRoot = [string]$item.OutputRoot
+                RunDir = [string]$item.RunDir
+                StageDir = [string]$item.StageDir
+                CleanupPaths = @($item.CleanupPaths)
+                CleanupError = [string]$item.CleanupError
+                PendingRemoval = [bool]$item.PendingRemoval
+                AttemptFinished = [bool]$item.AttemptFinished
+                DeferredToNextStart = [bool]$item.DeferredToNextStart
+                AttachedToRecovered = [bool]$item.AttachedToRecovered
             }
         }
     )
@@ -343,23 +367,36 @@ function Save-SessionCheckpoint {
 
 function Sync-RecoveredEngine {
     if (-not $script:recoveredEngine) { return $true }
+    Tail-Events -EventsPath ([string]$script:recoveredEngine.EventsPath) -Cursor $script:recoveredEventCursor -Recovered
     if (Test-VdSessionEngineAlive -Engine $script:recoveredEngine) { return $false }
-    $checkpoint = Get-SessionSnapshot
-    $checkpoint = Merge-VdSessionResultEvents -Session $checkpoint -EventsPath ([string]$script:recoveredEngine.EventsPath)
-    Import-CompletedUrlsToHistory -Items @($checkpoint.Queue)
-    $script:restoringSession = $true
-    try {
-        $script:queue.Clear()
-        foreach ($item in @(Get-VdRestoredQueue -Session $checkpoint)) { $script:queue.Add($item) }
-        $script:failedUrls.Clear()
-        foreach ($item in $script:queue) {
-            if ($item.Status -eq "Failed") { [void]$script:failedUrls.Add([string]$item.Url) }
-        }
-        $script:recoveredEngine = $null
-        Reindex-Queue
-    } finally { $script:restoringSession = $false }
+    Complete-EngineQueue -Engine $script:recoveredEngine
+    Import-CompletedUrlsToHistory -Items @($script:queue)
+    $script:recoveredEngine = $null
+    Reindex-Queue
     Save-SessionCheckpoint
     return $true
+}
+
+function Initialize-RecoveredEngine([object]$Engine) {
+    if (-not $Engine) { return }
+    # Legacy descriptors did not save cancellation context. Infer it only for
+    # the app's own non-reparse temporary directory and conventional event file.
+    if (-not $Engine.RunDir -and $Engine.EventsPath) {
+        try {
+            $eventPath = [IO.Path]::GetFullPath([string]$Engine.EventsPath)
+            $directory = [IO.Path]::GetDirectoryName($eventPath)
+            if ([IO.Path]::GetFileName($eventPath) -ne 'events.jsonl' -or
+                [IO.Path]::GetFileName($directory) -notmatch '^ytdl-gui-[a-fA-F0-9]{32}$' -or
+                -not (Test-VdPathInsideRoot -Path $directory -Root ([IO.Path]::GetTempPath()))) {
+                throw 'Legacy engine directory could not be validated.'
+            }
+            Assert-VdRegularFileIfPresent -Path $eventPath
+            $Engine.RunDir = $directory
+            $Engine.CancelDir = Join-Path $directory 'cancel'
+        } catch { Log-Line ('Cancellation context unavailable for the previous engine: ' + $_.Exception.Message) }
+    }
+    $script:recoveredEngine = $Engine
+    $script:recoveredEventCursor = @{ Offset=0L }
 }
 
 function Restore-PreviousSession {
@@ -383,10 +420,11 @@ function Restore-PreviousSession {
     # previous checkpoint, even when the user declines restoring that queue.
     Import-CompletedUrlsToHistory -Items @($checkpoint.Queue)
     $items = @(Get-VdRestoredQueue -Session $checkpoint)
-    if (-not (Test-VdSessionHasPending -Queue $items)) {
+    if (-not (Test-VdSessionHasPending -Queue $items) -and
+        @($items | Where-Object { $_.PendingRemoval -or $_.CleanupError }).Count -eq 0) {
         # A detached worker also needs to be guarded when there is no pending queue.
         if (Test-VdSessionEngineAlive -Engine $checkpoint.Engine) {
-            $script:recoveredEngine = $checkpoint.Engine
+            Initialize-RecoveredEngine $checkpoint.Engine
             Log-Line "An earlier downloader is still running. Start is blocked until it finishes."
         }
         return
@@ -396,7 +434,7 @@ function Restore-PreviousSession {
         "Video Downloader", [System.Windows.MessageBoxButton]::YesNo, [System.Windows.MessageBoxImage]::Question)
     if ($answer -ne [System.Windows.MessageBoxResult]::Yes) {
         if (Test-VdSessionEngineAlive -Engine $checkpoint.Engine) {
-            $script:recoveredEngine = $checkpoint.Engine
+            Initialize-RecoveredEngine $checkpoint.Engine
             Log-Line "Queue discarded; previous downloader is still running. New downloads are blocked until it finishes."
         }
         try { Remove-Item -LiteralPath $script:sessionPath -Force -ErrorAction Stop } catch {
@@ -409,12 +447,16 @@ function Restore-PreviousSession {
     $script:restoringSession = $true
     try {
         Restore-SessionSettings $checkpoint.Settings
+        Initialize-RecoveredEngine $checkpoint.Engine
         foreach ($item in $items) {
+            if (-not $item.RunDir -and -not $item.DeferredToNextStart -and $script:recoveredEngine) {
+                $item.RunDir = [string]$script:recoveredEngine.RunDir
+            }
+            if (-not $item.DeferredToNextStart -and $script:recoveredEngine) { $item.AttachedToRecovered = $true }
             $script:queue.Add($item)
             Queue-PreviewPrefetch -Url ([string]$item.Url)
             if ($item.Status -eq "Failed") { [void]$script:failedUrls.Add([string]$item.Url) }
         }
-        $script:recoveredEngine = $checkpoint.Engine
         Reindex-Queue
     } finally { $script:restoringSession = $false }
     if (-not (Sync-RecoveredEngine)) {
@@ -471,6 +513,7 @@ function Add-Urls([string[]]$Urls,[switch]$FromClipboard,[switch]$ShowPreview) {
 
     $running = $script:proc -and -not $script:proc.HasExited
     $toAdd = @($newUrls.ToArray())
+    $liveUrls = @()
     if ($running) {
         # The history prompt applies to live additions too, before the engine or UI changes.
         try {
@@ -484,8 +527,11 @@ function Add-Urls([string[]]$Urls,[switch]$FromClipboard,[switch]$ShowPreview) {
             $running = $script:proc -and -not $script:proc.HasExited -and
                 -not [string]::IsNullOrWhiteSpace($script:liveQueuePath)
             if ($running) {
+                # A removed URL is already known/cancelled in this engine.
+                # Its next attempt belongs to the next Start, not this ingress.
+                $liveUrls = @($toAdd | Where-Object { -not $script:removedUrls.Contains([string]$_) })
                 # Only the dedicated ingress is written; never edit engine queue.txt.
-                Add-VdLiveQueueUrls -Path $script:liveQueuePath -Urls $toAdd
+                if ($liveUrls.Count -gt 0) { Add-VdLiveQueueUrls -Path $script:liveQueuePath -Urls $liveUrls }
             }
         } catch {
             [System.Windows.MessageBox]::Show(
@@ -497,6 +543,7 @@ function Add-Urls([string[]]$Urls,[switch]$FromClipboard,[switch]$ShowPreview) {
     }
 
     foreach ($u in $toAdd) {
+        $deferred = $running -and $script:removedUrls.Contains([string]$u)
         $script:queue.Add([pscustomobject]@{
             Order = $script:queue.Count + 1
             Url = $u
@@ -504,6 +551,15 @@ function Add-Urls([string[]]$Urls,[switch]$FromClipboard,[switch]$ShowPreview) {
             Status = "Queued"
             Path = ""
             OwnedPaths = @()
+            OutputRoot = if ($running -and -not $deferred) { [string]$script:activeEngine.OutputRoot } else { '' }
+            RunDir = if ($running -and -not $deferred) { [string]$script:runDir } else { '' }
+            StageDir = ''
+            CleanupPaths = @()
+            CleanupError = ''
+            PendingRemoval = $false
+            AttemptFinished = $false
+            DeferredToNextStart = [bool]$deferred
+            AttachedToRecovered = $false
             Progress = 0.0
             Speed = ""
             Downloaded = ""
@@ -515,10 +571,11 @@ function Add-Urls([string[]]$Urls,[switch]$FromClipboard,[switch]$ShowPreview) {
     }
     $script:lastAddedCount = $toAdd.Count
     if ($running) {
-        foreach ($u in $toAdd) { [void]$script:runUrls.Add([string]$u) }
-        $script:sessionTotal += $toAdd.Count
+        foreach ($u in $liveUrls) { [void]$script:runUrls.Add([string]$u) }
+        $script:sessionTotal += $liveUrls.Count
         Update-LiveStats
-        Log-Line ("Added $($toAdd.Count) URL(s) to the active download queue.")
+        if ($liveUrls.Count -gt 0) { Log-Line ("Added $($liveUrls.Count) URL(s) to the active download queue.") }
+        if ($liveUrls.Count -lt $toAdd.Count) { Log-Line 'Previously removed URLs are queued for the next Start.' }
     }
     Reindex-Queue
     if ($FromClipboard -and $ShowPreview -and $toAdd.Count -gt 0) {
@@ -531,25 +588,122 @@ function Add-Urls([string[]]$Urls,[switch]$FromClipboard,[switch]$ShowPreview) {
 }
 
 function Add-FileToQueue([string]$Path) {
-    if (-not (Test-Path $Path -PathType Leaf)) { return }
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return }
     try {
         if ([IO.Path]::GetExtension($Path).ToLowerInvariant() -eq ".url") {
-            $line = @(Get-Content $Path -Encoding UTF8) | Where-Object { $_ -match '^URL=' } | Select-Object -First 1
+            $line = @(Get-Content -LiteralPath $Path -Encoding UTF8 -ErrorAction Stop) | Where-Object { $_ -match '^URL=' } | Select-Object -First 1
             if ($line) { Add-Urls @($line.Substring(4)) }
             return
         }
-        Add-Urls @(Get-Content $Path -Encoding UTF8)
+        Add-Urls @(Get-Content -LiteralPath $Path -Encoding UTF8 -ErrorAction Stop)
     } catch {
         $message = "Cannot read file: " + $Path + [Environment]::NewLine + $_.Exception.Message
         [System.Windows.MessageBox]::Show($message,"Video Downloader") | Out-Null
     }
 }
 
+function Set-QueueFields([object]$Row,[hashtable]$Values) {
+    $Row | Add-Member -NotePropertyMembers $Values -Force
+}
+
+function Get-QueueEngineContext([object]$Row) {
+    if ($Row.AttachedToRecovered -and -not $Row.DeferredToNextStart -and $script:recoveredEngine) { return $script:recoveredEngine }
+    if (-not $Row.RunDir -or $Row.DeferredToNextStart) { return $null }
+    foreach ($context in @($script:activeEngine,$script:recoveredEngine)) {
+        if ($context -and [string]::Equals([string]$context.RunDir,[string]$Row.RunDir,[StringComparison]::OrdinalIgnoreCase)) {
+            return $context
+        }
+    }
+    return $null
+}
+
+function Test-GuiEngineAlive([object]$Engine) {
+    if (-not $Engine) { return $false }
+    if ([object]::ReferenceEquals($Engine,$script:activeEngine) -and $script:proc) {
+        return -not $script:proc.HasExited
+    }
+    return Test-VdSessionEngineAlive -Engine $Engine
+}
+
+function Show-QueueCleanupFailure([object]$Row,[string]$Message) {
+    if (-not $Row.CountedOutcome -and $script:runUrls.Contains([string]$Row.Url) -and $Row.Status -in @('Completed','Failed')) {
+        Set-QueueFields $Row @{ CountedOutcome=[string]$Row.Status }
+    }
+    Set-QueueFields $Row @{ PendingRemoval=$true; CleanupError=$Message; Status='Interrupted'; State='Cleanup failed — Remove to retry' }
+    $QueueGrid.Items.Refresh()
+    Save-SessionCheckpoint
+    [System.Windows.MessageBox]::Show(
+        "Could not finish deleting this download. Its row and cleanup paths were kept; use Remove to retry.`n$($Row.Url)`n$Message",
+        'Remove download failed', [System.Windows.MessageBoxButton]::OK,
+        [System.Windows.MessageBoxImage]::Warning) | Out-Null
+}
+
+function Remove-QueueRowFiles([object]$Row) {
+    $paths = @(@($Row.OwnedPaths) + @($Row.CleanupPaths) | Where-Object { $_ })
+    if ($paths.Count -eq 0 -and $Row.Status -eq 'Completed' -and $Row.Path) { $paths = @([string]$Row.Path) }
+    # Preserve legacy Path ownership before an operation can fail and change
+    # the visible status to Interrupted; the next Remove must retry that file.
+    Set-QueueFields $Row @{ CleanupPaths=$paths }
+    if ($paths.Count -gt 0) {
+        if (-not $Row.OutputRoot) { throw 'The original output folder is unavailable; no files were deleted.' }
+        [void](Remove-VdOwnedFiles -OutputRoot ([string]$Row.OutputRoot) -Paths $paths)
+    }
+    if ($Row.StageDir) {
+        if (-not $Row.RunDir) { throw 'The original staging root is unavailable; partial files were kept.' }
+        Remove-VdStagingDirectory -StageDir ([string]$Row.StageDir) -RunDir ([string]$Row.RunDir)
+    }
+    Set-QueueFields $Row @{ StageDir=''; CleanupPaths=@(); CleanupError=''; OwnedPaths=@(); Path='' }
+}
+
+function Remove-QueueRow([object]$Row) {
+    $url = [string]$Row.Url
+    if ((Get-QueueEngineContext $Row) -or $script:runUrls.Contains($url)) { [void]$script:removedUrls.Add($url) }
+    if ($script:runUrls.Remove($url)) {
+        $script:sessionTotal = [Math]::Max(0,$script:sessionTotal-1)
+        $outcome = if ($Row.CountedOutcome) { [string]$Row.CountedOutcome } else { [string]$Row.Status }
+        if ($outcome -eq 'Completed') { $script:sessionSuccess = [Math]::Max(0,$script:sessionSuccess-1) }
+        if ($outcome -eq 'Failed') { $script:sessionFailed = [Math]::Max(0,$script:sessionFailed-1) }
+    }
+    [void]$script:failedUrls.Remove($url)
+    $download = Find-Download -Slot 0 -Url $url
+    if ($download) { [void]$script:downloads.Remove($download) }
+    [void]$script:queue.Remove($Row)
+    [void]$script:transferredByUrl.Remove($url)
+}
+
+function Complete-EngineQueue([object]$Engine) {
+    if (-not $Engine) { return }
+    foreach ($row in @($script:queue)) {
+        if ($row.DeferredToNextStart -or -not [object]::ReferenceEquals((Get-QueueEngineContext $row),$Engine)) { continue }
+        Set-QueueFields $row @{ AttemptFinished=$true; AttachedToRecovered=$false }
+        if ($row.Status -eq 'Running') { Set-QueueState ([string]$row.Url) 'Interrupted' 'Interrupted' }
+        if ($row.PendingRemoval -and -not $row.CleanupError) {
+            try { Remove-QueueRowFiles $row; Remove-QueueRow $row }
+            catch { Show-QueueCleanupFailure $row $_.Exception.Message }
+        }
+    }
+}
+
+function Clear-QueueEntries {
+    foreach ($row in @($script:queue)) {
+        if (-not $row.PendingRemoval -and -not $row.CleanupError -and -not $row.StageDir) { [void]$script:queue.Remove($row) }
+    }
+    if ($script:queue.Count -gt 0) {
+        [System.Windows.MessageBox]::Show(
+            'Downloads awaiting cleanup were kept. Use Remove on these rows to retry deleting their files.',
+            'Cleanup pending', [System.Windows.MessageBoxButton]::OK,
+            [System.Windows.MessageBoxImage]::Warning) | Out-Null
+    }
+    Reindex-Queue
+}
+
 function Remove-SelectedQueueEntries([object[]]$Items) {
+    # A process can exit before the dispatcher has consumed its final Result.
+    Tail-Events
+    [void](Sync-RecoveredEngine)
     $rows = @($Items | Where-Object { $null -ne $_ -and $script:queue.Contains($_) })
     if ($rows.Count -eq 0) { return }
 
-    $running = $script:proc -and -not $script:proc.HasExited
     $hasStarted = @($rows | Where-Object {
         $_.Status -in @("Running","Completed","Failed","Interrupted") -or $_.Path
     }).Count -gt 0
@@ -561,44 +715,26 @@ function Remove-SelectedQueueEntries([object[]]$Items) {
         if ($answer -ne [System.Windows.MessageBoxResult]::Yes) { return }
     }
 
-    # Explicit output paths are from this URL's Result event or checkpoint.
-    # No wildcard/glob deletion; never remove files outside the output root.
-    $rootPath = $OutputBox.Text.Trim()
+    # Modal confirmation pumps dispatcher events; refresh paths and state again.
+    Tail-Events
+    [void](Sync-RecoveredEngine)
     foreach ($row in $rows) {
+        if (-not $script:queue.Contains($row)) { continue }
         $url = [string]$row.Url
-        $paths = @($row.OwnedPaths | Where-Object { $_ })
-        if ($paths.Count -eq 0 -and $row.Status -eq "Completed" -and $row.Path) {
-            # Backward compatibility: older checkpoints only recorded the media path.
-            $paths = @([string]$row.Path)
-        }
+        $context = Get-QueueEngineContext $row
         try {
-            if ($running -and $script:cancelDir) {
-                Request-VdCancellation -Directory $script:cancelDir -Url $url
+            if ((Test-GuiEngineAlive $context) -and -not $row.AttemptFinished -and $row.Status -notin @('Completed','Failed')) {
+                if (-not $context.CancelDir) { throw 'Cancellation context for the previous downloader is unavailable. Wait for it to finish, then retry Remove.' }
+                Request-VdCancellation -Directory ([string]$context.CancelDir) -Url $url
+                Set-QueueFields $row @{ PendingRemoval=$true; CleanupError=''; State='Cancelling — waiting for cleanup' }
+                continue
             }
-            if ($paths.Count -gt 0) {
-                [void](Remove-VdOwnedFiles -OutputRoot $rootPath -Paths $paths)
-            }
+            Remove-QueueRowFiles $row
         } catch {
-            [System.Windows.MessageBox]::Show(
-                "Could not cancel or delete files for this URL. The row was kept: " + $_.Exception.Message,
-                "Remove download failed", [System.Windows.MessageBoxButton]::OK,
-                [System.Windows.MessageBoxImage]::Warning) | Out-Null
+            Show-QueueCleanupFailure $row $_.Exception.Message
             continue
         }
-
-        if ($running) {
-            [void]$script:removedUrls.Add($url)
-            if ($script:runUrls.Remove($url)) {
-                $script:sessionTotal = [Math]::Max(0,$script:sessionTotal-1)
-                if ($row.Status -eq "Completed") { $script:sessionSuccess = [Math]::Max(0,$script:sessionSuccess-1) }
-                if ($row.Status -eq "Failed") { $script:sessionFailed = [Math]::Max(0,$script:sessionFailed-1) }
-            }
-        }
-        [void]$script:failedUrls.Remove($url)
-        $download = Find-Download -Slot 0 -Url $url
-        if ($download) { [void]$script:downloads.Remove($download) }
-        [void]$script:queue.Remove($row)
-        [void]$script:transferredByUrl.Remove($url)
+        Remove-QueueRow $row
     }
     Reindex-Queue
     Update-LiveStats
@@ -723,7 +859,14 @@ function Set-Running([bool]$Running) {
 
 function Clean-Temp {
     if ($script:runDir -and (Test-Path $script:runDir)) {
-        Remove-Item $script:runDir -Recurse -Force -ErrorAction SilentlyContinue
+        $retained = @($script:queue | Where-Object {
+            [string]::Equals([string]$_.RunDir,[string]$script:runDir,[StringComparison]::OrdinalIgnoreCase) -and
+            ($_.StageDir -or $_.CleanupError -or $_.PendingRemoval)
+        })
+        if ($retained.Count -eq 0) {
+            try { Remove-Item -LiteralPath $script:runDir -Recurse -Force -ErrorAction Stop }
+            catch { Log-Line ('Could not remove session temporary files: ' + $_.Exception.Message) }
+        }
     }
     $script:runDir = $null
     $script:runLog = $null
@@ -788,22 +931,32 @@ function Tail-Log {
 }
 
 function Tail-Events {
-    if (-not $script:runEvents -or -not (Test-Path $script:runEvents)) { return }
-    try { $lines = @(Read-VdEventLines -Path $script:runEvents -Cursor $script:eventCursor) } catch { return }
+    param([string]$EventsPath=$script:runEvents,[hashtable]$Cursor=$script:eventCursor,[switch]$Recovered)
+    if (-not $EventsPath -or -not (Test-Path -LiteralPath $EventsPath)) { return }
+    try { $lines = @(Read-VdEventLines -Path $EventsPath -Cursor $Cursor) } catch { return }
 
     for ($i=0; $i -lt $lines.Count; $i++) {
         if ([string]::IsNullOrWhiteSpace($lines[$i])) { continue }
         try { $event = $lines[$i] | ConvertFrom-Json -ErrorAction Stop } catch { continue }
 
+        $queueItem = if ($event.Url) { Find-QueueItem ([string]$event.Url) } else { $null }
+        if ($Recovered -and (-not $queueItem -or $queueItem.DeferredToNextStart -or
+            -not [object]::ReferenceEquals((Get-QueueEngineContext $queueItem),$script:recoveredEngine))) { continue }
+
         if ($event.Url -and $null -ne $script:removedUrls -and $script:removedUrls.Contains([string]$event.Url)) {
-            if ($event.Kind -eq "Result" -and $event.OwnedPaths) {
-                try { [void](Remove-VdOwnedFiles -OutputRoot $OutputBox.Text.Trim() -Paths @($event.OwnedPaths)) }
-                catch { Log-Line ("Could not clean late result for removed URL: " + $_.Exception.Message) }
-            }
+            # This URL may already have been re-added for the next Start.
+            # Its old attempt must never update or consume the new row.
             continue
         }
+        if ($queueItem -and $queueItem.DeferredToNextStart) { continue }
         if ($event.Kind -eq "Event") {
             $slot = [int]$event.Slot
+            if ($event.EventType -eq 'Staging') {
+                if ($queueItem) { Set-QueueFields $queueItem @{ StageDir=[string]$event.Text } }
+                Save-SessionCheckpoint
+                continue
+            }
+            if ($queueItem -and $queueItem.PendingRemoval) { continue }
             switch ($event.EventType) {
                 "Started" {
                     $u = [string]$event.Url
@@ -856,14 +1009,40 @@ function Tail-Events {
                 }
             }
         } elseif ($event.Kind -eq "Result") {
-            if ($event.Cancelled -eq $true) { continue }
             $slot = [int]$event.Slot
             $script:speeds[$slot] = 0
+            if ($queueItem) {
+                $fields = @{
+                    AttemptFinished=$true; StageDir=[string]$event.StageDir
+                    CleanupError=[string]$event.CleanupError
+                    CleanupPaths=@($event.CleanupPaths | Where-Object { $_ })
+                    OwnedPaths=@($event.OwnedPaths | Where-Object { $_ })
+                }
+                if ($event.OutputRoot) { $fields.OutputRoot = [string]$event.OutputRoot }
+                Set-QueueFields $queueItem $fields
+                if ($event.CleanupError) {
+                    Show-QueueCleanupFailure $queueItem ([string]$event.CleanupError)
+                    Reindex-Queue
+                    continue
+                }
+                if ($queueItem.PendingRemoval) {
+                    try { Remove-QueueRowFiles $queueItem; Remove-QueueRow $queueItem }
+                    catch { Show-QueueCleanupFailure $queueItem $_.Exception.Message }
+                    Reindex-Queue
+                    continue
+                }
+            }
+            if ($event.Cancelled -eq $true) {
+                Set-QueueState ([string]$event.Url) 'Cancelled' 'Interrupted'
+                Save-SessionCheckpoint
+                continue
+            }
             Update-TransferBytes -Url ([string]$event.Url) -Bytes ([long]$event.TransferredBytes)
             Set-RowProgress -Url ([string]$event.Url) -Percent $(if ($event.Success) {100} else {0}) -Speed "" -Downloaded "" -ETA ""
 
             if ([bool]$event.Success) {
                 $script:sessionSuccess++
+                if ($queueItem) { Set-QueueFields $queueItem @{ CountedOutcome='Completed' } }
                 $path = [string]$event.Path
                 if (-not $path -and $script:lastFiles.ContainsKey($slot)) { $path = [string]$script:lastFiles[$slot] }
                 $size = [int64]$event.FileSize
@@ -880,6 +1059,7 @@ function Tail-Events {
                 Set-QueueState $u "Done" "Completed"
             } else {
                 $script:sessionFailed++
+                if ($queueItem) { Set-QueueFields $queueItem @{ CountedOutcome='Failed' } }
                 $u = [string]$event.Url
                 if ($u -and -not $script:failedUrls.Contains($u)) { [void]$script:failedUrls.Add($u) }
                 $friendly = [string]$event.FriendlyError
@@ -975,6 +1155,7 @@ function Resume-ProcessTree {
 
 function Start-Download([string[]]$OverrideUrls=$null) {
     if ($script:proc -and -not $script:proc.HasExited) { return }
+    if ($script:proc) { Finish-Download }
 
     if (-not (Sync-RecoveredEngine)) {
         [System.Windows.MessageBox]::Show("The downloader from the previous session is still running. Wait until it exits before starting more downloads.","Video Downloader") | Out-Null
@@ -982,6 +1163,10 @@ function Start-Download([string[]]$OverrideUrls=$null) {
     }
     $items = $OverrideUrls
     if ($null -eq $items) { $items = @(Get-VdResumeUrls -Queue @($script:queue | ForEach-Object { $_ })) }
+    $items = @($items | Where-Object {
+        $row = Find-QueueItem ([string]$_)
+        -not $row -or (-not $row.PendingRemoval -and -not $row.CleanupError)
+    })
     if ($items.Count -eq 0) { return }
 
     # Resolve decisions before mutating Queue or creating any engine temp files.
@@ -1005,6 +1190,14 @@ function Start-Download([string[]]$OverrideUrls=$null) {
     if ($items.Count -eq 0) { return }
 
     foreach ($u in $items) { Queue-PreviewPrefetch -Url ([string]$u) }
+
+    foreach ($u in $items) {
+        $row = Find-QueueItem ([string]$u)
+        if ($row -and $row.StageDir) {
+            try { Remove-VdStagingDirectory -StageDir ([string]$row.StageDir) -RunDir ([string]$row.RunDir); $row.StageDir = '' }
+            catch { Show-QueueCleanupFailure $row $_.Exception.Message; return }
+        }
+    }
 
     $dest = $OutputBox.Text.Trim()
     if (-not $dest) {
@@ -1070,7 +1263,14 @@ function Start-Download([string[]]$OverrideUrls=$null) {
     # Explicit retry may refer to a Downloads row removed from Queue.
     # History confirmation has already succeeded; persist every selected URL.
     Add-Urls $items
-    foreach ($u in $items) { Set-QueueState ([string]$u) "Starting" "Running" }
+    foreach ($u in $items) {
+        Set-QueueFields (Find-QueueItem ([string]$u)) @{
+            OutputRoot=$dest; RunDir=$script:runDir; StageDir=''; CleanupPaths=@(); CleanupError=''
+            Path=''; OwnedPaths=@()
+            PendingRemoval=$false; AttemptFinished=$false; DeferredToNextStart=$false; AttachedToRecovered=$false; CountedOutcome=''
+        }
+        Set-QueueState ([string]$u) "Starting" "Running"
+    }
     Save-SessionCheckpoint
     Update-LiveStats
 
@@ -1120,7 +1320,10 @@ function Start-Download([string[]]$OverrideUrls=$null) {
 
     try {
         $script:proc = [Diagnostics.Process]::Start($psi)
-        $script:activeEngine = [ordered]@{ Pid=$script:proc.Id; StartedUtc=$script:proc.StartTime.ToUniversalTime().ToString("o"); EventsPath=$script:runEvents }
+        $script:activeEngine = [ordered]@{
+            Pid=$script:proc.Id; StartedUtc=$script:proc.StartTime.ToUniversalTime().ToString("o")
+            EventsPath=$script:runEvents; CancelDir=$script:cancelDir; OutputRoot=$dest; RunDir=$script:runDir
+        }
         Save-SessionCheckpoint
         Set-Running $true
         Log-Line "Started $($items.Count) URL(s) into $dest"
@@ -1145,6 +1348,7 @@ function Stop-Download {
 function Finish-Download {
     Tail-Events
     Tail-Log
+    Complete-EngineQueue -Engine $script:activeEngine
 
     $code = $null
     try { $code = $script:proc.ExitCode } catch {}
@@ -1559,6 +1763,13 @@ function Handle-StartupArgs([string[]]$Arguments=$StartupArgs) {
 }
 
 function Apply-Profile([string]$Name) {
+    if ($Name -notin @('Universal','4K archive','MP4 compatibility','Music MP3','Subtitles archive')) { return }
+    # Every profile defines all of its controls, independent of the previous
+    # profile. Connection paths, rate limits and other user settings stay separate.
+    $QualityCombo.SelectedItem='Best'; $CodecCombo.SelectedItem='Auto'; $ContainerCombo.SelectedItem='Auto'
+    $AudioOnlyCheck.IsChecked=$false
+    $WriteSubsCheck.IsChecked=$false; $AutoSubsCheck.IsChecked=$false; $EmbedSubsCheck.IsChecked=$false
+    $EmbedThumbnailCheck.IsChecked=$false; $EmbedMetadataCheck.IsChecked=$true; $EmbedChaptersCheck.IsChecked=$true
     switch ($Name) {
         "Universal" {
             $QualityCombo.SelectedItem="Best"; $CodecCombo.SelectedItem="Auto"; $ContainerCombo.SelectedItem="Auto"
@@ -1703,7 +1914,7 @@ $OpenListButton.Add_Click({
 
 $RemoveQueueButton.Add_Click({ Remove-SelectedQueueEntries -Items @($QueueGrid.SelectedItems) })
 
-$ClearQueueButton.Add_Click({ $script:queue.Clear(); Reindex-Queue })
+$ClearQueueButton.Add_Click({ Clear-QueueEntries })
 
 $MoveUpButton.Add_Click({
     $item = $QueueGrid.SelectedItem
@@ -1932,6 +2143,7 @@ $window.Add_Closing({
     }
     # If a failed kill left the worker alive, keep its PID guard and event file.
     $workerSurvived = ($script:proc -and -not $script:proc.HasExited)
+    if (-not $workerSurvived) { Complete-EngineQueue -Engine $script:activeEngine }
     if ($workerSurvived) { $script:recoveredEngine = $script:activeEngine }
     $script:activeEngine = $null
     Save-SessionCheckpoint

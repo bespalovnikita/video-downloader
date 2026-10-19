@@ -70,6 +70,8 @@ function Get-VdRestoredQueue {
         if ($status -eq "Completed") { $display = "Done" }
         elseif ($status -eq "Interrupted" -or $display -match '^\d+(?:[.,]\d+)?%$') { $display = "Interrupted" }
         elseif (-not $display) { $display = $status }
+        if ($item.CleanupError) { $display = 'Cleanup failed — Remove to retry' }
+        elseif ($item.PendingRemoval -eq $true) { $display = 'Cancelling — waiting for cleanup' }
         [pscustomobject]@{
             Order = $order
             Url = [string]$item.Url
@@ -77,6 +79,15 @@ function Get-VdRestoredQueue {
             Status = $status
             Path = [string]$item.Path
             OwnedPaths = @($item.OwnedPaths | Where-Object { $_ })
+            OutputRoot = if ($item.OutputRoot) { [string]$item.OutputRoot } else { [string]$Session.Settings.Output }
+            RunDir = [string]$item.RunDir
+            StageDir = [string]$item.StageDir
+            CleanupPaths = @($item.CleanupPaths | Where-Object { $_ })
+            CleanupError = [string]$item.CleanupError
+            PendingRemoval = ($item.PendingRemoval -eq $true)
+            AttemptFinished = ($item.AttemptFinished -eq $true -or $status -in @('Completed','Failed'))
+            DeferredToNextStart = ($item.DeferredToNextStart -eq $true)
+            AttachedToRecovered = ($item.AttachedToRecovered -eq $true)
             Progress = if ($status -eq "Completed") { 100.0 } else { 0.0 }
             Speed = ""
             Downloaded = ""
@@ -87,12 +98,12 @@ function Get-VdRestoredQueue {
 
 function Get-VdResumeUrls {
     param([Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Queue)
-    return @($Queue | Where-Object { $_.Status -ne "Completed" } | ForEach-Object { [string]$_.Url })
+    return @($Queue | Where-Object { $_.Status -ne "Completed" -and -not $_.PendingRemoval -and -not $_.CleanupError } | ForEach-Object { [string]$_.Url })
 }
 
 function Test-VdSessionHasPending {
     param([Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Queue)
-    return @($Queue | Where-Object { $_.Status -ne "Completed" }).Count -gt 0
+    return @($Queue | Where-Object { $_.Status -ne "Completed" -and -not $_.PendingRemoval -and -not $_.CleanupError }).Count -gt 0
 }
 
 function Test-VdSessionEngineAlive {
@@ -126,6 +137,19 @@ function Merge-VdSessionResultEvents {
         $url = [string]$event.Url
         if (-not $byUrl.ContainsKey($url)) { continue }
         $item = $byUrl[$url]
+        if ($item.DeferredToNextStart -eq $true) { continue }
+        $item.AttemptFinished = $true
+        if ($event.OutputRoot) { $item.OutputRoot = [string]$event.OutputRoot }
+        $item.StageDir = [string]$event.StageDir
+        $item.CleanupError = [string]$event.CleanupError
+        $item.CleanupPaths = @($event.CleanupPaths | Where-Object { $_ })
+        if ($event.CleanupError) {
+            $item.Status = 'Interrupted'
+            $item.DisplayState = 'Cleanup failed — Remove to retry'
+            $item.PendingRemoval = $true
+            $item.OwnedPaths = @($event.OwnedPaths | Where-Object { $_ })
+            continue
+        }
         if ($event.Success -eq $true) {
             $item.Status = "Completed"
             $item.DisplayState = "Done"

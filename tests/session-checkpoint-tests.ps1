@@ -60,6 +60,24 @@ try {
     Assert-Vd ($merged.Queue[2].Status -eq "Failed") "Failure event not reconciled"
     Assert-Vd ((@(Get-VdResumeUrls -Queue @(Get-VdRestoredQueue -Session $merged))).Count -eq 2) "Recovered results should not re-download"
 
+    # Cleanup ownership and a pending cancellation must survive a restart.
+    $cleanupSession = @{
+        Queue = @(@{ Url='https://example.com/cleanup'; Status='Interrupted'; DisplayState='Cleanup failed'; Path=''
+            OutputRoot='C:\original-output'; RunDir='C:\session-run'; StageDir='C:\session-run\download-1-0123456789abcdef0123456789abcdef'
+            CleanupPaths=@('C:\original-output\locked.mp4'); CleanupError='Access denied'; PendingRemoval=$true; AttemptFinished=$true })
+        Settings = @{Output='C:\current-output'}
+        Engine = @{Pid=123;StartedUtc='2000-01-01T00:00:00Z';CancelDir='C:\session-run\cancel';OutputRoot='C:\original-output';RunDir='C:\session-run'}
+    }
+    Write-VdSessionCheckpoint -Path $path -Session $cleanupSession
+    $cleanupLoaded = Read-VdSessionCheckpoint -Path $path
+    $cleanupRows = @(Get-VdRestoredQueue -Session $cleanupLoaded)
+    Assert-Vd ($cleanupRows[0].OutputRoot -eq 'C:\original-output' -and $cleanupRows[0].RunDir -eq 'C:\session-run') 'Original cleanup roots lost'
+    Assert-Vd ($cleanupRows[0].PendingRemoval -and $cleanupRows[0].CleanupPaths.Count -eq 1 -and $cleanupRows[0].StageDir) 'Pending cleanup paths lost'
+    Assert-Vd (@(Get-VdResumeUrls -Queue $cleanupRows).Count -eq 0) 'Cleanup failures must not restart a download'
+    Assert-Vd ($cleanupLoaded.Engine.CancelDir -eq 'C:\session-run\cancel') 'Recovered engine cancellation context lost'
+    $legacyRows = @(Get-VdRestoredQueue -Session @{Queue=@(@{Url='https://example.com/legacy';Status='Completed';Path='C:\old-output\done.mp4'});Settings=@{Output='C:\old-output'}})
+    Assert-Vd ($legacyRows[0].OutputRoot -eq 'C:\old-output') 'Legacy output root must come from the saved session, not current UI'
+
     # URL paths are case-sensitive: a result must not complete the wrong row.
     $caseSession = [ordered]@{
         Queue = @(
