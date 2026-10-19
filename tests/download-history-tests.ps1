@@ -57,6 +57,34 @@ try {
     Assert (-not $known.Contains($lower)) "History URL matching must be ordinal/case-sensitive"
     Assert ((Get-Content $path).Count -eq 3) "History must append, not overwrite, successful attempts"
 
+    # Imported/external JSONL may have a complete last record without a newline.
+    # Preserve its bytes and append exactly one record, also for empty/LF/CRLF files.
+    $seedUrl = "https://example.com/сохранённый"
+    $seedRecord = ConvertTo-Json -InputObject @{ Version=1; Url=$seedUrl; CompletedAtUtc=$null } -Compress
+    $utf8 = [Text.UTF8Encoding]::new($false)
+    foreach ($suffix in @("", "`n", "`r`n")) {
+        $casePath = Join-Path $dir ("separator-" + $suffix.Length + ".jsonl")
+        $prefix = $seedRecord + $suffix
+        [IO.File]::WriteAllText($casePath,$prefix,$utf8)
+        Assert ((Read-VdDownloadHistory -Path $casePath).Contains($seedUrl)) "A complete final history record must be readable without LF"
+        Add-VdSuccessfulDownloadUrl -Path $casePath -Url $fresh
+        $actual = [IO.File]::ReadAllText($casePath,$utf8)
+        Assert ($actual.StartsWith($prefix,[StringComparison]::Ordinal)) "Append must preserve every existing history byte"
+        Assert ([IO.File]::ReadAllLines($casePath,$utf8).Count -eq 2) "Append must separate records without introducing blank lines"
+        $caseHistory = Read-VdDownloadHistory -Path $casePath
+        Assert ($caseHistory.Count -eq 2 -and $caseHistory.Contains($seedUrl) -and $caseHistory.Contains($fresh)) "Append must retain both complete history records"
+    }
+    $emptyAppendPath = Join-Path $dir "empty-append.jsonl"
+    [IO.File]::WriteAllText($emptyAppendPath,"",$utf8)
+    Add-VdSuccessfulDownloadUrl -Path $emptyAppendPath -Url $fresh
+    Assert ([IO.File]::ReadAllLines($emptyAppendPath,$utf8).Count -eq 1) "Appending to an empty history must not insert a leading blank line"
+    Assert ((Read-VdDownloadHistory -Path $emptyAppendPath).Contains($fresh)) "Appending to an empty history must record the URL"
+    $damagedTailPath = Join-Path $dir "damaged-tail.jsonl"
+    $damagedTail = $seedRecord + "`n" + '{"Version":1,"Url":'
+    [IO.File]::WriteAllText($damagedTailPath,$damagedTail,$utf8)
+    Expect-Throw { Add-VdSuccessfulDownloadUrl -Path $damagedTailPath -Url $fresh } "Append must reject a damaged unterminated history"
+    Assert ([IO.File]::ReadAllText($damagedTailPath,$utf8) -ceq $damagedTail) "Rejected append must leave a damaged history untouched"
+
     $queue = @($fresh,$upper,$another,$lower)
     $script:promptCount = 0
     $plan = Resolve-VdDuplicateDownloadPlan -Urls $queue -Known $known -Prompt {
@@ -100,7 +128,8 @@ try {
     Assert (-not $empty.Cancelled -and $empty.Selected.Count -eq 0) "Empty selection must do nothing"
     Expect-Throw { Resolve-VdDuplicateDownloadPlan -Urls @($upper) -Known $known -Prompt { "Unknown" } } "Invalid decision must fail closed"
 
-    # Independent runspaces concurrently append to the same long-lived history.
+    # Independent runspaces concurrently append to history whose last record has no LF.
+    [IO.File]::WriteAllText($path,([IO.File]::ReadAllText($path)).TrimEnd([char]10),$utf8)
     $moduleFile = Join-Path (Split-Path -Parent $PSScriptRoot) "lib/VideoDownloader.DownloadHistory.psm1"
     $jobs = @(
         1..3 | ForEach-Object {
