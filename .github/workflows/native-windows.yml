@@ -31,6 +31,9 @@ jobs:
       - name: Automatic release version tests
         shell: pwsh
         run: pwsh -NoProfile -File ./tests/release-version-tests.ps1
+      - name: Shared UI Russian profiles and folder buttons
+        shell: pwsh
+        run: pwsh -NoProfile -File ./tests/russian-ui-tests.ps1
       - name: Build native C# WPF app
         run: dotnet build native/VideoDownloader.Native.csproj -c Release
       - name: Native WPF window startup smoke
