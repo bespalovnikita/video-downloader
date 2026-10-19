@@ -85,10 +85,10 @@ internal static class NativeUiSelfTest
             archive.IsChecked=false;
             var outputPath=typeof(NativeWindow).GetMethod("ConfiguredOutputDirectory",
                 System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance)!;
-            Require((string)outputPath.Invoke(controller,null)!==outputBox.Text,
+            Require((string)outputPath.Invoke(controller,null)!=outputBox.Text,
                 "Open folder must resolve the configured output even before first download.");
             archive.IsChecked=true;
-            Require((string)outputPath.Invoke(controller,null)!==
+            Require((string)outputPath.Invoke(controller,null)!=
                     Path.Combine(outputBox.Text,DateTime.Now.ToString("yyyy-MM-dd")),
                 "Archive mode must point into the dated output subfolder.");
             archive.IsChecked=false;
