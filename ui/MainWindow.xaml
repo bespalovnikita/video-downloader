@@ -594,6 +594,7 @@
                                     <Button x:Name="InstallFfmpegButton" Content="Install FFmpeg"/>
                                     <Button x:Name="UpdateYtDlpButton" Content="Update yt-dlp"/>
                                     <Button x:Name="RegisterProtocolButton" Content="Register protocol"/>
+                                    <Button x:Name="OpenAppSettingsButton" Content="📁 Открыть папку настроек" ToolTip="Открыть %LOCALAPPDATA%\VideoDownloader в Проводнике"/>
                                 </WrapPanel>
                             </StackPanel>
                         </Expander>
