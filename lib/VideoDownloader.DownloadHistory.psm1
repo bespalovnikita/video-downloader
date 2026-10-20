@@ -80,10 +80,28 @@ function Add-VdSuccessfulDownloadUrl {
     Invoke-VdHistoryLocked {
         $dir = [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($Path))
         [void][IO.Directory]::CreateDirectory($dir)
+        $needsSeparator = $false
+        if (Test-Path -LiteralPath $Path -PathType Leaf) {
+            $existing = [IO.FileStream]::new($Path,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::ReadWrite)
+            try {
+                if ($existing.Length -gt 0) {
+                    [void]$existing.Seek(-1,[IO.SeekOrigin]::End)
+                    $lastByte = $existing.ReadByte()
+                    $needsSeparator = $lastByte -ne 10 -and $lastByte -ne 13
+                }
+            } finally { $existing.Dispose() }
+        }
+        if ($needsSeparator) {
+            # A valid final JSON record need not end in a newline. Validate before
+            # adding its separator so a truncated/corrupt tail remains untouched.
+            # The named mutex is reentrant on this thread and remains held here.
+            Read-VdDownloadHistory -Path $Path | Out-Null
+        }
         # Stream the record without rewriting the accumulated history; flush to disk.
         $stream = [IO.FileStream]::new($Path,[IO.FileMode]::Append,[IO.FileAccess]::Write,[IO.FileShare]::Read)
         try {
-            $bytes = [Text.UTF8Encoding]::new($false).GetBytes($entry + "`n")
+            $separator = if ($needsSeparator) { "`n" } else { "" }
+            $bytes = [Text.UTF8Encoding]::new($false).GetBytes($separator + $entry + "`n")
             $stream.Write($bytes,0,$bytes.Length)
             $stream.Flush($true)
         } finally { $stream.Dispose() }

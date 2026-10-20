@@ -97,6 +97,31 @@ function Remove-VdOwnedFiles {
     return ,$removed.ToArray()
 }
 
+function Remove-VdStagingDirectory {
+    param(
+        [Parameter(Mandatory)][string]$StageDir,
+        [Parameter(Mandatory)][string]$RunDir
+    )
+    $stagePath=[IO.Path]::GetFullPath($StageDir).TrimEnd([IO.Path]::DirectorySeparatorChar,[IO.Path]::AltDirectorySeparatorChar)
+    $runPath=[IO.Path]::GetFullPath($RunDir).TrimEnd([IO.Path]::DirectorySeparatorChar,[IO.Path]::AltDirectorySeparatorChar)
+    $compare=if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+    if (-not [string]::Equals([IO.Path]::GetDirectoryName($stagePath),$runPath,$compare) -or
+        [IO.Path]::GetFileName($stagePath) -notmatch '^download-\d+-[0-9a-f]{32}$') {
+        throw "Refusing to remove a directory that is not a job staging folder: $StageDir"
+    }
+    Assert-VdNoReparseAncestors -Path (Join-Path $stagePath '__check__')
+    if (-not (Test-Path -LiteralPath $stagePath)) { return }
+    if (-not (Test-Path -LiteralPath $stagePath -PathType Container)) { throw "Staging path is not a directory: $StageDir" }
+    # Do not recurse through, or silently discard, links placed inside staging.
+    foreach ($entry in @(Get-ChildItem -LiteralPath $stagePath -Recurse -Force -ErrorAction Stop)) {
+        if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Refusing to remove staging containing a symlink, junction or reparse point: $($entry.FullName)"
+        }
+    }
+    Assert-VdNoReparseAncestors -Path (Join-Path $stagePath '__check__')
+    [IO.Directory]::Delete($stagePath,$true)
+}
+
 function Publish-VdStagedFiles {
     param(
         [Parameter(Mandatory)][string]$StageDir,
@@ -163,9 +188,16 @@ function Publish-VdStagedFiles {
         return [pscustomobject]@{ Path=$publishedMedia; OwnedPaths=@($owned.ToArray()) }
     } catch {
         # Roll back only new files created by this publish. Never touch old files.
-        [void](Remove-VdOwnedFiles -OutputRoot $OutputRoot -Paths @($owned.ToArray()))
-        throw
+        $publishError=$_.Exception
+        try { [void](Remove-VdOwnedFiles -OutputRoot $OutputRoot -Paths @($owned.ToArray())) }
+        catch {
+            $failure=[IO.IOException]::new(($publishError.Message + ' Rollback failed: ' + $_.Exception.Message),$publishError)
+            # The caller must retain ownership even when rollback itself fails.
+            $failure.Data['OwnedPaths']=$owned.ToArray()
+            throw $failure
+        }
+        throw $publishError
     }
 }
 
-Export-ModuleMember -Function Get-VdCancelMarkerPath,Request-VdCancellation,Test-VdCancellation,Test-VdPathInsideRoot,Assert-VdNoReparseAncestors,Assert-VdRegularFileIfPresent,Remove-VdOwnedFiles,Publish-VdStagedFiles
+Export-ModuleMember -Function Get-VdCancelMarkerPath,Request-VdCancellation,Test-VdCancellation,Test-VdPathInsideRoot,Assert-VdNoReparseAncestors,Assert-VdRegularFileIfPresent,Remove-VdOwnedFiles,Remove-VdStagingDirectory,Publish-VdStagedFiles

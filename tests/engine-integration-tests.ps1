@@ -1,21 +1,31 @@
 #requires -Version 7.0
+param([string]$YtDlpPath)
 $ErrorActionPreference='Stop'
 $root=Split-Path -Parent $PSScriptRoot
 function Assert([bool]$value,[string]$message) { if (-not $value) { throw $message } }
+. (Join-Path $PSScriptRoot 'fixtures/OfflineMediaServer.ps1')
 $dir=Join-Path ([IO.Path]::GetTempPath()) ('vd-engine-integration-'+[guid]::NewGuid().ToString('N'))
 [void][IO.Directory]::CreateDirectory($dir)
 $oldLocalAppData=$env:LOCALAPPDATA
+$server=$null
 try {
     $env:LOCALAPPDATA=Join-Path $dir 'profile'
-    Copy-Item (Join-Path $root 'ytdl-manager-v8.ps1'),(Join-Path $root 'yt-dlp.exe') $dir
+    if (-not $YtDlpPath) { $YtDlpPath=Join-Path $root 'yt-dlp.exe' }
+    if (-not (Test-Path -LiteralPath $YtDlpPath -PathType Leaf)) { throw "Missing integration executable: $YtDlpPath" }
+    Copy-Item -LiteralPath (Join-Path $root 'ytdl-manager-v8.ps1') -Destination $dir
+    Copy-Item -LiteralPath $YtDlpPath -Destination (Join-Path $dir 'yt-dlp.exe')
     Copy-Item (Join-Path $root 'lib') (Join-Path $dir 'lib') -Recurse
-    # Local file downloads exercise the actual bundled executable without network.
-    Set-Content (Join-Path $dir 'yt-dlp.conf') '--enable-file-urls'
+    # Loopback media exercises the real executable without external requests or
+    # depending on ambient config (which the engine deliberately ignores).
+    $server=Start-VdOfflineMediaServer -Root $dir
+    function Get-FixtureUrl([string]$Path) {
+        return ([Uri]::new([Uri]$server.BaseUrl,[Uri]::EscapeDataString([IO.Path]::GetFileName($Path)))).AbsoluteUri
+    }
     $sources=@()
     foreach ($name in @('first','second')) {
         $path=Join-Path $dir "$name.mp4"
         [IO.File]::WriteAllBytes($path,[byte[]]::new(2MB))
-        $sources+=([uri]$path).AbsoluteUri
+        $sources+=Get-FixtureUrl $path
     }
     $queue=Join-Path $dir 'queue.txt'; Set-Content $queue $sources
     $events=Join-Path $dir 'events.jsonl'
@@ -32,12 +42,11 @@ try {
         Assert ($result.FileSize -eq 2MB -and (Test-Path -LiteralPath $result.Path)) 'Default bracket filename must preserve path and file size'
         Assert ($result.TransferredBytes -eq 2MB) 'Repeated final progress must not double-count transferred bytes'
     }
-    # The file:// fixture is intentionally outside supported history URLs.
     $parallelSources=@()
     foreach ($index in 1..8) {
         $path=Join-Path $dir "parallel$index.mp4"
         [IO.File]::WriteAllBytes($path,[byte[]]::new(256KB))
-        $parallelSources+=([uri]$path).AbsoluteUri
+        $parallelSources+=Get-FixtureUrl $path
     }
     Set-Content $queue $parallelSources
     $parallelEvents=Join-Path $dir 'parallel.jsonl'
@@ -46,7 +55,9 @@ try {
     $parallelResults=@(Get-Content $parallelEvents | Where-Object {$_} | ConvertFrom-Json | Where-Object Kind -eq Result)
     Assert ($parallelResults.Count -eq 8 -and @($parallelResults | Where-Object { -not $_.Success }).Count -eq 0) 'Every scheduled URL must complete above the default ThreadJob throttle'
     Assert (@(Get-Content $queue | Where-Object {$_}).Count -eq 0) 'Successful engine exit must leave no pending URLs'
-    Assert (-not (Test-Path (Join-Path $env:LOCALAPPDATA 'VideoDownloader/successful-downloads.jsonl'))) 'Local test fixtures must not enter real URL history'
+    Import-Module (Join-Path $dir 'lib/VideoDownloader.DownloadHistory.psm1') -Force
+    $history=Read-VdDownloadHistory -Path (Join-Path $env:LOCALAPPDATA 'VideoDownloader/successful-downloads.jsonl')
+    Assert ($history.Count -eq 10) 'Every completed loopback fixture must enter only the isolated test history'
 
     # Cancel one of two active native yt-dlp processes, leaving the other running.
     Import-Module (Join-Path $dir 'lib/VideoDownloader.Cancellation.psm1') -Force
@@ -54,8 +65,8 @@ try {
     $keepSource=Join-Path $dir 'to-keep.mp4'
     [IO.File]::WriteAllBytes($cancelSource,[byte[]]::new(2MB))
     [IO.File]::WriteAllBytes($keepSource,[byte[]]::new(128KB))
-    $cancelUrl=([uri]$cancelSource).AbsoluteUri
-    $keepUrl=([uri]$keepSource).AbsoluteUri
+    $cancelUrl=Get-FixtureUrl $cancelSource
+    $keepUrl=Get-FixtureUrl $keepSource
     $cancelQueue=Join-Path $dir 'cancel-queue.txt'
     Set-Content -LiteralPath $cancelQueue @($cancelUrl,$keepUrl)
     $cancelEvents=Join-Path $dir 'cancel-events.jsonl'
@@ -106,6 +117,7 @@ try {
         Remove-Job $run -Force -ErrorAction SilentlyContinue
     }
 } finally {
+    if ($server) { $server.Dispose() }
     $env:LOCALAPPDATA=$oldLocalAppData
     Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
 }
