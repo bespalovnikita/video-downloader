@@ -58,6 +58,10 @@ jobs:
         shell: pwsh
         run: pwsh -NoProfile -File ./tests/tray-preview-tests.ps1
 
+      - name: Russian profiles and folder buttons
+        shell: pwsh
+        run: pwsh -NoProfile -File ./tests/russian-ui-tests.ps1
+
       - name: WPF and engine smoke checks
         shell: pwsh
         run: ./tests/smoke.ps1

@@ -5,6 +5,7 @@ Import-Module (Join-Path $root 'lib/VideoDownloader.Core.psm1') -Force -DisableN
 Import-Module (Join-Path $root 'lib/VideoDownloader.Cancellation.psm1') -Force
 Import-Module (Join-Path $root 'lib/VideoDownloader.LiveQueue.psm1') -Force
 Import-Module (Join-Path $root 'lib/VideoDownloader.Session.psm1') -Force
+Import-Module (Join-Path $root 'lib/VideoDownloader.Profiles.psm1') -Force
 
 function Assert([bool]$Value,[string]$Message) { if (-not $Value) { throw $Message } }
 Add-Type @'
@@ -225,6 +226,15 @@ try {
   Apply-Profile $previous; Apply-Profile $name
   Assert ((Profile-State) -eq $expected[$name]) "Profile $name depends on previous profile $previous"
  } }
+ $captions=@(Get-VdProfileCaptions)
+ foreach ($previous in $captions) { foreach ($caption in $captions) {
+  Apply-Profile $previous; Apply-Profile $caption
+  $id=Get-VdProfileId $caption
+  Assert ((Profile-State) -eq $expected[$id]) "Russian profile $caption depends on previous profile $previous"
+ } }
+ $beforeUnknown=Profile-State
+ Apply-Profile 'Unknown profile'
+ Assert ((Profile-State) -eq $beforeUnknown) 'An unknown profile must not reset the selected settings'
  Apply-Profile 'Subtitles archive'; Apply-Profile Universal
  Assert (-not $AutoSubsCheck.IsChecked -and -not $WriteSubsCheck.IsChecked -and -not $EmbedSubsCheck.IsChecked) 'Universal must turn off subtitle options inherited from a subtitle profile'
 
@@ -249,7 +259,31 @@ try {
  $script:RateLimitCombo=[pscustomobject]@{Text='Unlimited'}; $script:FragmentsCombo=[pscustomobject]@{SelectedItem='Auto'}
  $script:SubtitleLangsBox=[pscustomobject]@{Text=''}; $script:PauseButton=[pscustomobject]@{Content='Pause'}
  $script:ArchiveCheck=[pscustomobject]@{IsChecked=$false}; $script:SponsorCheck=[pscustomobject]@{IsChecked=$false}
+ $script:WatchClipboardCheck=[pscustomobject]@{IsChecked=$false}
  $script:LogBox=[pscustomobject]@{}; $script:LogBox|Add-Member ScriptMethod Clear {}
+ # Execute real persistence mapping with localized ComboBox choices. The saved
+ # profile remains the stable English ID accepted by both application runtimes.
+ foreach ($name in @('Get-SessionSettings','Restore-SessionSettings')) {
+  $node=$ast.Find({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name},$true)
+  . ([scriptblock]::Create($node.Extent.Text))
+ }
+ $script:ProfileCombo=[pscustomobject]@{SelectedItem='';Items=$captions}
+ foreach ($control in @('QualityCombo','CodecCombo','ContainerCombo','FragmentsCombo')) {
+  (Get-Variable -Name $control -ValueOnly)|Add-Member -NotePropertyName Items -NotePropertyValue @('Best','2160','1080','Auto','H264','MP4','MKV') -Force
+ }
+ foreach ($id in $profiles) {
+  $caption=Get-VdProfileCaption $id
+  $ProfileCombo.SelectedItem=$caption
+  Apply-Profile $caption
+  $settings=Get-SessionSettings
+  Assert ($settings.Profile -ceq $id) "Russian selection $caption must save canonical profile ID $id"
+  $snapshot=Get-SessionSnapshot
+  Assert ($snapshot.Settings.Profile -ceq $id) "Session snapshot must keep English profile ID $id"
+  $ProfileCombo.SelectedItem=Get-VdProfileCaption Universal
+  Restore-SessionSettings $settings
+  Assert ($ProfileCombo.SelectedItem -ceq $caption) "English checkpoint ID $id must restore its Russian caption"
+ }
+ Apply-Profile Universal
  $engine=Join-Path $root 'ytdl-manager-v8.ps1'
  Start-Download @([string]$row.Url)
  Assert ($row.Status -eq 'Interrupted' -and $row.OutputRoot -eq $newRoot -and -not $row.Path -and $row.OwnedPaths.Count -eq 0) 'A failed retry launch must not combine old owned paths with the new output root'

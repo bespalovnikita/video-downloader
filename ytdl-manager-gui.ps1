@@ -51,11 +51,12 @@ $historyModule = Join-Path $root "lib\VideoDownloader.DownloadHistory.psm1"
 $liveQueueModule = Join-Path $root "lib\VideoDownloader.LiveQueue.psm1"
 $cancelModule = Join-Path $root "lib\VideoDownloader.Cancellation.psm1"
 $trayStatusModule = Join-Path $root "lib\VideoDownloader.TrayStatus.psm1"
+$profileModule = Join-Path $root "lib\VideoDownloader.Profiles.psm1"
 $duplicateDialogXaml = Join-Path $root "ui\DuplicateDownloadDialog.xaml"
 $lifecycleModule = Join-Path $root "lib\VideoDownloader.WindowLifecycle.psm1"
 $xamlPath = Join-Path $root "ui\MainWindow.xaml"
 
-foreach ($required in @($engine,$ytDlp,$coreModule,$previewCacheModule,$lifecycleModule,$sessionModule,$historyModule,$liveQueueModule,$cancelModule,$trayStatusModule,$duplicateDialogXaml,$xamlPath)) {
+foreach ($required in @($engine,$ytDlp,$coreModule,$previewCacheModule,$lifecycleModule,$sessionModule,$historyModule,$liveQueueModule,$cancelModule,$trayStatusModule,$profileModule,$duplicateDialogXaml,$xamlPath)) {
     if (-not (Test-Path $required)) { throw "Missing required file: $required" }
 }
 Import-Module $coreModule -Force
@@ -66,6 +67,7 @@ Import-Module $historyModule -Force
 Import-Module $liveQueueModule -Force
 Import-Module $cancelModule -Force
 Import-Module $trayStatusModule -Force
+Import-Module $profileModule -Force
 
 function Remove-StaleGuiTempDirs {
     $cutoff = (Get-Date).AddHours(-24)
@@ -103,14 +105,14 @@ $window = [System.Windows.Markup.XamlReader]::Load($reader)
 
 $controlNames = @(
     "HeaderStats","HeaderStatus","QueueCount","UrlInput","AddUrlButton","PasteClipboardButton","OpenListButton","RemoveQueueButton",
-    "ClearQueueButton","MoveUpButton","MoveDownButton","RetryFailedButton","QueueGrid","WatchClipboardCheck",
+    "ClearQueueButton","MoveUpButton","MoveDownButton","RetryFailedButton","OpenOutputDirectoryButton","QueueGrid","WatchClipboardCheck",
     "ClipboardHint","DownloadGrid","OpenFileButton","OpenFolderButton","CopyPathButton","OpenUrlButton","LogBox",
     "PreviewImage","PreviewTitle","PreviewMeta","PreviewFormats","ProfileCombo","QualityCombo","CodecCombo",
     "ContainerCombo","RateLimitCombo","ThreadsBox","FragmentsCombo","FilenameTemplateBox","WriteSubsCheck",
     "AutoSubsCheck","EmbedSubsCheck","SubtitleLangsBox","EmbedThumbnailCheck","EmbedMetadataCheck",
     "EmbedChaptersCheck","ArchiveCheck","SponsorCheck","AudioOnlyCheck","OutputBox","PickOutputButton",
     "CookiesBox","PickCookiesButton","DependencyStatus","RefreshDepsButton","InstallFfmpegButton",
-    "UpdateYtDlpButton","RegisterProtocolButton","SessionStats","OverallProgress","TrayButton","PauseButton",
+    "UpdateYtDlpButton","RegisterProtocolButton","OpenAppSettingsButton","SessionStats","OverallProgress","TrayButton","PauseButton",
     "StopButton","StartButton"
 )
 foreach ($name in $controlNames) {
@@ -268,7 +270,7 @@ function Confirm-DuplicateDownloads([string[]]$Urls) {
 
 function Get-SessionSettings {
     return [ordered]@{
-        Profile = [string]$ProfileCombo.SelectedItem
+        Profile = Get-VdProfileId ([string]$ProfileCombo.SelectedItem)
         Quality = [string]$QualityCombo.SelectedItem
         Codec = [string]$CodecCombo.SelectedItem
         Container = [string]$ContainerCombo.SelectedItem
@@ -300,6 +302,7 @@ function Restore-SessionSettings([object]$Settings) {
     )) {
         $combo = $entry[0]
         $value = [string]$Settings[$entry[1]]
+        if ([string]$entry[1] -eq "Profile") { $value = Get-VdProfileCaption $value }
         if ($combo.Items.Contains($value)) { $combo.SelectedItem = $value }
     }
     if ($Settings.Contains("RateLimit")) { $RateLimitCombo.Text = [string]$Settings.RateLimit }
@@ -1763,14 +1766,15 @@ function Handle-StartupArgs([string[]]$Arguments=$StartupArgs) {
 }
 
 function Apply-Profile([string]$Name) {
-    if ($Name -notin @('Universal','4K archive','MP4 compatibility','Music MP3','Subtitles archive')) { return }
+    $profileId = Get-VdProfileId $Name
+    if ($Name -notin @($profileId,(Get-VdProfileCaption $profileId))) { return }
     # Every profile defines all of its controls, independent of the previous
     # profile. Connection paths, rate limits and other user settings stay separate.
     $QualityCombo.SelectedItem='Best'; $CodecCombo.SelectedItem='Auto'; $ContainerCombo.SelectedItem='Auto'
     $AudioOnlyCheck.IsChecked=$false
     $WriteSubsCheck.IsChecked=$false; $AutoSubsCheck.IsChecked=$false; $EmbedSubsCheck.IsChecked=$false
     $EmbedThumbnailCheck.IsChecked=$false; $EmbedMetadataCheck.IsChecked=$true; $EmbedChaptersCheck.IsChecked=$true
-    switch ($Name) {
+    switch ($profileId) {
         "Universal" {
             $QualityCombo.SelectedItem="Best"; $CodecCombo.SelectedItem="Auto"; $ContainerCombo.SelectedItem="Auto"
             $AudioOnlyCheck.IsChecked=$false; $EmbedMetadataCheck.IsChecked=$true; $EmbedChaptersCheck.IsChecked=$true
@@ -1803,14 +1807,14 @@ foreach ($v in @("Auto","H264","VP9","AV1")) { [void]$CodecCombo.Items.Add($v) }
 foreach ($v in @("Auto","MP4","MKV","WebM")) { [void]$ContainerCombo.Items.Add($v) }
 foreach ($v in @("Unlimited","1M","5M","10M","25M","50M")) { [void]$RateLimitCombo.Items.Add($v) }
 foreach ($v in @("Auto","1","2","3","4","6","8")) { [void]$FragmentsCombo.Items.Add($v) }
-foreach ($v in @("Universal","4K archive","MP4 compatibility","Music MP3","Subtitles archive")) { [void]$ProfileCombo.Items.Add($v) }
+foreach ($v in @(Get-VdProfileCaptions)) { [void]$ProfileCombo.Items.Add($v) }
 
 $QualityCombo.SelectedItem = "Best"
 $CodecCombo.SelectedItem = "Auto"
 $ContainerCombo.SelectedItem = "Auto"
 $RateLimitCombo.SelectedItem = "Unlimited"
 $FragmentsCombo.SelectedItem = "Auto"
-$ProfileCombo.SelectedItem = "Universal"
+$ProfileCombo.SelectedItem = Get-VdProfileCaption "Universal"
 $OutputBox.Text = Join-Path (Join-Path $env:USERPROFILE "Downloads") "downloaded-video"
 
 $folderDialog = [System.Windows.Forms.FolderBrowserDialog]::new()
@@ -1925,6 +1929,43 @@ $MoveDownButton.Add_Click({
     $item = $QueueGrid.SelectedItem
     if ($item) { Move-QueueItem $item ([Math]::Min($script:queue.Count-1,$script:queue.IndexOf($item)+1)) }
 })
+
+function Get-ConfiguredOutputPath {
+    $destination = [string]$OutputBox.Text
+    if (-not $destination.Trim()) { return '' }
+    if ($ArchiveCheck.IsChecked -eq $true) {
+        # Match the engine's current archive-by-date destination.
+        $destination = Join-Path $destination (Get-Date -Format 'yyyy-MM-dd')
+    }
+    return $destination
+}
+
+function Open-ConfiguredOutputFolder {
+    $destination = Get-ConfiguredOutputPath
+    if (-not $destination -or -not (Test-Path -LiteralPath $destination -PathType Container)) {
+        [System.Windows.MessageBox]::Show("Папка загрузок ещё не существует: " + $destination,
+            "Открыть папку загрузок") | Out-Null
+        return
+    }
+    try { Start-Process explorer.exe -ArgumentList @([string][IO.Path]::GetFullPath($destination)) }
+    catch {
+        [System.Windows.MessageBox]::Show("Не удалось открыть папку загрузок: " + $_.Exception.Message,
+            "Открыть папку загрузок") | Out-Null
+    }
+}
+function Open-AppSettingsFolder {
+    $directory = Join-Path $env:LOCALAPPDATA 'VideoDownloader'
+    try {
+        [void][IO.Directory]::CreateDirectory($directory)
+        Start-Process explorer.exe -ArgumentList @($directory)
+    } catch {
+        [System.Windows.MessageBox]::Show("Не удалось открыть папку настроек: " + $_.Exception.Message,
+            "Открыть папку настроек") | Out-Null
+    }
+}
+
+$OpenOutputDirectoryButton.Add_Click({ Open-ConfiguredOutputFolder })
+$OpenAppSettingsButton.Add_Click({ Open-AppSettingsFolder })
 
 $RetryFailedButton.Add_Click({
     $items = @($script:queue | Where-Object { $_.Status -eq "Failed" } | ForEach-Object { [string]$_.Url })

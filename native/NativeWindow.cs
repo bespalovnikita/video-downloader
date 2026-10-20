@@ -72,7 +72,7 @@ public sealed partial class NativeWindow : IDisposable
             ("ContainerCombo",["Auto","MP4","MKV","WebM"]),
             ("RateLimitCombo",["Unlimited","1M","5M","10M","25M","50M"]),
             ("FragmentsCombo",["Auto","1","2","3","4","6","8"]),
-            ("ProfileCombo",["Universal","4K archive","MP4 compatibility","Music MP3","Subtitles archive"])})
+            ("ProfileCombo",ProfileCatalog.DisplayNames)})
         {
             foreach(var v in values) C(control).Items.Add(v);
             C(control).SelectedIndex=0;
@@ -214,7 +214,7 @@ public sealed partial class NativeWindow : IDisposable
     }
     private DownloadOptions ReadOptions() => new()
     {
-        Profile=Pick(C("ProfileCombo")),Quality=Pick(C("QualityCombo")),Codec=Pick(C("CodecCombo")),
+        Profile=ProfileCatalog.ToId(Pick(C("ProfileCombo"))),Quality=Pick(C("QualityCombo")),Codec=Pick(C("CodecCombo")),
         Container=Pick(C("ContainerCombo")),RateLimit=C("RateLimitCombo").Text,
         Threads=B("ThreadsBox").Text,Fragments=Pick(C("FragmentsCombo")),
         FilenameTemplate=B("FilenameTemplateBox").Text,Output=B("OutputBox").Text,
@@ -228,7 +228,7 @@ public sealed partial class NativeWindow : IDisposable
     private void ApplyOptions(DownloadOptions o)
     {
         foreach(var (name,value) in new[]{
-            ("ProfileCombo",o.Profile),("QualityCombo",o.Quality),("CodecCombo",o.Codec),
+            ("ProfileCombo",ProfileCatalog.Display(o.Profile)),("QualityCombo",o.Quality),("CodecCombo",o.Codec),
             ("ContainerCombo",o.Container),("FragmentsCombo",o.Fragments)})
             if (C(name).Items.Contains(value)) C(name).SelectedItem=value;
         C("RateLimitCombo").Text=o.RateLimit;

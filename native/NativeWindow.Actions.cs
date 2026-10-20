@@ -44,6 +44,59 @@ public sealed partial class NativeWindow
         string folder=Directory.Exists(path)?path:Path.GetDirectoryName(path)??"";
         if(Directory.Exists(folder))Process.Start(new ProcessStartInfo("explorer.exe"){UseShellExecute=true,ArgumentList={folder}});
     }
+    private string ConfiguredOutputDirectory()
+    {
+        // When downloading, use the pinned output path of the actual session
+        // (important for Archive and midnight rollover). Otherwise use the UI.
+        return _session?.IsRunning==true
+            ? _sessionOptions.OutputDirectory
+            : ReadOptions().OutputDirectory;
+    }
+    private void OpenConfiguredOutputFolder()
+    {
+        try
+        {
+            string folder=ConfiguredOutputDirectory();
+            if (!Directory.Exists(folder))
+            {
+                MessageBox.Show(_window, "Папка загрузок ещё не существует:\n" + folder,
+                    "Открыть папку загрузок", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+            Process.Start(new ProcessStartInfo("explorer.exe")
+            {
+                UseShellExecute=true,
+                ArgumentList={folder}
+            });
+        }
+        catch(Exception e) when (e is IOException or ArgumentException or
+                                System.ComponentModel.Win32Exception or UnauthorizedAccessException)
+        {
+            MessageBox.Show(_window, "Не удалось открыть папку загрузок:\n" + e.Message,
+                "Открыть папку загрузок",MessageBoxButton.OK,MessageBoxImage.Warning);
+        }
+    }
+    private void OpenAppSettingsFolder()
+    {
+        try
+        {
+            // Use the actual persistence directory rather than guessing AppData
+            // or depending on whether the user has changed their downloads path.
+            var path=Path.GetDirectoryName(_storage.SessionPath)!;
+            Directory.CreateDirectory(path);
+            Process.Start(new ProcessStartInfo("explorer.exe")
+            {
+                UseShellExecute=true,
+                ArgumentList={path}
+            });
+        }
+        catch(Exception e) when (e is IOException or ArgumentException or
+                                System.ComponentModel.Win32Exception or UnauthorizedAccessException)
+        {
+            MessageBox.Show(_window, "Не удалось открыть папку настроек:\n" + e.Message,
+                "Открыть папку настроек",MessageBoxButton.OK,MessageBoxImage.Warning);
+        }
+    }
     private void ShowFileInFolder(DownloadItem? row)
     {
         if(row==null || row.Path.Length==0 || !File.Exists(row.Path))return;
@@ -81,6 +134,7 @@ public sealed partial class NativeWindow
         F<Button>("MoveUpButton").Click+=(_,_)=>{if(Q.SelectedItem is DownloadItem item)MoveItem(item,_queue.IndexOf(item)-1);};
         F<Button>("MoveDownButton").Click+=(_,_)=>{if(Q.SelectedItem is DownloadItem item)MoveItem(item,_queue.IndexOf(item)+1);};
         F<Button>("RetryFailedButton").Click+=async(_,_)=>await StartAsync(_queue.Where(x=>x.Status=="Failed").ToArray());
+        F<Button>("OpenOutputDirectoryButton").Click+=(_,_)=>OpenConfiguredOutputFolder();
         F<Button>("StartButton").Click+=async(_,_)=>await StartAsync();
         F<Button>("StopButton").Click+=(_,_)=>{_stopping=true;_session?.Stop();UpdateState();};
         F<Button>("PauseButton").Click+=(_,_)=>{_session?.Pause(!_session.IsPaused);UpdateState();};
@@ -100,6 +154,7 @@ public sealed partial class NativeWindow
         F<Button>("UpdateYtDlpButton").Click+=async(_,_)=>await DependencyOperation("Updating yt-dlp...",DependencyCenter.UpdateYtDlpAsync);
         F<Button>("InstallFfmpegButton").Click+=async(_,_)=>await DependencyOperation("Installing FFmpeg...",
             async cancel=>{ await DependencyCenter.InstallFfmpegAsync(cancel);return "FFmpeg installed next to VideoDownloader.exe.";});
+        F<Button>("OpenAppSettingsButton").Click+=(_,_)=>OpenAppSettingsFolder();
         F<Button>("RegisterProtocolButton").Click+=(_,_)=>
         {
             try { DependencyCenter.RegisterProtocol();MessageBox.Show(_window,"videodownloader:// registered for this Windows user.","Protocol registered");}
@@ -163,7 +218,7 @@ public sealed partial class NativeWindow
     }
     private void ApplyProfile(string name)
     {
-        switch(name)
+        switch(ProfileCatalog.ToId(name))
         {
             case "Universal":
                 C("QualityCombo").SelectedItem="Best";C("CodecCombo").SelectedItem="Auto";
