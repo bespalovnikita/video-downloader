@@ -19,10 +19,17 @@ public sealed class PreviewService : IDisposable
     private readonly SemaphoreSlim _signal=new(0);
     private readonly CancellationTokenSource _stop=new();
     private readonly object _gate=new();
-    private readonly HttpClient _http=new(){Timeout=TimeSpan.FromSeconds(15)};
+    private readonly HttpClient _http=new(){Timeout=Timeout.InfiniteTimeSpan};
+    private readonly TimeSpan _requestTimeout;
+    private readonly TimeSpan _thumbnailTimeout;
     private readonly Task _worker;
-    public PreviewService(string exe,AppPersistence data,Func<string> cookiePath,Action<PreviewData> ready,Action<string> log)
+    public PreviewService(string exe,AppPersistence data,Func<string> cookiePath,Action<PreviewData> ready,Action<string> log,
+        TimeSpan? requestTimeout=null,TimeSpan? thumbnailTimeout=null)
     {
+        _requestTimeout=requestTimeout??TimeSpan.FromSeconds(30);
+        _thumbnailTimeout=thumbnailTimeout??TimeSpan.FromSeconds(12);
+        if (_requestTimeout<=TimeSpan.Zero || _thumbnailTimeout<=TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(requestTimeout));
         _exe=exe;_cacheDir=data.PreviewDir;_cookiePath=cookiePath;_ready=ready;_log=log;
         Directory.CreateDirectory(_cacheDir);
         _worker=Task.Run(Worker);
@@ -86,7 +93,9 @@ public sealed class PreviewService : IDisposable
             }
             try
             {
-                var data=await FetchAsync(url,_stop.Token).ConfigureAwait(false);
+                using var deadline=CancellationTokenSource.CreateLinkedTokenSource(_stop.Token);
+                deadline.CancelAfter(_requestTimeout);
+                var data=await FetchAsync(url,deadline.Token).ConfigureAwait(false);
                 if (data!=null)
                 {
                     _cache[url]=data;
@@ -100,6 +109,7 @@ public sealed class PreviewService : IDisposable
                 }
             }
             catch(OperationCanceledException) when (_stop.IsCancellationRequested){break;}
+            catch(OperationCanceledException){_log("Preview timed out for "+url);}
             catch(Exception e){_log("Preview unavailable for "+url+": "+e.Message);}
             finally { lock(_gate) { _known.Remove(url); } }
         }
@@ -120,7 +130,7 @@ public sealed class PreviewService : IDisposable
             RedirectStandardOutput=true,RedirectStandardError=true,
             StandardOutputEncoding=Encoding.UTF8,StandardErrorEncoding=Encoding.UTF8
         };
-        foreach(string arg in new[]{"--dump-single-json","--skip-download","--no-warnings","--playlist-items","1","--encoding","utf-8","--impersonate","chrome"})
+        foreach(string arg in new[]{"--ignore-config","--dump-single-json","--skip-download","--no-warnings","--playlist-items","1","--encoding","utf-8","--impersonate","chrome"})
             psi.ArgumentList.Add(arg);
         string cookie=_cookiePath();
         if (File.Exists(cookie)) { psi.ArgumentList.Add("--cookies");psi.ArgumentList.Add(cookie); }
@@ -164,16 +174,19 @@ public sealed class PreviewService : IDisposable
         string base64="";
         if (Uri.TryCreate(thumb,UriKind.Absolute,out var uri) && (uri.Scheme=="https"||uri.Scheme=="http"))
         {
+            using var imageDeadline=CancellationTokenSource.CreateLinkedTokenSource(token);
+            imageDeadline.CancelAfter(_thumbnailTimeout);
             try
             {
-                using var response=await _http.GetAsync(uri,HttpCompletionOption.ResponseHeadersRead,token).ConfigureAwait(false);
+                var imageToken=imageDeadline.Token;
+                using var response=await _http.GetAsync(uri,HttpCompletionOption.ResponseHeadersRead,imageToken).ConfigureAwait(false);
                 response.EnsureSuccessStatusCode();
                 if (response.Content.Headers.ContentLength is > 2_000_000) throw new IOException("Thumbnail exceeds 2MB");
-                using var stream=await response.Content.ReadAsStreamAsync(token).ConfigureAwait(false);
+                using var stream=await response.Content.ReadAsStreamAsync(imageToken).ConfigureAwait(false);
                 using var buffer=new MemoryStream();
                 var chunk=new byte[16384];
                 int read;
-                while((read=await stream.ReadAsync(chunk,token).ConfigureAwait(false))>0)
+                while((read=await stream.ReadAsync(chunk,imageToken).ConfigureAwait(false))>0)
                 {
                     if(buffer.Length+read>2_000_000)throw new IOException("Thumbnail exceeds 2MB");
                     buffer.Write(chunk,0,read);
@@ -182,6 +195,7 @@ public sealed class PreviewService : IDisposable
             }
             catch(HttpRequestException e){_log("Thumbnail request failed: "+e.Message);}
             catch(IOException e){_log("Thumbnail unavailable: "+e.Message);}
+            catch(OperationCanceledException) when (!token.IsCancellationRequested){_log("Thumbnail timed out for "+url);}
         }
         return new PreviewData(url,Str(j,"title"),Str(j,"uploader"),playlist,Number(j,"duration"),
             Str(j,"extractor"),maxHeight,maxFps,string.Join(", ",codecs),string.Join(", ",ranges),base64,DateTime.UtcNow);

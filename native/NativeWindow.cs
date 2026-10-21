@@ -160,7 +160,7 @@ public sealed partial class NativeWindow : IDisposable
         string title=_sessionStart.HasValue
             ? DownloadFormat.Tray(_ok,left,_failed,speed,running,paused) : "Video Downloader | Ready";
         if (_tray.Text!=title)_tray.Text=title;
-        F<Button>("StartButton").IsEnabled=!running && _queue.Any(x=>x.Status!="Completed");
+        F<Button>("StartButton").IsEnabled=!running && _queue.Any(x=>x.Status!="Completed" && x.CanResume);
         F<Button>("StopButton").IsEnabled=running;
         F<Button>("PauseButton").IsEnabled=running;
         F<Button>("PauseButton").Content=paused?"Resume":"Pause";
@@ -190,14 +190,23 @@ public sealed partial class NativeWindow : IDisposable
         _=Dispatcher.BeginInvoke(()=>
         {
             if (_disposed || !_queue.Contains(item)) return;
+            if (item.PendingRemoval && item.AttemptFinished && item.CleanupError.Length==0)
+            {
+                try { DownloadCleanup.Retry(item);ForgetRow(item);Reindex();return; }
+                catch(Exception e) { Log("Removal failed for "+item.Url+": "+e.Message); }
+            }
             if (!_downloads.Contains(item))_downloads.Add(item);
             if (item.Status is "Completed" or "Failed" or "Interrupted")
             {
-                if (!_finalStates.TryGetValue(item.Url,out var before) || before!=item.Status)
+                var final=item.Status+":"+item.CleanupError;
+                if (!_finalStates.TryGetValue(item.Url,out var before) || before!=final)
                 {
-                    _finalStates[item.Url]=item.Status;
+                    _finalStates[item.Url]=final;
                     Log($"{item.Status}: {item.Url}"+(item.RawError.Length>0?" | "+item.RawError:""));
                     SaveCheckpoint();
+                    if (item.CleanupError.Length>0)
+                        MessageBox.Show(_window,"Cleanup failed. The row and paths were kept; use Remove to retry.\n"+
+                            item.CleanupError,"Removal blocked",MessageBoxButton.OK,MessageBoxImage.Warning);
                 }
             }
             UpdateState();
@@ -286,7 +295,10 @@ public sealed partial class NativeWindow : IDisposable
         try
         {
             // Save on meaningful changes, not every progress tick.
-            var fingerprint=string.Join("|",_queue.Select(i=>$"{i.Url}:{i.Status}:{i.Path}:{i.Order}"))+
+            var fingerprint=System.Text.Json.JsonSerializer.Serialize(_queue.Select(i=>new{
+                i.Url,i.Status,i.Path,i.Order,i.OwnedPaths,i.OutputRoot,i.RunDir,i.StageDir,
+                i.CleanupPaths,i.CleanupError,i.PendingRemoval,i.AttemptFinished,i.DeferredToNextStart
+            }),AppPersistence.Json)+
                 ":"+System.Text.Json.JsonSerializer.Serialize(ReadOptions(),AppPersistence.Json)+":"+_queue.Count;
             if (fingerprint==_lastSavedSnapshot) return;
             _storage.Save(_queue,ReadOptions());_lastSavedSnapshot=fingerprint;
@@ -390,7 +402,11 @@ public sealed partial class NativeWindow : IDisposable
             if(active)
             {
                 if(_session!.Add(row)) _sessionUrls.Add(row.Url);
-                else Log("Session finished; URL stays queued for next Start: "+row.Url);
+                else
+                {
+                    row.DeferredToNextStart=true;
+                    Log("URL stays queued for next Start: "+row.Url);
+                }
             }
         }
         if(selectNew && rows.Count>0)
@@ -460,7 +476,7 @@ public sealed partial class NativeWindow : IDisposable
             return;
         }
         if(_session?.IsRunning==true) return;
-        var pending=(custom??_queue.Where(i=>i.Status!="Completed")).Distinct().ToList();
+        var pending=(custom??_queue.Where(i=>i.Status!="Completed")).Where(i=>i.CanResume).Distinct().ToList();
         if(pending.Count==0)return;
         var approved=ConfirmDuplicates(pending,true);
         if(approved==null||approved.Count==0)return;
@@ -476,6 +492,12 @@ public sealed partial class NativeWindow : IDisposable
             OwnedFiles.NoReparseAncestors(Path.Combine(options.OutputDirectory,"__validation__"));
             Directory.CreateDirectory(options.OutputDirectory);
             _sessionOptions=options;
+            // Validate retained staging before resetting any attempt or ownership.
+            foreach(var row in approved.Where(row=>row.StageDir.Length>0))
+            {
+                try { OwnedFiles.DeleteStage(row.StageDir,row.RunDir);row.StageDir=""; }
+                catch(Exception e) {DownloadCleanup.Failed(row,e.Message);SaveCheckpoint();throw;}
+            }
             _stopping=false;_sessionStart=DateTime.Now;_finalStates.Clear();_downloads.Clear();
             _sessionUrls.Clear();
             foreach(var row in approved) _sessionUrls.Add(row.Url);
@@ -483,6 +505,11 @@ public sealed partial class NativeWindow : IDisposable
             {
                 row.Status="Queued";row.State="Queued";row.RawError="";row.Progress=0;
                 row.Speed="";row.Downloaded="";row.ETA="";row.TransferredBytes=0;
+                // An explicit retry is a new attempt; previous successful files
+                // remain on disk and must never become this attempt's ownership.
+                row.Path="";row.OwnedPaths.Clear();row.CleanupPaths.Clear();
+                row.OutputRoot=options.OutputDirectory;row.RunDir="";
+                row.AttemptFinished=false;row.DeferredToNextStart=false;
             }
             var session=new DownloadCoordinator(_ytDlp,_storage,options,OnRowChanged,
                 line=>Dispatcher.BeginInvoke(()=>Log(line)));
@@ -537,18 +564,14 @@ public sealed partial class NativeWindow : IDisposable
         {
             try
             {
-                CancelRow(row);
-                if(row.Status=="Completed")
+                if (_session?.IsRunning==true && _session.IsPending(row))
                 {
-                    // Never delete an old checkpoint path without the owned-file manifest.
-                    if(row.OwnedPaths.Count==0 && row.Path.Length>0)
-                        throw new IOException("This restored download has no ownership manifest. Remove the file manually; the application will not risk deleting an unrelated file.");
-                    if(row.OwnedPaths.Count>0)
-                        OwnedFiles.DeleteOwned(row.OutputRoot,row.OwnedPaths);
+                    row.PendingRemoval=true;row.State="Cancelling — waiting for cleanup";
+                    _session.Cancel(row);
+                    continue;
                 }
-                _queue.Remove(row);
-                _downloads.Remove(row);
-                _sessionUrls.Remove(row.Url);
+                DownloadCleanup.Retry(row);
+                ForgetRow(row);
             }
             catch(Exception e)
             {
@@ -556,6 +579,19 @@ public sealed partial class NativeWindow : IDisposable
                 MessageBox.Show(_window,e.Message,"Removal blocked",MessageBoxButton.OK,MessageBoxImage.Warning);
             }
         }
+        Reindex();
+    }
+    private void ForgetRow(DownloadItem row)
+    {
+        _queue.Remove(row);_downloads.Remove(row);_sessionUrls.Remove(row.Url);
+    }
+    private void ClearRows()
+    {
+        foreach(var row in _queue.ToArray())
+            if (row.CanResume && row.StageDir.Length==0 && row.CleanupPaths.Count==0) ForgetRow(row);
+        if (_queue.Count>0)
+            MessageBox.Show(_window,"Downloads awaiting cleanup were kept. Use Remove to retry.",
+                "Cleanup pending",MessageBoxButton.OK,MessageBoxImage.Warning);
         Reindex();
     }
     private void MoveItem(DownloadItem item,int index)

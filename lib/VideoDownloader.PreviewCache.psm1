@@ -171,12 +171,16 @@ function Get-VdPreviewData {
     param(
         [Parameter(Mandatory=$true)][string]$YtDlpPath,
         [Parameter(Mandatory=$true)][string]$Url,
-        [AllowEmptyString()][string]$CookiePath = ""
+        [AllowEmptyString()][string]$CookiePath = "",
+        [ValidateRange(1,300)][int]$TimeoutSeconds = 30,
+        [ValidateRange(1,60)][int]$ThumbnailTimeoutSeconds = 12
     )
 
-    $stderrFile = Join-Path ([IO.Path]::GetTempPath()) ("video-downloader-preview-" + [guid]::NewGuid().ToString("N") + ".log")
+    $deadline = [Threading.CancellationTokenSource]::new([TimeSpan]::FromSeconds($TimeoutSeconds))
+    $process = $null
     try {
         $args = @(
+            "--ignore-config",
             "--dump-single-json",
             "--skip-download",
             "--no-warnings",
@@ -187,12 +191,19 @@ function Get-VdPreviewData {
         if ($CookiePath -and (Test-Path $CookiePath)) { $args += @("--cookies",$CookiePath) }
         $args += $Url
 
-        $raw = & $YtDlpPath @args 2>$stderrFile
-        $exitCode = $LASTEXITCODE
-        $stderr = ""
-        if (Test-Path $stderrFile) {
-            $stderr = (@(Get-Content $stderrFile -Encoding UTF8 -ErrorAction SilentlyContinue) | Select-Object -Last 12) -join " | "
-        }
+        $psi = [Diagnostics.ProcessStartInfo]::new($YtDlpPath)
+        $psi.UseShellExecute=$false; $psi.CreateNoWindow=$true
+        $psi.RedirectStandardOutput=$true; $psi.RedirectStandardError=$true
+        $psi.StandardOutputEncoding=[Text.Encoding]::UTF8; $psi.StandardErrorEncoding=[Text.Encoding]::UTF8
+        foreach ($argument in $args) { [void]$psi.ArgumentList.Add($argument) }
+        $process=[Diagnostics.Process]::new(); $process.StartInfo=$psi
+        if (-not $process.Start()) { throw 'Could not start yt-dlp for preview.' }
+        $stdout=$process.StandardOutput.ReadToEndAsync($deadline.Token)
+        $stderrTask=$process.StandardError.ReadToEndAsync($deadline.Token)
+        $process.WaitForExitAsync($deadline.Token).GetAwaiter().GetResult()
+        $jsonText=$stdout.GetAwaiter().GetResult()
+        $stderr=$stderrTask.GetAwaiter().GetResult().Trim()
+        $exitCode=$process.ExitCode
 
         if ($exitCode -ne 0) {
             if ([string]::IsNullOrWhiteSpace($stderr)) { $stderr = "yt-dlp exit code $exitCode" }
@@ -202,7 +213,6 @@ function Get-VdPreviewData {
             }
         }
 
-        $jsonText = ($raw -join [Environment]::NewLine)
         if ([string]::IsNullOrWhiteSpace($jsonText)) {
             return [pscustomobject]@{
                 Success = $false
@@ -256,13 +266,26 @@ function Get-VdPreviewData {
 
         if ($thumbnailUrl) {
             $client = $null
+            $imageDeadline = [Threading.CancellationTokenSource]::CreateLinkedTokenSource($deadline.Token)
+            $imageDeadline.CancelAfter([TimeSpan]::FromSeconds($ThumbnailTimeoutSeconds))
+            $response=$null; $stream=$null; $buffer=$null
             try {
                 $handler = [Net.Http.HttpClientHandler]::new()
                 $handler.AllowAutoRedirect = $true
                 $client = [Net.Http.HttpClient]::new($handler)
-                $client.Timeout = [TimeSpan]::FromSeconds(12)
+                $client.Timeout = [Threading.Timeout]::InfiniteTimeSpan
                 $client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) VideoDownloader/1.0")
-                $bytes = $client.GetByteArrayAsync($thumbnailUrl).GetAwaiter().GetResult()
+                $response=$client.GetAsync($thumbnailUrl,[Net.Http.HttpCompletionOption]::ResponseHeadersRead,$imageDeadline.Token).GetAwaiter().GetResult()
+                [void]$response.EnsureSuccessStatusCode()
+                if ($response.Content.Headers.ContentLength -gt 2000000) { throw 'Thumbnail exceeds 2MB.' }
+                $stream=$response.Content.ReadAsStreamAsync($imageDeadline.Token).GetAwaiter().GetResult()
+                $buffer=[IO.MemoryStream]::new()
+                $chunk=[byte[]]::new(16384)
+                while (($read=$stream.ReadAsync($chunk,0,$chunk.Length,$imageDeadline.Token).GetAwaiter().GetResult()) -gt 0) {
+                    if ($buffer.Length+$read -gt 2000000) { throw 'Thumbnail exceeds 2MB.' }
+                    $buffer.Write($chunk,0,$read)
+                }
+                $bytes=$buffer.ToArray()
                 if ($bytes -and $bytes.Length -gt 0) {
                     $thumbnailBase64 = [Convert]::ToBase64String($bytes)
                 } else {
@@ -271,7 +294,11 @@ function Get-VdPreviewData {
             } catch {
                 $thumbnailError = $_.Exception.Message
             } finally {
+                if ($buffer) { $buffer.Dispose() }
+                if ($stream) { $stream.Dispose() }
+                if ($response) { $response.Dispose() }
                 if ($client) { $client.Dispose() }
+                $imageDeadline.Dispose()
             }
         } else {
             $thumbnailError = "no JPEG/PNG thumbnail was provided by yt-dlp"
@@ -299,7 +326,13 @@ function Get-VdPreviewData {
             Error = $_.Exception.Message
         }
     } finally {
-        Remove-Item $stderrFile -Force -ErrorAction SilentlyContinue
+        if ($process) {
+            try {
+                if (-not $process.HasExited) { $process.Kill($true); [void]$process.WaitForExit(3000) }
+            } catch [InvalidOperationException] { } catch [ComponentModel.Win32Exception] { }
+            $process.Dispose()
+        }
+        $deadline.Dispose()
     }
 }
 

@@ -81,6 +81,13 @@ function Remove-VdOwnedFiles {
         [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$Paths
     )
     $removed=[Collections.Generic.List[string]]::new()
+    # Reject the whole batch before deleting anything. A later unsafe path
+    # must not cause a partially deleted manifest in either runtime.
+    foreach ($path in $Paths) {
+        if (-not $path) { continue }
+        if (-not (Test-VdPathInsideRoot -Path $path -Root $OutputRoot)) { throw "Refusing to delete file outside output folder: $path" }
+        Assert-VdRegularFileIfPresent -Path $path
+    }
     foreach ($path in $Paths) {
         if (-not $path) { continue }
         if (-not (Test-VdPathInsideRoot -Path $path -Root $OutputRoot)) {
@@ -106,7 +113,7 @@ function Remove-VdStagingDirectory {
     $runPath=[IO.Path]::GetFullPath($RunDir).TrimEnd([IO.Path]::DirectorySeparatorChar,[IO.Path]::AltDirectorySeparatorChar)
     $compare=if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
     if (-not [string]::Equals([IO.Path]::GetDirectoryName($stagePath),$runPath,$compare) -or
-        [IO.Path]::GetFileName($stagePath) -notmatch '^download-\d+-[0-9a-f]{32}$') {
+        [IO.Path]::GetFileName($stagePath) -notmatch '^(?:download-\d+-)?[0-9a-f]{32}$') {
         throw "Refusing to remove a directory that is not a job staging folder: $StageDir"
     }
     Assert-VdNoReparseAncestors -Path (Join-Path $stagePath '__check__')

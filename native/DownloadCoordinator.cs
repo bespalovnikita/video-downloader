@@ -17,6 +17,7 @@ public sealed class DownloadCoordinator : IAsyncDisposable
     private readonly ConcurrentDictionary<string,CancellationTokenSource> _itemCancels=new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string,Process> _processes=new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string,byte> _queued=new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string,DownloadItem> _items=new(StringComparer.Ordinal);
     // Tombstones outlive a worker's CTS registration and prevent cancellation races.
     private readonly ConcurrentDictionary<string,byte> _cancelled=new(StringComparer.Ordinal);
     private readonly CancellationTokenSource _stop=new();
@@ -121,14 +122,20 @@ public sealed class DownloadCoordinator : IAsyncDisposable
     {
         if (!IsRunning || _stop.IsCancellationRequested || !_queued.TryAdd(item.Url,0)) return false;
         Interlocked.Increment(ref _outstanding);
+        item.AttemptFinished=false;
+        _items[item.Url]=item;
         if (!_queue.Writer.TryWrite(item))
         {
             _queued.TryRemove(item.Url,out _);
+            _items.TryRemove(item.Url,out _);
+            item.AttemptFinished=true;
             Interlocked.Decrement(ref _outstanding);
             return false;
         }
         return true;
     }
+    public bool IsPending(DownloadItem item) => _items.TryGetValue(item.Url,out var owned) &&
+        ReferenceEquals(item,owned) && !item.AttemptFinished;
     public void Cancel(DownloadItem item)
     {
         // Serializes cancellation with the final success/ownership transition.
@@ -198,7 +205,10 @@ public sealed class DownloadCoordinator : IAsyncDisposable
             _queue.Writer.TryComplete();
             await Task.WhenAll(workers).ConfigureAwait(false);
             IsRunning=false;
-            try { Directory.Delete(_stageRoot,true); } catch(IOException){} catch(UnauthorizedAccessException){}
+            // A failed cleanup remains on disk, with its paths in the checkpoint.
+            // Never recursively erase another row's retained staging context.
+            try { if (!Directory.EnumerateFileSystemEntries(_stageRoot).Any()) Directory.Delete(_stageRoot); }
+            catch(IOException){} catch(UnauthorizedAccessException){}
         }
     }
     private async Task WorkerAsync(int slot)
@@ -211,7 +221,7 @@ public sealed class DownloadCoordinator : IAsyncDisposable
             {
                 if (_cancelled.ContainsKey(item.Url) || linked.IsCancellationRequested)
                 {
-                    item.Status="Interrupted";item.State="Cancelled";_changed(item);continue;
+                    item.Status="Interrupted";item.State="Cancelled";continue;
                 }
                 item.Slot="T"+slot;item.Status="Running";item.State="Starting";_changed(item);
                 // Cancellation can arrive between the previous check and CTS registration.
@@ -225,13 +235,16 @@ public sealed class DownloadCoordinator : IAsyncDisposable
                     cancelled |= _cancelled.ContainsKey(item.Url) || linked.IsCancellationRequested;
                     if (cancelled)
                     {
-                        if (result.OwnedPaths.Count>0)
-                            OwnedFiles.DeleteOwned(_options.OutputDirectory,result.OwnedPaths);
-                        item.Status="Interrupted";item.State="Cancelled";
+                        if (item.CleanupError.Length==0)
+                        {
+                            DownloadCleanup.Retry(item);
+                            item.Status="Interrupted";item.State="Cancelled";
+                        }
                     }
-                    else if (result.Success)
+                    else if (result.Success && item.CleanupError.Length==0 && !item.PendingRemoval)
                     {
                         item.Path=result.Path;item.OwnedPaths=result.OwnedPaths.ToList();
+                        item.CleanupPaths=[];
                         item.OutputRoot=_options.OutputDirectory;
                         item.Progress=100;item.Speed="";item.ETA="";
                         item.Status="Completed";item.State="Done";
@@ -240,27 +253,31 @@ public sealed class DownloadCoordinator : IAsyncDisposable
                         Interlocked.Increment(ref _completed);
                         WriteResult("success",$"{item.Url} | {item.Path}");
                     }
-                    else
+                    else if (item.CleanupError.Length==0)
                     {
                         item.Status="Failed";item.State="Failed";
                         item.RawError=result.Error;item.Speed="";item.ETA="";
                         WriteResult("error",$"{item.Url} | {result.Error}");
                     }
                 }
-                _changed(item);
             }
             catch (OperationCanceledException)
             {
-                item.Status="Interrupted";item.State="Cancelled";_changed(item);
+                item.Status="Interrupted";item.State="Cancelled";
             }
             catch(Exception ex)
             {
-                item.Status="Failed";item.State="Failed";item.RawError=ex.Message;_changed(item);
+                if (item.CleanupPaths.Count>0 || item.CleanupError.Length>0)
+                    DownloadCleanup.Failed(item,ex.Message);
+                else {item.Status="Failed";item.State="Failed";item.RawError=ex.Message;}
                 WriteResult("error",$"{item.Url} | {ex.Message}");
                 _log($"ERROR {item.Url}: {ex.Message}");
             }
             finally
             {
+                if (item.CleanupError.Length>0) DownloadCleanup.Failed(item,item.CleanupError);
+                item.AttemptFinished=true;
+                _changed(item);
                 _itemCancels.TryRemove(item.Url,out _);
                 Interlocked.Decrement(ref _outstanding);
             }
@@ -322,7 +339,7 @@ public sealed class DownloadCoordinator : IAsyncDisposable
     };
     private IEnumerable<string> YtDlpArgs(string url,string stage,string quality)
     {
-        string[] standard=["--encoding","utf-8","--newline","--progress","--no-color",
+        string[] standard=["--ignore-config","--encoding","utf-8","--newline","--progress","--no-color",
             "--impersonate","chrome","-N",_options.FragmentCount.ToString(CultureInfo.InvariantCulture),
             "-o",Path.Combine(stage,_options.FilenameTemplate),
             "--progress-template","download:__VD_PROGRESS__|%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s|%(progress.downloaded_bytes)s|%(progress.total_bytes,progress.total_bytes_estimate)s|%(info.id)s:%(info.format_id)s",
@@ -358,6 +375,8 @@ public sealed class DownloadCoordinator : IAsyncDisposable
     {
         string stage=Path.Combine(_stageRoot,Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(stage);
+        item.RunDir=_stageRoot;item.StageDir=stage;item.OutputRoot=_options.OutputDirectory;
+        _changed(item);
         string mediaPath="";
         var streamed=new Dictionary<string,long>(StringComparer.Ordinal);
         long transferred=0;
@@ -424,11 +443,13 @@ public sealed class DownloadCoordinator : IAsyncDisposable
                         if (string.IsNullOrWhiteSpace(mediaPath))
                             return new DownloadResult(false,false,"",[],
                                 "yt-dlp finished without reporting a downloaded media file.",transferred);
-                        var published=OwnedFiles.Publish(stage,_options.OutputDirectory,mediaPath);
+                        // Publication updates the row's manifest after each move,
+                        // so even a failed rollback retains exact cleanup paths.
+                        var published=OwnedFiles.Publish(stage,_options.OutputDirectory,mediaPath,
+                            paths=>item.CleanupPaths=paths.ToList());
                         if (ct.IsCancellationRequested || _cancelled.ContainsKey(item.Url))
                         {
-                            OwnedFiles.DeleteOwned(_options.OutputDirectory,published.OwnedPaths);
-                            return new DownloadResult(false,true,"",[],"",transferred);
+                            return new DownloadResult(false,true,published.Path,published.OwnedPaths,"",transferred);
                         }
                         return new DownloadResult(true,false,published.Path,published.OwnedPaths,"",transferred);
                     }
@@ -454,8 +475,12 @@ public sealed class DownloadCoordinator : IAsyncDisposable
         finally
         {
             // Staged partial files never touch the destination folder.
-            try { if (Directory.Exists(stage)) Directory.Delete(stage,true); }
-            catch(IOException e) { _log("Could not remove partial staging files: "+e.Message); }
+            try { OwnedFiles.DeleteStage(stage,_stageRoot);item.StageDir=""; }
+            catch(Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+                DownloadCleanup.Failed(item,"Could not remove partial staging files: "+e.Message);
+                _log(item.CleanupError);
+            }
         }
     }
 
