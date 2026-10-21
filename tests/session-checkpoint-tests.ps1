@@ -78,6 +78,15 @@ try {
     $legacyRows = @(Get-VdRestoredQueue -Session @{Queue=@(@{Url='https://example.com/legacy';Status='Completed';Path='C:\old-output\done.mp4'});Settings=@{Output='C:\old-output'}})
     Assert-Vd ($legacyRows[0].OutputRoot -eq 'C:\old-output') 'Legacy output root must come from the saved session, not current UI'
 
+    $partialPublish = @{Queue=@(@{Url='https://example.com/partial-publish';Status='Interrupted';
+        PendingRemoval=$false;CleanupPaths=@('C:\original-output\part.mp4');StageDir='';RunDir='C:\run'});Settings=@{Output='C:\original-output'}}
+    $partialRows=@(Get-VdRestoredQueue -Session $partialPublish)
+    Assert-Vd ($partialRows[0].PendingRemoval -and @(Get-VdResumeUrls -Queue $partialRows).Count -eq 0) 'A manifest saved during native publication must require cleanup before another attempt'
+    $deferred=@{Queue=@(@{Url='https://example.com/readded';Status='Queued';DeferredToNextStart=$true});Settings=@{}}
+    [IO.File]::WriteAllText($events,'{"Kind":"Result","Url":"https://example.com/readded","Success":true,"Path":"C:\\deleted.mp4"}')
+    $deferred=Merge-VdSessionResultEvents -Session $deferred -EventsPath $events
+    Assert-Vd ($deferred.Queue[0].Status -eq 'Queued' -and -not $deferred.Queue[0].Path) 'Previous Result must not complete a deferred new attempt'
+
     # URL paths are case-sensitive: a result must not complete the wrong row.
     $caseSession = [ordered]@{
         Queue = @(

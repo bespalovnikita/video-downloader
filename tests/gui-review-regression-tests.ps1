@@ -176,11 +176,14 @@ try {
  $script:sessionSuccess=1
  $script:failDelete=$true
  Remove-SelectedQueueEntries @($row)
- Assert ($script:queue.Count -eq 1 -and $row.Status -eq 'Interrupted' -and $row.CleanupPaths -contains $file) 'Failed legacy Path removal must retain its exact cleanup path'
+ Assert ($script:queue.Count -eq 1 -and $row.Status -eq 'Interrupted' -and $row.CleanupPaths.Count -eq 0 -and [IO.File]::Exists($file)) 'Legacy Path alone must never authorize deletion'
  $script:failDelete=$false
  $OutputBox.Text=Join-Path $testRoot 'new-output'
  Remove-SelectedQueueEntries @($row)
- Assert ($script:queue.Count -eq 0 -and -not [IO.File]::Exists($file)) 'Legacy removal retry must not forget the file after its status changed'
+ Assert ($script:queue.Count -eq 1 -and [IO.File]::Exists($file)) 'Retry must still refuse unowned legacy files after status changes'
+ [IO.File]::Delete($file)
+ Remove-SelectedQueueEntries @($row)
+ Assert ($script:queue.Count -eq 0) 'A legacy row can be removed after its file was deleted manually'
  Assert ($script:sessionSuccess -eq 0 -and $script:sessionTotal -eq 0) 'Removal retry must remove the original terminal outcome from session counters'
 
  Reset-State
@@ -217,8 +220,8 @@ try {
  Assert ($script:queue.Count -eq 1 -and [VdGuiReview.MessageBox]::WarningCount -gt 0) 'An unvalidated legacy engine must not lose its active row without cancellation'
 
  foreach ($control in @('QualityCombo','CodecCombo','ContainerCombo')) { Set-Variable -Name $control -Value ([pscustomobject]@{SelectedItem=''}) -Scope Script }
- foreach ($control in @('AudioOnlyCheck','WriteSubsCheck','AutoSubsCheck','EmbedSubsCheck','EmbedThumbnailCheck','EmbedMetadataCheck','EmbedChaptersCheck')) { Set-Variable -Name $control -Value ([pscustomobject]@{IsChecked=$false}) -Scope Script }
- function Profile-State { @($QualityCombo.SelectedItem,$CodecCombo.SelectedItem,$ContainerCombo.SelectedItem,$AudioOnlyCheck.IsChecked,$WriteSubsCheck.IsChecked,$AutoSubsCheck.IsChecked,$EmbedSubsCheck.IsChecked,$EmbedThumbnailCheck.IsChecked,$EmbedMetadataCheck.IsChecked,$EmbedChaptersCheck.IsChecked) | ConvertTo-Json -Compress }
+ foreach ($control in @('AudioOnlyCheck','ArchiveCheck','WriteSubsCheck','AutoSubsCheck','EmbedSubsCheck','EmbedThumbnailCheck','EmbedMetadataCheck','EmbedChaptersCheck')) { Set-Variable -Name $control -Value ([pscustomobject]@{IsChecked=$false}) -Scope Script }
+ function Profile-State { @($QualityCombo.SelectedItem,$CodecCombo.SelectedItem,$ContainerCombo.SelectedItem,$AudioOnlyCheck.IsChecked,$WriteSubsCheck.IsChecked,$AutoSubsCheck.IsChecked,$EmbedSubsCheck.IsChecked,$EmbedThumbnailCheck.IsChecked,$EmbedMetadataCheck.IsChecked,$EmbedChaptersCheck.IsChecked,$ArchiveCheck.IsChecked) | ConvertTo-Json -Compress }
  $profiles=@('Universal','4K archive','MP4 compatibility','Music MP3','Subtitles archive')
  $expected=@{}
  foreach ($name in $profiles) { Apply-Profile Universal; Apply-Profile $name; $expected[$name]=Profile-State }
@@ -237,6 +240,10 @@ try {
  Assert ((Profile-State) -eq $beforeUnknown) 'An unknown profile must not reset the selected settings'
  Apply-Profile 'Subtitles archive'; Apply-Profile Universal
  Assert (-not $AutoSubsCheck.IsChecked -and -not $WriteSubsCheck.IsChecked -and -not $EmbedSubsCheck.IsChecked) 'Universal must turn off subtitle options inherited from a subtitle profile'
+ Apply-Profile 'Music MP3'; Apply-Profile '4K archive'
+ Assert (-not $AudioOnlyCheck.IsChecked -and $ArchiveCheck.IsChecked -and $QualityCombo.SelectedItem -eq '2160') '4K profile must select video and dated archive after MP3'
+ Apply-Profile Universal
+ Assert (-not $ArchiveCheck.IsChecked) 'Universal must reset dated archive mode'
 
  # Exercise a retry whose process fails to launch. Replace the process boundary
  # with a deterministic failure, and place its temporary run under this harness.

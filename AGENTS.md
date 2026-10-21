@@ -39,6 +39,15 @@ Video Downloader — Windows-приложение с основной реали
   queued/running cancellation, late live Add, pause/resume.
 - При отмене URL используй tombstone и синхронизацию конечного результата:
   публикация и удаление файлов должны быть согласованы, без оставшихся media.
+- `DownloadItem` хранит совместимые с PowerShell `PendingRemoval`, `CleanupError`,
+  `CleanupPaths`, `StageDir`, `RunDir`, `AttemptFinished`, `DeferredToNextStart`.
+  Не удаляй активную строку до подтверждения работника. Ошибка очистки и
+  частичный манифест переживают checkpoint, Clear Queue и переход между runtimes;
+  Start/Retry исключают такие строки. Полный список опубликованных файлов
+  сохраняется даже при неудачном rollback; меняй списки атомарной заменой,
+  чтобы сериализация GUI не гонялась с изменением коллекции работником.
+- Старый Result не применяется к `DeferredToNextStart`. Сохраняй контекст
+  очистки и исходный `OutputRoot` также при чтении legacy Result-событий.
 - Успех требует валидного `after_move:__VD_FILE__` media path из staging;
   код 0 без медиа не должен публиковать sidecars или пополнять историю.
 - Счётчики transfer учитывают сброс при retry; постоянная HTTP/auth ошибка
@@ -104,6 +113,17 @@ URL должен попадать в preview-prefetch queue сразу посл�
 - cache key: SHA-256 URL.
 
 Fetch/cache логика находится в <code>lib/VideoDownloader.PreviewCache.psm1</code>.
+
+В обоих runtimes общий deadline запроса — 30 секунд, включая дочерний процесс,
+заголовки и тело изображения. Для миниатюры дополнительно действуют 12 секунд
+и предел 2 МБ. Таймаут метаданных завершает дочерний процесс и освобождает
+единственного работника; ошибка изображения сохраняет текстовые метаданные.
+Используй отдельный token для всего чтения тела при ResponseHeadersRead.
+
+Профили задают полный набор одинаковых параметров в обеих версиях: качество,
+кодек, контейнер, AudioOnly, Archive, субтитры и встраивание данных. Только
+«Архив 4K» включает Archive; остальные профили сбрасывают его. Пути, cookies,
+скорость и число работников не меняются при выборе профиля.
 
 ### 3. Queue selectable во время download session
 
@@ -262,6 +282,8 @@ pwsh -File .\tests\smoke.ps1
 pwsh -STA -File .\tests\tray-lifecycle-tests.ps1
 pwsh -File .\tests\session-checkpoint-tests.ps1
 pwsh -File .\tests\download-history-tests.ps1
+pwsh -File .\tests\cross-runtime-contract-tests.ps1
+pwsh -File .\tests\preview-deadline-tests.ps1
 pwsh -File .\tests\engine-review-regression-tests.ps1
 pwsh -File .\tests\gui-review-regression-tests.ps1
 pwsh -File .\tests\live-queue-tests.ps1
