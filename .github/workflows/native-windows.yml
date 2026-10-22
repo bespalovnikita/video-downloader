@@ -118,7 +118,7 @@ jobs:
           if (Get-ChildItem dist/release -Recurse -File -Include pwsh.exe,*.ps1,*.psm1) {
             throw "Refusing release with PowerShell runtime/scripts"
           }
-          foreach ($required in @('VideoDownloader.exe','yt-dlp.exe','ui/MainWindow.xaml','ui/DuplicateDownloadDialog.xaml')) {
+          foreach ($required in @('VideoDownloader.exe','yt-dlp.exe','ui/MainWindow.xaml','ui/DuplicateDownloadDialog.xaml','ui/SubscriptionsWindow.xaml')) {
             if (-not (Test-Path -LiteralPath (Join-Path dist/release $required) -PathType Leaf)) {
               throw "Missing required release file: $required"
             }

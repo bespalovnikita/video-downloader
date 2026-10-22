@@ -53,6 +53,9 @@ internal static class NativeUiSelfTest
             Require(window.Resources.Contains("QueueStatusTextStyle"),"Queue state colors must be present");
             Require(window.Resources.Contains("DownloadStatusTextStyle"),"Download state colors must be present");
 
+            Stage("testing manual subscriptions window and inbox queue actions");
+            controller.TestSubscriptionsUi(root);
+
             Stage("testing Russian profile labels and legacy ID mapping");
             var profile=(ComboBox)window.FindName("ProfileCombo")!;
             Require(profile.Items.Count==5 &&
@@ -149,6 +152,16 @@ internal static class NativeUiSelfTest
             try
             {
                 cancelSession.Add(pending);sessionField.SetValue(controller,cancelSession);
+                var queueSubscriptions=typeof(NativeWindow).GetMethod("QueueSubscriptionUrls",
+                    System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance)!;
+                const string deferredUrl="https://example.com/subscription-next-start";
+                var accepted=(IReadOnlyList<string>)queueSubscriptions.Invoke(controller,new object[]{new[]{deferredUrl}})!;
+                var deferred=((System.Collections.ObjectModel.ObservableCollection<DownloadItem>)queue.ItemsSource)
+                    .Single(row=>row.Url==deferredUrl);
+                Require(accepted.SequenceEqual(new[]{deferredUrl}) && deferred.DeferredToNextStart &&
+                    deferred.Status=="Queued" && cancelSession.Outstanding==1,
+                    "Subscription import must stay queued until Start without entering the active coordinator");
+                ((System.Collections.ObjectModel.ObservableCollection<DownloadItem>)queue.ItemsSource).Remove(deferred);
                 queue.SelectedItem=pending;remove.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                 Require(queue.Items.Contains(pending) && pending.PendingRemoval && !pending.AttemptFinished,
                     "Remove must retain the row while cancellation is unacknowledged");
