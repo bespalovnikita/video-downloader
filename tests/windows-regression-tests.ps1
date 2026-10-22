@@ -68,7 +68,7 @@ try {
     # Exercise actual GUI functions without starting the GUI or touching user state.
     $tokens=$null; $errors=$null
     $ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'ytdl-manager-gui.ps1'),[ref]$tokens,[ref]$errors)
-    foreach ($name in @('Format-Bytes','Find-Download','Set-Download','Find-QueueItem','Set-QueueState','Set-QueueFields','Set-RowProgress','Update-TransferBytes','Tail-Events','Reindex-Queue')) {
+    foreach ($name in @('Format-Bytes','Find-Download','Set-Download','Find-QueueItem','Set-QueueState','Set-QueueFields','Set-RowProgress','Update-TransferBytes','Tail-Events','Reindex-Queue','Register-SubscriptionSuccess')) {
         $node=$ast.Find({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name},$true)
         . ([scriptblock]::Create($node.Extent.Text))
     }
@@ -82,6 +82,7 @@ try {
     $script:failedUrls=[Collections.Generic.List[string]]::new()
     $script:speeds=@{}; $script:lastFiles=@{}
     $script:sessionSuccess=0; $script:sessionFailed=0; $script:sessionBytes=0; $script:sessionTotal=2
+    $script:subscriptionsDirectory=$dir
     $script:transferredByUrl=[Collections.Generic.Dictionary[string,long]]::new([StringComparer]::Ordinal)
     $OverallProgress=[pscustomobject]@{Value=0}
     $u='https://example.com/second'
@@ -101,6 +102,7 @@ try {
     [IO.File]::AppendAllText($script:runEvents,$result.Substring(10)+"`n")
     Tail-Events
     Assert ($script:sessionSuccess -eq 1 -and $script:queue[0].Status -eq 'Completed') 'Partial Result must eventually complete the queue item'
+    Assert (-not (Test-Path (Join-Path $dir 'subscriptions.json'))) 'A successful ordinary download must not create unconfigured subscriptions'
     Assert ($script:sessionBytes -eq 1048576) 'Completion must not count output filesize a second time'
     [void]$script:failedUrls.Add($u); $script:queue.Clear(); Reindex-Queue
     Assert ($script:failedUrls.Count -eq 0) 'Removed failures must leave retry candidates'

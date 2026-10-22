@@ -399,6 +399,7 @@
 
                     <WrapPanel Grid.Row="2" Margin="0,0,0,8">
                         <Button x:Name="OpenListButton" Content="Open list"/>
+                        <Button x:Name="SubscriptionsButton" Content="Подписки" ToolTip="Ручная проверка каналов и плейлистов, новые материалы и исходный набор"/>
                         <Button x:Name="RemoveQueueButton" Content="Remove"/>
                         <Button x:Name="ClearQueueButton" Content="Clear"/>
                         <Button x:Name="MoveUpButton" Content="↑"/>

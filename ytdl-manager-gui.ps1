@@ -52,11 +52,13 @@ $liveQueueModule = Join-Path $root "lib\VideoDownloader.LiveQueue.psm1"
 $cancelModule = Join-Path $root "lib\VideoDownloader.Cancellation.psm1"
 $trayStatusModule = Join-Path $root "lib\VideoDownloader.TrayStatus.psm1"
 $profileModule = Join-Path $root "lib\VideoDownloader.Profiles.psm1"
+$subscriptionsModule = Join-Path $root "lib\VideoDownloader.Subscriptions.psm1"
+$subscriptionUiModule = Join-Path $root "lib\VideoDownloader.SubscriptionUi.psm1"
 $duplicateDialogXaml = Join-Path $root "ui\DuplicateDownloadDialog.xaml"
 $lifecycleModule = Join-Path $root "lib\VideoDownloader.WindowLifecycle.psm1"
 $xamlPath = Join-Path $root "ui\MainWindow.xaml"
 
-foreach ($required in @($engine,$ytDlp,$coreModule,$previewCacheModule,$lifecycleModule,$sessionModule,$historyModule,$liveQueueModule,$cancelModule,$trayStatusModule,$profileModule,$duplicateDialogXaml,$xamlPath)) {
+foreach ($required in @($engine,$ytDlp,$coreModule,$previewCacheModule,$lifecycleModule,$sessionModule,$historyModule,$liveQueueModule,$cancelModule,$trayStatusModule,$profileModule,$subscriptionsModule,$subscriptionUiModule,$duplicateDialogXaml,$xamlPath,(Join-Path $root 'ui/SubscriptionsWindow.xaml'))) {
     if (-not (Test-Path $required)) { throw "Missing required file: $required" }
 }
 Import-Module $coreModule -Force
@@ -68,6 +70,8 @@ Import-Module $liveQueueModule -Force
 Import-Module $cancelModule -Force
 Import-Module $trayStatusModule -Force
 Import-Module $profileModule -Force
+Import-Module $subscriptionsModule -Force
+Import-Module $subscriptionUiModule -Force
 
 function Remove-StaleGuiTempDirs {
     $cutoff = (Get-Date).AddHours(-24)
@@ -113,7 +117,7 @@ $controlNames = @(
     "EmbedChaptersCheck","ArchiveCheck","SponsorCheck","AudioOnlyCheck","OutputBox","PickOutputButton",
     "CookiesBox","PickCookiesButton","DependencyStatus","RefreshDepsButton","InstallFfmpegButton",
     "UpdateYtDlpButton","RegisterProtocolButton","OpenAppSettingsButton","SessionStats","OverallProgress","TrayButton","PauseButton",
-    "StopButton","StartButton"
+    "StopButton","StartButton","SubscriptionsButton"
 )
 foreach ($name in $controlNames) {
     Set-Variable -Name $name -Value $window.FindName($name) -Scope Script
@@ -173,6 +177,8 @@ $script:recoveredEventCursor = @{ Offset=0L }
 $script:lastSessionError = ""
 $script:checkpointReadOnly = $false
 $script:lastAddedCount = 0
+$script:subscriptionsDirectory = Split-Path -Parent $script:sessionPath
+$script:subscriptionSuccesses = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
 
 function Log-Line([string]$Text) {
     if ([string]::IsNullOrWhiteSpace($Text)) { return }
@@ -588,6 +594,48 @@ function Add-Urls([string[]]$Urls,[switch]$FromClipboard,[switch]$ShowPreview) {
             Start-Preview ([string]$newSelection.Url)
         }
     }
+}
+
+function Add-SubscriptionUrls([string[]]$Urls) {
+    if ($script:checkpointReadOnly) { throw 'Очередь недоступна для сохранения. Сначала устраните ошибку восстановления.' }
+    $seen=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    $requested=[Collections.Generic.List[string]]::new()
+    foreach($url in $Urls) { if ((Is-ValidUrl $url) -and $seen.Add($url)) { $requested.Add($url) } }
+    $newUrls=@($requested | Where-Object { -not (Find-QueueItem $_) })
+    $plan=Confirm-DuplicateDownloads -Urls $newUrls
+    if ($plan.Cancelled) { return @() }
+    # Keep subscription jobs out of incoming.txt and the recovered engine.
+    # Start remains the user's explicit action, even while other jobs run.
+    $deferred=($script:proc -and -not $script:proc.HasExited) -or
+        (Test-VdSessionEngineAlive -Engine $script:recoveredEngine)
+    foreach($url in @($plan.Selected)) {
+        if (Find-QueueItem $url) { continue }
+        $script:queue.Add([pscustomobject]@{
+            Order=$script:queue.Count+1;Url=$url;State='Queued';Status='Queued';Path='';OwnedPaths=@()
+            OutputRoot='';RunDir='';StageDir='';CleanupPaths=@();CleanupError='';PendingRemoval=$false
+            AttemptFinished=$false;DeferredToNextStart=[bool]$deferred;AttachedToRecovered=$false
+            Progress=0.0;Speed='';Downloaded='';ETA=''
+        })
+        Queue-PreviewPrefetch -Url $url
+    }
+    Reindex-Queue
+    if ($script:lastSessionError) { throw 'Не удалось сохранить очередь. Материалы подписки доступны для повторного добавления.' }
+    $accepted=[Collections.Generic.List[string]]::new()
+    foreach($url in $requested) {
+        $row=Find-QueueItem $url
+        if ($row -and $row.Status -ne 'Completed' -and -not $row.PendingRemoval -and -not $row.CleanupError) { $accepted.Add($url) }
+    }
+    $ClipboardHint.Text="Из подписок принято $($accepted.Count). Загрузка начнётся по кнопке Start."
+    return $accepted.ToArray()
+}
+
+function Register-SubscriptionSuccess([string]$Url) {
+    if (-not $script:subscriptionsDirectory -or -not [IO.File]::Exists((Join-Path $script:subscriptionsDirectory 'subscriptions.json'))) { return }
+    if (-not $script:subscriptionSuccesses.Add($Url)) { return }
+    try {
+        Set-VdSubscriptionSuccessful -Directory $script:subscriptionsDirectory -Url $Url | Out-Null
+        Refresh-VdSubscriptionsWindow -DataDirectory $script:subscriptionsDirectory
+    } catch { Log-Line ('Не удалось обновить подписки после успешной загрузки: '+$_.Exception.Message) }
 }
 
 function Add-FileToQueue([string]$Path) {
@@ -1045,6 +1093,9 @@ function Tail-Events {
             Set-RowProgress -Url ([string]$event.Url) -Percent $(if ($event.Success) {100} else {0}) -Speed "" -Downloaded "" -ETA ""
 
             if ([bool]$event.Success) {
+                if ($event.Success -eq $true -and -not $event.Cancelled -and -not $event.CleanupError) {
+                    Register-SubscriptionSuccess ([string]$event.Url)
+                }
                 $script:sessionSuccess++
                 if ($queueItem) { Set-QueueFields $queueItem @{ CountedOutcome='Completed' } }
                 $path = [string]$event.Path
@@ -1969,6 +2020,14 @@ function Open-AppSettingsFolder {
 
 $OpenOutputDirectoryButton.Add_Click({ Open-ConfiguredOutputFolder })
 $OpenAppSettingsButton.Add_Click({ Open-AppSettingsFolder })
+$SubscriptionsButton.Add_Click({
+    try {
+        Show-VdSubscriptionsWindow -Owner $window -Root $root -DataDirectory $script:subscriptionsDirectory -YtDlpPath $ytDlp `
+            -CookiePathScript { [string]$CookiesBox.Text } -QueueUrls { param($urls) Add-SubscriptionUrls -Urls $urls }
+    } catch {
+        [System.Windows.MessageBox]::Show($window,$_.Exception.Message,'Подписки',[System.Windows.MessageBoxButton]::OK,[System.Windows.MessageBoxImage]::Warning) | Out-Null
+    }
+})
 
 $RetryFailedButton.Add_Click({
     $items = @($script:queue | Where-Object { $_.Status -eq "Failed" } | ForEach-Object { [string]$_.Url })
@@ -2214,6 +2273,7 @@ $timer.Start()
 $clipboardTimer.Start()
 try { Start-VdGuiMessageLoop -Window $window }
 finally {
+    Close-VdSubscriptionsWindow
     if ($script:ipcServer) { $script:ipcServer.Dispose() }
     if ($script:guiMutex) {
         try { $script:guiMutex.ReleaseMutex() } catch {}

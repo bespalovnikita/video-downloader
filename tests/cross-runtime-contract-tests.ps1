@@ -1,7 +1,7 @@
 #requires -Version 7.4
 $ErrorActionPreference='Stop'
 $root=Split-Path -Parent $PSScriptRoot
-foreach ($module in @('Session','DownloadHistory','Cancellation','Profiles')) {
+foreach ($module in @('Session','DownloadHistory','Cancellation','Profiles','Subscriptions')) {
     Import-Module (Join-Path $root "lib/VideoDownloader.$module.psm1") -Force
 }
 function Assert([bool]$Value,[string]$Message) {if(-not $Value){throw $Message}}
@@ -22,7 +22,7 @@ namespace System.Windows {
  public class Dispatcher { public bool CheckAccess()=>true; public object BeginInvoke(Action action){action();return new();} }
 }
 '@ | Set-Content -LiteralPath $platform
-    $sources=@('Models','Persistence','ProfileCatalog','OwnedFiles','DownloadCleanup') | ForEach-Object {Join-Path $root "native/$_.cs"}
+    $sources=@('Models','Persistence','ProfileCatalog','OwnedFiles','DownloadCleanup','SubscriptionModels','SubscriptionStore') | ForEach-Object {Join-Path $root "native/$_.cs"}
     Add-Type -Path (@($platform)+$sources) -CompilerOptions '/nullable:enable'
     $native=[VideoDownloader.Native.AppPersistence]::new((Join-Path $temp 'profile'))
     $seed='{"Version":1,"Url":"https://example.com/старый"}'
@@ -77,5 +77,53 @@ namespace System.Windows {
             Assert ((Get-Variable ($field+'Check') -ValueOnly).IsChecked -eq $options.$field) "Profile $field differs across runtimes: $previous -> $target"
         }
     }}
-    Write-Host 'Cross-runtime history, checkpoint, cleanup and all profile transitions: PASS'
+    # Same data must be editable from both runtimes, including success
+    # provenance, one-time notices, and a removed source's retained provenance.
+    $subscriptionDir=Join-Path $temp 'subscriptions-profile'
+    $sourceA=Add-VdSubscription -Directory $subscriptionDir -Url 'https://example.org/channel?a=1' -DownloadExisting $false
+    $mediaUrl='https://media.example.org/Video?id=Exact'
+    Apply-VdSubscriptionScan -Directory $subscriptionDir -Id $sourceA.Id -Scan @{
+        Title='Первый источник';FeedUrl='';Warning='';Items=@(@{Url=$mediaUrl;Title='Материал'})
+    } -SuccessfulUrls @() | Out-Null
+    $subscriptionStore=[VideoDownloader.Native.SubscriptionStore]::new($subscriptionDir)
+    Assert ($subscriptionStore.Read().Items[0].State -eq 'Baseline') 'Native must preserve a PowerShell initial baseline'
+    $sourceB=$subscriptionStore.Add('https://example.org/playlist?list=other',$true,'')
+    $scanItems=[Collections.Generic.List[VideoDownloader.Native.DiscoveredMedia]]::new()
+    $scanItems.Add([VideoDownloader.Native.DiscoveredMedia]::new($mediaUrl,'Материал'))
+    $scan=[VideoDownloader.Native.SubscriptionScan]::new('Второй источник',$scanItems,'','')
+    $subscriptionStore.ApplyScan($sourceB.Id,$scan,[string[]]@()) | Out-Null
+    $subscriptionStore.MarkQueued($sourceB.Id,[string[]]@($mediaUrl))
+    $beforeSuccess=Read-VdSubscriptions -Directory $subscriptionDir
+    Assert (@($beforeSuccess.Items|Where-Object State -eq 'Processed').Count -eq 0) 'Neither baseline nor queue acceptance may imply successful processing'
+    Set-VdSubscriptionSuccessful -Directory $subscriptionDir -Url $mediaUrl | Out-Null
+    Assert (@($subscriptionStore.Read().Items | Where-Object SubscriptionId -eq $sourceB.Id)[0].SuccessAttributed) 'PowerShell must persist attributable queued success for native'
+    $duplicates=@((Read-VdSubscriptions -Directory $subscriptionDir).Items|Where-Object State -eq 'AlreadyProcessed')
+    Assert ($duplicates.Count -eq 1 -and $duplicates[0].SubscriptionId -eq $sourceA.Id -and $duplicates[0].DuplicateSubscriptionId -eq $sourceB.Id -and -not $duplicates[0].DuplicateNotified) 'PS success must preserve exact cross-source origin for native'
+    $nativeDuplicates=@($subscriptionStore.Read().Items|Where-Object State -eq 'AlreadyProcessed')
+    $subscriptionStore.AcknowledgeDuplicates([VideoDownloader.Native.SubscriptionItem[]]$nativeDuplicates)
+    $subscriptionStore.Remove($sourceB.Id)
+    $afterRemove=Read-VdSubscriptions -Directory $subscriptionDir
+    Assert ($afterRemove.Subscriptions.Count -eq 1 -and $afterRemove.Items[0].DuplicateNotified -and $afterRemove.Items[0].DuplicateSubscriptionId -eq $sourceB.Id) 'Acknowledgement and provenance must survive removing the other subscription'
+    Sync-VdSubscriptionsSuccessful -Directory $subscriptionDir -SuccessfulUrls @($mediaUrl) | Out-Null
+    Assert ($subscriptionStore.Read().Items[0].DuplicateNotified) 'Reconciliation must never reset an acknowledged duplicate notice'
+
+    # A history-only result must never turn into an alleged subscription origin
+    # on restart or when the other runtime discovers that exact URL later.
+    $globalOnly='https://media.example.org/global-only'
+    $globalSource=Add-VdSubscription -Directory $subscriptionDir -Url 'https://example.org/global-source'
+    $globalScan=@{Title='Глобальный успех';FeedUrl='';Warning='';Items=@(@{Url=$globalOnly;Title='Материал'})}
+    Apply-VdSubscriptionScan -Directory $subscriptionDir -Id $globalSource.Id -Scan $globalScan -SuccessfulUrls @($globalOnly) | Out-Null
+    $reopened=[VideoDownloader.Native.SubscriptionStore]::new($subscriptionDir)
+    $laterSource=$reopened.Add('https://example.org/later-source',$false,'')
+    $globalItems=[Collections.Generic.List[VideoDownloader.Native.DiscoveredMedia]]::new()
+    $globalItems.Add([VideoDownloader.Native.DiscoveredMedia]::new($globalOnly,'Материал'))
+    $reopened.ApplyScan($laterSource.Id,[VideoDownloader.Native.SubscriptionScan]::new('Позже',$globalItems,'',''),[string[]]@()) | Out-Null
+    $reopened.MarkSuccessful($globalOnly)
+    $globalRows=@((Read-VdSubscriptions -Directory $subscriptionDir).Items | Where-Object Url -ceq $globalOnly)
+    Assert ($globalRows.Count -eq 2 -and @($globalRows | Where-Object {$_.State -ne 'Processed' -or $_.SuccessAttributed -or $_.DuplicateSubscriptionId -or $_.DuplicateNotified}).Count -eq 0) 'PS global-only success must remain unattributed after native discovery and success replay'
+    $lastSource=Add-VdSubscription -Directory $subscriptionDir -Url 'https://example.org/last-source'
+    Apply-VdSubscriptionScan -Directory $subscriptionDir -Id $lastSource.Id -Scan $globalScan | Out-Null
+    $globalRows=@($reopened.Read().Items | Where-Object Url -ceq $globalOnly)
+    Assert ($globalRows.Count -eq 3 -and @($globalRows | Where-Object {$_.State -ne 'Processed' -or $_.SuccessAttributed -or $_.DuplicateSubscriptionId}).Count -eq 0) 'Native persisted global-only result must also remain unattributed when PowerShell adds another subscription'
+    Write-Host 'Cross-runtime history, checkpoint, cleanup, subscriptions and all profile transitions: PASS'
 } finally {Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue}

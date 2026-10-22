@@ -124,6 +124,7 @@ public sealed partial class NativeWindow
             if(picker.ShowDialog()==Forms.DialogResult.OK)AddUrls(ReadInputFile(picker.FileName));
         };
         F<Button>("RemoveQueueButton").Click+=(_,_)=>RemoveRows(Q.SelectedItems.Cast<DownloadItem>().ToArray());
+        F<Button>("SubscriptionsButton").Click+=(_,_)=>OpenSubscriptions();
         F<Button>("ClearQueueButton").Click+=(_,_)=>
         {
             if (_session?.IsRunning==true)return;
@@ -269,6 +270,7 @@ public sealed partial class NativeWindow
         // only after the final ownership/status checkpoint has been written.
         e.Cancel=true;
         _closing=true;
+        DisposeSubscriptions();
         _stopping=true;
         _tick.Stop();_clipboardTick.Stop();
         _window.IsEnabled=false;
@@ -289,6 +291,7 @@ public sealed partial class NativeWindow
     public void Dispose()
     {
         if(_disposed)return;
+        DisposeSubscriptions();
         _disposed=true;
         _tick.Stop();_clipboardTick.Stop();
         _session?.Stop();

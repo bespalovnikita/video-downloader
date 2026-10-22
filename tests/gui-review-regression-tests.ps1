@@ -35,10 +35,10 @@ $ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'ytdl-m
 Assert ($parseErrors.Count -eq 0) 'GUI syntax failed'
 foreach ($name in @(
  'Format-Bytes','Is-ValidUrl','Add-Urls','Add-FileToQueue','Find-QueueItem','Find-Download','Set-Download',
- 'Set-QueueState','Set-QueueFields','Set-RowProgress','Update-TransferBytes','Tail-Events','Reindex-Queue',
+ 'Set-QueueState','Set-QueueFields','Set-RowProgress','Update-TransferBytes','Tail-Events','Reindex-Queue','Register-SubscriptionSuccess',
  'Get-QueueEngineContext','Test-GuiEngineAlive','Show-QueueCleanupFailure','Remove-QueueRowFiles','Remove-QueueRow',
  'Complete-EngineQueue','Clear-QueueEntries','Remove-SelectedQueueEntries','Sync-RecoveredEngine','Initialize-RecoveredEngine',
- 'Clean-Temp','Get-SessionSnapshot','Apply-Profile'
+ 'Clean-Temp','Get-SessionSnapshot','Apply-Profile','Add-SubscriptionUrls'
 )) {
  $node=$ast.Find({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name},$true)
  Assert ($null -ne $node) "Missing production function $name"
@@ -87,6 +87,8 @@ function Reset-State {
  $items=[pscustomobject]@{}; $items|Add-Member ScriptMethod Refresh {}
  $script:QueueGrid=[pscustomobject]@{Items=$items}; $script:DownloadGrid=[pscustomobject]@{Items=$items}
  $script:QueueCount=[pscustomobject]@{Text=''}; $script:OverallProgress=[pscustomobject]@{Value=0}
+ $script:ClipboardHint=[pscustomobject]@{Text=''}
+ $script:checkpointReadOnly=$false; $script:lastSessionError=''
  $script:saveCount=0; $script:failDelete=$false
  [VdGuiReview.MessageBox]::WarningCount=0; [VdGuiReview.MessageBox]::BeforeAnswer=$null
 }
@@ -107,6 +109,20 @@ function Append-Result([object]$Row,[hashtable]$Changes=@{}) {
  [IO.File]::AppendAllText($script:runEvents,($event|ConvertTo-Json -Compress)+"`n")
 }
 try {
+ Reset-State
+ $runningRow=Add-TestRow
+ $ingressBefore=[IO.File]::ReadAllText($script:liveQueuePath)
+ $first='https://example.com/subscription/B';$second='https://example.com/subscription/b'
+ $accepted=@(Add-SubscriptionUrls @($first,$second,$first))
+ Assert ($accepted.Count -eq 2 -and $accepted[0] -ceq $first -and $accepted[1] -ceq $second) 'Subscription queue acceptance must preserve exact URLs and input order'
+ Assert ($script:queue.Count -eq 3 -and $script:queue[1].DeferredToNextStart -and $script:queue[2].DeferredToNextStart) 'Subscription jobs must wait for explicit Start even during an active session'
+ Assert ([IO.File]::ReadAllText($script:liveQueuePath) -ceq $ingressBefore -and $script:sessionTotal -eq 1 -and $script:runUrls.Count -eq 1) 'Subscription import must not enter live ingress, active URL accounting or session totals'
+ $acceptedAgain=@(Add-SubscriptionUrls @($first,$second))
+ Assert ($acceptedAgain.Count -eq 2 -and $script:queue.Count -eq 3) 'Retrying queue acceptance after a lost store acknowledgement must be idempotent'
+ $script:checkpointReadOnly=$true
+ $refused=$false;try { Add-SubscriptionUrls @('https://example.com/no-save') | Out-Null } catch {$refused=$true}
+ Assert ($refused -and $script:queue.Count -eq 3) 'Read-only checkpoint must block durable subscription queue acceptance'
+
  Reset-State
  $row=Add-TestRow
  Remove-SelectedQueueEntries @($row)

@@ -36,6 +36,16 @@ jobs:
         shell: pwsh
         run: pwsh -NoProfile -File ./tests/cross-runtime-contract-tests.ps1
 
+      - name: Manual subscriptions store and full hybrid scan
+        shell: pwsh
+        timeout-minutes: 4
+        run: pwsh -NoProfile -File ./tests/subscription-tests.ps1
+
+      - name: Subscription WPF controls and explicit queue integration
+        shell: pwsh
+        timeout-minutes: 3
+        run: pwsh -NoProfile -STA -File ./tests/subscription-ui-tests.ps1
+
       - name: Preview metadata and thumbnail deadlines
         shell: pwsh
         run: pwsh -NoProfile -File ./tests/preview-deadline-tests.ps1

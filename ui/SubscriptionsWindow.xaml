@@ -1,0 +1,172 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Подписки" Width="1200" Height="850" MinWidth="920" MinHeight="690"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
+        Background="#111318" Foreground="#EEF1F8" FontFamily="Segoe UI">
+    <Window.Resources>
+        <Style TargetType="Button">
+            <Setter Property="Background" Value="#303644"/>
+            <Setter Property="Foreground" Value="#EEF1F8"/>
+            <Setter Property="Padding" Value="12,8"/>
+            <Setter Property="Margin" Value="0,0,7,0"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Chrome" Background="{TemplateBinding Background}"
+                                Padding="{TemplateBinding Padding}" CornerRadius="6">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Chrome" Property="Background" Value="#414B60"/></Trigger>
+                            <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Chrome" Property="Background" Value="#414B60"/></Trigger>
+                            <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.45"/></Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style TargetType="TextBox">
+            <Setter Property="Background" Value="#252932"/>
+            <Setter Property="Foreground" Value="#EEF1F8"/>
+            <Setter Property="CaretBrush" Value="#EEF1F8"/>
+            <Setter Property="BorderBrush" Value="#454C5D"/>
+            <Setter Property="Padding" Value="8,6"/>
+        </Style>
+        <Style TargetType="CheckBox">
+            <Setter Property="Foreground" Value="#EEF1F8"/>
+            <Setter Property="Margin" Value="0,8,0,5"/>
+        </Style>
+        <Style TargetType="DataGrid">
+            <Setter Property="Background" Value="#1B1E25"/>
+            <Setter Property="Foreground" Value="#EEF1F8"/>
+            <Setter Property="BorderBrush" Value="#343946"/>
+            <Setter Property="RowBackground" Value="#1B1E25"/>
+            <Setter Property="AlternatingRowBackground" Value="#20242D"/>
+            <Setter Property="AlternationCount" Value="2"/>
+            <Setter Property="HorizontalGridLinesBrush" Value="#343946"/>
+            <Setter Property="GridLinesVisibility" Value="Horizontal"/>
+            <Setter Property="HeadersVisibility" Value="Column"/>
+            <Setter Property="RowHeaderWidth" Value="0"/>
+            <Setter Property="IsReadOnly" Value="True"/>
+            <Setter Property="CanUserAddRows" Value="False"/>
+            <Setter Property="CanUserDeleteRows" Value="False"/>
+            <Setter Property="CanUserResizeRows" Value="False"/>
+            <Setter Property="AutoGenerateColumns" Value="False"/>
+            <Setter Property="SelectionUnit" Value="FullRow"/>
+            <Setter Property="EnableRowVirtualization" Value="True"/>
+            <Setter Property="EnableColumnVirtualization" Value="True"/>
+        </Style>
+        <Style TargetType="DataGridColumnHeader">
+            <Setter Property="Background" Value="#111318"/>
+            <Setter Property="Foreground" Value="#B3BBCD"/>
+            <Setter Property="BorderBrush" Value="#343946"/>
+            <Setter Property="Padding" Value="8,7"/>
+        </Style>
+        <Style TargetType="DataGridCell">
+            <Setter Property="Foreground" Value="#EEF1F8"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="7,6"/>
+            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+            <Style.Triggers>
+                <Trigger Property="IsSelected" Value="True"><Setter Property="Background" Value="#35456D"/></Trigger>
+            </Style.Triggers>
+        </Style>
+        <Style TargetType="DataGridRow">
+            <Setter Property="Foreground" Value="#EEF1F8"/>
+            <Style.Triggers>
+                <Trigger Property="IsSelected" Value="True"><Setter Property="Background" Value="#35456D"/></Trigger>
+            </Style.Triggers>
+        </Style>
+        <Style TargetType="ToolTip">
+            <Setter Property="Background" Value="#252932"/>
+            <Setter Property="Foreground" Value="#EEF1F8"/>
+            <Setter Property="MaxWidth" Value="620"/>
+        </Style>
+    </Window.Resources>
+    <Grid Margin="18">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="2*" MinHeight="120"/>
+            <RowDefinition Height="10"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="3*" MinHeight="120"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        <StackPanel Grid.Row="0" Margin="0,0,0,12">
+            <TextBlock Text="Подписки" FontSize="24" FontWeight="SemiBold"/>
+            <TextBlock Text="Проверка только вручную. Материалы добавляются в обычную очередь; скачивание — только кнопкой Start."
+                       Foreground="#B3BBCD" TextWrapping="Wrap" Margin="0,5,0,0"/>
+        </StackPanel>
+        <Border Grid.Row="1" Background="#1B1E25" CornerRadius="8" Padding="12" Margin="0,0,0,12">
+            <Grid>
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                <TextBlock Text="Канал или плейлист — любой сайт, поддерживаемый yt-dlp" Margin="0,0,10,5" TextWrapping="Wrap"/>
+                <TextBlock Grid.Column="1" Text="RSS / Atom (необязательно)" Margin="0,0,10,5"/>
+                <TextBox Grid.Row="1" x:Name="SubscriptionUrlBox" Margin="0,0,10,0"
+                         ToolTip="Полный HTTP(S) URL канала или плейлиста. yt-dlp должен уметь перечислить все его материалы."/>
+                <TextBox Grid.Row="1" Grid.Column="1" x:Name="SubscriptionFeedBox" Margin="0,0,10,0"
+                         ToolTip="Лента дополняет полную проверку через yt-dlp. Для YouTube лента может определиться автоматически."/>
+                <Button Grid.Row="1" Grid.Column="2" x:Name="AddSubscriptionButton" Content="Добавить и проверить" Background="#6366F1" Margin="0"/>
+                <CheckBox Grid.Row="2" Grid.ColumnSpan="3" x:Name="DownloadExistingCheck" IsChecked="False"
+                          Content="Добавить все существующие материалы в очередь (без скачивания)"/>
+                <TextBlock Grid.Row="3" Grid.ColumnSpan="3" Foreground="#B3BBCD" TextWrapping="Wrap"
+                           Text="Если флажок выключен, текущие материалы станут исходной отметкой: во «Входящие» попадут только новые. Первая полная проверка начнётся сразу после добавления."/>
+            </Grid>
+        </Border>
+        <WrapPanel Grid.Row="2" Margin="0,0,0,8">
+            <Button x:Name="CheckSubscriptionButton" Content="Проверить"/>
+            <Button x:Name="CheckAllSubscriptionsButton" Content="Проверить все"/>
+            <Button x:Name="CancelSubscriptionCheckButton" Content="Отменить проверку" IsEnabled="False"/>
+            <Button x:Name="PauseSubscriptionButton" Content="Приостановить"/>
+            <Button x:Name="RemoveSubscriptionButton" Content="Удалить подписку"/>
+        </WrapPanel>
+        <DataGrid Grid.Row="3" x:Name="SubscriptionGrid" SelectionMode="Single">
+            <DataGrid.RowStyle>
+                <Style TargetType="DataGridRow" BasedOn="{StaticResource {x:Type DataGridRow}}">
+                    <Setter Property="ToolTip">
+                        <Setter.Value><ToolTip><TextBlock Text="{Binding Message}" TextWrapping="Wrap" MaxWidth="600"/></ToolTip></Setter.Value>
+                    </Setter>
+                </Style>
+            </DataGrid.RowStyle>
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="Подписка" Binding="{Binding Title}" Width="2*"/>
+                <DataGridTextColumn Header="Состояние" Binding="{Binding StatusLabel}" Width="145"/>
+                <DataGridTextColumn Header="Последняя полная проверка" Binding="{Binding LastSuccessLabel}" Width="185"/>
+                <DataGridTextColumn Header="URL" Binding="{Binding Url}" Width="2*"/>
+                <DataGridTextColumn Header="Ошибка / предупреждение" Binding="{Binding Message}" Width="2*"/>
+            </DataGrid.Columns>
+        </DataGrid>
+        <GridSplitter Grid.Row="4" HorizontalAlignment="Stretch" VerticalAlignment="Center" Height="4" Background="#343946"/>
+        <TextBlock Grid.Row="5" x:Name="SubscriptionInboxTitle" Text="Входящие" FontSize="17" FontWeight="SemiBold" Margin="0,0,0,8"/>
+        <DataGrid Grid.Row="6" x:Name="SubscriptionInboxGrid" SelectionMode="Extended">
+            <DataGrid.RowStyle>
+                <Style TargetType="DataGridRow" BasedOn="{StaticResource {x:Type DataGridRow}}">
+                    <Setter Property="ToolTip" Value="{Binding Url}"/>
+                </Style>
+            </DataGrid.RowStyle>
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="Материал" Binding="{Binding Title}" Width="3*"/>
+                <DataGridTextColumn Header="Состояние" Binding="{Binding StateLabel}" Width="180"/>
+                <DataGridTextColumn Header="Обнаружен" Binding="{Binding DiscoveredLabel}" Width="145"/>
+                <DataGridTextColumn Header="URL" Binding="{Binding Url}" Width="3*"/>
+            </DataGrid.Columns>
+        </DataGrid>
+        <WrapPanel Grid.Row="7" Margin="0,10,0,8">
+            <Button x:Name="QueueSubscriptionItemsButton" Content="В очередь; запуск кнопкой Start" Background="#6366F1"/>
+            <Button x:Name="SkipSubscriptionItemsButton" Content="Пропустить"/>
+            <Button x:Name="OpenSubscriptionItemButton" Content="Открыть URL"/>
+        </WrapPanel>
+        <StackPanel Grid.Row="8">
+            <TextBlock x:Name="SubscriptionStatusText" Text="Проверки по расписанию и автоматического скачивания нет."
+                       TextWrapping="Wrap" Foreground="#B3BBCD"/>
+            <TextBlock Text="Полная проверка: до 10 000 материалов и 180 секунд. Неполный список не меняет исходную отметку. RSS дополняет проверку, но не заменяет её."
+                       Foreground="#949CAE" TextWrapping="Wrap" FontSize="11" Margin="0,6,0,0"/>
+        </StackPanel>
+    </Grid>
+</Window>

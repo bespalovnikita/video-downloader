@@ -189,7 +189,10 @@ public sealed partial class NativeWindow : IDisposable
     {
         _=Dispatcher.BeginInvoke(()=>
         {
-            if (_disposed || !_queue.Contains(item)) return;
+            if (_disposed) return;
+            if (item.Status=="Completed" && item.AttemptFinished && item.CleanupError.Length==0)
+                RecordSubscriptionSuccess(item.Url);
+            if (!_queue.Contains(item)) return;
             if (item.PendingRemoval && item.AttemptFinished && item.CleanupError.Length==0)
             {
                 try { DownloadCleanup.Retry(item);ForgetRow(item);Reindex();return; }
