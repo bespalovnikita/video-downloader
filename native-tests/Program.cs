@@ -2,7 +2,8 @@ using System.IO;
 using System.Text.Json;
 using VideoDownloader.Native;
 
-if (ReviewRegressionTests.TryRunFixture(args)) return;
+if (LifecycleRegressionTests.TryRunFixture(args) || ReviewRegressionTests.TryRunFixture(args)) return;
+await LifecycleRegressionTests.RunAsync();
 await ReviewRegressionTests.RunAsync();
 
 static void Assert(bool value,string why)

@@ -31,4 +31,32 @@ public static class ProfileCatalog
                 return item.Id;
         return Items[0].Id;
     }
+
+    public static void Apply(DownloadOptions options,string name)
+    {
+        string id=ToId(name);
+        if (name!=id && name!=Display(id)) return;
+        options.Profile=id;
+        options.Quality="Best";options.Codec="Auto";options.Container="Auto";
+        options.AudioOnly=false;options.Archive=false;
+        options.WriteSubs=false;options.AutoSubs=false;options.EmbedSubs=false;
+        options.EmbedThumbnail=false;options.EmbedMetadata=true;options.EmbedChapters=true;
+        switch(id)
+        {
+            case "4K archive":
+                options.Quality="2160";options.Container="MKV";
+                options.Archive=true;options.EmbedThumbnail=true;
+                break;
+            case "MP4 compatibility":
+                options.Quality="1080";options.Codec="H264";options.Container="MP4";
+                options.EmbedThumbnail=true;
+                break;
+            case "Music MP3":
+                options.AudioOnly=true;options.EmbedThumbnail=true;
+                break;
+            case "Subtitles archive":
+                options.Container="MKV";options.WriteSubs=true;options.AutoSubs=true;options.EmbedSubs=true;
+                break;
+        }
+    }
 }

@@ -34,6 +34,7 @@ public sealed class AppPersistence
             if (row.Status == "Running") { row.Status="Interrupted"; row.State="Interrupted"; }
             if (row.Status == "Completed") { row.State="Done"; row.Progress=100; }
             row.OwnedPaths ??= new List<string>();
+            row.CleanupPaths ??= new List<string>();
         }
         // A live legacy worker still owns its checkpoint and may hold the
         // append-only event stream open. Let the GUI see its identity without
@@ -42,6 +43,12 @@ public sealed class AppPersistence
         if (!session.LegacyEngineWasActive) MergeLegacyResultEvents(session);
         foreach (var row in session.Queue)
         {
+            if (!session.LegacyEngineWasActive) row.AttemptFinished=true;
+            if (row.CleanupError.Length>0 || row.PendingRemoval || row.CleanupPaths.Count>0)
+            {
+                row.PendingRemoval=true;row.Status="Interrupted";
+                row.State=row.CleanupError.Length>0 ? "Cleanup failed — Remove to retry" : "Removal pending — use Remove";
+            }
             // Older v1 snapshots have no per-result root. The saved base output
             // also contains dated archive folders, regardless of today's date.
             if (string.IsNullOrWhiteSpace(row.OutputRoot))
@@ -93,6 +100,7 @@ public sealed class AppPersistence
                     !ev.TryGetProperty("Url",out var urlValue) || urlValue.ValueKind!=JsonValueKind.String ||
                     !rows.TryGetValue(urlValue.GetString()??"",out var row))
                     continue;
+                if (row.DeferredToNextStart) continue;
                 // Validate terminal fields before changing the row. A partial
                 // or malformed Result is not proof of success, failure or cancel.
                 if (!ev.TryGetProperty("Success",out var success) ||
@@ -104,6 +112,24 @@ public sealed class AppPersistence
                 bool hasOwned=ev.TryGetProperty("OwnedPaths",out var owned);
                 if (hasOwned && (owned.ValueKind!=JsonValueKind.Array ||
                     owned.EnumerateArray().Any(v=>v.ValueKind!=JsonValueKind.String))) continue;
+                if (ev.TryGetProperty("CleanupPaths",out var cleanup) &&
+                    (cleanup.ValueKind!=JsonValueKind.Array || cleanup.EnumerateArray().Any(v=>v.ValueKind!=JsonValueKind.String))) continue;
+                if (new[]{"OutputRoot","StageDir","CleanupError"}.Any(name=>
+                    ev.TryGetProperty(name,out var value) && value.ValueKind!=JsonValueKind.String)) continue;
+                row.AttemptFinished=true;
+                if (ev.TryGetProperty("OutputRoot",out var output)) row.OutputRoot=output.GetString()??"";
+                if (engine.TryGetProperty("RunDir",out var run) && run.ValueKind==JsonValueKind.String)
+                    row.RunDir=run.GetString()??"";
+                if (ev.TryGetProperty("StageDir",out var stage)) row.StageDir=stage.GetString()??"";
+                if (cleanup.ValueKind==JsonValueKind.Array)
+                    row.CleanupPaths=cleanup.EnumerateArray().Select(v=>v.GetString()!).ToList();
+                if (ev.TryGetProperty("CleanupError",out var error)) row.CleanupError=error.GetString()??"";
+                if (row.CleanupError.Length>0)
+                {
+                    row.PendingRemoval=true;row.Status="Interrupted";row.State="Cleanup failed — Remove to retry";
+                    if (hasOwned) row.OwnedPaths=owned.EnumerateArray().Select(v=>v.GetString()!).ToList();
+                    continue;
+                }
                 if (success.ValueKind==JsonValueKind.True)
                 {
                     row.Status="Completed";row.State="Done";row.Progress=100;
@@ -197,8 +223,21 @@ public sealed class AppPersistence
         if (!ValidUrl(url)) throw new ArgumentException("Cannot record a non-HTTP URL.",nameof(url));
         WithHistoryLock(()=>
         {
+            bool separator=false;
+            if (File.Exists(HistoryPath))
+            {
+                using var existing=new FileStream(HistoryPath,FileMode.Open,FileAccess.Read,FileShare.ReadWrite);
+                if (existing.Length>0)
+                {
+                    existing.Seek(-1,SeekOrigin.End);
+                    separator=existing.ReadByte() is not (10 or 13);
+                }
+            }
+            // The mutex is reentrant. Validate before changing an unterminated
+            // tail, preserving corrupt/truncated history byte for byte.
+            if (separator) ReadHistory();
             var obj=new {Version=1,Url=url,CompletedAtUtc=DateTime.UtcNow.ToString("O")};
-            var data=Encoding.UTF8.GetBytes(JsonSerializer.Serialize(obj,Json)+"\n");
+            var data=Encoding.UTF8.GetBytes((separator?"\n":"")+JsonSerializer.Serialize(obj,Json)+"\n");
             using var stream=new FileStream(HistoryPath,FileMode.Append,FileAccess.Write,FileShare.Read);
             stream.Write(data);
             stream.Flush(true);

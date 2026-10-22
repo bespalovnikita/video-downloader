@@ -67,11 +67,12 @@ function Get-VdRestoredQueue {
         $status = [string]$item.Status
         if ($status -eq "Running") { $status = "Interrupted" }
         $display = [string]$item.DisplayState
+        $pendingRemoval = $item.PendingRemoval -eq $true -or [bool]$item.CleanupError -or @($item.CleanupPaths | Where-Object { $_ }).Count -gt 0
         if ($status -eq "Completed") { $display = "Done" }
         elseif ($status -eq "Interrupted" -or $display -match '^\d+(?:[.,]\d+)?%$') { $display = "Interrupted" }
         elseif (-not $display) { $display = $status }
         if ($item.CleanupError) { $display = 'Cleanup failed — Remove to retry' }
-        elseif ($item.PendingRemoval -eq $true) { $display = 'Cancelling — waiting for cleanup' }
+        elseif ($pendingRemoval) { $display = 'Removal pending — use Remove' }
         [pscustomobject]@{
             Order = $order
             Url = [string]$item.Url
@@ -84,7 +85,7 @@ function Get-VdRestoredQueue {
             StageDir = [string]$item.StageDir
             CleanupPaths = @($item.CleanupPaths | Where-Object { $_ })
             CleanupError = [string]$item.CleanupError
-            PendingRemoval = ($item.PendingRemoval -eq $true)
+            PendingRemoval = $pendingRemoval
             AttemptFinished = ($item.AttemptFinished -eq $true -or $status -in @('Completed','Failed'))
             DeferredToNextStart = ($item.DeferredToNextStart -eq $true)
             AttachedToRecovered = ($item.AttachedToRecovered -eq $true)

@@ -643,9 +643,10 @@ function Show-QueueCleanupFailure([object]$Row,[string]$Message) {
 
 function Remove-QueueRowFiles([object]$Row) {
     $paths = @(@($Row.OwnedPaths) + @($Row.CleanupPaths) | Where-Object { $_ })
-    if ($paths.Count -eq 0 -and $Row.Status -eq 'Completed' -and $Row.Path) { $paths = @([string]$Row.Path) }
-    # Preserve legacy Path ownership before an operation can fail and change
-    # the visible status to Interrupted; the next Remove must retry that file.
+    if ($paths.Count -eq 0 -and $Row.Path -and [IO.File]::Exists([string]$Row.Path)) {
+        throw 'This restored download has no ownership manifest. Remove its file manually, then retry Remove.'
+    }
+    # Keep the manifest before an operation can fail and change the status.
     Set-QueueFields $Row @{ CleanupPaths=$paths }
     if ($paths.Count -gt 0) {
         if (-not $Row.OutputRoot) { throw 'The original output folder is unavailable; no files were deleted.' }
@@ -1772,6 +1773,7 @@ function Apply-Profile([string]$Name) {
     # profile. Connection paths, rate limits and other user settings stay separate.
     $QualityCombo.SelectedItem='Best'; $CodecCombo.SelectedItem='Auto'; $ContainerCombo.SelectedItem='Auto'
     $AudioOnlyCheck.IsChecked=$false
+    $ArchiveCheck.IsChecked=$false
     $WriteSubsCheck.IsChecked=$false; $AutoSubsCheck.IsChecked=$false; $EmbedSubsCheck.IsChecked=$false
     $EmbedThumbnailCheck.IsChecked=$false; $EmbedMetadataCheck.IsChecked=$true; $EmbedChaptersCheck.IsChecked=$true
     switch ($profileId) {
@@ -1781,6 +1783,7 @@ function Apply-Profile([string]$Name) {
             $EmbedThumbnailCheck.IsChecked=$false; $WriteSubsCheck.IsChecked=$false; $EmbedSubsCheck.IsChecked=$false
         }
         "4K archive" {
+            $ArchiveCheck.IsChecked=$true
             $QualityCombo.SelectedItem="2160"; $CodecCombo.SelectedItem="Auto"; $ContainerCombo.SelectedItem="MKV"
             $AudioOnlyCheck.IsChecked=$false; $EmbedMetadataCheck.IsChecked=$true; $EmbedChaptersCheck.IsChecked=$true
             $EmbedThumbnailCheck.IsChecked=$true

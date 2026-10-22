@@ -41,6 +41,14 @@ public sealed class DownloadItem : INotifyPropertyChanged
     public List<string> OwnedPaths { get; set; } = new();
     // The publication boundary belongs to the result, not the next session.
     public string OutputRoot { get; set; } = "";
+    public string RunDir { get; set; } = "";
+    public string StageDir { get; set; } = "";
+    public List<string> CleanupPaths { get; set; } = new();
+    public string CleanupError { get; set; } = "";
+    public bool PendingRemoval { get; set; }
+    public bool AttemptFinished { get; set; }
+    public bool DeferredToNextStart { get; set; }
+    [JsonIgnore] public bool CanResume => !PendingRemoval && CleanupError.Length == 0;
     public long TransferredBytes { get; set; }
     public string DisplayState { get => State; set => State = value; }
 }

@@ -129,7 +129,7 @@ public sealed partial class NativeWindow
             if (_session?.IsRunning==true)return;
             if (_queue.Count>0 && MessageBox.Show(_window,"Clear queue? This removes entries, not downloaded files.",
                     "Clear queue",MessageBoxButton.YesNo,MessageBoxImage.Question)==MessageBoxResult.Yes)
-            { _queue.Clear();_downloads.Clear();Reindex(); }
+            { ClearRows(); }
         };
         F<Button>("MoveUpButton").Click+=(_,_)=>{if(Q.SelectedItem is DownloadItem item)MoveItem(item,_queue.IndexOf(item)-1);};
         F<Button>("MoveDownButton").Click+=(_,_)=>{if(Q.SelectedItem is DownloadItem item)MoveItem(item,_queue.IndexOf(item)+1);};
@@ -218,34 +218,11 @@ public sealed partial class NativeWindow
     }
     private void ApplyProfile(string name)
     {
-        switch(ProfileCatalog.ToId(name))
-        {
-            case "Universal":
-                C("QualityCombo").SelectedItem="Best";C("CodecCombo").SelectedItem="Auto";
-                C("ContainerCombo").SelectedItem="Auto";
-                K("AudioOnlyCheck").IsChecked=false;K("EmbedMetadataCheck").IsChecked=true;
-                K("EmbedChaptersCheck").IsChecked=true;K("EmbedThumbnailCheck").IsChecked=false;
-                K("WriteSubsCheck").IsChecked=false;K("EmbedSubsCheck").IsChecked=false;
-                break;
-            case "4K archive":
-                C("QualityCombo").SelectedItem="2160";C("CodecCombo").SelectedItem="Auto";
-                C("ContainerCombo").SelectedItem="MKV";K("ArchiveCheck").IsChecked=true;
-                K("EmbedMetadataCheck").IsChecked=true;K("EmbedChaptersCheck").IsChecked=true;
-                break;
-            case "MP4 compatibility":
-                C("QualityCombo").SelectedItem="1080";C("CodecCombo").SelectedItem="H264";
-                C("ContainerCombo").SelectedItem="MP4";K("AudioOnlyCheck").IsChecked=false;
-                break;
-            case "Music MP3":
-                K("AudioOnlyCheck").IsChecked=true;K("EmbedMetadataCheck").IsChecked=true;
-                K("EmbedThumbnailCheck").IsChecked=true;
-                break;
-            case "Subtitles archive":
-                K("AudioOnlyCheck").IsChecked=false;K("WriteSubsCheck").IsChecked=true;
-                K("AutoSubsCheck").IsChecked=true;K("EmbedSubsCheck").IsChecked=true;
-                K("EmbedMetadataCheck").IsChecked=true;K("EmbedChaptersCheck").IsChecked=true;
-                break;
-        }
+        string id=ProfileCatalog.ToId(name);
+        if (name!=id && name!=ProfileCatalog.Display(id)) return;
+        var options=ReadOptions();
+        ProfileCatalog.Apply(options,name);
+        ApplyOptions(options);
     }
     private void RefreshDependencyLabel()=>T("DependencyStatus").Text=DependencyCenter.Inspect();
     private async Task DependencyOperation(string progress,Func<CancellationToken,Task<string>> task)

@@ -75,6 +75,20 @@ internal static class NativeUiSelfTest
             Require(options.Profile=="Music MP3" && options.AudioOnly,
                 "Russian music profile must preserve the canonical ID and audio-only preset.");
 
+            Stage("testing all profile transitions through real WPF controls");
+            foreach(var previous in ProfileCatalog.DisplayNames)
+            foreach(var target in ProfileCatalog.DisplayNames)
+            {
+                profile.SelectedItem=previous;profile.SelectedItem=target;
+                var actual=(DownloadOptions)readOptions.Invoke(controller,null)!;
+                var expected=new DownloadOptions();ProfileCatalog.Apply(expected,target);
+                Require(actual.Quality==expected.Quality && actual.Codec==expected.Codec && actual.Container==expected.Container &&
+                    actual.AudioOnly==expected.AudioOnly && actual.Archive==expected.Archive && actual.AutoSubs==expected.AutoSubs &&
+                    actual.WriteSubs==expected.WriteSubs && actual.EmbedSubs==expected.EmbedSubs &&
+                    actual.EmbedThumbnail==expected.EmbedThumbnail && actual.EmbedMetadata==expected.EmbedMetadata && actual.EmbedChapters==expected.EmbedChapters,
+                    "WPF profile must fully replace previous preset: "+previous+" -> "+target);
+            }
+
             Stage("testing configured output directory");
             var outputButton=(Button)window.FindName("OpenOutputDirectoryButton")!;
             Require(outputButton.IsEnabled && (string)outputButton.Content=="📂 Открыть папку загрузок",
@@ -121,6 +135,39 @@ internal static class NativeUiSelfTest
             Stage("Remove clicked");
             Require(queue.Items.Count==1,"Remove button must delete only the selected queued URL");
             Require((queue.Items[0] as DownloadItem)?.Url=="https://example.com/two","Remove must preserve other entries");
+
+            Stage("testing pending removal until worker cleanup acknowledgement");
+            var pending=new DownloadItem{Url="https://example.com/cancel-before-start"};
+            ((System.Collections.ObjectModel.ObservableCollection<DownloadItem>)queue.ItemsSource).Add(pending);
+            var notify=(Action<DownloadItem>)typeof(NativeWindow).GetMethod("OnRowChanged",
+                System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance)!
+                .CreateDelegate(typeof(Action<DownloadItem>),controller);
+            var sessionField=typeof(NativeWindow).GetField("_session",
+                System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance)!;
+            var cancelSession=new DownloadCoordinator("must-not-launch",new AppPersistence(Path.Combine(root,"cancel-profile")),
+                new DownloadOptions{Output=Path.Combine(root,"cancel-output"),Threads="1"},notify,_=>{});
+            try
+            {
+                cancelSession.Add(pending);sessionField.SetValue(controller,cancelSession);
+                queue.SelectedItem=pending;remove.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                Require(queue.Items.Contains(pending) && pending.PendingRemoval && !pending.AttemptFinished,
+                    "Remove must retain the row while cancellation is unacknowledged");
+                var task=cancelSession.RunAsync();
+                var cancellationFrame=new System.Windows.Threading.DispatcherFrame();
+                var deadline=DateTime.UtcNow.AddSeconds(10);
+                var poll=new System.Windows.Threading.DispatcherTimer{Interval=TimeSpan.FromMilliseconds(20)};
+                poll.Tick+=(_,_)=>{if(task.IsCompleted && !queue.Items.Contains(pending) || DateTime.UtcNow>deadline)cancellationFrame.Continue=false;};
+                poll.Start();
+                try{System.Windows.Threading.Dispatcher.PushFrame(cancellationFrame);}finally{poll.Stop();}
+                Require(task.IsCompletedSuccessfully && pending.AttemptFinished && !queue.Items.Contains(pending),
+                    "Worker acknowledgement must finish removal and preserve the other queue row");
+                Require(queue.Items.Count==1,"Cancelling one row must not remove another URL");
+            }
+            finally
+            {
+                cancelSession.DisposeAsync().AsTask().GetAwaiter().GetResult();
+                sessionField.SetValue(controller,null);
+            }
 
             Stage("testing tray");
             var trayField=typeof(NativeWindow).GetField("_tray",

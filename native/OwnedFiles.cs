@@ -68,7 +68,8 @@ public static class OwnedFiles
         return removed;
     }
 
-    public static (string Path,List<string> OwnedPaths) Publish(string stage,string root,string? mediaPath)
+    public static (string Path,List<string> OwnedPaths) Publish(string stage,string root,string? mediaPath,
+        Action<IReadOnlyList<string>>? updateManifest=null)
     {
         if (!Directory.Exists(stage)) throw new DirectoryNotFoundException($"Stage absent: {stage}");
         NoReparseAncestors(Path.Combine(stage,"check"));
@@ -101,6 +102,7 @@ public static class OwnedFiles
                 RegularOrAbsent(dst);
                 File.Move(src,dst);  // does not overwrite pre-existing files
                 owned.Add(dst);
+                updateManifest?.Invoke(owned);
                 if (mediaPath!=null && string.Equals(Path.GetFullPath(mediaPath),Path.GetFullPath(src),Comparison))
                     result=dst;
             }
@@ -110,8 +112,31 @@ public static class OwnedFiles
         catch
         {
             DeleteOwned(root,owned);
+            owned.Clear();
+            updateManifest?.Invoke(owned);
             throw;
         }
+    }
+
+    public static void DeleteStage(string stage,string run)
+    {
+        var path=Path.TrimEndingDirectorySeparator(Path.GetFullPath(stage));
+        var root=Path.TrimEndingDirectorySeparator(Path.GetFullPath(run));
+        if (!string.Equals(Path.GetDirectoryName(path),root,Comparison) ||
+            !System.Text.RegularExpressions.Regex.IsMatch(Path.GetFileName(path),@"^(?:download-\d+-)?[0-9a-f]{32}$"))
+            throw new IOException("Refusing deletion of an unknown staging directory: "+stage);
+        NoReparseAncestors(Path.Combine(path,"__check__"));
+        if (!Directory.Exists(path))
+        {
+            RegularOrAbsent(path);
+            if (File.Exists(path)) throw new IOException("Staging path is not a directory: "+stage);
+            return;
+        }
+        foreach (var entry in Directory.EnumerateFileSystemEntries(path,"*",SearchOption.AllDirectories))
+            if ((File.GetAttributes(entry)&FileAttributes.ReparsePoint)!=0)
+                throw new IOException("Refusing staging directory containing a reparse point: "+entry);
+        NoReparseAncestors(Path.Combine(path,"__check__"));
+        Directory.Delete(path,true);
     }
 
     public static void ValidateTemplate(string template)

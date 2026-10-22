@@ -118,6 +118,7 @@ internal static class NativeCli
                 Cookies=Option(args,"--cookies","")
             };
             var store=new AppPersistence();
+            store.ReadHistory(); // Refuse a damaged history before starting any child.
             using var logger=new StreamWriter(Path.Combine(Path.GetDirectoryName(Path.GetFullPath(input))!,"native-cli.log"),append:false);
             var rows=new List<DownloadItem>();
             await using var coordinator=new DownloadCoordinator(DependencyCenter.Executable("yt-dlp.exe"),store,options,
@@ -132,7 +133,7 @@ internal static class NativeCli
             await coordinator.RunAsync().ConfigureAwait(false);
             logger.WriteLine($"Finished: OK={rows.Count(x=>x.Status=="Completed")}, errors={rows.Count(x=>x.Status=="Failed")}");
             logger.Flush();
-            Environment.ExitCode=rows.Any(x=>x.Status=="Failed")?1:0;
+            Environment.ExitCode=rows.Any(x=>x.Status!="Completed")?1:0;
         }
         catch(Exception e){System.Diagnostics.Debug.WriteLine(e);Environment.ExitCode=1;}
     }

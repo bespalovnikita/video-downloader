@@ -32,6 +32,14 @@ jobs:
         shell: pwsh
         run: pwsh -NoProfile -File ./tests/download-history-tests.ps1
 
+      - name: C# and PowerShell shared history, profiles and cleanup contracts
+        shell: pwsh
+        run: pwsh -NoProfile -File ./tests/cross-runtime-contract-tests.ps1
+
+      - name: Preview metadata and thumbnail deadlines
+        shell: pwsh
+        run: pwsh -NoProfile -File ./tests/preview-deadline-tests.ps1
+
       - name: Live clipboard queue tests
         shell: pwsh
         run: pwsh -NoProfile -File ./tests/live-queue-tests.ps1
