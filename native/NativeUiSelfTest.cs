@@ -28,7 +28,7 @@ internal static class NativeUiSelfTest
         try
         {
             Stage("testing startup recovery dialogs and empty-queue settings");
-            VerifyStartupRecovery(root);
+            VerifyStartupRecovery(root,Stage);
             using var input=File.OpenRead(Path.Combine(AppContext.BaseDirectory,"ui","MainWindow.xaml"));
             using var reader=XmlReader.Create(input);
             window=(Window)XamlReader.Load(reader);
@@ -288,7 +288,7 @@ internal static class NativeUiSelfTest
         }
     }
 
-    private static void VerifyStartupRecovery(string root)
+    private static void VerifyStartupRecovery(string root,Action<string> stage)
     {
         const System.Reflection.BindingFlags methods=System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance;
         static Window LoadWindow()
@@ -301,6 +301,7 @@ internal static class NativeUiSelfTest
         var options=new DownloadOptions {Output=Path.Combine(root,"saved-output"),Cookies=Path.Combine(root,"cookies.txt"),Threads="7",Profile="Music MP3",AudioOnly=true};
         data.Save([],options);
         var window=LoadWindow();
+        stage("recovery: restoring empty queue settings");
         using(var controller=new NativeWindow(window,data))
         {
             var restored=(DownloadOptions)typeof(NativeWindow).GetMethod("ReadOptions",methods)!.Invoke(controller,null)!;
@@ -308,6 +309,7 @@ internal static class NativeUiSelfTest
                 throw new InvalidOperationException("Empty queues must restore saved settings without a dialog.");
         }
         window.Close();
+        stage("recovery: empty queue settings restored");
         foreach(bool corrupt in new[]{false,true})
         {
             if(corrupt) File.WriteAllText(data.SessionPath,"{invalid checkpoint");
@@ -322,13 +324,14 @@ internal static class NativeUiSelfTest
             observer.Tick+=(_,_)=>
             {
                 observer.Stop();observed=true;
+                stage("recovery: observing "+title);
                 try
                 {
                     if(File.ReadAllText(data.SessionPath)!=before)
                         throw new InvalidOperationException("Recovery dialog must preserve the checkpoint while dispatcher timers are running.");
                 }
                 catch(Exception error) {failure=error;}
-                finally {DismissDialog(thread,title,button);}
+                finally {stage("recovery: dismissing "+title+" found="+DismissDialog(thread,title,button));}
             };
             using var watchdog=new CancellationTokenSource();
             _=Task.Delay(TimeSpan.FromSeconds(12),watchdog.Token).ContinueWith(task=>
@@ -339,7 +342,9 @@ internal static class NativeUiSelfTest
             observer.Start();
             try
             {
+                stage("recovery: constructing controller for "+title);
                 controller=new NativeWindow(window,data);
+                stage("recovery: controller restored after "+title);
                 if(!observed) throw new InvalidOperationException("Recovery dialog must keep the dispatcher responsive.");
                 if(failure!=null) throw failure;
                 if(corrupt && File.ReadAllText(data.SessionPath)!=before)
@@ -351,18 +356,20 @@ internal static class NativeUiSelfTest
         }
     }
 
-    private static void DismissDialog(uint thread,string title,int button)
+    private static bool DismissDialog(uint thread,string title,int button)
     {
+        bool found=false;
         EnumThreadWindows(thread,(handle,_)=>
         {
             var caption=new StringBuilder(256);GetWindowTextW(handle,caption,caption.Capacity);
-            if(caption.ToString()==title) {SendMessageW(handle,0x111,(IntPtr)button,IntPtr.Zero);return false;}
+            if(caption.ToString()==title) {found=PostMessageW(handle,0x111,(IntPtr)button,IntPtr.Zero);return false;}
             return true;
         },IntPtr.Zero);
+        return found;
     }
     private delegate bool EnumWindowsProc(IntPtr window,IntPtr argument);
     [DllImport("kernel32.dll")] private static extern uint GetCurrentThreadId();
     [DllImport("user32.dll")] private static extern bool EnumThreadWindows(uint thread,EnumWindowsProc callback,IntPtr argument);
     [DllImport("user32.dll",CharSet=CharSet.Unicode)] private static extern int GetWindowTextW(IntPtr window,StringBuilder text,int count);
-    [DllImport("user32.dll")] private static extern IntPtr SendMessageW(IntPtr window,uint message,IntPtr wParam,IntPtr lParam);
+    [DllImport("user32.dll")] private static extern bool PostMessageW(IntPtr window,uint message,IntPtr wParam,IntPtr lParam);
 }
