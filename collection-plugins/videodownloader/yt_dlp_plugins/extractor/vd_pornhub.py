@@ -22,7 +22,7 @@ _VOID = {'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'me
 _LISTS = {'videoSearchResult', 'mostRecentVideosSection', 'pornstarsVideoSection', 'uploadedVideos',
           'claimedUploadedVideoSection', 'channelVideosList', 'showAllChanelVideos'}
 _CARDS = {'pcVideoListItem', 'videoBox', 'videoblock'}
-_EXCLUDED = re.compile(r'watch.?history|recently.?viewed|recommended|suggested|related.?videos|favorites|favourites', re.I)
+_EXCLUDED = re.compile(r'watch.?history|recently.?viewed|recommended|suggested|related.?videos|favorites|favourites|drop.?down|menu', re.I)
 
 
 def _same_source(origin, target):
@@ -83,7 +83,7 @@ class _Page(HTMLParser):
         publication = explicit or (tag in ('div', 'section') and 'videoUList' in classes)
         scoped = publication or parent.get('scoped', False)
         unrelated = bool(_EXCLUDED.search((attrs.get('id') or '') + ' ' + ' '.join(classes)))
-        excluded = parent.get('excluded', False) or tag in ('nav', 'aside', 'footer') or unrelated
+        excluded = parent.get('excluded', False) or tag in ('nav', 'header', 'aside', 'footer') or unrelated
         # Main navigation can be a <nav> or <footer>; excluding its cards must
         # not hide advertised pages. Explicitly unrelated paging is ignored.
         pagination_excluded = parent.get('pagination_excluded', False) or unrelated

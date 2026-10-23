@@ -169,6 +169,13 @@ class CollectorTests(unittest.TestCase):
         with self.assertRaises(ExtractorError):
             Collector({1: html}).extract(SOURCE)
 
+    def test_header_dropdown_grid_is_never_a_publication_archive(self):
+        menu = '<div class="mainMenuDropdown"><div class="videoUList"><ul class="videos"><li class="videoblock" data-video-vkey="phwrong"></li></ul></div></div>'
+        result = Collector({1: page(outside=menu)}).extract(SOURCE)
+        self.assertEqual([e['id'] for e in result['entries']], ['phfixture1'])
+        with self.assertRaises(ExtractorError):
+            Collector({1: menu}).extract(SOURCE)
+
     def test_unknown_layout_reports_structural_details_without_video_keys(self):
         html = page().replace('mostRecentVideosSection', 'newVideosGrid')
         with self.assertRaises(ExtractorError) as failure:
