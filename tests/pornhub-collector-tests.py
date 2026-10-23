@@ -133,8 +133,37 @@ class CollectorTests(unittest.TestCase):
     def test_localization_redirects_preserve_the_publication_source(self):
         self.assertTrue(module._same_source(LISTING, LISTING.replace('rt.', 'www.')))
         for other in ('https://www.pornhub.com/login', LISTING.replace('fixture-model', 'someone-else'),
-                      LISTING.replace('pornhub.com', 'pornhub.com.evil.example'), LISTING.replace('/upload', '/favorites')):
+                      LISTING.replace('pornhub.com', 'pornhub.com.evil.example'), LISTING.replace('/upload', '/favorites'),
+                      SOURCE, LISTING.replace('/model/', '/users/'), LISTING.replace('rt.', ':password@'),
+                      LISTING.replace('rt.', 'www.').replace('.com/', '.com:invalid/')):
             self.assertFalse(module._same_source(LISTING, other))
+
+    def test_publication_alias_redirect_is_used_for_the_rest_of_the_scan(self):
+        canonical = SOURCE.replace('rt.', 'www.') + '/videos'
+        class Canonical(Collector):
+            def _download_webpage_handle(self, base, channel, *args, query=None, **kwargs):
+                html, response = super()._download_webpage_handle(base, channel, *args, query=query, **kwargs)
+                response.url = canonical + ('?page=' + str(query['page']) if query['page'] != 1 else '')
+                # Absolute pagination links may still use the legacy alias.
+                html = html.replace('?page=2', LISTING + '?page=2')
+                return html, response
+        collector = Canonical({1: page(('phfixture1', 'phfixture2'), next_page=2, total=3),
+                               2: page(('phfixture3',), number=2, total=3)})
+        result = collector.extract(SOURCE)
+        self.assertEqual(len(result['entries']), 3)
+        self.assertEqual(collector.calls, [(LISTING, 1), (canonical, 2), (canonical, 1)])
+        self.assertEqual(result['vd_ph_scan']['listing_url'], LISTING)
+
+    def test_rejected_redirect_reports_destination_without_secrets(self):
+        class Login(Collector):
+            def _download_webpage_handle(self, base, channel, *args, **kwargs):
+                return page(), SimpleNamespace(url='https://user:secret@www.pornhub.com/login?token=secret#secret')
+        with self.assertRaises(ExtractorError) as failure:
+            Login({1: page()}).extract(SOURCE)
+        diagnostic = str(failure.exception)
+        self.assertIn('https://www.pornhub.com/login', diagnostic)
+        self.assertNotIn('secret', diagnostic)
+        self.assertNotIn('user:', diagnostic)
 
     def test_redirect_cannot_start_at_a_later_page_or_drop_pagination(self):
         class Redirected(Collector):

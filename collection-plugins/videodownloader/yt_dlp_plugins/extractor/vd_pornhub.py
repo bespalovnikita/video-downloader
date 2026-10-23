@@ -7,7 +7,7 @@ into yt-dlp's automatic plugin directory. Requires no external Python runtime.
 import hashlib
 import re
 from html.parser import HTMLParser
-from urllib.parse import parse_qs, urljoin, urlsplit
+from urllib.parse import parse_qs, urljoin, urlsplit, urlunsplit
 
 from yt_dlp.extractor.pornhub import PornHubBaseIE
 from yt_dlp.utils import ExtractorError
@@ -22,13 +22,35 @@ _EXCLUDED = re.compile(r'watch.?history|recently.?viewed|recommended|suggested|r
 
 
 def _same_source(origin, target):
-    """Permit locale/www redirects within the same site, never another tab or author."""
-    left, right = urlsplit(origin), urlsplit(target)
-    site = re.search(r'pornhub(?:premium)?\.(?:com|net|org)$', left.hostname or '', re.I)
-    return (site is not None and right.scheme == 'https' and not right.username
-            and right.port in (None, 443)
-            and re.fullmatch(r'(?:[a-z0-9-]+\.)?' + re.escape(site.group()), right.hostname or '', re.I) is not None
-            and left.path.rstrip('/') == right.path.rstrip('/'))
+    """Accept publication endpoint aliases, keeping the site and profile fixed."""
+    try:
+        left, right = urlsplit(origin), urlsplit(target)
+        site = re.search(r'pornhub(?:premium)?\.(?:com|net|org)$', left.hostname or '', re.I)
+        if (site is None or right.scheme != 'https' or right.username is not None
+                or right.port not in (None, 443)
+                or re.fullmatch(r'(?:[a-z0-9-]+\.)?' + re.escape(site.group()), right.hostname or '', re.I) is None):
+            return False
+        route = r'/(channels|model|pornstar|users)/([A-Za-z0-9_-]+)/videos(/upload)?/?'
+        source, destination = re.fullmatch(route, left.path), re.fullmatch(route, right.path)
+        return (source is not None and destination is not None
+                and source.group(1, 2) == destination.group(1, 2)
+                and (source[1] != 'channels' or not destination[3]))
+    except ValueError:
+        return False
+
+
+def _diagnostic_url(url):
+    """Show the redirect destination without credentials or arbitrary query data."""
+    try:
+        parsed = urlsplit(url)
+        host = parsed.hostname or ''
+        if parsed.port is not None:
+            host += f':{parsed.port}'
+        page = parse_qs(parsed.query).get('page', [])
+        query = 'page=' + page[0] if len(page) == 1 and re.fullmatch(r'[0-9]+', page[0]) else ''
+        return re.sub(r'[\x00-\x1f\x7f]', '', urlunsplit((parsed.scheme, host, parsed.path, query, '')))[:300]
+    except ValueError:
+        return '(некорректный URL)'
 
 
 class _Page(HTMLParser):
@@ -168,13 +190,20 @@ class VideoDownloaderPornHubChannelIE(PornHubBaseIE):
                 html, response = self._download_webpage_handle(
                     base, channel_id, f'Publication page {number}', query={'page': number}, impersonate=True)
                 if not _same_source(base, response.url):
-                    raise ExtractorError('Publication page redirected to a different source or login', expected=True)
+                    raise ExtractorError(
+                        'Переход со страницы публикаций отклонён: '
+                        f'{_diagnostic_url(base)} → {_diagnostic_url(response.url)}. '
+                        'Ожидалась вкладка видео того же профиля; проверьте адрес и доступ к сайту.', expected=True)
                 actual_page = parse_qs(urlsplit(response.url).query, keep_blank_values=True).get('page', ['1'])
                 if actual_page != [str(number)]:
-                    raise ExtractorError('Publication page redirected to a different page number', expected=True)
+                    raise ExtractorError(
+                        f'Сайт изменил номер страницы публикаций: ожидалась {number}, '
+                        f'получено {_diagnostic_url(response.url)}.', expected=True)
                 if len(html.encode('utf-8')) > 8 * 1024 * 1024:
                     raise ExtractorError('Publication HTML exceeds 8 MiB', expected=True)
-                return _Page(html, base, number).result()
+                resolved = urlsplit(response.url)
+                endpoint = urlunsplit((resolved.scheme, resolved.netloc, resolved.path.rstrip('/'), '', ''))
+                return (*_Page(html, endpoint, number).result(), endpoint)
             except ExtractorError as error:
                 if getattr(error.cause, 'status', None) not in (429, 500, 502, 503, 504) or attempt == 2:
                     raise
@@ -189,9 +218,9 @@ class VideoDownloaderPornHubChannelIE(PornHubBaseIE):
         base = f'https://{domain.lower()}/{kind}/{slug}/videos' + ('' if kind == 'channels' else '/upload')
         maximum, max_pages = self._limit('max_items', 10000), self._limit('max_pages', 500)
         entries, pages, seen, signatures = [], [], set(), set()
-        first, total, title = None, None, slug
+        first, total, title, endpoint = None, None, slug, base
         for number in range(1, max_pages + 1):
-            cards, has_next, count, page_title = self._page(base, number, slug)
+            cards, has_next, count, page_title, endpoint = self._page(endpoint, number, slug)
             signature = hashlib.sha256('\n'.join(sorted(key for key, _ in cards)).encode()).hexdigest()
             if signature in signatures or (number > 1 and not cards):
                 raise ExtractorError('Publication pages repeat or end unexpectedly', expected=True)
@@ -224,7 +253,7 @@ class VideoDownloaderPornHubChannelIE(PornHubBaseIE):
             raise ExtractorError('Publication list is incomplete: video count does not match', expected=True)
         # A channel can change while pages are being walked. Do not commit a
         # mixed snapshot if its first page changed in the meantime.
-        check, check_next, check_total, _ = self._page(base, 1, slug)
+        check, check_next, check_total, _, _ = self._page(endpoint, 1, slug)
         if hashlib.sha256('\n'.join(sorted(key for key, _ in check)).encode()).hexdigest() != first or check_total != total or check_next != pages[0]['has_next']:
             raise ExtractorError('Publication list changed during enumeration; retry the scan', expected=True)
         result = self.playlist_result(entries, f'{kind}/{slug}', title)
