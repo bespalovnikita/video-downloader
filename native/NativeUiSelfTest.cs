@@ -336,7 +336,7 @@ internal static class NativeUiSelfTest
             using var watchdog=new CancellationTokenSource();
             _=Task.Delay(TimeSpan.FromSeconds(12),watchdog.Token).ContinueWith(task=>
             {
-                if(!task.IsCanceled) DismissDialog(thread,title,button);
+                if(!task.IsCanceled) stage("recovery: watchdog dismissal "+title+" found="+DismissDialog(thread,title,button));
             },TaskScheduler.Default);
             window=LoadWindow();NativeWindow? controller=null;
             observer.Start();
@@ -362,7 +362,13 @@ internal static class NativeUiSelfTest
         EnumThreadWindows(thread,(handle,_)=>
         {
             var caption=new StringBuilder(256);GetWindowTextW(handle,caption,caption.Capacity);
-            if(caption.ToString()==title) {found=PostMessageW(handle,0x111,(IntPtr)button,IntPtr.Zero);return false;}
+            if(caption.ToString()==title)
+            {
+                // OK-only message boxes support WM_CLOSE. The Yes/No question
+                // needs an explicit Yes command because its close box is disabled.
+                found=PostMessageW(handle,button==1?0x10u:0x111u,button==1?IntPtr.Zero:(IntPtr)button,IntPtr.Zero);
+                return false;
+            }
             return true;
         },IntPtr.Zero);
         return found;

@@ -44,11 +44,12 @@ public static class DependencyCenter
         var psi=new ProcessStartInfo(Executable("yt-dlp.exe"))
         {UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true};
         psi.ArgumentList.Add("-U");
-        using var child=ManagedChildProcess.Start(psi);
-        var process=child.Process;
+        // yt-dlp's Windows updater schedules deletion of its .old binary in
+        // a child shell after it exits. That cleanup must outlive -U itself.
+        using var process=Process.Start(psi)??throw new IOException("Cannot start yt-dlp");
         using var cancel=token.Register(()=>{try {if(!process.HasExited)process.Kill(true);}catch{}});
-        var stdout=child.StandardOutput.ReadToEndAsync(token);
-        var stderr=child.StandardError.ReadToEndAsync(token);
+        var stdout=process.StandardOutput.ReadToEndAsync(token);
+        var stderr=process.StandardError.ReadToEndAsync(token);
         await Task.WhenAll(stdout,stderr,process.WaitForExitAsync(token)).ConfigureAwait(false);
         if(process.ExitCode!=0)throw new IOException(stderr.Result);
         return stdout.Result;
