@@ -135,11 +135,11 @@ public sealed class PreviewService : IDisposable
         string cookie=_cookiePath();
         if (File.Exists(cookie)) { psi.ArgumentList.Add("--cookies");psi.ArgumentList.Add(cookie); }
         psi.ArgumentList.Add(url);
-        using var process=new Process{StartInfo=psi};
-        process.Start();
+        using var child=ManagedChildProcess.Start(psi);
+        var process=child.Process;
         using var kill=token.Register(() => { try { if (!process.HasExited) process.Kill(true); }catch{} });
-        var stdout=process.StandardOutput.ReadToEndAsync(token);
-        var stderr=process.StandardError.ReadToEndAsync(token);
+        var stdout=child.StandardOutput.ReadToEndAsync(token);
+        var stderr=child.StandardError.ReadToEndAsync(token);
         await Task.WhenAll(stdout,stderr,process.WaitForExitAsync(token)).ConfigureAwait(false);
         if (process.ExitCode!=0) throw new IOException(stderr.Result.Trim() is {Length:>0} e ? e : "yt-dlp metadata request failed.");
         using var doc=JsonDocument.Parse(stdout.Result);

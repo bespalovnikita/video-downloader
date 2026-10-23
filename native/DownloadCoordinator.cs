@@ -346,6 +346,8 @@ public sealed class DownloadCoordinator : IAsyncDisposable
             "--print","before_dl:__VD_TITLE__:%(title)s",
             "--print","after_move:__VD_FILE__:%(filepath)s"];
         var args=new List<string>(standard);
+        string ffmpeg=DependencyCenter.Executable("ffmpeg.exe");
+        if(File.Exists(ffmpeg)) args.AddRange(["--ffmpeg-location",ffmpeg]);
         // Explicitly enable file:// only for local offline integration fixtures;
         // GUI URL validation still restricts user-entered links to HTTP/HTTPS.
         if (Uri.TryCreate(url,UriKind.Absolute,out var source) && source.Scheme=="file")
@@ -357,7 +359,8 @@ public sealed class DownloadCoordinator : IAsyncDisposable
         else
         {
             args.AddRange(["-f",FormatSelector(quality)]);
-            if (_options.Container!="Auto") args.AddRange(["--merge-output-format",_options.Container.ToLowerInvariant()]);
+            if (_options.Container!="Auto") args.AddRange(["--merge-output-format",_options.Container.ToLowerInvariant(),
+                "--remux-video",_options.Container.ToLowerInvariant()]);
         }
         if (_options.WriteSubs || _options.EmbedSubs) args.Add("--write-subs");
         if (_options.WriteSubs || _options.EmbedSubs || _options.AutoSubs)
@@ -443,10 +446,14 @@ public sealed class DownloadCoordinator : IAsyncDisposable
                         if (string.IsNullOrWhiteSpace(mediaPath))
                             return new DownloadResult(false,false,"",[],
                                 "yt-dlp finished without reporting a downloaded media file.",transferred);
+                        if(!_options.AudioOnly && _options.Container!="Auto" &&
+                            !Path.GetExtension(mediaPath).Equals("."+_options.Container,StringComparison.OrdinalIgnoreCase))
+                            return new DownloadResult(false,false,"",[],
+                                "yt-dlp did not produce the requested container: "+_options.Container,transferred);
                         // Publication updates the row's manifest after each move,
                         // so even a failed rollback retains exact cleanup paths.
                         var published=OwnedFiles.Publish(stage,_options.OutputDirectory,mediaPath,
-                            paths=>item.CleanupPaths=paths.ToList());
+                            paths=>item.CleanupPaths=paths.ToList(),renameCollisions:true);
                         if (ct.IsCancellationRequested || _cancelled.ContainsKey(item.Url))
                         {
                             return new DownloadResult(false,true,published.Path,published.OwnedPaths,"",transferred);
@@ -494,8 +501,8 @@ public sealed class DownloadCoordinator : IAsyncDisposable
         };
         foreach(string arg in args) psi.ArgumentList.Add(arg);
         while(_paused) await Task.Delay(100,token).ConfigureAwait(false);
-        using var process=new Process{StartInfo=psi};
-        if (!process.Start()) throw new IOException("Failed to start yt-dlp");
+        using var child=ManagedChildProcess.Start(psi);
+        var process=child.Process;
         _processes[url]=process;
         lock(_pauseGuard)
         {
@@ -512,7 +519,7 @@ public sealed class DownloadCoordinator : IAsyncDisposable
         }
         try
         {
-            await Task.WhenAll(Pump(process.StandardOutput),Pump(process.StandardError),process.WaitForExitAsync())
+            await Task.WhenAll(Pump(child.StandardOutput),Pump(child.StandardError),process.WaitForExitAsync())
                 .ConfigureAwait(false);
             token.ThrowIfCancellationRequested();
             return process.ExitCode;

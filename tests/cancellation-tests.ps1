@@ -50,6 +50,12 @@ try {
     [IO.File]::WriteAllText((Join-Path $output "new.mp4"),"ALREADY HERE")
     Expect-Throw { Publish-VdStagedFiles -StageDir $stage -OutputRoot $output -MediaPath $stageMedia } "Collision must fail closed: never claim a pre-existing file as owned"
     Assert (([IO.File]::ReadAllText((Join-Path $output "new.mp4"))) -eq "ALREADY HERE") "Existing media must never be overwritten"
+    [IO.File]::WriteAllText($stageSubtitle,'COPIED SUBTITLE')
+    $copy=Publish-VdStagedFiles -StageDir $stage -OutputRoot $output -MediaPath $stageMedia -RenameCollisions
+    Assert ($copy.Path -eq (Join-Path $output 'new (2).mp4')) 'Approved repeat must choose a free media name'
+    Assert ($copy.OwnedPaths -contains (Join-Path $output 'new (2).en.srt')) 'Repeated media and subtitles must retain a shared stem'
+    [void](Remove-VdOwnedFiles -OutputRoot $output -Paths $copy.OwnedPaths)
+    Assert (([IO.File]::ReadAllText((Join-Path $output 'new.mp4'))) -eq 'ALREADY HERE') 'Removing a repeated download must preserve the original'
 
     $outside=Join-Path $dir "unrelated.mp4"
     [IO.File]::WriteAllText($outside,"DON'T TOUCH")

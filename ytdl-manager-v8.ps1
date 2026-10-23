@@ -471,7 +471,7 @@ while ($pending.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
                     $a += @("-x","--audio-format","mp3")
                 } else {
                     $a += @("-f",(Get-FormatSelector $Height))
-                    if ($container -ne "Auto") { $a += @("--merge-output-format",$container.ToLowerInvariant()) }
+                    if ($container -ne "Auto") { $a += @("--merge-output-format",$container.ToLowerInvariant(),"--remux-video",$container.ToLowerInvariant()) }
                 }
 
                 if ($writeSubtitles -or $embedSubtitles) {
@@ -647,7 +647,7 @@ while ($pending.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
             if ($cancelDir -and (Test-VdCancellation -Directory $cancelDir -Url $url)) { $cancelled = $true }
             if ($success -and -not $cancelled -and $stageDir) {
                 try {
-                    $publish = Publish-VdStagedFiles -StageDir $stageDir -OutputRoot $outputRoot -MediaPath $finalPath
+                    $publish = Publish-VdStagedFiles -StageDir $stageDir -OutputRoot $outputRoot -MediaPath $finalPath -RenameCollisions
                     $ownedPaths = @($publish.OwnedPaths)
                     $finalPath = [string]$publish.Path
                 } catch {

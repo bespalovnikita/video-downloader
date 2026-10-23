@@ -118,8 +118,8 @@ public sealed class SubscriptionScanner : IDisposable
             start.ArgumentList.Add("--cookies"); start.ArgumentList.Add(cookiePath);
         }
         start.ArgumentList.Add("--"); start.ArgumentList.Add(url);
-        using var process = new Process { StartInfo = start };
-        if (!process.Start()) throw new IOException("Не удалось запустить yt-dlp для проверки подписки.");
+        using var child=ManagedChildProcess.Start(start);
+        var process=child.Process;
         using var stop = CancellationTokenSource.CreateLinkedTokenSource(token);
         using var kill = stop.Token.Register(() => {
             try { if (!process.HasExited) process.Kill(true); }
@@ -131,10 +131,10 @@ public sealed class SubscriptionScanner : IDisposable
             try { return await ReadBoundedAsync(stream, maximum, stop.Token).ConfigureAwait(false); }
             catch { stop.Cancel(); throw; }
         }
-        var stdout = ReadOutput(process.StandardOutput.BaseStream, _limits.MaxMetadataBytes);
+        var stdout = ReadOutput(child.StandardOutput.BaseStream, _limits.MaxMetadataBytes);
         async Task<(string Text, bool Incomplete)> ReadErrors()
         {
-            try { return await ReadDiagnosticsAsync(process.StandardError.BaseStream, stop.Token).ConfigureAwait(false); }
+            try { return await ReadDiagnosticsAsync(child.StandardError.BaseStream, stop.Token).ConfigureAwait(false); }
             catch { stop.Cancel(); throw; }
         }
         var stderr = ReadErrors();

@@ -117,6 +117,7 @@ internal static class NativeCli
                 RateLimit=Option(args,"--rate","Unlimited"),
                 Cookies=Option(args,"--cookies","")
             };
+            DependencyCenter.ValidateDownloadTools(DependencyCenter.Executable("yt-dlp.exe"));
             var store=new AppPersistence();
             store.ReadHistory(); // Refuse a damaged history before starting any child.
             using var logger=new StreamWriter(Path.Combine(Path.GetDirectoryName(Path.GetFullPath(input))!,"native-cli.log"),append:false);

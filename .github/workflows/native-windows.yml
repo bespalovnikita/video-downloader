@@ -36,6 +36,8 @@ jobs:
         run: pwsh -NoProfile -File ./tests/russian-ui-tests.ps1
       - name: Build native C# WPF app
         run: dotnet build native/VideoDownloader.Native.csproj -c Release
+      - name: Native unit and filesystem security tests
+        run: dotnet run --project native-tests/VideoDownloader.NativeTests.csproj -c Release
       - name: Native WPF window startup smoke
         shell: pwsh
         timeout-minutes: 2
@@ -46,7 +48,20 @@ jobs:
         run: |
           $env:VD_NATIVE_UI_TEST_RESULT = Join-Path $env:RUNNER_TEMP 'native-ui-result.txt'
           $exe = (Resolve-Path 'native/bin/Release/net8.0-windows/win-x64/VideoDownloader.exe').Path
-          $app = Start-Process -FilePath $exe -ArgumentList '--ui-self-test' -Wait -PassThru
+          $app = Start-Process -FilePath $exe -ArgumentList '--ui-self-test' -PassThru
+          $deadline = [DateTime]::UtcNow.AddSeconds(90)
+          $lastStage = ''
+          while (-not $app.WaitForExit(250)) {
+            if (Test-Path -LiteralPath $env:VD_NATIVE_UI_TEST_RESULT) {
+              $stage = Get-Content -LiteralPath $env:VD_NATIVE_UI_TEST_RESULT -Raw
+              if ($stage -ne $lastStage) { Write-Host "Native UI stage: $stage"; $lastStage = $stage }
+            }
+            if ([DateTime]::UtcNow -gt $deadline) {
+              Stop-Process -Id $app.Id -Force
+              throw "Native WPF interaction regression timed out; last stage=$lastStage"
+            }
+          }
+          $app.WaitForExit()
           if ($app.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $env:VD_NATIVE_UI_TEST_RESULT)) {
             $lastStage = if (Test-Path -LiteralPath $env:VD_NATIVE_UI_TEST_RESULT) {
               Get-Content -LiteralPath $env:VD_NATIVE_UI_TEST_RESULT -Raw
@@ -56,8 +71,6 @@ jobs:
           if ((Get-Content -LiteralPath $env:VD_NATIVE_UI_TEST_RESULT -Raw).Trim() -ne 'PASS') {
             throw 'Native WPF interaction regression did not pass'
           }
-      - name: Native unit and filesystem security tests
-        run: dotnet run --project native-tests/VideoDownloader.NativeTests.csproj -c Release
       - name: Publish native portable EXE
         shell: pwsh
         run: |

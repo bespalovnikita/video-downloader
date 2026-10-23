@@ -194,11 +194,10 @@ internal static class ReviewRegressionTests
                 const string url = FixtureBase + "preview-metadata";
                 var ready = new TaskCompletionSource<PreviewData>(TaskCreationOptions.RunContinuationsAsynchronously);
                 var logs = new System.Collections.Concurrent.ConcurrentQueue<string>();
-                int ownerThread = Environment.CurrentManagedThreadId;
                 int credentialReads = 0;
                 using (var previews = new PreviewService(TestExecutable(), data,
                     () => {
-                        if (Environment.CurrentManagedThreadId == ownerThread)
+                        if (System.Windows.Application.Current?.Dispatcher.CheckAccess()==true)
                             throw new InvalidOperationException("Preview metadata did not execute on a worker thread.");
                         Interlocked.Increment(ref credentialReads);
                         return "";

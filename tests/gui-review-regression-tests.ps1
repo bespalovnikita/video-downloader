@@ -308,7 +308,11 @@ try {
  }
  Apply-Profile Universal
  $engine=Join-Path $root 'ytdl-manager-v8.ps1'
- Start-Download @([string]$row.Url)
+ $originalRoot=$root
+ $root=Join-Path $testRoot 'retry-app'
+ [void][IO.Directory]::CreateDirectory($root)
+ foreach ($tool in @('ffmpeg.exe','ffprobe.exe')) { [IO.File]::WriteAllText((Join-Path $root $tool),'dependency fixture') }
+ try { Start-Download @([string]$row.Url) } finally { $root=$originalRoot }
  Assert ($row.Status -eq 'Interrupted' -and $row.OutputRoot -eq $newRoot -and -not $row.Path -and $row.OwnedPaths.Count -eq 0) 'A failed retry launch must not combine old owned paths with the new output root'
  Remove-SelectedQueueEntries @($row)
  Assert ($script:queue.Count -eq 0 -and [IO.File]::Exists($oldFile)) 'Removing a failed new attempt must preserve the previous successful file'
