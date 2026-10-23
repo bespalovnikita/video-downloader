@@ -78,7 +78,10 @@ class VideoDownloaderPornHubFixtureIE(_BaseIE):
         with open(os.environ['VD_PH_FIXTURE'], encoding='utf-8') as handle:
             pages = json.load(handle)
         number = query['page']
-        return pages[str(number)], SimpleNamespace(url=f'{base}?page={number}')
+        if number > 1 and base.endswith('/upload'):
+            raise RuntimeError('The scanner must reuse the canonical publication endpoint')
+        canonical = base.removesuffix('/upload').replace('https://rt.', 'https://www.')
+        return pages[str(number)], SimpleNamespace(url=f'{canonical}?page={number}')
 '@ | Set-Content -LiteralPath (Join-Path $extractors 'vd_transport.py') -Encoding utf8
         function Page([string[]]$Keys,[bool]$More) {
             $cards=(@($Keys|ForEach-Object {'<li class="pcVideoListItem"><a title="Fixture" href="/view_video.php?viewkey='+$_+'">Video</a></li>'}) -join '')
