@@ -102,10 +102,131 @@ class CollectorTests(unittest.TestCase):
         with self.assertRaises(ExtractorError):
             Collector({1: page(()).replace('<div class="noVideos">No videos</div>', '')}).extract(SOURCE)
 
-    def test_no_list_and_ambiguous_lists_fail_closed(self):
-        for html in ('<html><body>Please log in</body></html>', page(outside='<ul id="videoSearchResult"></ul>')):
+    def test_no_list_and_different_lists_fail_closed(self):
+        other = '<ul id="videoSearchResult"><li class="videoblock" data-video-vkey="phwrong"></li></ul>'
+        for html in ('<html><body>Please log in</body></html>', page(outside=other)):
             with self.subTest(html=html), self.assertRaises(ExtractorError):
                 Collector({1: html}).extract(SOURCE)
+
+    def test_empty_layout_placeholder_does_not_make_the_archive_ambiguous(self):
+        result = Collector({1: page(outside='<ul id="videoSearchResult"></ul>')}).extract(SOURCE)
+        self.assertEqual([e['id'] for e in result['entries']], ['phfixture1'])
+        for content in ('data-total-videos="0"', 'data-total-videos="8"'):
+            with self.subTest(content=content), self.assertRaises(ExtractorError):
+                Collector({1: page(outside=f'<ul id="videoSearchResult" {content}></ul>')}).extract(SOURCE)
+        for content in ('<a href="/view_video.php?viewkey=phwrong">New card layout</a>',
+                        '<button id="moreDataBtn">More</button>'):
+            with self.subTest(content=content), self.assertRaises(ExtractorError):
+                Collector({1: page(outside=f'<ul id="videoSearchResult">{content}</ul>')}).extract(SOURCE)
+
+    def test_identical_list_copies_are_one_archive_and_walk_all_pages(self):
+        def copies(html):
+            start = html.index('<ul id="mostRecentVideosSection"')
+            end = html.index('</ul>', start) + len('</ul>')
+            copy = html[start:end].replace('mostRecentVideosSection', 'videoSearchResult')
+            return html[:end] + copy + html[end:]
+        result = Collector({1: copies(page(('phfixture1', 'phfixture2'), next_page=2, total=3)),
+                            2: copies(page(('phfixture3',), number=2, total=3))}).extract(SOURCE)
+        self.assertEqual([e['id'] for e in result['entries']], ['phfixture1', 'phfixture2', 'phfixture3'])
+        self.assertEqual([p['count'] for p in result['vd_ph_scan']['pages']], [2, 1])
+
+    def test_list_copies_with_different_counts_or_subsets_are_rejected(self):
+        for other in ('<ul id="videoSearchResult" data-total-videos="2"><li class="videoblock" data-video-vkey="phfixture1"></li></ul>',
+                      '<ul id="videoSearchResult"><li class="videoblock" data-video-vkey="phfixture1"></li><li class="videoblock" data-video-vkey="phwrong"></li></ul>'):
+            with self.subTest(other=other), self.assertRaises(ExtractorError):
+                Collector({1: page(total=1, outside=other)}).extract(SOURCE)
+
+    def test_video_tab_owns_the_archive_and_not_other_page_grids(self):
+        def variant(html):
+            start = html.index('<ul id="mostRecentVideosSection"')
+            end = html.index('<ul class="pagination">', start)
+            main = html[start:end].replace('id="mostRecentVideosSection"', 'id="profileGrid" class="videos"')
+            # A secondary block has a known ID, its own counter, malformed card
+            # and foreign paging; none describe the active publication tab.
+            other = ('<div class="videoUList"><ul id="videoSearchResult" data-total-videos="9">'
+                     '<li class="videoblock" data-video-vkey="invalid-key"></li>'
+                     '<a rel="next" href="https://other.example/?page=8">Next</a>'
+                     '<button id="moreDataBtn">More</button></ul></div>')
+            return html[:start] + '<section id="videosTab"><div class="videoUList">' + main + '</div></section>' + html[end:] + other
+        result = Collector({1: variant(page(('phfixture1', 'phfixture2'), next_page=2, total=3)),
+                            2: variant(page(('phfixture3',), number=2, total=3))}).extract(SOURCE)
+        self.assertEqual([e['id'] for e in result['entries']], ['phfixture1', 'phfixture2', 'phfixture3'])
+
+    def test_unknown_video_tab_cannot_fall_back_to_a_recognized_list_elsewhere(self):
+        for main in ('<ul id="changedGrid"><li class="videoblock" data-video-vkey="phactual"></li></ul>', ''):
+            with self.subTest(main=main), self.assertRaises(ExtractorError):
+                Collector({1: page(outside=f'<section id="videosTab">{main}</section>')}).extract(SOURCE)
+
+    def test_video_tab_scopes_a_plain_videos_ul_without_a_generic_wrapper(self):
+        html = ('<section id="videosTab"><ul class="videos" id="modelMostRecentVideosSection" data-total-videos="1">'
+                '<li class="videoblock" data-video-vkey="phactual"></li></ul></section>')
+        result = Collector({1: page(outside=html)}).extract(SOURCE)
+        self.assertEqual([e['id'] for e in result['entries']], ['phactual'])
+
+    def test_ancestors_outside_video_tab_cannot_supply_counts_or_paging(self):
+        html = ('<div class="videoUList" data-total-videos="9"><section id="videosTab">'
+                '<ul class="videos" data-total-videos="1"><li class="videoblock" data-video-vkey="phactual"></li></ul>'
+                '</section><a rel="next" href="https://other.example/?page=8">Next</a></div>')
+        result = Collector({1: html}).extract(SOURCE)
+        self.assertEqual([e['id'] for e in result['entries']], ['phactual'])
+
+    def test_without_a_video_tab_exact_and_generic_grids_remain_ambiguous(self):
+        other = ('<div class="videoUList"><ul class="videos" data-total-videos="9">'
+                 '<li class="videoblock" data-video-vkey="phwrong"></li>'
+                 '<a rel="next" href="https://other.example/?page=8">Next</a></ul></div>')
+        with self.assertRaises(ExtractorError):
+            Collector({1: page(outside=other)}).extract(SOURCE)
+
+    def test_nested_publication_containers_are_not_independent_lists(self):
+        def variant(html):
+            return html.replace('<ul id="mostRecentVideosSection"', '<section id="videosTab"><div class="videoUList"><div id="mostRecentVideosSection"><ul class="videos"').replace(
+                '</ul><ul class="pagination">', '</ul></div></div></section><ul class="pagination">', 1)
+        result = Collector({1: variant(page())}).extract(SOURCE)
+        self.assertEqual([e['id'] for e in result['entries']], ['phfixture1'])
+
+    def test_outer_publication_cards_cannot_be_lost_when_a_nested_list_is_found(self):
+        html = ('<div id="mostRecentVideosSection"><li class="videoblock" data-video-vkey="phouter"></li>'
+                '<ul id="uploadedVideos"><li class="videoblock" data-video-vkey="phinner"></li></ul></div>')
+        with self.assertRaises(ExtractorError):
+            Collector({1: html}).extract(SOURCE)
+
+    def test_explicit_wrapper_cannot_merge_independent_nested_lists(self):
+        html = ('<div id="mostRecentVideosSection"><ul class="videos">'
+                '<li class="videoblock" data-video-vkey="phfirst"></li></ul><ul class="videos">'
+                '<li class="videoblock" data-video-vkey="phsecond"></li></ul></div>')
+        with self.assertRaises(ExtractorError):
+            Collector({1: html}).extract(SOURCE)
+
+    def test_nested_list_count_is_not_lost_under_an_explicit_wrapper(self):
+        html = ('<div id="mostRecentVideosSection"><ul class="videos" data-total-videos="9">'
+                '<li class="videoblock" data-video-vkey="phactual"></li></ul></div>')
+        with self.assertRaisesRegex(ExtractorError, 'count does not match'):
+            Collector({1: html}).extract(SOURCE)
+
+    def test_unknown_card_layout_inside_primary_list_is_not_a_placeholder(self):
+        html = page(()).replace('<div class="noVideos">No videos</div>', '<a href="/view_video.php?viewkey=phnewlayout">Video</a>')
+        with self.assertRaises(ExtractorError):
+            Collector({1: html}).extract(SOURCE)
+
+    def test_ambiguous_list_error_reports_names_and_counts_without_video_keys(self):
+        other = '<ul id="videoSearchResult"><li class="videoblock" data-video-vkey="phwrong"></li></ul>'
+        with self.assertRaises(ExtractorError) as failure:
+            Collector({1: page(outside=other)}).extract(SOURCE)
+        message = str(failure.exception)
+        self.assertIn('#mostRecentVideosSection (1)', message)
+        self.assertIn('#videoSearchResult (1)', message)
+        self.assertIn(LISTING, message)
+        self.assertNotIn('phfixture1', message)
+        self.assertNotIn('phwrong', message)
+
+    def test_primary_section_cannot_change_mid_scan_or_during_first_page_recheck(self):
+        for change in (lambda html: html.replace('mostRecentVideosSection', 'uploadedVideos'),
+                       lambda html: html.replace('<body>', '<body><section id="videosTab">').replace('</body>', '</section></body>')):
+            with self.subTest(change=change), self.assertRaisesRegex(ExtractorError, 'section changed'):
+                Collector({1: page(next_page=2), 2: change(page(('phfixture2',), number=2))}).extract(SOURCE)
+            responses = iter((page(), change(page())))
+            with self.subTest(change=change), self.assertRaisesRegex(ExtractorError, 'changed during enumeration'):
+                Collector({1: lambda: next(responses)}).extract(SOURCE)
 
     def test_limits_do_not_return_a_partial_success(self):
         with self.assertRaises(ExtractorError):

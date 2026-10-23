@@ -64,10 +64,10 @@ class _Page(HTMLParser):
     def __init__(self, html, listing_url, page):
         super().__init__(convert_charrefs=True)
         self.listing_url, self.page = listing_url, page
-        self.stack, self.cards, self.next_links, self.page_numbers = [], [], [], set()
-        self.list_count, self.total, self.empty, self.more_button = 0, None, False, False
+        self.stack, self.lists, self.navigation = [], [], []
+        self.video_tabs = 0
         self.card, self.title_parts, self.document_title = None, [], []
-        self.branches, self.candidates = [], []
+        self.candidates = []
         self.outside_cards = 0
         self.feed(html)
         self.close()
@@ -82,7 +82,6 @@ class _Page(HTMLParser):
         # moreData.feedItems alone is a general activity feed, not publications.
         explicit = attrs.get('id') in _LISTS or (tag == 'ul' and attrs.get('id') == 'moreData' and 'videos' in classes)
         publication = explicit or (tag in ('div', 'section') and 'videoUList' in classes)
-        scoped = publication or parent.get('scoped', False)
         marker = (attrs.get('id') or '') + ' ' + ' '.join(classes)
         unrelated = bool(_EXCLUDED.search(marker))
         auxiliary = (tag in ('nav', 'header', 'aside', 'footer') or bool(_CHROME.search(marker))
@@ -91,35 +90,31 @@ class _Page(HTMLParser):
         # Main navigation can be a <nav> or <footer>; excluding its cards must
         # not hide advertised pages. Explicitly unrelated paging is ignored.
         pagination_excluded = parent.get('pagination_excluded', False) or unrelated
-        concrete = explicit or (tag == 'ul' and 'videos' in classes and parent.get('scoped', False))
+        concrete = explicit or (tag == 'ul' and 'videos' in classes
+                                and (parent.get('listing') is not None or parent.get('video_tab', False)))
+        scoped = publication or concrete or parent.get('listing') is not None
         pagination = parent.get('pagination', False) or bool(classes & {'pagination', 'page_next', 'page_current', 'page_last'})
         disabled = parent.get('disabled', False) or 'disabled' in classes
-        node = dict(tag=tag, scoped=scoped, excluded=excluded, pagination=pagination, disabled=disabled,
+        video_tab = parent.get('video_tab', False) or (tag == 'section' and attrs.get('id') == 'videosTab')
+        if tag == 'section' and attrs.get('id') == 'videosTab' and not excluded:
+            self.video_tabs += 1
+        node = dict(tag=tag, excluded=excluded, pagination=pagination, disabled=disabled,
                     next=parent.get('next', False) or 'page_next' in classes, title=tag == 'h1' or parent.get('title', False),
                     document_title=tag == 'title' or parent.get('document_title', False),
-                    concrete=concrete or parent.get('concrete', False), branch=parent.get('branch'),
-                    pagination_excluded=pagination_excluded)
+                    listing=parent.get('listing'), video_tab=video_tab, pagination_excluded=pagination_excluded)
         if (publication or concrete) and not excluded:
-            if not parent.get('scoped', False):
-                self.list_count += 1
-                node['branch'] = {'lists': 0}
-                self.branches.append(node['branch'])
-            if concrete and not parent.get('concrete', False):
-                node['branch']['lists'] += 1
+            name = '#' + attrs['id'] if explicit else ('ul.videos' if concrete else tag + '.videoUList')
+            node['listing'] = dict(name=name, explicit=explicit, video_tab=video_tab, parent=parent.get('listing'),
+                                   cards=[], totals=[], empty=False, errors=[], unknown_links=0)
+            self.lists.append(node['listing'])
             for key in ('data-total-videos', 'data-total-count', 'data-videos-count'):
                 if key in attrs:
-                    value = attrs[key]
-                    if not value or not re.fullmatch(r'\d+', value):
-                        raise ExtractorError('Invalid publication count', expected=True)
-                    count = int(value)
-                    if self.total is not None and self.total != count:
-                        raise ExtractorError('Publication counts disagree', expected=True)
-                    self.total = count
+                    node['listing']['totals'].append(attrs[key])
         if scoped and not excluded:
             if classes & {'noVideos', 'noVideosAvailable', 'noVideosMsg', 'noResults'}:
-                self.empty = True
+                node['listing']['empty'] = True
             if classes & _CARDS and self.card is None:
-                self.card = dict(depth=len(self.stack), ids=set(), title='')
+                self.card = dict(depth=len(self.stack), ids=set(), title='', listing=node['listing'])
             if self.card is not None:
                 key = attrs.get('data-video-vkey') or attrs.get('data-viewkey')
                 if key:
@@ -130,9 +125,14 @@ class _Page(HTMLParser):
                     if target.path == '/view_video.php' and values:
                         site = re.search(r'pornhub(?:premium)?\.(?:com|net|org)$', urlsplit(self.listing_url).hostname, re.I).group().lower()
                         if not re.fullmatch(r'(?:[a-z0-9-]+\.)?' + re.escape(site), target.hostname or '', re.I) or len(values) != 1:
-                            raise ExtractorError('Publication card points outside its source', expected=True)
-                        self._add_key(values[0])
+                            self._card_error('Publication card points outside its source')
+                        else:
+                            self._add_key(values[0])
                         self.card['title'] = self.card['title'] or (attrs.get('title') or '').strip()
+            elif tag == 'a' and urlsplit(urljoin(self.listing_url, attrs.get('href') or '')).path == '/view_video.php':
+                # A changed card layout must not look like an empty placeholder.
+                for listing in self._ancestors(node['listing']):
+                    listing['unknown_links'] += 1
         elif classes & _CARDS and not excluded:
             self.outside_cards += 1
         identifier = attrs.get('id') or ''
@@ -141,7 +141,7 @@ class _Page(HTMLParser):
                 and re.search(r'video|upload|moreData', identifier, re.I) and identifier not in self.candidates):
             self.candidates.append(identifier)
         if attrs.get('id') == 'moreDataBtn' and not disabled and not pagination_excluded:
-            self.more_button = True
+            self.navigation.append((node['listing'], 'more', True))
         relation = (attrs.get('rel') or '').split()
         if tag in ('a', 'link') and attrs.get('href'):
             href = attrs['href']
@@ -150,15 +150,14 @@ class _Page(HTMLParser):
                 target = urlsplit(urljoin(self.listing_url, href))
                 if not _same_source(self.listing_url, target.geturl()):
                     if is_next:
-                        raise ExtractorError('Next page changes the publication source', expected=True)
+                        self.navigation.append((node['listing'], 'error', 'Next page changes the publication source'))
                 else:
                     values = parse_qs(target.query).get('page', ['1'])
                     if len(values) != 1 or not re.fullmatch(r'[1-9]\d*', values[0]):
-                        raise ExtractorError('Invalid pagination index', expected=True)
-                    number = int(values[0])
-                    self.page_numbers.add(number)
-                    if is_next:
-                        self.next_links.append(number)
+                        self.navigation.append((node['listing'], 'error', 'Invalid pagination index'))
+                    else:
+                        number = int(values[0])
+                        self.navigation.append((node['listing'], 'next' if is_next else 'page', number))
         if tag not in _VOID:
             self.stack.append(node)
 
@@ -169,8 +168,19 @@ class _Page(HTMLParser):
 
     def _add_key(self, key):
         if not re.fullmatch(r'[a-z0-9]+', key):
-            raise ExtractorError('Invalid publication video key', expected=True)
-        self.card['ids'].add(key)
+            self._card_error('Invalid publication video key')
+        else:
+            self.card['ids'].add(key)
+
+    @staticmethod
+    def _ancestors(listing):
+        while listing is not None:
+            yield listing
+            listing = listing['parent']
+
+    def _card_error(self, message):
+        for listing in self._ancestors(self.card['listing']):
+            listing['errors'].append(message)
 
     def handle_endtag(self, tag):
         index = next((i for i in range(len(self.stack) - 1, -1, -1) if self.stack[i]['tag'] == tag), None)
@@ -179,8 +189,10 @@ class _Page(HTMLParser):
         del self.stack[index:]
         if self.card is not None and len(self.stack) <= self.card['depth']:
             if len(self.card['ids']) != 1:
-                raise ExtractorError('A publication card has no unique video URL', expected=True)
-            self.cards.append((next(iter(self.card['ids'])), self.card['title']))
+                self._card_error('A publication card has no unique video URL')
+            else:
+                for listing in self._ancestors(self.card['listing']):
+                    listing['cards'].append((next(iter(self.card['ids'])), self.card['title']))
             self.card = None
 
     def handle_data(self, data):
@@ -190,7 +202,10 @@ class _Page(HTMLParser):
             self.document_title.append(data)
 
     def result(self):
-        if not self.list_count:
+        # videosTab is the profile's publication boundary. A recognized carousel
+        # elsewhere cannot stand in for an unknown/empty layout inside the tab.
+        candidates = [listing for listing in self.lists if not self.video_tabs or listing['video_tab']]
+        if not candidates:
             title = ' '.join(''.join(self.document_title + self.title_parts).split())
             age = re.search(r'age.?verif|verify your age|confirm your age|over 18|старше.?18|подтвер\w* возраст', title, re.I)
             reason = 'Получена страница подтверждения возраста.' if age else 'Не распознан список публикаций на полученной странице.'
@@ -199,19 +214,72 @@ class _Page(HTMLParser):
                 f'{reason} Адрес: {_diagnostic_url(self.listing_url)}. '
                 f'Секции видео: {detail}; карточек вне списка: {self.outside_cards}. '
                 'Если сайт требует подтверждение возраста или вход, укажите файл сессии браузера в поле Cookies основного окна.', expected=True)
-        if self.list_count != 1 or any(branch['lists'] > 1 for branch in self.branches):
-            raise ExtractorError('Ambiguous publication lists on the page', expected=True)
-        unique = dict(self.cards)
-        if not unique and not (self.empty or self.total == 0):
+        # An outer wrapper and its actual UL are one list, not competing lists.
+        # Without an authoritative tab, do not guess between independent grids
+        # by document order, card count or specificity of their selectors.
+        pool = candidates
+        containers = {id(parent) for listing in pool for parent in self._ancestors(listing['parent'])}
+        selected = [listing for listing in pool if id(listing) not in containers]
+        # Bare empty ULs are layout placeholders. A count, empty-state marker,
+        # watch link, malformed card or paging makes a list meaningful instead.
+        meaningful = [listing for listing in selected if listing['cards'] or listing['totals'] or listing['empty']
+                      or listing['errors'] or listing['unknown_links']
+                      or any(owner is listing for owner, _, _ in self.navigation)]
+        selected = meaningful or selected
+        for listing in self.lists:
+            listing['keys'] = frozenset(key for key, _ in listing['cards'])
+        unique = dict(selected[0]['cards'])
+        keys = frozenset(unique)
+        if any(listing['keys'] != keys for listing in selected):
+            self._ambiguous(selected)
+        # Do not silently drop cards that belong directly to a publication ID
+        # (or generic wrapper) when narrower lists were found inside it.
+        selected_ids = {id(listing) for listing in selected}
+        for listing in pool:
+            if id(listing) not in selected_ids and listing['keys'] - keys:
+                self._ambiguous(selected + [listing])
+        for listing in pool:
+            if listing['errors'] or listing['unknown_links']:
+                raise ExtractorError((listing['errors'] or ['Unrecognized publication card layout'])[0], expected=True)
+        owners = {id(parent) for listing in selected for parent in self._ancestors(listing)
+                  if not self.video_tabs or parent['video_tab']}
+        counts = []
+        for listing in self.lists:
+            if id(listing) not in owners or listing['keys'] != keys:
+                continue
+            for value in listing['totals']:
+                if not value or not re.fullmatch(r'\d+', value):
+                    raise ExtractorError('Invalid publication count', expected=True)
+                counts.append(int(value))
+        if len(set(counts)) > 1:
+            raise ExtractorError('Publication counts disagree', expected=True)
+        total = counts[0] if counts else None
+        empty = any(listing['empty'] for listing in self.lists if id(listing) in owners and listing['keys'] == keys)
+        if not unique and not (empty or total == 0):
             raise ExtractorError('Empty publication page has no confirmed empty-state marker', expected=True)
-        if len(set(self.next_links)) > 1 or any(number != self.page + 1 for number in self.next_links):
+        navigation = [(kind, value) for owner, kind, value in self.navigation if owner is None or id(owner) in owners]
+        for kind, value in navigation:
+            if kind == 'error':
+                raise ExtractorError(value, expected=True)
+        next_links = [value for kind, value in navigation if kind == 'next']
+        if len(set(next_links)) > 1 or any(number != self.page + 1 for number in next_links):
             raise ExtractorError('Pagination skips or repeats a page', expected=True)
-        has_next = bool(self.next_links)
-        if not has_next and (self.more_button or any(number > self.page for number in self.page_numbers)):
+        has_next = bool(next_links)
+        if not has_next and any(kind == 'more' or (kind == 'page' and value > self.page) for kind, value in navigation):
             raise ExtractorError('Pagination ended before its last advertised page', expected=True)
         if has_next and not unique:
             raise ExtractorError('Empty page advertises more publications', expected=True)
-        return list(unique.items()), has_next, self.total, ' '.join(''.join(self.title_parts).split())
+        identity = (bool(self.video_tabs), tuple(sorted({next(
+            (parent['name'] for parent in self._ancestors(listing) if parent['explicit'] and id(parent) in owners),
+            listing['name']) for listing in selected})))
+        return list(unique.items()), has_next, total, ' '.join(''.join(self.title_parts).split()), identity
+
+    def _ambiguous(self, listings):
+        detail = ', '.join(f'{listing["name"]} ({len(dict(listing["cards"]))})' for listing in listings[:6])
+        raise ExtractorError(
+            'Не удалось однозначно выбрать список публикаций. '
+            f'Адрес: {_diagnostic_url(self.listing_url)}. Секции (число видео): {detail}. '
+            'Разные списки не объединены; прежние результаты сохранены.', expected=True)
 
 
 class VideoDownloaderPornHubChannelIE(PornHubBaseIE):
@@ -259,17 +327,19 @@ class VideoDownloaderPornHubChannelIE(PornHubBaseIE):
         base = f'https://{domain.lower()}/{kind}/{slug}/videos' + ('' if kind == 'channels' else '/upload')
         maximum, max_pages = self._limit('max_items', 10000), self._limit('max_pages', 500)
         entries, pages, seen, signatures = [], [], set(), set()
-        first, total, title, endpoint = None, None, slug, base
+        first, total, title, endpoint, selection = None, None, slug, base, None
         for number in range(1, max_pages + 1):
-            cards, has_next, count, page_title, endpoint = self._page(endpoint, number, slug)
+            cards, has_next, count, page_title, identity, endpoint = self._page(endpoint, number, slug)
             signature = hashlib.sha256('\n'.join(sorted(key for key, _ in cards)).encode()).hexdigest()
             if signature in signatures or (number > 1 and not cards):
                 raise ExtractorError('Publication pages repeat or end unexpectedly', expected=True)
             signatures.add(signature)
             if number == 1:
-                first, total, title = signature, count, page_title or slug
+                first, total, title, selection = signature, count, page_title or slug, identity
                 if total is not None and total > maximum:
                     raise ExtractorError('Publication list exceeds its item limit', expected=True)
+            elif identity != selection:
+                raise ExtractorError('Publication section changed during enumeration; retry the scan', expected=True)
             elif count is not None and total is not None and count != total:
                 raise ExtractorError('Publication count changed during enumeration; retry the scan', expected=True)
             added = 0
@@ -294,8 +364,8 @@ class VideoDownloaderPornHubChannelIE(PornHubBaseIE):
             raise ExtractorError('Publication list is incomplete: video count does not match', expected=True)
         # A channel can change while pages are being walked. Do not commit a
         # mixed snapshot if its first page changed in the meantime.
-        check, check_next, check_total, _, _ = self._page(endpoint, 1, slug)
-        if hashlib.sha256('\n'.join(sorted(key for key, _ in check)).encode()).hexdigest() != first or check_total != total or check_next != pages[0]['has_next']:
+        check, check_next, check_total, _, check_selection, _ = self._page(endpoint, 1, slug)
+        if hashlib.sha256('\n'.join(sorted(key for key, _ in check)).encode()).hexdigest() != first or check_total != total or check_next != pages[0]['has_next'] or check_selection != selection:
             raise ExtractorError('Publication list changed during enumeration; retry the scan', expected=True)
         result = self.playlist_result(entries, f'{kind}/{slug}', title)
         result['vd_ph_scan'] = dict(version=1, complete=True, source_url=url, listing_url=base,
