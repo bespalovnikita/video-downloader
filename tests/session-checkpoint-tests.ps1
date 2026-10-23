@@ -23,7 +23,7 @@ try {
     $session = [ordered]@{
         Queue = @(
             [ordered]@{ Url="https://example.com/a"; Status="Completed"; DisplayState="Done"; Path="C:\a.mp4" },
-            [ordered]@{ Url="https://example.com/b"; Status="Running"; DisplayState="75.3%"; Path="" },
+            [ordered]@{ Url="https://example.com/b"; Status="Running"; DisplayState="75.3%"; Path=""; SubscriptionId='source-123'; SubscriptionName='Канал 123' },
             [ordered]@{ Url="https://example.com/c"; Status="Queued"; DisplayState="Queued"; Path="" },
             [ordered]@{ Url="https://example.com/d"; Status="Failed"; DisplayState="Network error"; Path="" }
         )
@@ -45,6 +45,8 @@ try {
     $restored = @(Get-VdRestoredQueue -Session $loaded)
     Assert-Vd ($restored[0].Status -eq "Completed" -and $restored[0].State -eq "Done") "Completed item changed during restore"
     Assert-Vd ($restored[1].Status -eq "Interrupted" -and $restored[1].State -eq "Interrupted") "Running item must recover as interrupted"
+    Assert-Vd ($restored[1].SubscriptionId -ceq 'source-123' -and $restored[1].SubscriptionName -ceq 'Канал 123') 'Restoring a queued subscription must retain its pinned source and folder'
+    Assert-Vd ($restored[0].SubscriptionId -ceq '' -and $restored[0].SubscriptionName -ceq '') 'Legacy ordinary queue rows must restore with an empty source and no extra output folder'
     Assert-Vd ($restored[2].Status -eq "Queued" -and $restored[3].Status -eq "Failed") "Queued/failed statuses lost"
     $remaining = @(Get-VdResumeUrls -Queue $restored)
     Assert-Vd ($remaining.Count -eq 3 -and $remaining[0] -eq "https://example.com/b") "Already completed item selected for download"
@@ -155,6 +157,10 @@ try {
     Write-VdSessionCheckpoint -Path $path -Session (Get-SessionSnapshot)
     $retrySession=Read-VdSessionCheckpoint -Path $path
     Assert-Vd ($retrySession.Queue.Count -eq 1 -and $retrySession.Queue[0].Status -eq 'Running') 'Retry must be checkpointed exactly once after queue removal'
+    $script:queue[0] | Add-Member -NotePropertyMembers @{SubscriptionId='retry-source';SubscriptionName='123'} -Force
+    Write-VdSessionCheckpoint -Path $path -Session (Get-SessionSnapshot)
+    $retrySource=Read-VdSessionCheckpoint -Path $path
+    Assert-Vd ($retrySource.Queue[0].SubscriptionId -ceq 'retry-source' -and $retrySource.Queue[0].SubscriptionName -ceq '123') 'GUI checkpoint mapping must preserve source metadata for a resumed retry'
     Assert-Vd (@(Get-VdResumeUrls -Queue (Get-VdRestoredQueue -Session $retrySession)).Count -eq 1) 'Retry must be resumable after restart'
     $startNode=$guiAst.Find({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Start-Download'},$true)
     Assert-Vd ($startNode.Extent.Text.IndexOf('Add-Urls $items') -gt $startNode.Extent.Text.IndexOf('if ($plan.Cancelled) { return }')) 'Queue insertion must follow duplicate confirmation'
@@ -190,6 +196,10 @@ try {
 
     [IO.File]::WriteAllText($path,'truncated json')
     Assert-Throws { Read-VdSessionCheckpoint -Path $path | Out-Null } "Corrupt checkpoint must fail, not silently reset"
+    foreach($badName in @('../escape','a\b','NUL','name.')) {
+        Write-VdSessionCheckpoint -Path $path -Session @{Queue=@(@{Url='https://example.com/source';Status='Queued';SubscriptionName=$badName});Settings=@{};Engine=$null}
+        Assert-Throws { Read-VdSessionCheckpoint -Path $path | Out-Null } "Unsafe saved subscription folder must fail: $badName"
+    }
 }
 finally {
     Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue

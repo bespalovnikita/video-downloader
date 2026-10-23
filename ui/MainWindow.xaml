@@ -422,6 +422,7 @@
                                 </DataGridTemplateColumn.CellTemplate>
                             </DataGridTemplateColumn>
                             <DataGridTextColumn Header="State" Binding="{Binding State}" Width="90" ElementStyle="{StaticResource QueueStatusTextStyle}"/>
+                            <DataGridTextColumn Header="Подписка / папка" Binding="{Binding SubscriptionName}" Width="120" ElementStyle="{StaticResource GridTextStyle}"/>
                         </DataGrid.Columns>
                     </DataGrid>
 
@@ -447,6 +448,7 @@
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="Slot" Binding="{Binding Slot}" Width="52" ElementStyle="{StaticResource GridTextStyle}"/>
                             <DataGridTextColumn Header="State" Binding="{Binding State}" Width="110" ElementStyle="{StaticResource DownloadStatusTextStyle}"/>
+                            <DataGridTextColumn Header="Подписка / папка" Binding="{Binding SubscriptionName}" Width="120" ElementStyle="{StaticResource GridTextStyle}"/>
                             <DataGridTemplateColumn Header="Video / progress" Width="*" MinWidth="220">
                                 <DataGridTemplateColumn.CellTemplate>
                                     <DataTemplate>

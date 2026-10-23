@@ -160,13 +160,14 @@ internal static class NativeUiSelfTest
             {
                 cancelSession.Add(pending);sessionField.SetValue(controller,cancelSession);
                 var queueSubscriptions=typeof(NativeWindow).GetMethod("QueueSubscriptionUrls",
-                    System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance)!;
+                    System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance,null,
+                    new[]{typeof(IEnumerable<string>),typeof(string),typeof(string)},null)!;
                 const string deferredUrl="https://example.com/subscription-next-start";
-                var accepted=(IReadOnlyList<string>)queueSubscriptions.Invoke(controller,new object[]{new[]{deferredUrl}})!;
+                var accepted=(IReadOnlyList<string>)queueSubscriptions.Invoke(controller,new object[]{new[]{deferredUrl},"subscription-test","123"})!;
                 var deferred=((System.Collections.ObjectModel.ObservableCollection<DownloadItem>)queue.ItemsSource)
                     .Single(row=>row.Url==deferredUrl);
                 Require(accepted.SequenceEqual(new[]{deferredUrl}) && deferred.DeferredToNextStart &&
-                    deferred.Status=="Queued" && cancelSession.Outstanding==1,
+                    deferred.Status=="Queued" && deferred.SubscriptionId=="subscription-test" && deferred.SubscriptionName=="123" && cancelSession.Outstanding==1,
                     "Subscription import must stay queued until Start without entering the active coordinator");
                 ((System.Collections.ObjectModel.ObservableCollection<DownloadItem>)queue.ItemsSource).Remove(deferred);
                 queue.SelectedItem=pending;remove.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));

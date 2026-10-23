@@ -13,6 +13,7 @@ internal static class SubscriptionStoreTests
         try
         {
             InitialSnapshotsAndFailures(Path.Combine(root, "initial"));
+            NamesAndLegacyMigration(Path.Combine(root, "names"));
             SuccessfulProcessingAndNotices(Path.Combine(root, "notices"));
             CrashRecovery(Path.Combine(root, "recovery"));
             LargeCompleteScan(Path.Combine(root, "large"));
@@ -41,6 +42,56 @@ internal static class SubscriptionStoreTests
 
     private static SubscriptionItem Item(SubscriptionSnapshot snapshot, string id, string url) =>
         snapshot.Items.Single(item => item.SubscriptionId == id && item.Url == url);
+
+    private static void NamesAndLegacyMigration(string directory)
+    {
+        foreach (var (raw, expected) in new[] {
+            (" . Мой: канал / Test . ", "Мой_ канал _ Test"), ("CON", "_CON"), ("nul.txt", "_nul.txt"),
+            ("LPT³", "_LPT³"), ("con .txt", "_con .txt"), ("Conductor", "Conductor"), ("..", "Подписка"),
+            ("Имя   канала", "Имя канала"), ("bad\u0001name", "bad_name"), ("left\ud800right", "left_right") })
+        {
+            string name = SubscriptionNames.Normalize(raw);
+            Assert(name == expected && SubscriptionNames.IsValid(name), "Safe folder normalization: " + expected);
+        }
+        string unicodeBoundary = new('x', 79);
+        Assert(SubscriptionNames.Normalize(unicodeBoundary + "😀") == unicodeBoundary,
+            "Length cap must not leave a split UTF16 surrogate pair");
+        foreach (string invalid in new[] { "", ".", "..", "../escape", @"..\escape", @"C:\escape", "a/b", "a\\b", "CON", "name.", " name", "a  b", new string('x', 81) })
+        {
+            Assert(!SubscriptionNames.IsValid(invalid), "Unsafe folder must fail validation: " + invalid);
+            if (invalid.Length > 0) Refuses(() => SubscriptionNames.ResolveOutputDirectory(directory, invalid), "Output resolution must reject unsafe leaves");
+        }
+        Assert(SubscriptionNames.ResolveOutputDirectory(directory, "123") == Path.Combine(Path.GetFullPath(directory), "123") &&
+            SubscriptionNames.ResolveOutputDirectory(directory, "") == Path.GetFullPath(directory),
+            "Subscription folders are exactly one child of the selected output; ordinary rows retain the base");
+
+        var store = new SubscriptionStore(directory);
+        var source = store.Add("https://names.example/playlist", false);
+        var first = store.ApplyScan(source.Id, new("Полное имя плейлиста", [], "", "", "Канал: 123"), []);
+        Assert(first.Subscriptions.Single().ShortName == "Канал_ 123", "The first successful scan must prefer the channel's suggested name");
+        store.ApplyScan(source.Id, new("Новое имя плейлиста", [], "", "", "Новое имя канала"), []);
+        Assert(store.Read().Subscriptions.Single().ShortName == "Канал_ 123", "Later scans must never move an assigned folder silently");
+        store.SetShortName(source.Id, "123");
+        store.ApplyScan(source.Id, new("Плейлист", [], "", "", "Другой канал"), []);
+        Assert(new SubscriptionStore(directory).Read().Subscriptions.Single().ShortName == "123", "An explicit short name must survive scans and restarts");
+        var custom = store.Add("https://names.example/custom", true, shortName: "Моя: папка");
+        Assert(custom.ShortName == "Моя_ папка", "An explicit name before discovery must use the same leaf rules");
+        byte[] before = File.ReadAllBytes(store.Path);
+        Refuses(() => store.SetShortName(source.Id, " \t"), "A blank manual name must not replace a real folder");
+        Refuses(() => store.Add("https://names.example/rejected", false, shortName: "   "), "A blank manual initial name must fail");
+        Assert(before.SequenceEqual(File.ReadAllBytes(store.Path)), "Rejected renames must preserve durable bytes");
+
+        var legacy = JsonNode.Parse(before)!.AsObject();
+        foreach (var row in legacy["Subscriptions"]!.AsArray()) row!.AsObject().Remove("ShortName");
+        byte[] old = Encoding.UTF8.GetBytes(legacy.ToJsonString());
+        File.WriteAllBytes(store.Path, old);
+        Assert(store.Read().Subscriptions.All(row => row.ShortName == "") && old.SequenceEqual(File.ReadAllBytes(store.Path)),
+            "Released v1 without ShortName must read without overwriting its file");
+        var migrated = store.ApplyScan(source.Id, new("Плейлист", [], "", "", "Канал после обновления"), []);
+        Assert(migrated.Subscriptions.Single(row => row.Id == source.Id).ShortName == "Канал после обновления" &&
+            new SubscriptionStore(directory).Read().Subscriptions.Count == 2,
+            "The next successful scan may safely populate a legacy subscription's folder");
+    }
 
     private static void InitialSnapshotsAndFailures(string directory)
     {
@@ -252,6 +303,9 @@ internal static class SubscriptionStoreTests
         Variant(root => root["Subscriptions"]![0]!["Initialized"] = "false");
         Variant(root => root["Subscriptions"]![0]!["LastAttemptUtc"] = "not-a-date");
         Variant(root => root["Subscriptions"]![0]!["Title"] = null);
+        Variant(root => root["Subscriptions"]![0]!["ShortName"] = null);
+        Variant(root => root["Subscriptions"]![0]!["ShortName"] = "../escape");
+        Variant(root => root["Subscriptions"]![0]!["ShortName"] = "CON");
         Variant(root => root["Subscriptions"]![0]!["Url"] = "file:///outside");
         Variant(root => root["Subscriptions"]!.AsArray().Add(root["Subscriptions"]![0]!.DeepClone()));
         Variant(root => root["Items"]!.AsArray().Add(root["Items"]![0]!.DeepClone()));

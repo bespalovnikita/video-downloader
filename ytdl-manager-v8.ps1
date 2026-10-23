@@ -8,6 +8,7 @@ param(
     [switch]$Watch,
     [int]$WatchInterval = 2,
     [string]$LiveQueueFile,
+    [string]$ItemFoldersFile,
     [string]$CancelDir,
     [switch]$Archive,
     [string]$Cookies,
@@ -48,6 +49,9 @@ Import-Module $liveQueueModule -Force
 $cancelModule = Join-Path $root "lib\VideoDownloader.Cancellation.psm1"
 if (-not (Test-Path -LiteralPath $cancelModule)) { throw "Missing cancellation module: $cancelModule" }
 Import-Module $cancelModule -Force
+$subscriptionNamesModule = Join-Path $root "lib\VideoDownloader.SubscriptionNames.psm1"
+if (-not (Test-Path -LiteralPath $subscriptionNamesModule)) { throw "Missing subscription names module: $subscriptionNamesModule" }
+Import-Module $subscriptionNamesModule -Force
 $historyPath = Join-Path $env:LOCALAPPDATA "VideoDownloader\successful-downloads.jsonl"
 
 $ytDlpExe = Join-Path $root "yt-dlp.exe"
@@ -79,6 +83,49 @@ if ($Out) {
     $ResolvedOut = (Get-Location).Path
 }
 if ($Archive) { $ResolvedOut = Join-Path $ResolvedOut (Get-Date -Format "yyyy-MM-dd") }
+$ResolvedOut = [IO.Path]::GetFullPath($ResolvedOut)
+# Routing is immutable for the complete run. Never infer a folder from an URL,
+# a video title, a later subscription rename or a mutable live queue file.
+$itemOutputRoots=[Collections.Generic.Dictionary[string,string]]::new([StringComparer]::Ordinal)
+if ($ItemFoldersFile) {
+    $manifestPath=$ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($ItemFoldersFile)
+    $stream=[IO.FileStream]::new($manifestPath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+    try {
+        if ($stream.Length -gt 16MB) { throw 'ItemFoldersFile exceeds the 16 MiB safety limit.' }
+        $manifest=[Text.Json.JsonDocument]::Parse($stream)
+        try {
+            function Assert-ItemFolderFields($Element,[string[]]$Names) {
+                if ($Element.ValueKind -ne [Text.Json.JsonValueKind]::Object) { throw 'Invalid ItemFoldersFile object.' }
+                $seen=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+                foreach($property in $Element.EnumerateObject()) {
+                    if ($property.Name -cnotin $Names -or -not $seen.Add($property.Name)) { throw 'Unknown or duplicate ItemFoldersFile field.' }
+                }
+                if ($seen.Count -ne $Names.Count) { throw 'Missing ItemFoldersFile field.' }
+            }
+            $document=$manifest.RootElement
+            Assert-ItemFolderFields $document @('Version','Items')
+            if ($document.GetProperty('Version').ValueKind -ne [Text.Json.JsonValueKind]::Number -or $document.GetProperty('Version').GetInt32() -ne 1 -or
+                $document.GetProperty('Items').ValueKind -ne [Text.Json.JsonValueKind]::Array -or $document.GetProperty('Items').GetArrayLength() -gt 100000) {
+                throw 'Unsupported or invalid ItemFoldersFile format.'
+            }
+            foreach($entry in $document.GetProperty('Items').EnumerateArray()) {
+                Assert-ItemFolderFields $entry @('Url','Folder')
+                if ($entry.GetProperty('Url').ValueKind -ne [Text.Json.JsonValueKind]::String -or $entry.GetProperty('Folder').ValueKind -ne [Text.Json.JsonValueKind]::String) {
+                    throw 'ItemFoldersFile URL and folder must be strings.'
+                }
+                $itemUrl=$entry.GetProperty('Url').GetString();$folder=$entry.GetProperty('Folder').GetString();$uri=$null
+                if ([string]::IsNullOrWhiteSpace($itemUrl) -or $itemUrl -cne $itemUrl.Trim() -or $itemUrl -match '\p{Cc}' -or
+                    -not [Uri]::TryCreate($itemUrl,[UriKind]::Absolute,[ref]$uri) -or $uri.Scheme -notin @('http','https') -or
+                    [string]::IsNullOrWhiteSpace($uri.Host) -or [string]::IsNullOrWhiteSpace($folder) -or -not (Test-VdSubscriptionName -Name $folder)) {
+                    throw 'Invalid URL or unsafe subscription folder in ItemFoldersFile.'
+                }
+                $itemRoot=Resolve-VdSubscriptionOutput -BaseDirectory $ResolvedOut -Name $folder
+                Assert-VdNoReparseAncestors -Path (Join-Path $itemRoot '__validation__')
+                if (-not $itemOutputRoots.TryAdd($itemUrl,$itemRoot)) { throw 'Duplicate URL in ItemFoldersFile.' }
+            }
+        } finally { $manifest.Dispose() }
+    } finally { $stream.Dispose() }
+}
 New-Item -ItemType Directory -Path $ResolvedOut -Force | Out-Null
 
 $ResultBaseDir = $InputDir
@@ -236,7 +283,10 @@ Write-Log ("Retries: {0}; delay={1}s" -f $Retries,$RetryDelaySeconds) Cyan
 if ($RateLimit) { Write-Log ("Rate limit: {0}" -f $RateLimit) Cyan }
 
 if ($DryRun) {
-    foreach ($u in $urls) { Write-Log ("DRY: " + $u) DarkGray }
+    foreach ($u in $urls) {
+        $targetRoot=if($itemOutputRoots.ContainsKey($u)){$itemOutputRoots[$u]}else{$ResolvedOut}
+        Write-Log ("DRY: " + $u + " -> " + $targetRoot) DarkGray
+    }
     Write-Log "DryRun finished." Cyan
     exit 0
 }
@@ -293,11 +343,12 @@ while ($pending.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
     while ($pending.Count -gt 0 -and $freeSlots.Count -gt 0) {
         $slot = $freeSlots.Dequeue()
         $url = $pending.Dequeue()
+        $jobOutputRoot=if($itemOutputRoots.ContainsKey($url)){$itemOutputRoots[$url]}else{$ResolvedOut}
         if ($CancelDir -and (Test-VdCancellation -Directory $CancelDir -Url $url)) {
             $cancelEvent = [pscustomobject]@{
                 Kind="Result"; Slot=$slot; Url=$url; Success=$false; Cancelled=$true
                 Path=""; OwnedPaths=@(); FileSize=[int64]0; TransferredBytes=[long]0
-                OutputRoot=$ResolvedOut; CleanupError=""; CleanupPaths=@(); StageDir=""
+                OutputRoot=$jobOutputRoot; CleanupError=""; CleanupPaths=@(); StageDir=""
             }
             Handle-Message -Message $cancelEvent -Results $results -Completed $completed -Urls $urls -Titles $titles
             $freeSlots.Enqueue($slot)
@@ -307,18 +358,18 @@ while ($pending.Count -gt 0 -or $jobs.Count -gt 0 -or $Watch) {
         $index = $startedCount
 
         $jobArgs = @(
-            $slot,$index,$totalUrls,$url,$Qualities,$OutputTemplate,$ResolvedCookies,
+            $slot,$index,$totalUrls,$url,$Qualities,(Join-Path $jobOutputRoot $FilenameTemplate),$ResolvedCookies,
             [bool]$SponsorBlock,[bool]$AudioOnly,$Fragments,
             [bool]($AutoFragments -and -not $FragmentsWasSpecified),
             $RateLimit,$Container,$VideoCodec,
             [bool]$WriteSubtitles,[bool]$WriteAutoSubtitles,$SubtitleLangs,[bool]$EmbedSubtitles,
             [bool]$EmbedThumbnail,[bool]$EmbedMetadata,[bool]$EmbedChapters,
             $Retries,$RetryDelaySeconds,$ytDlpExe,$coreModule,
-            $CancelDir,$cancelModule,$ResolvedOut,$FilenameTemplate
+            $CancelDir,$cancelModule,$jobOutputRoot,$FilenameTemplate
         )
 
         Write-Log ("T{0} START #{1}/{2} {3}" -f $slot,$index,$totalUrls,(Shorten $url 100)) Cyan
-        Write-EventFile ([pscustomobject]@{Kind="Event";EventType="Started";Slot=$slot;Url=$url})
+        Write-EventFile ([pscustomobject]@{Kind="Event";EventType="Started";Slot=$slot;Url=$url;OutputRoot=$jobOutputRoot})
 
         $jobs += Start-ThreadJob -ThrottleLimit $Threads -Name ([string]$slot) -ArgumentList $jobArgs -ScriptBlock {
             param(

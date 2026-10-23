@@ -2,6 +2,7 @@
 $ErrorActionPreference='Stop'
 $root=Split-Path -Parent $PSScriptRoot
 Import-Module (Join-Path $root 'lib/VideoDownloader.Subscriptions.psm1') -Force -DisableNameChecking
+Import-Module (Join-Path $root 'lib/VideoDownloader.SubscriptionNames.psm1') -Force
 function Assert([bool]$Value,[string]$Message) { if (-not $Value) { throw $Message } }
 function Expect-Error([scriptblock]$Action,[string]$Message) {
     $failed=$false
@@ -17,6 +18,47 @@ function Item($Snapshot,[string]$Id,[string]$Url) {
 $testRoot=Join-Path $root ('work/subscription-tests-'+[guid]::NewGuid().ToString('N'))
 [void][IO.Directory]::CreateDirectory($testRoot)
 try {
+    foreach($case in @(
+        @(' . Мой: канал / Test . ','Мой_ канал _ Test'),@('CON','_CON'),@('nul.txt','_nul.txt'),
+        @('LPT³','_LPT³'),@('con .txt','_con .txt'),@('Conductor','Conductor'),@('..','Подписка'),
+        @('Имя   канала','Имя канала'),@("bad$([char]1)name",'bad_name'),@("left$([char]0xd800)right",'left_right')
+    )) {
+        $name=ConvertTo-VdSubscriptionName $case[0]
+        Assert ($name -ceq $case[1] -and (Test-VdSubscriptionName $name)) ('Safe folder normalization: '+$case[1])
+    }
+    $boundary='x'*79
+    Assert ((ConvertTo-VdSubscriptionName ($boundary+'😀')) -ceq $boundary) 'Length cap must not split a UTF16 surrogate pair'
+    foreach($invalid in @('','.','..','../escape','..\escape','C:\escape','a/b','a\b','CON','name.',' name','a  b',('x'*81))) {
+        Assert (-not (Test-VdSubscriptionName $invalid)) ('Unsafe folder must fail validation: '+$invalid)
+        if($invalid){Expect-Error {Resolve-VdSubscriptionOutput -BaseDirectory $testRoot -Name $invalid} 'Output resolution must reject unsafe leaves'}
+    }
+    Assert ((Resolve-VdSubscriptionOutput -BaseDirectory $testRoot -Name '123') -ceq [IO.Path]::Combine([IO.Path]::GetFullPath($testRoot),'123')) 'A subscription name must resolve one folder below the selected output'
+    $nameDirectory=Join-Path $testRoot 'names'
+    $named=Add-VdSubscription -Directory $nameDirectory -Url 'https://names.example/playlist'
+    $namedScan=@{Title='Полный плейлист';SuggestedName='Канал: 123';Items=@();FeedUrl='';Warning=''}
+    $snapshot=Apply-VdSubscriptionScan -Directory $nameDirectory -Id $named.Id -Scan $namedScan
+    Assert ($snapshot.Subscriptions[0].ShortName -ceq 'Канал_ 123') 'First successful scan must assign a safe channel-based name'
+    $namedScan.SuggestedName='Новое имя канала'
+    $snapshot=Apply-VdSubscriptionScan -Directory $nameDirectory -Id $named.Id -Scan $namedScan
+    Assert ($snapshot.Subscriptions[0].ShortName -ceq 'Канал_ 123') 'Later metadata must not silently change the folder'
+    $null=Set-VdSubscriptionShortName -Directory $nameDirectory -Id $named.Id -Name '123'
+    $snapshot=Apply-VdSubscriptionScan -Directory $nameDirectory -Id $named.Id -Scan $namedScan
+    Assert ((Read-VdSubscriptions -Directory $nameDirectory).Subscriptions[0].ShortName -ceq '123') 'Manual name must survive scans and restarts'
+    $custom=Add-VdSubscription -Directory $nameDirectory -Url 'https://names.example/custom' -ShortName 'Моя: папка'
+    Assert ($custom.ShortName -ceq 'Моя_ папка') 'Explicit initial name must use the same normalization rules'
+    $namePath=Join-Path $nameDirectory 'subscriptions.json'
+    $beforeRename=[IO.File]::ReadAllText($namePath)
+    Expect-Error {Set-VdSubscriptionShortName -Directory $nameDirectory -Id $named.Id -Name '   '} 'Blank manual name must fail'
+    Expect-Error {Add-VdSubscription -Directory $nameDirectory -Url 'https://names.example/rejected' -ShortName '   '} 'Blank initial manual name must fail'
+    Assert ([IO.File]::ReadAllText($namePath) -ceq $beforeRename) 'Rejected name changes must preserve the store'
+    $legacy=ConvertFrom-Json $beforeRename -AsHashtable
+    foreach($source in $legacy.Subscriptions){$source.Remove('ShortName')}
+    $legacyJson=ConvertTo-Json $legacy -Depth 12 -Compress
+    [IO.File]::WriteAllText($namePath,$legacyJson)
+    $legacyRead=Read-VdSubscriptions -Directory $nameDirectory
+    Assert (@($legacyRead.Subscriptions | Where-Object ShortName).Count -eq 0 -and [IO.File]::ReadAllText($namePath) -ceq $legacyJson) 'Released v1 without ShortName must remain readable without rewriting on Read'
+    $snapshot=Apply-VdSubscriptionScan -Directory $nameDirectory -Id $named.Id -Scan $namedScan
+    Assert ($snapshot.Subscriptions[0].ShortName -ceq 'Новое имя канала') 'First successful scan after upgrade must populate a legacy folder'
     $directory=Join-Path $testRoot 'store'
     $empty=Read-VdSubscriptions -Directory $directory
     Assert ($empty.Version -eq 1 -and $empty.Items.Count -eq 0 -and $empty.Subscriptions.Count -eq 0) 'Missing store must be empty without networking'
@@ -113,6 +155,11 @@ try {
     $json='{"title":"Generic playlist","entries":[{"url":"https://other.example/V?x=1","title":"One"},{"webpage_url":"https://other.example/v?x=1","title":"Two"}]}'
     $scan=ConvertFrom-VdSubscriptionMetadata -Json $json -SourceUrl 'https://other.example/list'
     Assert ($scan.Items.Count -eq 2 -and $scan.Items[0].Url -ceq 'https://other.example/V?x=1') 'Discovery must support non-YouTube HTTP(S) sources and preserve exact URLs'
+    $namedMetadata='{"title":"Полный плейлист","channel":"Канал 123","uploader":"Автор","entries":[]}'
+    $namedResult=ConvertFrom-VdSubscriptionMetadata -Json $namedMetadata -SourceUrl 'https://other.example/list'
+    Assert ($namedResult.Title -ceq 'Полный плейлист' -and $namedResult.SuggestedName -ceq 'Канал 123') 'Channel folder suggestion must preserve the original collection title'
+    $uploaderResult=ConvertFrom-VdSubscriptionMetadata -Json '{"title":"Плейлист","uploader":"Автор","entries":[]}' -SourceUrl 'https://other.example/list'
+    Assert ($uploaderResult.SuggestedName -ceq 'Автор') 'Uploader must precede collection title as folder suggestion'
     $nested=ConvertFrom-VdSubscriptionMetadata -Json '{"entries":[{"entries":[{"url":"https://other.example/one"}]}]}' -SourceUrl 'https://other.example/list'
     Assert ($nested.Items.Count -eq 1) 'Inline fully enumerated nested playlists must be supported'
     $yt=ConvertFrom-VdSubscriptionMetadata -Json '{"channel_id":"UC1234567890123456789012","entries":[{"id":"abcdefghijk","ie_key":"Youtube"}]}' -SourceUrl 'https://youtube.com/@test'

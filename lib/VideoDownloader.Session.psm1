@@ -1,6 +1,7 @@
 #requires -Version 7.0
 # Durable, UI-independent session checkpoints. No WPF dependency.
 $ErrorActionPreference = "Stop"
+Import-Module (Join-Path $PSScriptRoot 'VideoDownloader.SubscriptionNames.psm1') -Force
 
 function Test-VdSessionUrl([string]$Url) {
     $uri = $null
@@ -28,6 +29,12 @@ function Read-VdSessionCheckpoint {
             [string]$item.Status -notin @("Queued","Running","Completed","Failed","Interrupted") -or
             -not $seen.Add([string]$item.Url)) {
             throw "Invalid or duplicate URL/state in session checkpoint."
+        }
+        foreach($field in @('SubscriptionId','SubscriptionName')) {
+            if ($item.Contains($field) -and $item[$field] -isnot [string]) { throw "Invalid subscription metadata in session checkpoint." }
+        }
+        if ($item.SubscriptionName -and -not (Test-VdSubscriptionName -Name ([string]$item.SubscriptionName))) {
+            throw "Unsafe subscription folder in session checkpoint."
         }
     }
     return $session
@@ -76,6 +83,8 @@ function Get-VdRestoredQueue {
         [pscustomobject]@{
             Order = $order
             Url = [string]$item.Url
+            SubscriptionId = [string]$item.SubscriptionId
+            SubscriptionName = [string]$item.SubscriptionName
             State = $display
             Status = $status
             Path = [string]$item.Path

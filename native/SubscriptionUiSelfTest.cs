@@ -50,7 +50,7 @@ public sealed partial class NativeWindow
             var definition=SubscriptionStorage.Add("https://example.com/subscription-ui-source/"+suffix,false);
             sourceId=definition.Id;
             SubscriptionStorage.ApplyScan(sourceId,new SubscriptionScan("Проверка интерфейса",
-                [new DiscoveredMedia(baselineUrl,"Исходный материал")],"",""),[]);
+                [new DiscoveredMedia(baselineUrl,"Исходный материал")],"","","Канал 123"),[]);
             SubscriptionStorage.ApplyScan(sourceId,new SubscriptionScan("Проверка интерфейса",
                 [new DiscoveredMedia(baselineUrl,"Исходный материал"),new DiscoveredMedia(queueUrl,"Добавить вручную"),
                  new DiscoveredMedia(skipUrl,"Пропустить вручную")],"",""),[]);
@@ -68,7 +68,28 @@ public sealed partial class NativeWindow
             Require(window.Owner==_window && window.IsVisible && _window.IsEnabled,"Subscriptions must be a modeless window owned by the main window");
             Require(SubscriptionControl<CheckBox>("DownloadExistingCheck").IsChecked==false,"The initial-scan choice must default to baseline");
             Require(SubscriptionControl<TextBox>("SubscriptionFeedBox")!=null,"Optional RSS / Atom input must be available");
+            Require(SubscriptionControl<TextBox>("NewSubscriptionNameBox").Text.Length==0,
+                "A new subscription name must default to automatic channel detection");
             SubscriptionSources.SelectedItem=SubscriptionSources.Items.Cast<SubscriptionSourceView>().Single(x=>x.Id==sourceId);
+            var nameBox=SubscriptionControl<TextBox>("SubscriptionNameBox");
+            Require(nameBox.Text=="Канал 123" && ((SubscriptionSourceView)SubscriptionSources.SelectedItem).ShortName=="Канал 123",
+                "The source grid and editable folder must show the detected channel name");
+            nameBox.Text="Черновик";
+            var beforeRefresh=SubscriptionSources.SelectedItem;
+            RefreshSubscriptions();
+            WaitFor(()=>!ReferenceEquals(beforeRefresh,SubscriptionSources.SelectedItem),"The source projection must refresh");
+            Require(nameBox.Text=="Черновик","Refreshing the same stored source must preserve an unsaved name edit");
+            nameBox.Text="123";
+            var saveName=SubscriptionControl<Button>("SaveSubscriptionNameButton");
+            Require(saveName.IsEnabled,"A changed short name must enable Save");
+            saveName.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            WaitFor(()=>!_subscriptionMutation && SubscriptionStorage.Read().Subscriptions.Single(x=>x.Id==sourceId).ShortName=="123",
+                "Saving the short name must persist it without scanning or downloading");
+            Require(nameBox.Text=="123" && ((SubscriptionSourceView)SubscriptionSources.SelectedItem).Title=="Проверка интерфейса",
+                "Saving a short name must retain the original collection title");
+            SubscriptionSources.UpdateLayout();
+            WaitFor(()=>SubscriptionSources.Columns[1].GetCellContent(SubscriptionSources.SelectedItem) is TextBlock folder && folder.Text=="123",
+                "The actual source grid cell must bind the short folder name");
             Require(SubscriptionInbox.Items.Count==2,"Baseline materials must stay out of the inbox");
             Require(SubscriptionInbox.Items.Cast<SubscriptionItemView>().Any(x=>x.Title=="Добавить вручную" && x.StateLabel=="Новое"),
                 "Inbox title and localized state must bind through actual WPF columns");
@@ -88,6 +109,8 @@ public sealed partial class NativeWindow
                 "Queue button must record only accepted ordinary-queue URLs");
             Require(_queue.Count==originalQueue.Length+1 && _queue.Contains(queuedRow) && ReferenceEquals(_session,originalSession),
                 "Queue must not create duplicate rows or start a download session");
+            Require(queuedRow.SubscriptionId.Length==0 && queuedRow.SubscriptionName.Length==0,
+                "Accepting a URL already in the ordinary queue must preserve its existing source and folder");
             Require(SubscriptionStorage.Read().Items.Single(x=>x.SubscriptionId==sourceId && x.Url==queueUrl).State!="Processed",
                 "Queue acceptance must not claim successful processing");
             Require(queueButton.IsEnabled,"Queued materials must support manual requeue after ordinary queue removal");

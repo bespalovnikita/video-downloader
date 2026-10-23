@@ -2,6 +2,7 @@
 # Shared v1 subscription persistence and the independent, bounded discovery worker.
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'VideoDownloader.PornHub.psm1')
+Import-Module (Join-Path $PSScriptRoot 'VideoDownloader.SubscriptionNames.psm1')
 
 function Test-VdSubscriptionUrl([string]$Url) {
     $uri=$null
@@ -34,7 +35,7 @@ function Invoke-VdSubscriptionsLocked([scriptblock]$Action,[Threading.Cancellati
     }
 }
 
-function Assert-VdSubscriptionJsonShape($Element,[hashtable]$Fields,[string]$Description) {
+function Assert-VdSubscriptionJsonShape($Element,[hashtable]$Fields,[string]$Description,[string[]]$OptionalFields=@()) {
     if ($Element.ValueKind -ne [Text.Json.JsonValueKind]::Object) { throw "Некорректный объект подписок: $Description" }
     $seen=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     $allowed=[Collections.Generic.HashSet[string]]::new([string[]]@($Fields.Keys),[StringComparer]::Ordinal)
@@ -54,7 +55,9 @@ function Assert-VdSubscriptionJsonShape($Element,[hashtable]$Fields,[string]$Des
             if ($kind -notin @('True','False')) { throw "Некорректный тип ${Description}: $($property.Name)" }
         } elseif ($kind -ne $expected) { throw "Некорректный тип ${Description}: $($property.Name)" }
     }
-    if ($seen.Count -ne $Fields.Count) { throw "В объекте $Description отсутствуют обязательные поля." }
+    foreach($name in $Fields.Keys) {
+        if(-not $seen.Contains($name) -and $name -cnotin $OptionalFields) { throw "В объекте $Description отсутствуют обязательные поля." }
+    }
 }
 
 function Read-VdSubscriptionsUnlocked([string]$Directory) {
@@ -72,8 +75,8 @@ function Read-VdSubscriptionsUnlocked([string]$Directory) {
         $root=$document.RootElement
         Assert-VdSubscriptionJsonShape $root @{Version='Number';Subscriptions='Array';Items='Array'} 'snapshot'
         if ($root.GetProperty('Version').GetInt32() -ne 1) { throw 'Неподдерживаемая версия хранилища подписок.' }
-        $definitions=@{Id='String';Url='String';Title='String';FeedUrl='String';DownloadExisting='Boolean';Initialized='Boolean';Paused='Boolean';LastAttemptUtc='Date?';LastSuccessUtc='Date?';LastError='String';LastWarning='String'}
-        foreach ($entry in $root.GetProperty('Subscriptions').EnumerateArray()) { Assert-VdSubscriptionJsonShape $entry $definitions 'subscription' }
+        $definitions=@{Id='String';Url='String';Title='String';ShortName='String';FeedUrl='String';DownloadExisting='Boolean';Initialized='Boolean';Paused='Boolean';LastAttemptUtc='Date?';LastSuccessUtc='Date?';LastError='String';LastWarning='String'}
+        foreach ($entry in $root.GetProperty('Subscriptions').EnumerateArray()) { Assert-VdSubscriptionJsonShape $entry $definitions 'subscription' @('ShortName') }
         $items=@{SubscriptionId='String';Url='String';Title='String';State='String';DiscoveredAtUtc='Date';InitialQueuePending='Boolean';SuccessAttributed='Boolean';DuplicateSubscriptionId='String';DuplicateNotified='Boolean'}
         foreach ($entry in $root.GetProperty('Items').EnumerateArray()) { Assert-VdSubscriptionJsonShape $entry $items 'item' }
     } finally { $document.Dispose() }
@@ -82,7 +85,9 @@ function Read-VdSubscriptionsUnlocked([string]$Directory) {
     $sources=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     $byId=[Collections.Generic.Dictionary[string,object]]::new([StringComparer]::Ordinal)
     foreach ($source in $snapshot.Subscriptions) {
+        if(-not $source.Contains('ShortName')) {$source.ShortName=''}
         if ([string]::IsNullOrWhiteSpace($source.Id) -or -not $ids.Add($source.Id) -or
+            ($source.ShortName -and -not (Test-VdSubscriptionName $source.ShortName)) -or
             -not (Test-VdSubscriptionUrl $source.Url) -or -not $sources.Add($source.Url) -or
             ($source.FeedUrl -and -not (Test-VdSubscriptionUrl $source.FeedUrl)) -or
             (-not $source.Initialized -and $null -ne $source.LastSuccessUtc)) { throw 'Некорректная или повторная подписка в хранилище.' }
@@ -128,12 +133,13 @@ function Read-VdSubscriptions {
 }
 
 function Add-VdSubscription {
-    param([Parameter(Mandatory)][string]$Directory,[Parameter(Mandatory)][string]$Url,[bool]$DownloadExisting=$false,[string]$FeedUrl='')
+    param([Parameter(Mandatory)][string]$Directory,[Parameter(Mandatory)][string]$Url,[bool]$DownloadExisting=$false,[string]$FeedUrl='',[string]$ShortName='')
     if (-not (Test-VdSubscriptionUrl $Url) -or ($FeedUrl -and -not (Test-VdSubscriptionUrl $FeedUrl))) { throw 'Нужен корректный HTTP(S) URL источника и ленты.' }
+    if($ShortName.Length -gt 0 -and [string]::IsNullOrWhiteSpace($ShortName)){throw 'Укажите краткое имя подписки.'}
     Invoke-VdSubscriptionsLocked {
         $snapshot=Read-VdSubscriptionsUnlocked $Directory
         foreach ($existing in $snapshot.Subscriptions) { if ([string]::Equals($existing.Url,$Url,[StringComparison]::Ordinal)) { throw 'Этот источник уже добавлен.' } }
-        $source=@{Id=[guid]::NewGuid().ToString('N');Url=$Url;Title=$Url;FeedUrl=$FeedUrl;DownloadExisting=$DownloadExisting;Initialized=$false;Paused=$false;LastAttemptUtc=$null;LastSuccessUtc=$null;LastError='';LastWarning=''}
+        $source=@{Id=[guid]::NewGuid().ToString('N');Url=$Url;Title=$Url;ShortName=$(if($ShortName){ConvertTo-VdSubscriptionName $ShortName}else{''});FeedUrl=$FeedUrl;DownloadExisting=$DownloadExisting;Initialized=$false;Paused=$false;LastAttemptUtc=$null;LastSuccessUtc=$null;LastError='';LastWarning=''}
         $snapshot.Subscriptions=@($snapshot.Subscriptions)+@($source)
         Write-VdSubscriptionsUnlocked $Directory $snapshot
         return $source
@@ -214,6 +220,11 @@ function Apply-VdSubscriptionScan {
         }
         Sync-VdSubscriptionSuccess $snapshot @($reconcile)
         $source.Title=if ([string]::IsNullOrWhiteSpace([string]$Scan.Title)) { $source.Url } else { [string]$Scan.Title }
+        if(-not $source.ShortName) {
+            $suggestion=if([string]::IsNullOrWhiteSpace([string]$Scan.SuggestedName)){[string]$Scan.Title}else{[string]$Scan.SuggestedName}
+            if(Test-VdSubscriptionUrl $suggestion){$suggestion=''}
+            $source.ShortName=ConvertTo-VdSubscriptionName -Name $suggestion -Fallback ('Подписка '+$source.Id.Substring(0,[Math]::Min(8,$source.Id.Length)))
+        }
         if ($Scan.FeedUrl) { $source.FeedUrl=[string]$Scan.FeedUrl }
         $source.Initialized=$true; $source.LastAttemptUtc=$now; $source.LastSuccessUtc=$now; $source.LastError=''; $source.LastWarning=[string]$Scan.Warning
         Write-VdSubscriptionsUnlocked $Directory $snapshot $CancellationToken
@@ -235,6 +246,18 @@ function Set-VdSubscriptionPaused {
     param([Parameter(Mandatory)][string]$Directory,[Parameter(Mandatory)][string]$Id,[Parameter(Mandatory)][bool]$Paused)
     Invoke-VdSubscriptionsLocked {
         $snapshot=Read-VdSubscriptionsUnlocked $Directory; (Get-VdSubscriptionDefinition $snapshot $Id).Paused=$Paused
+        Write-VdSubscriptionsUnlocked $Directory $snapshot
+        return $snapshot
+    }
+}
+
+function Set-VdSubscriptionShortName {
+    param([Parameter(Mandatory)][string]$Directory,[Parameter(Mandatory)][string]$Id,[Parameter(Mandatory)][string]$Name)
+    if([string]::IsNullOrWhiteSpace($Name)){throw 'Укажите краткое имя подписки.'}
+    $normalized=ConvertTo-VdSubscriptionName $Name
+    Invoke-VdSubscriptionsLocked {
+        $snapshot=Read-VdSubscriptionsUnlocked $Directory
+        (Get-VdSubscriptionDefinition $snapshot $Id).ShortName=$normalized
         Write-VdSubscriptionsUnlocked $Directory $snapshot
         return $snapshot
     }
@@ -421,7 +444,8 @@ function ConvertFrom-VdSubscriptionMetadata {
         if ($channel -notmatch '^UC[A-Za-z0-9_-]{22}$') { $channel=[string]$root.uploader_id }
         if ($channel -match '^UC[A-Za-z0-9_-]{22}$') { $feedUrl='https://www.youtube.com/feeds/videos.xml?channel_id='+$channel }
     }
-    return @{Title=$(if ([string]::IsNullOrWhiteSpace([string]$root.title)) { $SourceUrl } else { [string]$root.title });Items=@($results.ToArray());FeedUrl=$feedUrl;Warning=''}
+    $suggestedName=@('channel','uploader','title' | ForEach-Object {$root[$_]} | Where-Object {$_ -is [string] -and -not [string]::IsNullOrWhiteSpace($_)} | Select-Object -First 1)
+    return @{Title=$(if ([string]::IsNullOrWhiteSpace([string]$root.title)) { $SourceUrl } else { [string]$root.title });Items=@($results.ToArray());FeedUrl=$feedUrl;Warning='';SuggestedName=$(if($suggestedName.Count){[string]$suggestedName[0]}else{''})}
 }
 
 function Read-VdSubscriptionFeed {
@@ -537,4 +561,4 @@ function Invoke-VdSubscriptionScan {
     } finally { $deadline.Dispose() }
 }
 
-Export-ModuleMember -Function Test-VdSubscriptionUrl,Read-VdSubscriptions,Add-VdSubscription,Apply-VdSubscriptionScan,Set-VdSubscriptionFailure,Set-VdSubscriptionPaused,Remove-VdSubscription,Set-VdSubscriptionItemsQueued,Skip-VdSubscriptionItems,Set-VdSubscriptionSuccessful,Sync-VdSubscriptionsSuccessful,Confirm-VdSubscriptionDuplicates,Invoke-VdSubscriptionProcess,ConvertFrom-VdSubscriptionMetadata,Read-VdSubscriptionFeed,ConvertFrom-VdSubscriptionFeed,Invoke-VdSubscriptionScan
+Export-ModuleMember -Function Test-VdSubscriptionUrl,Read-VdSubscriptions,Add-VdSubscription,Apply-VdSubscriptionScan,Set-VdSubscriptionFailure,Set-VdSubscriptionPaused,Set-VdSubscriptionShortName,Remove-VdSubscription,Set-VdSubscriptionItemsQueued,Skip-VdSubscriptionItems,Set-VdSubscriptionSuccessful,Sync-VdSubscriptionsSuccessful,Confirm-VdSubscriptionDuplicates,Invoke-VdSubscriptionProcess,ConvertFrom-VdSubscriptionMetadata,Read-VdSubscriptionFeed,ConvertFrom-VdSubscriptionFeed,Invoke-VdSubscriptionScan

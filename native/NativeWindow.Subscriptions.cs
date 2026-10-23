@@ -20,6 +20,9 @@ public sealed partial class NativeWindow
     private bool _subscriptionsDisposed;
     private int _subscriptionRefreshVersion;
     private bool _subscriptionRefreshQueued;
+    private bool _subscriptionBinding;
+    private string _subscriptionNameSelectionId="";
+    private string _subscriptionNameSavedValue="";
 
     private SubscriptionStore SubscriptionStorage => _subscriptionStore ??=
         new SubscriptionStore(Path.GetDirectoryName(_storage.SessionPath)!);
@@ -52,6 +55,7 @@ public sealed partial class NativeWindow
             window.Resources.MergedDictionaries.Add(_window.Resources);
             _subscriptionsWindow=window;
             SubscriptionControl<Button>("AddSubscriptionButton").Click+=async(_,_)=>await AddSubscriptionAsync();
+            SubscriptionControl<Button>("SaveSubscriptionNameButton").Click+=async(_,_)=>await SaveSubscriptionNameAsync();
             SubscriptionControl<Button>("CheckSubscriptionButton").Click+=async(_,_)=>
             {
                 if (SubscriptionSources.SelectedItem is SubscriptionSourceView source)
@@ -78,7 +82,16 @@ public sealed partial class NativeWindow
             {
                 if (e.Key==Key.Enter && !SubscriptionBusy) { e.Handled=true;await AddSubscriptionAsync(); }
             };
-            SubscriptionSources.SelectionChanged+=(_,_)=>{ ShowSubscriptionInbox();UpdateSubscriptionButtons(); };
+            SubscriptionControl<TextBox>("SubscriptionNameBox").TextChanged+=(_,_)=>UpdateSubscriptionButtons();
+            SubscriptionControl<TextBox>("SubscriptionNameBox").KeyDown+=async(_,e)=>
+            {
+                if (e.Key==Key.Enter && !SubscriptionBusy) { e.Handled=true;await SaveSubscriptionNameAsync(); }
+            };
+            SubscriptionSources.SelectionChanged+=(_,_)=>
+            {
+                if (_subscriptionBinding) return;
+                ShowSubscriptionInbox();UpdateSubscriptionNameEditor();UpdateSubscriptionButtons();
+            };
             SubscriptionInbox.SelectionChanged+=(_,_)=>UpdateSubscriptionButtons();
             SubscriptionInbox.MouseDoubleClick+=(_,_)=>OpenSubscriptionItem();
             window.Closed+=(_,_)=>
@@ -86,6 +99,8 @@ public sealed partial class NativeWindow
                 if (!ReferenceEquals(_subscriptionsWindow,window)) return;
                 _subscriptionCancellation?.Cancel();
                 _subscriptionsWindow=null;
+                _subscriptionNameSelectionId="";
+                _subscriptionNameSavedValue="";
                 _subscriptionRefreshVersion++;
             };
             window.Show();
@@ -143,9 +158,15 @@ public sealed partial class NativeWindow
             string? selected=(SubscriptionSources.SelectedItem as SubscriptionSourceView)?.Id;
             _subscriptionSnapshot=snapshot;
             var rows=snapshot.Subscriptions.Select(x=>new SubscriptionSourceView(x)).ToArray();
-            SubscriptionSources.ItemsSource=rows;
-            SubscriptionSources.SelectedItem=rows.FirstOrDefault(x=>x.Id==selected) ?? rows.FirstOrDefault();
+            _subscriptionBinding=true;
+            try
+            {
+                SubscriptionSources.ItemsSource=rows;
+                SubscriptionSources.SelectedItem=rows.FirstOrDefault(x=>x.Id==selected) ?? rows.FirstOrDefault();
+            }
+            finally { _subscriptionBinding=false; }
             ShowSubscriptionInbox();
+            UpdateSubscriptionNameEditor();
             UpdateSubscriptionButtons();
             if (notify) await NotifySubscriptionDuplicatesAsync(snapshot,window!);
             return snapshot;
@@ -199,7 +220,26 @@ public sealed partial class NativeWindow
         SubscriptionControl<Button>("OpenSubscriptionItemButton").IsEnabled=items.Length==1;
         SubscriptionControl<TextBox>("SubscriptionUrlBox").IsEnabled=ready;
         SubscriptionControl<TextBox>("SubscriptionFeedBox").IsEnabled=ready;
+        SubscriptionControl<TextBox>("NewSubscriptionNameBox").IsEnabled=ready;
+        var nameBox=SubscriptionControl<TextBox>("SubscriptionNameBox");
+        nameBox.IsEnabled=ready && source!=null;
+        SubscriptionControl<Button>("SaveSubscriptionNameButton").IsEnabled=ready && source!=null &&
+            !string.IsNullOrWhiteSpace(nameBox.Text) && nameBox.Text!=source.Definition.ShortName;
         SubscriptionControl<CheckBox>("DownloadExistingCheck").IsEnabled=ready;
+    }
+
+    private void UpdateSubscriptionNameEditor()
+    {
+        if (_subscriptionsWindow==null) return;
+        var source=SubscriptionSources.SelectedItem as SubscriptionSourceView;
+        string id=source?.Id??"";
+        string saved=source?.Definition.ShortName??"";
+        // A refresh replaces grid projections. Preserve an unsaved edit when
+        // the same source and stored name are still selected.
+        if (_subscriptionNameSelectionId==id && _subscriptionNameSavedValue==saved) return;
+        _subscriptionNameSelectionId=id;
+        _subscriptionNameSavedValue=saved;
+        SubscriptionControl<TextBox>("SubscriptionNameBox").Text=saved;
     }
 
     private void SubscriptionStatus(string message,bool error=false)
@@ -217,6 +257,7 @@ public sealed partial class NativeWindow
         var window=_subscriptionsWindow;
         string url=SubscriptionControl<TextBox>("SubscriptionUrlBox").Text.Trim();
         string feed=SubscriptionControl<TextBox>("SubscriptionFeedBox").Text.Trim();
+        string shortName=SubscriptionControl<TextBox>("NewSubscriptionNameBox").Text.Trim();
         bool existing=SubscriptionControl<CheckBox>("DownloadExistingCheck").IsChecked==true;
         if (!AppPersistence.ValidUrl(url) || (feed.Length>0 && !AppPersistence.ValidUrl(feed)))
         { SubscriptionStatus("Укажите полный HTTP(S) URL канала или плейлиста и, при необходимости, RSS / Atom.",true);return; }
@@ -225,16 +266,34 @@ public sealed partial class NativeWindow
         SubscriptionStatus("Сохраняем подписку…");
         try
         {
-            added=await Task.Run(()=>SubscriptionStorage.Add(url,existing,feed));
+            added=await Task.Run(()=>SubscriptionStorage.Add(url,existing,feed,shortName));
             if (!CurrentSubscriptionsWindow(window)) return;
             SubscriptionControl<TextBox>("SubscriptionUrlBox").Clear();
             SubscriptionControl<TextBox>("SubscriptionFeedBox").Clear();
+            SubscriptionControl<TextBox>("NewSubscriptionNameBox").Clear();
             await ReloadSubscriptionsAsync();
             SubscriptionSources.SelectedItem=SubscriptionSources.Items.Cast<SubscriptionSourceView>().FirstOrDefault(x=>x.Id==added.Id);
         }
         catch(Exception e) { if (CurrentSubscriptionsWindow(window)) SubscriptionStatus("Не удалось добавить подписку: "+e.Message,true); }
         finally { _subscriptionMutation=false;UpdateSubscriptionButtons(); }
         if (added!=null && CurrentSubscriptionsWindow(window)) await CheckSubscriptionsAsync([added.Id]);
+    }
+
+    private async Task SaveSubscriptionNameAsync()
+    {
+        if (SubscriptionBusy || _subscriptionsWindow==null || SubscriptionSources.SelectedItem is not SubscriptionSourceView selected) return;
+        string name=SubscriptionControl<TextBox>("SubscriptionNameBox").Text;
+        if (string.IsNullOrWhiteSpace(name)) { SubscriptionStatus("Введите краткое имя подписки для папки загрузки.",true);return; }
+        _subscriptionMutation=true;
+        UpdateSubscriptionButtons();
+        try
+        {
+            await Task.Run(()=>SubscriptionStorage.SetShortName(selected.Id,name));
+            await ReloadSubscriptionsAsync();
+            SubscriptionStatus("Имя сохранено. Новые задания будут скачиваться в подпапку с этим именем; уже добавленные задания сохранят прежнюю папку.");
+        }
+        catch(Exception e) { SubscriptionStatus("Не удалось сохранить имя подписки: "+e.Message,true); }
+        finally { _subscriptionMutation=false;UpdateSubscriptionButtons(); }
     }
 
     private async Task CheckSubscriptionsAsync(IEnumerable<string> subscriptionIds)
@@ -340,23 +399,37 @@ public sealed partial class NativeWindow
             .Select(x=>(x.SubscriptionId,x.Url)).ToHashSet();
         candidates=candidates.Where(x=>eligibleKeys.Contains((x.SubscriptionId,x.Url))).ToArray();
         if (candidates.Count==0) return 0;
-        var requested=candidates.Select(x=>x.Url).ToHashSet(StringComparer.Ordinal);
-        var accepted=QueueSubscriptionUrls(requested).Where(requested.Contains).Distinct(StringComparer.Ordinal).ToArray();
-        if (accepted.Length==0) return 0;
+        var sources=reconciled.Subscriptions.ToDictionary(x=>x.Id,StringComparer.Ordinal);
+        var acknowledgements=new List<(string Id,string[] Urls)>();
+        var acceptedUrls=new HashSet<string>(StringComparer.Ordinal);
+        foreach (var group in candidates.GroupBy(x=>x.SubscriptionId,StringComparer.Ordinal))
+        {
+            if (_subscriptionCancellation?.IsCancellationRequested==true) break;
+            if (!sources.TryGetValue(group.Key,out var source)) continue;
+            string suggestion=AppPersistence.ValidUrl(source.Title)?"":source.Title;
+            string name=source.ShortName.Length>0?source.ShortName:SubscriptionNames.Normalize(suggestion,
+                "Подписка "+source.Id[..Math.Min(8,source.Id.Length)]);
+            var requested=group.Select(x=>x.Url).ToHashSet(StringComparer.Ordinal);
+            var accepted=QueueSubscriptionUrls(requested,source.Id,name).Where(requested.Contains).Distinct(StringComparer.Ordinal).ToArray();
+            if (accepted.Length==0) continue;
+            acknowledgements.Add((group.Key,accepted));
+            acceptedUrls.UnionWith(accepted);
+        }
+        if (acknowledgements.Count==0) return 0;
         await Task.Run(()=>
         {
             var current=SubscriptionStorage.Read();
-            foreach (var group in candidates.GroupBy(x=>x.SubscriptionId,StringComparer.Ordinal))
+            foreach (var acknowledgement in acknowledgements)
             {
-                var urls=group.Select(x=>x.Url).Intersect(accepted,StringComparer.Ordinal).ToHashSet(StringComparer.Ordinal);
+                var urls=acknowledgement.Urls.ToHashSet(StringComparer.Ordinal);
                 // A genuine concurrent success may already have reconciled a
                 // row. Never turn Processed/AlreadyProcessed back into Queued.
-                var eligible=current.Items.Where(x=>x.SubscriptionId==group.Key && urls.Contains(x.Url) && x.State is "New" or "Skipped" or "Queued")
+                var eligible=current.Items.Where(x=>x.SubscriptionId==acknowledgement.Id && urls.Contains(x.Url) && x.State is "New" or "Skipped" or "Queued")
                     .Select(x=>x.Url).ToArray();
-                if (eligible.Length>0) SubscriptionStorage.MarkQueued(group.Key,eligible);
+                if (eligible.Length>0) SubscriptionStorage.MarkQueued(acknowledgement.Id,eligible);
             }
         });
-        return accepted.Length;
+        return acceptedUrls.Count;
     }
 
     private async Task QueueSelectedSubscriptionItemsAsync()
@@ -477,6 +550,7 @@ public sealed partial class NativeWindow
         public string Id=>Definition.Id;
         public string Url=>Definition.Url;
         public string Title=>Definition.Title.Length>0?Definition.Title:Definition.Url;
+        public string ShortName=>Definition.ShortName.Length>0?Definition.ShortName:"После проверки";
         public string StatusLabel=>Definition.Paused?"Приостановлена":!Definition.Initialized?"Нужна первая проверка":Definition.LastError.Length>0?"Ошибка проверки":"Активна";
         public string LastSuccessLabel=>Definition.LastSuccessUtc?.ToLocalTime().ToString("dd.MM.yyyy HH:mm")??"Ещё не проверена";
         public string Message=>Definition.LastError.Length>0?Definition.LastError:Definition.LastWarning;

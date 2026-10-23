@@ -105,7 +105,7 @@
         <Border Grid.Row="1" Background="#1B1E25" CornerRadius="8" Padding="12" Margin="0,0,0,12">
             <Grid>
                 <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
                 <TextBlock Text="Канал или плейлист — любой сайт, поддерживаемый yt-dlp" Margin="0,0,10,5" TextWrapping="Wrap"/>
                 <TextBlock Grid.Column="1" Text="RSS / Atom (необязательно)" Margin="0,0,10,5"/>
                 <TextBox Grid.Row="1" x:Name="SubscriptionUrlBox" Margin="0,0,10,0"
@@ -113,19 +113,33 @@
                 <TextBox Grid.Row="1" Grid.Column="1" x:Name="SubscriptionFeedBox" Margin="0,0,10,0"
                          ToolTip="Лента дополняет полную проверку через yt-dlp. Для YouTube лента может определиться автоматически."/>
                 <Button Grid.Row="1" Grid.Column="2" x:Name="AddSubscriptionButton" Content="Добавить и проверить" Background="#6366F1" Margin="0"/>
-                <CheckBox Grid.Row="2" Grid.ColumnSpan="3" x:Name="DownloadExistingCheck" IsChecked="False"
+                <StackPanel Grid.Row="2" Grid.ColumnSpan="3" Orientation="Horizontal" Margin="0,8,0,0">
+                    <TextBlock Text="Краткое имя / папка (необязательно)" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                    <TextBox x:Name="NewSubscriptionNameBox" Width="300" MaxLength="160"
+                             ToolTip="Оставьте пустым, чтобы взять имя канала или плейлиста при первой проверке. Можно задать своё, например 123."/>
+                </StackPanel>
+                <CheckBox Grid.Row="3" Grid.ColumnSpan="3" x:Name="DownloadExistingCheck" IsChecked="False"
                           Content="Добавить все существующие материалы в очередь (без скачивания)"/>
-                <TextBlock Grid.Row="3" Grid.ColumnSpan="3" Foreground="#B3BBCD" TextWrapping="Wrap"
+                <TextBlock Grid.Row="4" Grid.ColumnSpan="3" Foreground="#B3BBCD" TextWrapping="Wrap"
                            Text="Если флажок выключен, текущие материалы станут исходной отметкой: во «Входящие» попадут только новые. Первая полная проверка начнётся сразу после добавления."/>
             </Grid>
         </Border>
-        <WrapPanel Grid.Row="2" Margin="0,0,0,8">
-            <Button x:Name="CheckSubscriptionButton" Content="Проверить"/>
-            <Button x:Name="CheckAllSubscriptionsButton" Content="Проверить все"/>
-            <Button x:Name="CancelSubscriptionCheckButton" Content="Отменить проверку" IsEnabled="False"/>
-            <Button x:Name="PauseSubscriptionButton" Content="Приостановить"/>
-            <Button x:Name="RemoveSubscriptionButton" Content="Удалить подписку"/>
-        </WrapPanel>
+        <StackPanel Grid.Row="2" Margin="0,0,0,8">
+            <WrapPanel Margin="0,0,0,8">
+                <Button x:Name="CheckSubscriptionButton" Content="Проверить"/>
+                <Button x:Name="CheckAllSubscriptionsButton" Content="Проверить все"/>
+                <Button x:Name="CancelSubscriptionCheckButton" Content="Отменить проверку" IsEnabled="False"/>
+                <Button x:Name="PauseSubscriptionButton" Content="Приостановить"/>
+                <Button x:Name="RemoveSubscriptionButton" Content="Удалить подписку"/>
+            </WrapPanel>
+            <WrapPanel>
+                <TextBlock Text="Краткое имя выбранной подписки / папка" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                <TextBox x:Name="SubscriptionNameBox" Width="260" MaxLength="160" Margin="0,0,10,0"/>
+                <Button x:Name="SaveSubscriptionNameButton" Content="Сохранить имя"/>
+            </WrapPanel>
+            <TextBlock Text="Материалы сохраняются в подпапку с этим именем, например D:\Video\123. Изменение имени действует на новые задания."
+                       Foreground="#B3BBCD" TextWrapping="Wrap" FontSize="11" Margin="0,5,0,0"/>
+        </StackPanel>
         <DataGrid Grid.Row="3" x:Name="SubscriptionGrid" SelectionMode="Single">
             <DataGrid.RowStyle>
                 <Style TargetType="DataGridRow" BasedOn="{StaticResource {x:Type DataGridRow}}">
@@ -136,6 +150,7 @@
             </DataGrid.RowStyle>
             <DataGrid.Columns>
                 <DataGridTextColumn Header="Подписка" Binding="{Binding Title}" Width="2*"/>
+                <DataGridTextColumn Header="Краткое имя / папка" Binding="{Binding ShortName}" Width="170"/>
                 <DataGridTextColumn Header="Состояние" Binding="{Binding StatusLabel}" Width="145"/>
                 <DataGridTextColumn Header="Последняя полная проверка" Binding="{Binding LastSuccessLabel}" Width="185"/>
                 <DataGridTextColumn Header="URL" Binding="{Binding Url}" Width="2*"/>

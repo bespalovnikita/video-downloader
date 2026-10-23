@@ -306,7 +306,8 @@ public sealed partial class NativeWindow : IDisposable
             // Save on meaningful changes, not every progress tick.
             var fingerprint=System.Text.Json.JsonSerializer.Serialize(_queue.Select(i=>new{
                 i.Url,i.Status,i.Path,i.Order,i.OwnedPaths,i.OutputRoot,i.RunDir,i.StageDir,
-                i.CleanupPaths,i.CleanupError,i.PendingRemoval,i.AttemptFinished,i.DeferredToNextStart
+                i.CleanupPaths,i.CleanupError,i.PendingRemoval,i.AttemptFinished,i.DeferredToNextStart,
+                i.SubscriptionId,i.SubscriptionName
             }),AppPersistence.Json)+
                 ":"+System.Text.Json.JsonSerializer.Serialize(ReadOptions(),AppPersistence.Json)+":"+_queue.Count;
             if (fingerprint==_lastSavedSnapshot) return;
@@ -506,6 +507,12 @@ public sealed partial class NativeWindow : IDisposable
             if(approved==null||approved.Count==0)return;
             options.PinOutputDirectory();
             OwnedFiles.NoReparseAncestors(Path.Combine(options.OutputDirectory,"__validation__"));
+            var outputRoots=approved.ToDictionary(row=>row,row=>
+            {
+                string output=SubscriptionNames.ResolveOutputDirectory(options.OutputDirectory,row.SubscriptionName);
+                OwnedFiles.NoReparseAncestors(Path.Combine(output,"__validation__"));
+                return output;
+            });
             Directory.CreateDirectory(options.OutputDirectory);
             _sessionOptions=options;
             // Validate retained staging before resetting any attempt or ownership.
@@ -524,7 +531,7 @@ public sealed partial class NativeWindow : IDisposable
                 // An explicit retry is a new attempt; previous successful files
                 // remain on disk and must never become this attempt's ownership.
                 row.Path="";row.OwnedPaths.Clear();row.CleanupPaths.Clear();
-                row.OutputRoot=options.OutputDirectory;row.RunDir="";
+                row.OutputRoot=outputRoots[row];row.RunDir="";
                 row.AttemptFinished=false;row.DeferredToNextStart=false;
             }
             var session=new DownloadCoordinator(_ytDlp,_storage,options,OnRowChanged,

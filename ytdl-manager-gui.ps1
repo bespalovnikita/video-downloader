@@ -54,11 +54,12 @@ $trayStatusModule = Join-Path $root "lib\VideoDownloader.TrayStatus.psm1"
 $profileModule = Join-Path $root "lib\VideoDownloader.Profiles.psm1"
 $subscriptionsModule = Join-Path $root "lib\VideoDownloader.Subscriptions.psm1"
 $subscriptionUiModule = Join-Path $root "lib\VideoDownloader.SubscriptionUi.psm1"
+$subscriptionNamesModule = Join-Path $root "lib\VideoDownloader.SubscriptionNames.psm1"
 $duplicateDialogXaml = Join-Path $root "ui\DuplicateDownloadDialog.xaml"
 $lifecycleModule = Join-Path $root "lib\VideoDownloader.WindowLifecycle.psm1"
 $xamlPath = Join-Path $root "ui\MainWindow.xaml"
 
-foreach ($required in @($engine,$ytDlp,$coreModule,$previewCacheModule,$lifecycleModule,$sessionModule,$historyModule,$liveQueueModule,$cancelModule,$trayStatusModule,$profileModule,$subscriptionsModule,$subscriptionUiModule,$duplicateDialogXaml,$xamlPath,(Join-Path $root 'ui/SubscriptionsWindow.xaml'))) {
+foreach ($required in @($engine,$ytDlp,$coreModule,$previewCacheModule,$lifecycleModule,$sessionModule,$historyModule,$liveQueueModule,$cancelModule,$trayStatusModule,$profileModule,$subscriptionsModule,$subscriptionUiModule,$subscriptionNamesModule,$duplicateDialogXaml,$xamlPath,(Join-Path $root 'ui/SubscriptionsWindow.xaml'))) {
     if (-not (Test-Path $required)) { throw "Missing required file: $required" }
 }
 Import-Module $coreModule -Force
@@ -72,6 +73,7 @@ Import-Module $trayStatusModule -Force
 Import-Module $profileModule -Force
 Import-Module $subscriptionsModule -Force
 Import-Module $subscriptionUiModule -Force
+Import-Module $subscriptionNamesModule -Force
 
 function Remove-StaleGuiTempDirs {
     $cutoff = (Get-Date).AddHours(-24)
@@ -338,6 +340,8 @@ function Get-SessionSnapshot {
             if ($status -notin @("Queued","Running","Completed","Failed","Interrupted")) { $status = "Queued" }
             [ordered]@{
                 Url = [string]$item.Url
+                SubscriptionId = [string]$item.SubscriptionId
+                SubscriptionName = [string]$item.SubscriptionName
                 Status = $status
                 # Frequent progress percentages are UI-only; a recovered active item is interrupted.
                 DisplayState = if ($status -eq "Running") { "Interrupted" } else { [string]$item.State }
@@ -600,8 +604,10 @@ function Add-Urls([string[]]$Urls,[switch]$FromClipboard,[switch]$ShowPreview) {
     }
 }
 
-function Add-SubscriptionUrls([string[]]$Urls) {
+function Add-SubscriptionUrls([string[]]$Urls,[string]$SubscriptionId='',[string]$SubscriptionName='') {
     if ($script:checkpointReadOnly) { throw 'Очередь недоступна для сохранения. Сначала устраните ошибку восстановления.' }
+    if (([bool]$SubscriptionId -ne [bool]$SubscriptionName) -or
+        ($SubscriptionName -and -not (Test-VdSubscriptionName -Name $SubscriptionName))) { throw 'У подписки должно быть безопасное краткое имя папки.' }
     $seen=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     $requested=[Collections.Generic.List[string]]::new()
     foreach($url in $Urls) { if ((Is-ValidUrl $url) -and $seen.Add($url)) { $requested.Add($url) } }
@@ -616,6 +622,7 @@ function Add-SubscriptionUrls([string[]]$Urls) {
         if (Find-QueueItem $url) { continue }
         $script:queue.Add([pscustomobject]@{
             Order=$script:queue.Count+1;Url=$url;State='Queued';Status='Queued';Path='';OwnedPaths=@()
+            SubscriptionId=$SubscriptionId;SubscriptionName=$SubscriptionName
             OutputRoot='';RunDir='';StageDir='';CleanupPaths=@();CleanupError='';PendingRemoval=$false
             AttemptFinished=$false;DeferredToNextStart=[bool]$deferred;AttachedToRecovered=$false
             Progress=0.0;Speed='';Downloaded='';ETA=''
@@ -846,6 +853,7 @@ function Set-Download {
     $stableStatus = if ($State -eq "Done") { "Completed" }
                     elseif ($RawError -or $State -eq "Error") { "Failed" }
                     else { "Running" }
+    $sourceRow=if($Url){Find-QueueItem $Url}else{$null}
     if (-not $item) {
         $item = [pscustomobject]@{
             Slot = "T$Slot"
@@ -855,6 +863,8 @@ function Set-Download {
             Url = $Url
             Path = $Path
             RawError = $RawError
+            SubscriptionId = [string]$sourceRow.SubscriptionId
+            SubscriptionName = [string]$sourceRow.SubscriptionName
             Progress = 0.0
             Speed = ""
             Downloaded = ""
@@ -869,6 +879,7 @@ function Set-Download {
         if ($Url) { $item.Url = $Url }
         if ($Path) { $item.Path = $Path }
         if ($RawError) { $item.RawError = $RawError }
+        if ($sourceRow) { $item | Add-Member -NotePropertyMembers @{SubscriptionId=[string]$sourceRow.SubscriptionId;SubscriptionName=[string]$sourceRow.SubscriptionName} -Force }
     }
     $DownloadGrid.Items.Refresh()
 }
@@ -1292,6 +1303,25 @@ function Start-Download([string[]]$OverrideUrls=$null) {
         return
     }
 
+    # Pin the date and each queued source name before clearing Downloads. A
+    # retry can originate there after its Queue row has already been removed.
+    $sessionOutputRoot=$dest
+    if ($ArchiveCheck.IsChecked) { $sessionOutputRoot=Join-Path $dest (Get-Date -Format 'yyyy-MM-dd') }
+    $routing=[Collections.Generic.Dictionary[string,object]]::new([StringComparer]::Ordinal)
+    try {
+        foreach($u in $items) {
+            $source=Find-QueueItem ([string]$u)
+            if (-not $source) { $source=Find-Download -Url ([string]$u) }
+            $name=[string]$source.SubscriptionName
+            $itemRoot=Resolve-VdSubscriptionOutput -BaseDirectory $sessionOutputRoot -Name $name
+            Assert-VdNoReparseAncestors -Path (Join-Path $itemRoot '__validation__')
+            $routing[[string]$u]=@{SubscriptionId=[string]$source.SubscriptionId;SubscriptionName=$name;OutputRoot=$itemRoot}
+        }
+    } catch {
+        [System.Windows.MessageBox]::Show(('Нельзя использовать папку подписки: '+$_.Exception.Message),'Video Downloader') | Out-Null
+        return
+    }
+
     Clean-Temp
     $script:runDir = Join-Path ([IO.Path]::GetTempPath()) ("ytdl-gui-" + [guid]::NewGuid().ToString("N"))
     New-Item -ItemType Directory -Path $script:runDir -Force | Out-Null
@@ -1305,6 +1335,11 @@ function Start-Download([string[]]$OverrideUrls=$null) {
     [void][IO.Directory]::CreateDirectory($script:cancelDir)
     [IO.File]::WriteAllText($script:liveQueuePath, "")
     Set-Content $queuePath $items -Encoding UTF8
+    $itemFoldersPath=Join-Path $script:runDir 'item-folders.json'
+    $folderItems=@(foreach($u in $items) {
+        if ($routing[[string]$u].SubscriptionName) { @{Url=[string]$u;Folder=[string]$routing[[string]$u].SubscriptionName} }
+    })
+    [IO.File]::WriteAllText($itemFoldersPath,(ConvertTo-Json -InputObject @{Version=1;Items=$folderItems} -Depth 4 -Compress),[Text.UTF8Encoding]::new($false))
 
     $script:logLines = 0
     $script:eventLines = 0
@@ -1334,7 +1369,8 @@ function Start-Download([string[]]$OverrideUrls=$null) {
     Add-Urls $items
     foreach ($u in $items) {
         Set-QueueFields (Find-QueueItem ([string]$u)) @{
-            OutputRoot=$dest; RunDir=$script:runDir; StageDir=''; CleanupPaths=@(); CleanupError=''
+            SubscriptionId=[string]$routing[[string]$u].SubscriptionId; SubscriptionName=[string]$routing[[string]$u].SubscriptionName
+            OutputRoot=[string]$routing[[string]$u].OutputRoot; RunDir=$script:runDir; StageDir=''; CleanupPaths=@(); CleanupError=''
             Path=''; OwnedPaths=@()
             PendingRemoval=$false; AttemptFinished=$false; DeferredToNextStart=$false; AttachedToRecovered=$false; CountedOutcome=''
         }
@@ -1351,12 +1387,11 @@ function Start-Download([string[]]$OverrideUrls=$null) {
     $psi.UseShellExecute = $false
     $psi.CreateNoWindow = $true
 
-    $resultDir = $dest
-    if ($ArchiveCheck.IsChecked) { $resultDir = Join-Path $dest (Get-Date -Format "yyyy-MM-dd") }
+    $resultDir = $sessionOutputRoot
 
     $args = @(
         "-NoProfile","-ExecutionPolicy","Bypass","-File",$engine,
-        "-In",$queuePath,"-Out",$dest,"-Threads",[string]$threadCount,
+        "-In",$queuePath,"-Out",$sessionOutputRoot,"-Threads",[string]$threadCount,"-ItemFoldersFile",$itemFoldersPath,
         "-NoProgress","-Log",$script:runLog,"-EventFile",$script:runEvents,"-LiveQueueFile",$script:liveQueuePath,"-CancelDir",$script:cancelDir,"-ResultDir",$resultDir,
         "-Quality",[string]$QualityCombo.SelectedItem,
         "-Container",[string]$ContainerCombo.SelectedItem,
@@ -1371,7 +1406,6 @@ function Start-Download([string[]]$OverrideUrls=$null) {
     if ([string]$FragmentsCombo.SelectedItem -eq "Auto") { $args += "-AutoFragments" }
     else { $args += @("-Fragments",[string]$FragmentsCombo.SelectedItem) }
 
-    if ($ArchiveCheck.IsChecked) { $args += "-Archive" }
     if ($SponsorCheck.IsChecked) { $args += "-SponsorBlock" }
     if ($AudioOnlyCheck.IsChecked) { $args += "-AudioOnly" }
 
@@ -1391,11 +1425,11 @@ function Start-Download([string[]]$OverrideUrls=$null) {
         $script:proc = [Diagnostics.Process]::Start($psi)
         $script:activeEngine = [ordered]@{
             Pid=$script:proc.Id; StartedUtc=$script:proc.StartTime.ToUniversalTime().ToString("o")
-            EventsPath=$script:runEvents; CancelDir=$script:cancelDir; OutputRoot=$dest; RunDir=$script:runDir
+            EventsPath=$script:runEvents; CancelDir=$script:cancelDir; OutputRoot=$sessionOutputRoot; RunDir=$script:runDir
         }
         Save-SessionCheckpoint
         Set-Running $true
-        Log-Line "Started $($items.Count) URL(s) into $dest"
+        Log-Line "Started $($items.Count) URL(s) into $sessionOutputRoot"
     } catch {
         $script:proc = $null
         $script:activeEngine = $null
@@ -2037,7 +2071,7 @@ $OpenAppSettingsButton.Add_Click({ Open-AppSettingsFolder })
 $SubscriptionsButton.Add_Click({
     try {
         Show-VdSubscriptionsWindow -Owner $window -Root $root -DataDirectory $script:subscriptionsDirectory -YtDlpPath $ytDlp `
-            -CookiePathScript { [string]$CookiesBox.Text } -QueueUrls { param($urls) Add-SubscriptionUrls -Urls $urls }
+            -CookiePathScript { [string]$CookiesBox.Text } -QueueUrls { param($urls,$source) Add-SubscriptionUrls -Urls $urls -SubscriptionId ([string]$source.Id) -SubscriptionName ([string]$source.ShortName) }
     } catch {
         [System.Windows.MessageBox]::Show($window,$_.Exception.Message,'Подписки',[System.Windows.MessageBoxButton]::OK,[System.Windows.MessageBoxImage]::Warning) | Out-Null
     }
