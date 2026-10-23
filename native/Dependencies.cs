@@ -54,28 +54,39 @@ public static class DependencyCenter
         if(process.ExitCode!=0)throw new IOException(stderr.Result);
         return stdout.Result;
     }
-    public static async Task InstallFfmpegAsync(CancellationToken token=default)
+    public static Task InstallFfmpegAsync(CancellationToken token=default) =>
+        InstallFfmpegAsync(new Uri("https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"),
+            AppContext.BaseDirectory,TimeSpan.FromMinutes(6),token);
+
+    internal static async Task InstallFfmpegAsync(Uri source,string installDirectory,TimeSpan downloadTimeout,CancellationToken token)
     {
+        if (downloadTimeout<=TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(downloadTimeout));
         string scratch=Path.Combine(Path.GetTempPath(),"vd-ffmpeg-"+Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(scratch);
         try
         {
-            using var http=new HttpClient{Timeout=TimeSpan.FromMinutes(6)};
+            using var http=new HttpClient{Timeout=Timeout.InfiniteTimeSpan};
+            using var deadline=CancellationTokenSource.CreateLinkedTokenSource(token);
+            deadline.CancelAfter(downloadTimeout);
             string zip=Path.Combine(scratch,"ffmpeg.zip");
-            using (var response=await http.GetAsync("https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip",
-                       HttpCompletionOption.ResponseHeadersRead,token).ConfigureAwait(false))
+            try
             {
+                using var response=await http.GetAsync(source,HttpCompletionOption.ResponseHeadersRead,deadline.Token).ConfigureAwait(false);
                 response.EnsureSuccessStatusCode();
                 await using var target=File.Create(zip);
-                await response.Content.CopyToAsync(target,token).ConfigureAwait(false);
+                await response.Content.CopyToAsync(target,deadline.Token).ConfigureAwait(false);
+                deadline.Token.ThrowIfCancellationRequested();
             }
+            catch(OperationCanceledException error) when (!token.IsCancellationRequested)
+            { throw new TimeoutException("Не удалось скачать FFmpeg за отведённое время. Повторите установку.",error); }
             string unpack=Path.Combine(scratch,"unpacked");
             ZipFile.ExtractToDirectory(zip,unpack);
             string[] f=Directory.GetFiles(unpack,"ffmpeg.exe",SearchOption.AllDirectories);
             string[] p=Directory.GetFiles(unpack,"ffprobe.exe",SearchOption.AllDirectories);
             if(f.Length==0||p.Length==0)throw new IOException("No ffmpeg or ffprobe binary in package.");
-            File.Copy(f[0],Path.Combine(AppContext.BaseDirectory,"ffmpeg.exe"),true);
-            File.Copy(p[0],Path.Combine(AppContext.BaseDirectory,"ffprobe.exe"),true);
+            token.ThrowIfCancellationRequested();
+            File.Copy(f[0],Path.Combine(installDirectory,"ffmpeg.exe"),true);
+            File.Copy(p[0],Path.Combine(installDirectory,"ffprobe.exe"),true);
         }
         finally { try { Directory.Delete(scratch,true); } catch(IOException){} }
     }

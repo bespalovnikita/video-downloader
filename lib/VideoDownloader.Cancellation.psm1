@@ -136,6 +136,31 @@ function Publish-VdStagedFiles {
         [string]$MediaPath,
         [switch]$RenameCollisions
     )
+    # Thread jobs (and separate engines) must reserve the name and move the
+    # complete batch under the same lock. A preflight alone races File.Move.
+    $identity=[IO.Path]::GetFullPath($OutputRoot).TrimEnd([IO.Path]::DirectorySeparatorChar,[IO.Path]::AltDirectorySeparatorChar)
+    if ($IsWindows) { $identity=$identity.ToUpperInvariant() }
+    $hash=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($identity)))
+    $mutex=[Threading.Mutex]::new($false,('Local\VideoDownloader.Publish.'+$hash))
+    $locked=$false
+    try {
+        try { $locked=$mutex.WaitOne() }
+        catch [Threading.AbandonedMutexException] { $locked=$true }
+        if (-not $locked) { throw 'Cannot acquire output publication lock.' }
+        return Publish-VdStagedFilesCore @PSBoundParameters
+    } finally {
+        if ($locked) { $mutex.ReleaseMutex() }
+        $mutex.Dispose()
+    }
+}
+
+function Publish-VdStagedFilesCore {
+    param(
+        [Parameter(Mandatory)][string]$StageDir,
+        [Parameter(Mandatory)][string]$OutputRoot,
+        [string]$MediaPath,
+        [switch]$RenameCollisions
+    )
     if (-not (Test-Path -LiteralPath $StageDir -PathType Container)) {
         throw "Missing staged download folder: $StageDir"
     }

@@ -159,6 +159,35 @@ try {
     $startNode=$guiAst.Find({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Start-Download'},$true)
     Assert-Vd ($startNode.Extent.Text.IndexOf('Add-Urls $items') -gt $startNode.Extent.Text.IndexOf('if ($plan.Cancelled) { return }')) 'Queue insertion must follow duplicate confirmation'
 
+    # Execute the actual GUI restore functions: a round-trip of the storage
+    # module alone cannot detect an early return before applying settings.
+    Import-Module (Join-Path $root 'lib/VideoDownloader.Profiles.psm1') -Force
+    foreach ($name in @('Restore-PreviousSession','Restore-SessionSettings')) {
+        $node=$guiAst.Find({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name},$true)
+        . ([scriptblock]::Create($node.Extent.Text))
+    }
+    function Import-CompletedUrlsToHistory {}
+    $script:sessionPath=$path
+    foreach ($case in @('empty','completed')) {
+        foreach ($name in @('ProfileCombo','QualityCombo','CodecCombo','ContainerCombo','FragmentsCombo')) {
+            Set-Variable -Name $name -Value ([pscustomobject]@{Items=@('Музыка MP3','1080','H264','MP4','2');SelectedItem='';Text=''})
+        }
+        foreach ($name in @('RateLimitCombo','ThreadsBox','FilenameTemplateBox','OutputBox','CookiesBox','SubtitleLangsBox')) {
+            Set-Variable -Name $name -Value ([pscustomobject]@{Text='default'})
+        }
+        foreach ($name in @('WriteSubsCheck','AutoSubsCheck','EmbedSubsCheck','EmbedThumbnailCheck','EmbedMetadataCheck','EmbedChaptersCheck','ArchiveCheck','SponsorCheck','AudioOnlyCheck','WatchClipboardCheck')) {
+            Set-Variable -Name $name -Value ([pscustomobject]@{IsChecked=$false})
+        }
+        $rows=if($case -eq 'completed') {@(@{Url='https://example.com/done';Status='Completed';Path=''})}else{@()}
+        Write-VdSessionCheckpoint -Path $path -Session @{Queue=@($rows);Engine=$null;Settings=@{
+            Profile='Music MP3';Output='D:\saved-output';Cookies='D:\cookies.txt';Threads='7';AudioOnly=$true
+        }}
+        Restore-PreviousSession
+        Assert-Vd ($OutputBox.Text -eq 'D:\saved-output' -and $CookiesBox.Text -eq 'D:\cookies.txt' -and
+            $ThreadsBox.Text -eq '7' -and $AudioOnlyCheck.IsChecked -and $ProfileCombo.SelectedItem -eq 'Музыка MP3') "GUI settings must restore with a $case queue"
+        Assert-Vd (-not $script:restoringSession) 'Applying saved settings must release the save guard'
+    }
+
     [IO.File]::WriteAllText($path,'truncated json')
     Assert-Throws { Read-VdSessionCheckpoint -Path $path | Out-Null } "Corrupt checkpoint must fail, not silently reset"
 }

@@ -57,6 +57,9 @@ internal static class NativeUiSelfTest
             Require(window.Resources.Contains("QueueStatusTextStyle"),"Queue state colors must be present");
             Require(window.Resources.Contains("DownloadStatusTextStyle"),"Download state colors must be present");
 
+            Stage("testing live Add while duplicate dialogs pump the dispatcher");
+            controller.TestLiveAddDuringDuplicateDialog(root);
+
             Stage("testing manual subscriptions window and inbox queue actions");
             controller.TestSubscriptionsUi(root);
 

@@ -425,6 +425,11 @@ function Restore-PreviousSession {
         return
     }
     if (-not $checkpoint) { return }
+    # Settings belong to the app even if there is no unfinished queue or the
+    # user declines its restoration. Profile events must not save partial state.
+    $script:restoringSession = $true
+    try { Restore-SessionSettings $checkpoint.Settings }
+    finally { $script:restoringSession = $false }
     # One-time best-effort migration of successfully downloaded URLs from the
     # previous checkpoint, even when the user declines restoring that queue.
     Import-CompletedUrlsToHistory -Items @($checkpoint.Queue)
@@ -455,7 +460,6 @@ function Restore-PreviousSession {
     }
     $script:restoringSession = $true
     try {
-        Restore-SessionSettings $checkpoint.Settings
         Initialize-RecoveredEngine $checkpoint.Engine
         foreach ($item in $items) {
             if (-not $item.RunDir -and -not $item.DeferredToNextStart -and $script:recoveredEngine) {

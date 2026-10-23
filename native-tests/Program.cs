@@ -4,6 +4,7 @@ using VideoDownloader.Native;
 
 if (StartupDownloadRegressionTests.TryRunFixture(args) || SubscriptionScannerTests.TryRunFixture(args) || LifecycleRegressionTests.TryRunFixture(args) || ReviewRegressionTests.TryRunFixture(args)) return;
 await StartupDownloadRegressionTests.RunAsync();
+await DependencyInstallTests.RunAsync();
 SubscriptionStoreTests.Run();
 await SubscriptionScannerTests.RunAsync();
 await LifecycleRegressionTests.RunAsync();
@@ -29,6 +30,16 @@ try
     Assert(Math.Abs(DownloadCoordinator.ParseSize("1.5MiB/s")-1.5*1024*1024)<1,"Native progress speed parser");
     Assert(Math.Abs(DownloadCoordinator.ParseSize("550 KiB/s")-550*1024)<1,"Progress KiB parser");
     var data=new AppPersistence(Path.Combine(temp,"localdata"));
+    string volume=Path.GetPathRoot(temp)!;
+    Assert(OwnedFiles.Inside(volume,temp),"Children of a volume root must pass the output boundary check");
+    Assert(!OwnedFiles.Inside(volume,volume),"The output root itself is not an owned child file");
+    Assert(!OwnedFiles.Inside(temp,temp+"-sibling/file.mp4"),"A common path prefix must not authorize a sibling folder");
+    if(OperatingSystem.IsWindows())
+    {
+        Assert(OwnedFiles.Inside(@"D:\",@"D:\video.mp4"),"Drive roots must use exactly one separator");
+        Assert(OwnedFiles.Inside(@"\\server\share\",@"\\server\share\video.mp4"),"UNC share roots must accept their child files");
+        Assert(!OwnedFiles.Inside(@"D:\",@"E:\video.mp4"),"Root checks must preserve volume boundaries");
+    }
     Assert(data.ReadHistory().Count==0,"Fresh install has empty history");
     data.AppendSuccess("https://example.com/Video");
     data.AppendSuccess("https://example.com/Video");

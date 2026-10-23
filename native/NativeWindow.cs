@@ -397,20 +397,27 @@ public sealed partial class NativeWindow : IDisposable
             .Where(url=>!_queue.Any(i=>string.Equals(i.Url,url,StringComparison.Ordinal)))
             .Select(url=>new DownloadItem{Url=url}).ToList();
         if(rows.Count==0)return;
-        bool active=_session?.IsRunning==true;
+        var session=_session;
+        bool active=session?.IsRunning==true;
         if(active)
         {
             var checkedRows=ConfirmDuplicates(rows,false);
             if(checkedRows==null)return;
             rows=checkedRows;
         }
+        // A modal duplicate dialog pumps the dispatcher: IPC/clipboard may
+        // have added these URLs, completed the session, or closed the window.
+        if (_closing || _disposed) return;
+        var added=new List<DownloadItem>();
         foreach(var row in rows)
         {
+            if (_queue.Any(existing=>string.Equals(existing.Url,row.Url,StringComparison.Ordinal))) continue;
             _queue.Add(row);
+            added.Add(row);
             _previews.Request(row.Url,clipboard&&active);
             if(active)
             {
-                if(_session!.Add(row)) _sessionUrls.Add(row.Url);
+                if(ReferenceEquals(_session,session) && session!.IsRunning && session.Add(row)) _sessionUrls.Add(row.Url);
                 else
                 {
                     row.DeferredToNextStart=true;
@@ -418,13 +425,13 @@ public sealed partial class NativeWindow : IDisposable
                 }
             }
         }
-        if(selectNew && rows.Count>0)
+        if(selectNew && added.Count>0)
         {
-            Q.SelectedItem=rows[0];
-            ShowPreview(rows[0].Url);
+            Q.SelectedItem=added[0];
+            ShowPreview(added[0].Url);
         }
         Reindex();
-        T("ClipboardHint").Text=rows.Count+" URL(s) added.";
+        T("ClipboardHint").Text=added.Count+" URL(s) added.";
     }
     private void ShowPreview(string url)
     {
