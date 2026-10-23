@@ -17,7 +17,11 @@ __all__ = ['VideoDownloaderPornHubChannelIE']
 _HOST = r'(?:[a-zA-Z0-9-]+\.)?pornhub(?:premium)?\.(?:com|net|org)'
 _PATH = r'/(?P<kind>channels|model|pornstar|users)/(?P<slug>[A-Za-z0-9_-]+)(?:/videos(?:/upload)?)?/?'
 _VOID = {'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr'}
-_LISTS = {'videoSearchResult', 'mostRecentVideosSection', 'pornstarsVideoSection', 'uploadedVideos'}
+# Known publication selectors also used by RSS-Bridge/RSSHub and JDownloader.
+# Never fall back to all watch links from the document.
+_LISTS = {'videoSearchResult', 'mostRecentVideosSection', 'pornstarsVideoSection', 'uploadedVideos',
+          'claimedUploadedVideoSection', 'channelVideosList', 'showAllChanelVideos'}
+_CARDS = {'pcVideoListItem', 'videoBox', 'videoblock'}
 _EXCLUDED = re.compile(r'watch.?history|recently.?viewed|recommended|suggested|related.?videos|favorites|favourites', re.I)
 
 
@@ -61,7 +65,9 @@ class _Page(HTMLParser):
         self.listing_url, self.page = listing_url, page
         self.stack, self.cards, self.next_links, self.page_numbers = [], [], [], set()
         self.list_count, self.total, self.empty, self.more_button = 0, None, False, False
-        self.card, self.title_parts = None, []
+        self.card, self.title_parts, self.document_title = None, [], []
+        self.branches, self.candidates = [], []
+        self.outside_cards = 0
         self.feed(html)
         self.close()
         if self.stack or self.card is not None:
@@ -71,16 +77,31 @@ class _Page(HTMLParser):
         attrs = dict(attributes)
         classes = set((attrs.get('class') or '').split())
         parent = self.stack[-1] if self.stack else {}
-        publication = attrs.get('id') in _LISTS
+        # Profile layouts also use videoUList wrappers and moreData video lists.
+        # moreData.feedItems alone is a general activity feed, not publications.
+        explicit = attrs.get('id') in _LISTS or (tag == 'ul' and attrs.get('id') == 'moreData' and 'videos' in classes)
+        publication = explicit or (tag in ('div', 'section') and 'videoUList' in classes)
         scoped = publication or parent.get('scoped', False)
-        excluded = parent.get('excluded', False) or bool(_EXCLUDED.search((attrs.get('id') or '') + ' ' + ' '.join(classes)))
+        unrelated = bool(_EXCLUDED.search((attrs.get('id') or '') + ' ' + ' '.join(classes)))
+        excluded = parent.get('excluded', False) or tag in ('nav', 'aside', 'footer') or unrelated
+        # Main navigation can be a <nav> or <footer>; excluding its cards must
+        # not hide advertised pages. Explicitly unrelated paging is ignored.
+        pagination_excluded = parent.get('pagination_excluded', False) or unrelated
+        concrete = explicit or (tag == 'ul' and 'videos' in classes and parent.get('scoped', False))
         pagination = parent.get('pagination', False) or bool(classes & {'pagination', 'page_next', 'page_current', 'page_last'})
         disabled = parent.get('disabled', False) or 'disabled' in classes
         node = dict(tag=tag, scoped=scoped, excluded=excluded, pagination=pagination, disabled=disabled,
-                    next=parent.get('next', False) or 'page_next' in classes, title=tag == 'h1' or parent.get('title', False))
-        if publication and not excluded:
+                    next=parent.get('next', False) or 'page_next' in classes, title=tag == 'h1' or parent.get('title', False),
+                    document_title=tag == 'title' or parent.get('document_title', False),
+                    concrete=concrete or parent.get('concrete', False), branch=parent.get('branch'),
+                    pagination_excluded=pagination_excluded)
+        if (publication or concrete) and not excluded:
             if not parent.get('scoped', False):
                 self.list_count += 1
+                node['branch'] = {'lists': 0}
+                self.branches.append(node['branch'])
+            if concrete and not parent.get('concrete', False):
+                node['branch']['lists'] += 1
             for key in ('data-total-videos', 'data-total-count', 'data-videos-count'):
                 if key in attrs:
                     value = attrs[key]
@@ -93,7 +114,7 @@ class _Page(HTMLParser):
         if scoped and not excluded:
             if classes & {'noVideos', 'noVideosAvailable', 'noVideosMsg', 'noResults'}:
                 self.empty = True
-            if classes & {'pcVideoListItem', 'videoBox'} and self.card is None:
+            if classes & _CARDS and self.card is None:
                 self.card = dict(depth=len(self.stack), ids=set(), title='')
             if self.card is not None:
                 key = attrs.get('data-video-vkey') or attrs.get('data-viewkey')
@@ -108,13 +129,20 @@ class _Page(HTMLParser):
                             raise ExtractorError('Publication card points outside its source', expected=True)
                         self._add_key(values[0])
                         self.card['title'] = self.card['title'] or (attrs.get('title') or '').strip()
-        if attrs.get('id') == 'moreDataBtn' and not disabled:
+        elif classes & _CARDS and not excluded:
+            self.outside_cards += 1
+        identifier = attrs.get('id') or ''
+        if (tag in ('ul', 'div', 'section') and not excluded and len(self.candidates) < 6
+                and re.fullmatch(r'[A-Za-z][A-Za-z0-9_-]{0,59}', identifier)
+                and re.search(r'video|upload|moreData', identifier, re.I) and identifier not in self.candidates):
+            self.candidates.append(identifier)
+        if attrs.get('id') == 'moreDataBtn' and not disabled and not pagination_excluded:
             self.more_button = True
         relation = (attrs.get('rel') or '').split()
         if tag in ('a', 'link') and attrs.get('href'):
             href = attrs['href']
             is_next = 'next' in relation or node['next']
-            if (pagination or is_next) and not disabled:
+            if (pagination or is_next) and not disabled and not pagination_excluded:
                 target = urlsplit(urljoin(self.listing_url, href))
                 if not _same_source(self.listing_url, target.geturl()):
                     if is_next:
@@ -154,11 +182,20 @@ class _Page(HTMLParser):
     def handle_data(self, data):
         if self.stack and self.stack[-1].get('title'):
             self.title_parts.append(data)
+        if self.stack and self.stack[-1].get('document_title'):
+            self.document_title.append(data)
 
     def result(self):
         if not self.list_count:
-            raise ExtractorError('Publication list not found; login, restriction or page layout changed', expected=True)
-        if self.list_count != 1:
+            title = ' '.join(''.join(self.document_title + self.title_parts).split())
+            age = re.search(r'age.?verif|verify your age|confirm your age|over 18|старше.?18|подтвер\w* возраст', title, re.I)
+            reason = 'Получена страница подтверждения возраста.' if age else 'Не распознан список публикаций на полученной странице.'
+            detail = ', '.join('#' + name for name in self.candidates) or 'нет'
+            raise ExtractorError(
+                f'{reason} Адрес: {_diagnostic_url(self.listing_url)}. '
+                f'Секции видео: {detail}; карточек вне списка: {self.outside_cards}. '
+                'Если сайт требует подтверждение возраста или вход, укажите файл сессии браузера в поле Cookies основного окна.', expected=True)
+        if self.list_count != 1 or any(branch['lists'] > 1 for branch in self.branches):
             raise ExtractorError('Ambiguous publication lists on the page', expected=True)
         unique = dict(self.cards)
         if not unique and not (self.empty or self.total == 0):

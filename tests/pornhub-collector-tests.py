@@ -130,6 +130,60 @@ class CollectorTests(unittest.TestCase):
             result = Collector({1: page()}).extract(source)
             self.assertEqual(result['vd_ph_scan']['listing_url'], source + '/videos' + ('' if kind == 'channels' else '/upload'))
 
+    def test_alternative_publication_lists_walk_all_pages(self):
+        source = SOURCE.replace('/model/', '/pornstar/')
+        for identifier in ('claimedUploadedVideoSection', 'moreData', 'channelVideosList', 'showAllChanelVideos'):
+            with self.subTest(identifier=identifier):
+                def variant(html):
+                    return html.replace('id="mostRecentVideosSection"', f'id="{identifier}" class="videos"').replace('pcVideoListItem', 'videoblock')
+                result = Collector({1: variant(page(('phfixture1', 'phfixture2'), next_page=2, total=3)),
+                                    2: variant(page(('phfixture3',), number=2, total=3))}).extract(source)
+                self.assertEqual(len(result['entries']), 3)
+                self.assertEqual(len(result['vd_ph_scan']['pages']), 2)
+
+    def test_class_based_publication_wrapper_excludes_recommendations(self):
+        def variant(html):
+            return html.replace('<ul id="mostRecentVideosSection"', '<section class="videoUList"><ul id="profileGrid" class="videos"').replace(
+                '</ul><ul class="pagination">', '</ul></section><ul class="pagination">', 1)
+        unrelated = '<aside class="recommendedVideos"><div class="videoUList"><li class="videoBox" data-video-vkey="phwrong"></li><a rel="next" href="https://other.example/?page=8">Next</a><button id="moreDataBtn">More</button></div></aside>'
+        result = Collector({1: variant(page(('phfixture1', 'phfixture2'), next_page=2, total=3, outside=unrelated)),
+                            2: variant(page(('phfixture3',), number=2, total=3, outside=unrelated))}).extract(SOURCE)
+        self.assertEqual([e['id'] for e in result['entries']], ['phfixture1', 'phfixture2', 'phfixture3'])
+
+    def test_generic_feed_is_not_a_video_list(self):
+        html = page().replace('id="mostRecentVideosSection"', 'id="moreData" class="feedItems"')
+        with self.assertRaises(ExtractorError):
+            Collector({1: html}).extract(SOURCE)
+
+    def test_semantic_page_navigation_is_followed(self):
+        for tag in ('nav', 'footer'):
+            with self.subTest(tag=tag):
+                def variant(html):
+                    return html.replace('<ul class="pagination">', f'<{tag} class="pagination">').replace('</ul></body>', f'</{tag}></body>')
+                result = Collector({1: variant(page(('phfixture1', 'phfixture2'), next_page=2, total=3)),
+                                    2: variant(page(('phfixture3',), number=2, total=3))}).extract(SOURCE)
+                self.assertEqual(len(result['entries']), 3)
+
+    def test_class_wrapper_cannot_merge_two_independent_lists(self):
+        html = '<section class="videoUList"><ul class="videos"><li class="videoblock" data-video-vkey="phfixture1"></li></ul><ul class="videos"><li class="videoblock" data-video-vkey="phfixture2"></li></ul></section>'
+        with self.assertRaises(ExtractorError):
+            Collector({1: html}).extract(SOURCE)
+
+    def test_unknown_layout_reports_structural_details_without_video_keys(self):
+        html = page().replace('mostRecentVideosSection', 'newVideosGrid')
+        with self.assertRaises(ExtractorError) as failure:
+            Collector({1: html}).extract(SOURCE)
+        self.assertIn('#newVideosGrid', str(failure.exception))
+        self.assertIn(LISTING, str(failure.exception))
+        self.assertNotIn('phfixture1', str(failure.exception))
+
+    def test_age_page_is_an_actionable_failure_never_an_empty_archive(self):
+        html = '<html><head><title>Age verification</title></head><body><h1>Verify your age</h1></body></html>'
+        with self.assertRaises(ExtractorError) as failure:
+            Collector({1: html}).extract(SOURCE)
+        self.assertIn('возраста', str(failure.exception))
+        self.assertIn('Cookies', str(failure.exception))
+
     def test_localization_redirects_preserve_the_publication_source(self):
         self.assertTrue(module._same_source(LISTING, LISTING.replace('rt.', 'www.')))
         for other in ('https://www.pornhub.com/login', LISTING.replace('fixture-model', 'someone-else'),
