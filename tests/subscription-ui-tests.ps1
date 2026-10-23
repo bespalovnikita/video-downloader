@@ -3,11 +3,34 @@
 # platform controls/dialog and external discovery boundary are substituted.
 $ErrorActionPreference='Stop'
 $root=Split-Path -Parent $PSScriptRoot
-Import-Module (Join-Path $root 'lib/VideoDownloader.SubscriptionUi.psm1') -Force -DisableNameChecking
-Import-Module (Join-Path $root 'lib/VideoDownloader.Subscriptions.psm1') -Force -DisableNameChecking
-Import-Module (Join-Path $root 'lib/VideoDownloader.DownloadHistory.psm1') -Force
-$module=Get-Module VideoDownloader.SubscriptionUi
 function Assert([bool]$Condition,[string]$Message){if(-not $Condition){throw $Message}}
+# Execute the actual startup import graph in its real order. Importing history
+# again after the UI would hide a nested -Force import removing owner commands.
+$tokens=$null;$errors=$null
+$guiAst=[Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'ytdl-manager-gui.ps1'),[ref]$tokens,[ref]$errors)
+Assert ($errors.Count -eq 0) 'GUI syntax failed'
+foreach($statement in $guiAst.EndBlock.Statements) {
+    if ($statement -is [Management.Automation.Language.AssignmentStatementAst] -and
+        $statement.Left -is [Management.Automation.Language.VariableExpressionAst] -and
+        $statement.Left.VariablePath.UserPath -match 'Module$') {
+        . ([scriptblock]::Create($statement.Extent.Text))
+    } elseif ($statement -is [Management.Automation.Language.PipelineAst] -and
+        $statement.PipelineElements[0] -is [Management.Automation.Language.CommandAst] -and
+        $statement.PipelineElements[0].GetCommandName() -eq 'Import-Module') {
+        . ([scriptblock]::Create($statement.Extent.Text))
+    }
+}
+foreach($command in @('Read-VdDownloadHistory','Add-VdSuccessfulDownloadUrl','Resolve-VdDuplicateDownloadPlan',
+    'Read-VdSubscriptions','Set-VdSubscriptionSuccessful','Apply-VdSubscriptionScan')) {
+    Assert ([bool](Get-Command $command -ErrorAction SilentlyContinue)) "GUI startup lost owner command: $command"
+}
+$module=Get-Module VideoDownloader.SubscriptionUi
+# Keep the real owner's history/duplicate/queue code across the module callback.
+foreach($name in @('Confirm-DuplicateDownloads','Add-SubscriptionUrls','Is-ValidUrl','Find-QueueItem')) {
+    $function=$guiAst.EndBlock.Statements | Where-Object {$_ -is [Management.Automation.Language.FunctionDefinitionAst] -and $_.Name -eq $name}
+    Assert ($null -ne $function) "Missing production GUI function: $name"
+    . ([scriptblock]::Create($function.Extent.Text))
+}
 $temp=Join-Path ([IO.Path]::GetTempPath()) ('vd-subscription-ui-'+[guid]::NewGuid().ToString('N'))
 [void][IO.Directory]::CreateDirectory($temp)
 $contexts=[Collections.Generic.List[object]]::new()
@@ -122,6 +145,35 @@ Export-ModuleMember -Function Invoke-VdSubscriptionScan
     while($worker.Job -and [DateTime]::UtcNow -lt $deadline){Start-Sleep -Milliseconds 30;& $module {param($c) Complete-VdSubscriptionUiCheck $c} $worker}
     $saved=Read-VdSubscriptions -Directory $workDirectory
     Assert ($null -eq $worker.Job -and $saved.Subscriptions[0].Initialized -and $saved.Items[0].State -eq 'Baseline' -and -not $worker.Timer.Running) 'Completion observer must apply a complete scan, preserve baseline mode and release job/timer'
+
+    # Initial archive import invokes the actual main GUI queue callback, which
+    # must still be able to read history after importing the subscriptions UI.
+    $script:historyPath=Join-Path $workDirectory 'successful-downloads.jsonl'
+    $script:queue=[Collections.ObjectModel.ObservableCollection[object]]::new()
+    $script:checkpointReadOnly=$false;$script:lastSessionError='';$script:proc=$null;$script:recoveredEngine=$null
+    $script:ClipboardHint=[pscustomobject]@{Text=''}
+    $script:prefetched=[Collections.Generic.List[string]]::new()
+    function Queue-PreviewPrefetch([string]$Url) {$script:prefetched.Add($Url)}
+    function Reindex-Queue {}
+    $archive=Add-VdSubscription -Directory $workDirectory -Url 'https://example.com/archive' -DownloadExisting $true
+    $worker.QueueUrls={throw 'Owner queue callback failed'}
+    & $module {param($c,$id) Add-VdSubscriptionUiChecks $c @($id)} $worker $archive.Id
+    $deadline=[DateTime]::UtcNow.AddSeconds(15)
+    while($worker.Job -and [DateTime]::UtcNow -lt $deadline){Start-Sleep -Milliseconds 30;& $module {param($c) Complete-VdSubscriptionUiCheck $c} $worker}
+    $saved=Read-VdSubscriptions -Directory $workDirectory
+    $pending=@($saved.Items | Where-Object SubscriptionId -CEQ $archive.Id)
+    Assert ($pending.Count -eq 1 -and $pending[0].InitialQueuePending -and $pending[0].State -eq 'New') 'An owner callback failure must keep the initial archive pending for another manual check'
+    $worker.QueueUrls={param($urls) Add-SubscriptionUrls -Urls $urls}
+    & $module {param($c,$id) Add-VdSubscriptionUiChecks $c @($id)} $worker $archive.Id
+    $deadline=[DateTime]::UtcNow.AddSeconds(15)
+    while($worker.Job -and [DateTime]::UtcNow -lt $deadline){Start-Sleep -Milliseconds 30;& $module {param($c) Complete-VdSubscriptionUiCheck $c} $worker}
+    $saved=Read-VdSubscriptions -Directory $workDirectory
+    $archiveSource=@($saved.Subscriptions | Where-Object Id -CEQ $archive.Id)[0]
+    $archiveItems=@($saved.Items | Where-Object SubscriptionId -CEQ $archive.Id)
+    Assert ($null -eq $worker.Job -and $archiveSource.Initialized -and -not $archiveSource.LastError -and
+        $archiveItems.Count -eq 1 -and $archiveItems[0].State -eq 'Queued' -and -not $archiveItems[0].InitialQueuePending) 'Real owner callback must apply discovery and acknowledge the initial queue without losing history commands'
+    Assert ($script:queue.Count -eq 1 -and $script:queue[0].Url -ceq 'https://example.com/discovered' -and
+        $script:prefetched.Count -eq 1 -and (Read-VdDownloadHistory -Path $script:historyPath).Count -eq 0) 'Initial import must create an ordinary queued item and preview intent, without recording download success'
 
     $slow=Add-VdSubscription -Directory $workDirectory -Url 'https://example.com/slow'
     & $module {param($c,$id) Add-VdSubscriptionUiChecks $c @($id)} $worker $slow.Id

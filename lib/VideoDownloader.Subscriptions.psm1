@@ -1,7 +1,7 @@
 #requires -Version 7.0
 # Shared v1 subscription persistence and the independent, bounded discovery worker.
 $ErrorActionPreference = 'Stop'
-Import-Module (Join-Path $PSScriptRoot 'VideoDownloader.PornHub.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'VideoDownloader.PornHub.psm1')
 
 function Test-VdSubscriptionUrl([string]$Url) {
     $uri=$null
