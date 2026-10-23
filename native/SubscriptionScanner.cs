@@ -11,6 +11,8 @@ namespace VideoDownloader.Native;
 public sealed record SubscriptionScannerOptions
 {
     public TimeSpan ScanTimeout { get; init; } = TimeSpan.FromSeconds(180);
+    public TimeSpan ChannelScanTimeout { get; init; } = TimeSpan.FromMinutes(15);
+    public int MaxChannelPages { get; init; } = 500;
     public TimeSpan FeedTimeout { get; init; } = TimeSpan.FromSeconds(12);
     public int MaxItems { get; init; } = 10_000;
     public int MaxMetadataBytes { get; init; } = 32 * 1024 * 1024;
@@ -35,6 +37,8 @@ public sealed class SubscriptionScanner : IDisposable
         ArgumentException.ThrowIfNullOrWhiteSpace(ytDlpPath);
         _limits = options ?? new();
         if (_limits.ScanTimeout <= TimeSpan.Zero || _limits.ScanTimeout > TimeSpan.FromSeconds(180) ||
+            _limits.ChannelScanTimeout<=TimeSpan.Zero || _limits.ChannelScanTimeout>TimeSpan.FromMinutes(15) ||
+            _limits.MaxChannelPages is <1 or >500 ||
             _limits.FeedTimeout <= TimeSpan.Zero || _limits.FeedTimeout > TimeSpan.FromSeconds(12) ||
             _limits.MaxItems is < 1 or > 10_000 || _limits.MaxMetadataBytes is < 1 or > 32 * 1024 * 1024 ||
             _limits.MaxFeedBytes is < 1 or > 2 * 1024 * 1024)
@@ -49,13 +53,15 @@ public sealed class SubscriptionScanner : IDisposable
         ArgumentNullException.ThrowIfNull(source);
         if (!ValidUrl(source.Url)) throw new ArgumentException("Источник должен быть HTTP(S) URL.", nameof(source));
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
-        deadline.CancelAfter(_limits.ScanTimeout);
+        bool channel=PornHubChannel.ListingUrl(source.Url)!=null;
+        deadline.CancelAfter(channel?_limits.ChannelScanTimeout:_limits.ScanTimeout);
         try
         {
             // Always enumerate first, including when the feed has not changed.
             string metadata = await EnumerateAsync(source.Url, cookiePath, deadline.Token).ConfigureAwait(false);
             deadline.Token.ThrowIfCancellationRequested();
-            SubscriptionScan scan = ParseMetadata(metadata, source.Url, _limits.MaxItems);
+            SubscriptionScan scan = channel?PornHubChannel.ParseScan(metadata,source.Url,_limits.MaxItems,_limits.MaxChannelPages)
+                :ParseMetadata(metadata, source.Url, _limits.MaxItems);
             deadline.Token.ThrowIfCancellationRequested();
             string feedUrl = string.IsNullOrWhiteSpace(source.FeedUrl) ? scan.FeedUrl : source.FeedUrl;
             if (feedUrl.Length == 0) return scan;
@@ -107,11 +113,24 @@ public sealed class SubscriptionScanner : IDisposable
             UseShellExecute = false, CreateNoWindow = true,
             RedirectStandardOutput = true, RedirectStandardError = true
         };
+        bool channel=PornHubChannel.ListingUrl(url)!=null;
         foreach (string argument in new[] {
-            "--ignore-config", "--no-flat-playlist", "--dump-single-json", "--skip-download",
-            "--playlist-end", (_limits.MaxItems + 1).ToString(System.Globalization.CultureInfo.InvariantCulture),
+            "--ignore-config", "--dump-single-json", "--skip-download",
             "--abort-on-error", "--no-color", "--no-progress", "--encoding", "utf-8", "--impersonate", "chrome"
         }) start.ArgumentList.Add(argument);
+        if(channel)
+        {
+            PornHubChannel.RequireCollector();
+            foreach(string argument in new[]{"--no-plugin-dirs","--plugin-dirs",PornHubChannel.PluginDirectory,
+                "--use-extractors","videodownloader:pornhub:channel","--flat-playlist","--socket-timeout","20",
+                "--extractor-args",$"VideoDownloaderPornHubChannel:max_items={_limits.MaxItems};max_pages={_limits.MaxChannelPages}"})
+                start.ArgumentList.Add(argument);
+        }
+        else
+        {
+            start.ArgumentList.Add("--no-flat-playlist");start.ArgumentList.Add("--playlist-end");
+            start.ArgumentList.Add((_limits.MaxItems+1).ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
         if (!string.IsNullOrWhiteSpace(cookiePath))
         {
             if (!File.Exists(cookiePath)) throw new FileNotFoundException("Файл cookies не найден.", cookiePath);

@@ -25,7 +25,7 @@
 
 ## Артефакты и доступ
 
-В релизе находится автономная C# / .NET 8 Windows x64 сборка: `VideoDownloader.exe`, `yt-dlp.exe`, XAML и ресурсы. Для работы нативной версии PowerShell 7 не требуется. FFmpeg и ffprobe можно установить отдельно, если нужны соответствующие операции.
+В релизе находится автономная C# / .NET 8 Windows x64 сборка: `VideoDownloader.exe`, `yt-dlp.exe`, XAML, ресурсы и `collection-plugins/videodownloader/yt_dlp_plugins/extractor/vd_pornhub.py`. Последний файл обязателен для импорта публикаций Pornhub через подписки; CI проверяет его наличие в пакете. Для работы нативной версии PowerShell 7 и внешний Python не требуются. FFmpeg и ffprobe можно установить отдельно, если нужны соответствующие операции.
 
 `SHA256SUMS.txt` позволяет проверить целостность скачанного архива.
 

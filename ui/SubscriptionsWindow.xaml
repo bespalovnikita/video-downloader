@@ -109,7 +109,7 @@
                 <TextBlock Text="Канал или плейлист — любой сайт, поддерживаемый yt-dlp" Margin="0,0,10,5" TextWrapping="Wrap"/>
                 <TextBlock Grid.Column="1" Text="RSS / Atom (необязательно)" Margin="0,0,10,5"/>
                 <TextBox Grid.Row="1" x:Name="SubscriptionUrlBox" Margin="0,0,10,0"
-                         ToolTip="Полный HTTP(S) URL канала или плейлиста. yt-dlp должен уметь перечислить все его материалы."/>
+                         ToolTip="Полный HTTP(S) URL канала или плейлиста, включая модель или канал Pornhub. Каждый ролик добавляется отдельным заданием."/>
                 <TextBox Grid.Row="1" Grid.Column="1" x:Name="SubscriptionFeedBox" Margin="0,0,10,0"
                          ToolTip="Лента дополняет полную проверку через yt-dlp. Для YouTube лента может определиться автоматически."/>
                 <Button Grid.Row="1" Grid.Column="2" x:Name="AddSubscriptionButton" Content="Добавить и проверить" Background="#6366F1" Margin="0"/>
@@ -165,7 +165,7 @@
         <StackPanel Grid.Row="8">
             <TextBlock x:Name="SubscriptionStatusText" Text="Проверки по расписанию и автоматического скачивания нет."
                        TextWrapping="Wrap" Foreground="#B3BBCD"/>
-            <TextBlock Text="Полная проверка: до 10 000 материалов и 180 секунд. Неполный список не меняет исходную отметку. RSS дополняет проверку, но не заменяет её."
+            <TextBlock Text="До 10 000 материалов. Обычная проверка — до 180 секунд; публикации Pornhub — до 15 минут и 500 страниц. Каждый ролик скачивается отдельно. Неполный список не меняет исходную отметку."
                        Foreground="#949CAE" TextWrapping="Wrap" FontSize="11" Margin="0,6,0,0"/>
         </StackPanel>
     </Grid>

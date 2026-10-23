@@ -91,6 +91,7 @@ internal static class SubscriptionScannerTests
                     "Item, metadata and feed caps must match the subscription contract");
                 foreach (var raised in new[] {
                     options with { ScanTimeout = TimeSpan.FromSeconds(181) }, options with { FeedTimeout = TimeSpan.FromSeconds(13) },
+                    options with { ChannelScanTimeout=TimeSpan.FromMinutes(16) }, options with { MaxChannelPages=501 },
                     options with { MaxItems = 10001 }, options with { MaxMetadataBytes = options.MaxMetadataBytes + 1 },
                     options with { MaxFeedBytes = options.MaxFeedBytes + 1 } })
                     Refuses(() => { using var scanner = new SubscriptionScanner(TestExecutable(), options: raised); },

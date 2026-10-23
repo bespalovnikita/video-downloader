@@ -41,6 +41,11 @@ jobs:
         timeout-minutes: 4
         run: pwsh -NoProfile -File ./tests/subscription-tests.ps1
 
+      - name: Pornhub channel manifests and real bundled collector
+        shell: pwsh
+        timeout-minutes: 2
+        run: pwsh -NoProfile -File ./tests/pornhub-channel-tests.ps1
+
       - name: Subscription WPF controls and explicit queue integration
         shell: pwsh
         timeout-minutes: 3

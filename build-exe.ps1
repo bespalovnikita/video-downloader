@@ -12,8 +12,9 @@ $ytDlp = Join-Path $PSScriptRoot "yt-dlp.exe"
 $icon = Join-Path $PSScriptRoot "assets\app.ico"
 $cmd = Join-Path $PSScriptRoot "start-gui.cmd"
 $docs = Join-Path $PSScriptRoot "GUI.md"
+$collector = Join-Path $PSScriptRoot 'collection-plugins/videodownloader/yt_dlp_plugins/extractor/vd_pornhub.py'
 
-foreach ($path in @($launcherProject,$gui,$engine,$ytDlp,$icon)) {
+foreach ($path in @($launcherProject,$gui,$engine,$ytDlp,$icon,$collector)) {
     if (-not (Test-Path $path)) { throw "Missing required file: $path" }
 }
 
@@ -36,6 +37,13 @@ foreach ($dirName in @("assets","lib","ui")) {
     if (Test-Path $sourceDir) {
         Copy-Item $sourceDir (Join-Path $OutputDir $dirName) -Recurse -Force
     }
+}
+
+$collectorRoot=Join-Path $PSScriptRoot 'collection-plugins'
+foreach ($file in Get-ChildItem -LiteralPath $collectorRoot -Recurse -File -Filter '*.py') {
+    $destination=Join-Path (Join-Path $OutputDir 'collection-plugins') ([IO.Path]::GetRelativePath($collectorRoot,$file.FullName))
+    [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($destination))
+    Copy-Item -LiteralPath $file.FullName -Destination $destination -Force
 }
 
 $zip = Join-Path $OutputDir "VideoDownloader-portable.zip"

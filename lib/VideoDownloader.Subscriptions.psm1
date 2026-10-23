@@ -1,6 +1,7 @@
 #requires -Version 7.0
 # Shared v1 subscription persistence and the independent, bounded discovery worker.
 $ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot 'VideoDownloader.PornHub.psm1') -Force
 
 function Test-VdSubscriptionUrl([string]$Url) {
     $uri=$null
@@ -312,7 +313,7 @@ function Confirm-VdSubscriptionDuplicates {
 function Invoke-VdSubscriptionProcess {
     param([Parameter(Mandatory)][string]$FilePath,[Parameter(Mandatory)][AllowEmptyCollection()][string[]]$Arguments,
         [Threading.CancellationToken]$CancellationToken=[Threading.CancellationToken]::None,
-        [ValidateRange(0.05,180)][double]$TimeoutSeconds=180,[ValidateRange(1,33554432)][int]$MaxOutputBytes=33554432)
+        [ValidateRange(0.05,900)][double]$TimeoutSeconds=180,[ValidateRange(1,33554432)][int]$MaxOutputBytes=33554432)
     $deadline=[Threading.CancellationTokenSource]::CreateLinkedTokenSource($CancellationToken,[Threading.CancellationToken]::None)
     $deadline.CancelAfter([TimeSpan]::FromSeconds($TimeoutSeconds))
     $process=[Diagnostics.Process]::new(); $started=$false
@@ -480,22 +481,30 @@ function ConvertFrom-VdSubscriptionFeed {
 function Invoke-VdSubscriptionScan {
     param([Parameter(Mandatory)][string]$YtDlpPath,[Parameter(Mandatory)]$Subscription,[string]$CookiePath='',
         [Threading.CancellationToken]$CancellationToken=[Threading.CancellationToken]::None,
-        [scriptblock]$ProcessRunner,[scriptblock]$FeedLoader,[ValidateRange(0.05,180)][double]$TimeoutSeconds=180)
+        [scriptblock]$ProcessRunner,[scriptblock]$FeedLoader,[ValidateRange(0.05,180)][double]$TimeoutSeconds=180,
+        [ValidateRange(0.05,900)][double]$ChannelTimeoutSeconds=900)
     if (-not (Test-VdSubscriptionUrl ([string]$Subscription.Url))) { throw 'Некорректный URL подписки.' }
     $deadline=[Threading.CancellationTokenSource]::CreateLinkedTokenSource($CancellationToken,[Threading.CancellationToken]::None)
-    $deadline.CancelAfter([TimeSpan]::FromSeconds($TimeoutSeconds))
+    $channel=[bool](Get-VdPornHubListingUrl ([string]$Subscription.Url))
+    $effectiveTimeout=if($channel){$ChannelTimeoutSeconds}else{$TimeoutSeconds}
+    $deadline.CancelAfter([TimeSpan]::FromSeconds($effectiveTimeout))
     try {
-        $arguments=@('--ignore-config','--no-flat-playlist','--dump-single-json','--skip-download','--playlist-end','10001','--abort-on-error','--encoding','utf-8','--impersonate','chrome')
+        $arguments=@('--ignore-config','--dump-single-json','--skip-download','--abort-on-error','--encoding','utf-8','--impersonate','chrome')
+        if ($channel) {
+            $arguments+=@('--no-plugin-dirs','--plugin-dirs',(Get-VdPornHubCollectorDirectory),'--use-extractors','videodownloader:pornhub:channel',
+                '--flat-playlist','--socket-timeout','20','--extractor-args','VideoDownloaderPornHubChannel:max_items=10000;max_pages=500')
+        } else { $arguments+=@('--no-flat-playlist','--playlist-end','10001') }
         if ($CookiePath) { $arguments+=@('--cookies',$CookiePath) }
         $arguments+=@('--',[string]$Subscription.Url)
-        if ($ProcessRunner) { $result=& $ProcessRunner $YtDlpPath $arguments $deadline.Token $TimeoutSeconds 33554432 }
-        else { $result=Invoke-VdSubscriptionProcess -FilePath $YtDlpPath -Arguments $arguments -CancellationToken $deadline.Token -TimeoutSeconds $TimeoutSeconds }
+        if ($ProcessRunner) { $result=& $ProcessRunner $YtDlpPath $arguments $deadline.Token $effectiveTimeout 33554432 }
+        else { $result=Invoke-VdSubscriptionProcess -FilePath $YtDlpPath -Arguments $arguments -CancellationToken $deadline.Token -TimeoutSeconds $effectiveTimeout }
         $deadline.Token.ThrowIfCancellationRequested()
         # Match the native scanner: extractors may report a partial page in a
         # warning and still exit successfully. Such output cannot set baseline.
         $incompleteDiagnostic='(?i)\bERROR:|\bincomplete\b|\btruncat\w*|\bpartial (?:playlist|collection)|\b(?:unable|failed) to (?:download|extract|retrieve).*(?:page|playlist|entries)|\bgiving up after'
         if ($result.ExitCode -ne 0 -or [string]$result.Stderr -match $incompleteDiagnostic) { throw ('Не удалось полностью проверить подписку: '+[string]$result.Stderr) }
-        $scan=ConvertFrom-VdSubscriptionMetadata -Json ([string]$result.Stdout) -SourceUrl ([string]$Subscription.Url)
+        $scan=if($channel){ConvertFrom-VdPornHubScan -Json ([string]$result.Stdout) -SourceUrl ([string]$Subscription.Url)}
+            else{ConvertFrom-VdSubscriptionMetadata -Json ([string]$result.Stdout) -SourceUrl ([string]$Subscription.Url)}
         if ($Subscription.FeedUrl) { $scan.FeedUrl=[string]$Subscription.FeedUrl }
         if ($scan.FeedUrl) {
             try {
