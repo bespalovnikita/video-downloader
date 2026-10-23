@@ -2,9 +2,11 @@
 # Modeless PowerShell subscriptions window. The timer only observes explicitly
 # requested work; it never schedules a new check or starts a download session.
 $ErrorActionPreference='Stop'
-Import-Module (Join-Path $PSScriptRoot 'VideoDownloader.Subscriptions.psm1') -Force
-Import-Module (Join-Path $PSScriptRoot 'VideoDownloader.DownloadHistory.psm1') -Force
-Import-Module (Join-Path $PSScriptRoot 'VideoDownloader.PornHub.psm1') -Force
+# Dependencies are shared with the owner GUI. Reloading them with -Force here
+# removes its imported commands, breaking the callback that queues discoveries.
+Import-Module (Join-Path $PSScriptRoot 'VideoDownloader.Subscriptions.psm1')
+Import-Module (Join-Path $PSScriptRoot 'VideoDownloader.DownloadHistory.psm1')
+Import-Module (Join-Path $PSScriptRoot 'VideoDownloader.PornHub.psm1')
 $script:SubscriptionWindows=[Collections.Generic.Dictionary[string,object]]::new([StringComparer]::Ordinal)
 $script:ClosingSubscriptionWindows=[Collections.Generic.List[object]]::new()
 
