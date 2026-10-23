@@ -5,6 +5,7 @@ namespace VideoDownloader.Native;
 /// would require handle-relative Win32 APIs to eliminate the remaining TOCTOU window.</summary>
 public static class OwnedFiles
 {
+    private static readonly object PublishGate=new();
     private static readonly StringComparison Comparison = OperatingSystem.IsWindows() ?
         StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
 
@@ -69,7 +70,13 @@ public static class OwnedFiles
     }
 
     public static (string Path,List<string> OwnedPaths) Publish(string stage,string root,string? mediaPath,
-        Action<IReadOnlyList<string>>? updateManifest=null)
+        Action<IReadOnlyList<string>>? updateManifest=null,bool renameCollisions=false)
+    {
+        lock(PublishGate) return PublishCore(stage,root,mediaPath,updateManifest,renameCollisions);
+    }
+
+    private static (string Path,List<string> OwnedPaths) PublishCore(string stage,string root,string? mediaPath,
+        Action<IReadOnlyList<string>>? updateManifest,bool renameCollisions)
     {
         if (!Directory.Exists(stage)) throw new DirectoryNotFoundException($"Stage absent: {stage}");
         NoReparseAncestors(Path.Combine(stage,"check"));
@@ -88,8 +95,17 @@ public static class OwnedFiles
             var dst=Path.GetFullPath(Path.Combine(root,rel));
             if (!Inside(root,dst)) throw new IOException("Destination escaped its folder");
             RegularOrAbsent(dst);
-            if (File.Exists(dst)) throw new IOException($"Refusing to overwrite an existing file: {dst}");
             plan.Add((file,dst));
+        }
+        var original=plan.ToArray();
+        for(int copy=1;;copy++)
+        {
+            if(copy>10000) throw new IOException("Cannot find a free output name for this download.");
+            plan=original.Select(p=>(p.src,copy==1 ? p.dst : CopyName(p.dst,copy))).ToList();
+            foreach(var (_,dst) in plan) RegularOrAbsent(dst);
+            var collision=plan.FirstOrDefault(p=>File.Exists(p.dst));
+            if(collision==default) break;
+            if(!renameCollisions) throw new IOException($"Refusing to overwrite an existing file: {collision.dst}");
         }
         var owned=new List<string>();
         string result="";
@@ -116,6 +132,17 @@ public static class OwnedFiles
             updateManifest?.Invoke(owned);
             throw;
         }
+    }
+
+    private static string CopyName(string path,int copy)
+    {
+        // Insert the same suffix before the first extension in the whole batch:
+        // video.mp4 and video.en.srt become video (2).mp4 / video (2).en.srt.
+        string name=Path.GetFileName(path);
+        int dot=name.IndexOf('.');
+        if(dot<=0) dot=name.LastIndexOf('.');
+        if(dot<=0) dot=name.Length;
+        return Path.Combine(Path.GetDirectoryName(path)!,name[..dot]+$" ({copy})"+name[dot..]);
     }
 
     public static void DeleteStage(string stage,string run)

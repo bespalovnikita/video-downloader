@@ -133,7 +133,8 @@ function Publish-VdStagedFiles {
     param(
         [Parameter(Mandatory)][string]$StageDir,
         [Parameter(Mandatory)][string]$OutputRoot,
-        [string]$MediaPath
+        [string]$MediaPath,
+        [switch]$RenameCollisions
     )
     if (-not (Test-Path -LiteralPath $StageDir -PathType Container)) {
         throw "Missing staged download folder: $StageDir"
@@ -167,13 +168,33 @@ function Publish-VdStagedFiles {
                 throw 'Output path escapes download folder.'
             }
             Assert-VdRegularFileIfPresent -Path $dest
-            if ([IO.File]::Exists($dest)) {
+            if ([IO.File]::Exists($dest) -and -not $RenameCollisions) {
                 # Earlier code claimed a colliding, pre-existing file as the
                 # media path. A later Remove could delete that unrelated file.
                 # Reject the publish rather than ever claim foreign ownership.
                 throw "Output file already exists; will not overwrite or claim it: $dest"
             }
             [void]$planned.Add([pscustomobject]@{Source=$f.FullName; Destination=$dest})
+        }
+        # Keep media and sidecars together when selecting a free copy name.
+        $original=@($planned | ForEach-Object { $_.Destination })
+        for ($copy=1; $RenameCollisions; $copy++) {
+            if ($copy -gt 10000) { throw 'Cannot find a free output name for this download.' }
+            $collision=$false
+            for ($index=0; $index -lt $planned.Count; $index++) {
+                $dest=$original[$index]
+                if ($copy -gt 1) {
+                    $name=[IO.Path]::GetFileName($dest)
+                    $dot=$name.IndexOf('.')
+                    if ($dot -le 0) { $dot=$name.LastIndexOf('.') }
+                    if ($dot -le 0) { $dot=$name.Length }
+                    $dest=Join-Path ([IO.Path]::GetDirectoryName($dest)) ($name.Substring(0,$dot)+" ($copy)"+$name.Substring($dot))
+                }
+                Assert-VdRegularFileIfPresent -Path $dest
+                $planned[$index].Destination=$dest
+                if ([IO.File]::Exists($dest)) { $collision=$true }
+            }
+            if (-not $collision) { break }
         }
         foreach ($entry in $planned) {
             Assert-VdRegularFileIfPresent -Path $entry.Source

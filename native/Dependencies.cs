@@ -29,15 +29,26 @@ public static class DependencyCenter
                $"FFmpeg: {(File.Exists(ffmpeg)?"installed":"missing")}\n"+
                $"ffprobe: {(File.Exists(probe)?"installed":"missing")}";
     }
+    public static void ValidateDownloadTools(string ytDlp) =>
+        ValidateDownloadTools(ytDlp,Executable("ffmpeg.exe"),Executable("ffprobe.exe"));
+    public static void ValidateDownloadTools(string ytDlp,string ffmpeg,string ffprobe)
+    {
+        if(!File.Exists(ytDlp)) throw new FileNotFoundException("Не найден yt-dlp.exe.",ytDlp);
+        var missing=new[]{ffmpeg,ffprobe}.Where(path=>!File.Exists(path)).Select(Path.GetFileName).ToArray();
+        if(missing.Length>0)
+            throw new FileNotFoundException("Для скачивания и обработки медиа нужны "+string.Join(", ",missing)+
+                ". Нажмите Install FFmpeg в разделе Dependencies и повторите запуск. Загрузка ещё не началась.");
+    }
     public static async Task<string> UpdateYtDlpAsync(CancellationToken token=default)
     {
         var psi=new ProcessStartInfo(Executable("yt-dlp.exe"))
         {UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true};
         psi.ArgumentList.Add("-U");
-        using var process=Process.Start(psi)??throw new IOException("Cannot start yt-dlp");
+        using var child=ManagedChildProcess.Start(psi);
+        var process=child.Process;
         using var cancel=token.Register(()=>{try {if(!process.HasExited)process.Kill(true);}catch{}});
-        var stdout=process.StandardOutput.ReadToEndAsync(token);
-        var stderr=process.StandardError.ReadToEndAsync(token);
+        var stdout=child.StandardOutput.ReadToEndAsync(token);
+        var stderr=child.StandardError.ReadToEndAsync(token);
         await Task.WhenAll(stdout,stderr,process.WaitForExitAsync(token)).ConfigureAwait(false);
         if(process.ExitCode!=0)throw new IOException(stderr.Result);
         return stdout.Result;

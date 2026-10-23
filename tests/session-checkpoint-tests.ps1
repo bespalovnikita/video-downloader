@@ -17,6 +17,9 @@ $path = Join-Path $dir "session.json"
 [void][IO.Directory]::CreateDirectory($dir)
 try {
     Assert-Vd ($null -eq (Read-VdSessionCheckpoint -Path $path)) "Missing checkpoint must be null"
+    Write-VdSessionCheckpoint -Path $path -Session @{Queue=@();Settings=@{Output='C:\saved-empty';Cookies='C:\cookies.txt';Threads='7'};Engine=$null}
+    $empty=Read-VdSessionCheckpoint -Path $path
+    Assert-Vd ($empty.Queue.Count -eq 0 -and $empty.Settings.Output -eq 'C:\saved-empty' -and $empty.Settings.Threads -eq '7') 'An empty queue must retain independently restorable application settings'
     $session = [ordered]@{
         Queue = @(
             [ordered]@{ Url="https://example.com/a"; Status="Completed"; DisplayState="Done"; Path="C:\a.mp4" },

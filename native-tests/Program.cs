@@ -2,7 +2,8 @@ using System.IO;
 using System.Text.Json;
 using VideoDownloader.Native;
 
-if (SubscriptionScannerTests.TryRunFixture(args) || LifecycleRegressionTests.TryRunFixture(args) || ReviewRegressionTests.TryRunFixture(args)) return;
+if (StartupDownloadRegressionTests.TryRunFixture(args) || SubscriptionScannerTests.TryRunFixture(args) || LifecycleRegressionTests.TryRunFixture(args) || ReviewRegressionTests.TryRunFixture(args)) return;
+await StartupDownloadRegressionTests.RunAsync();
 SubscriptionStoreTests.Run();
 await SubscriptionScannerTests.RunAsync();
 await LifecycleRegressionTests.RunAsync();

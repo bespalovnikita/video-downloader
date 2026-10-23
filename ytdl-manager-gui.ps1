@@ -1224,6 +1224,16 @@ function Start-Download([string[]]$OverrideUrls=$null) {
     })
     if ($items.Count -eq 0) { return }
 
+    $missingTools=@('ffmpeg.exe','ffprobe.exe' | Where-Object {
+        -not (Test-Path -LiteralPath (Join-Path $root $_) -PathType Leaf) -and -not (Get-Command $_ -ErrorAction SilentlyContinue)
+    })
+    if ($missingTools.Count -gt 0) {
+        [System.Windows.MessageBox]::Show(
+            ('Для скачивания и обработки медиа нужны '+($missingTools -join ', ')+'. Нажмите Install FFmpeg в разделе Dependencies и повторите запуск. Загрузка ещё не началась.'),
+            'Не установлены зависимости') | Out-Null
+        return
+    }
+
     # Resolve decisions before mutating Queue or creating any engine temp files.
     # Cancel/X leaves the entire queue unchanged, and never starts a download.
     try {

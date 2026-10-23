@@ -87,7 +87,6 @@ public sealed partial class NativeWindow : IDisposable
         BindActions();
         _tick.Tick+=(_,_)=>Tick();
         _clipboardTick.Tick+=(_,_)=>PollClipboard();
-        _tick.Start();_clipboardTick.Start();
         _window.Closing+=OnClosing;
         _window.Drop+=WindowDrop;
         _window.DragOver+=(_,e)=>e.Effects=DragDropEffects.Copy;
@@ -127,6 +126,7 @@ public sealed partial class NativeWindow : IDisposable
         Reindex();
         RefreshDependencyLabel();
         UpdateState();
+        _tick.Start();_clipboardTick.Start();
     }
     private void Tick()
     {
@@ -257,6 +257,7 @@ public sealed partial class NativeWindow : IDisposable
     }
     private void TryRestore()
     {
+        _restoringSession=true;
         try
         {
             var previous=_storage.Restore();
@@ -272,10 +273,12 @@ public sealed partial class NativeWindow : IDisposable
                     "Old download process still active",MessageBoxButton.OK,MessageBoxImage.Warning);
                 return;
             }
+            // Settings belong to the application even when the queue is empty
+            // or the user chooses not to restore its rows.
+            ApplyOptions(previous.Settings);
             if (previous.Queue.Count==0) return;
             if (MessageBox.Show(_window,$"Restore previous queue ({previous.Queue.Count} URLs)?\nCompleted downloads will not restart automatically.",
                     "Restore previous session",MessageBoxButton.YesNo,MessageBoxImage.Question)!=MessageBoxResult.Yes) return;
-            ApplyOptions(previous.Settings);
             foreach(var item in previous.Queue)
             {
                 item.Order=_queue.Count+1;_queue.Add(item);
@@ -285,16 +288,19 @@ public sealed partial class NativeWindow : IDisposable
         }
         catch(Exception e)
         {
+            // A modal error dialog pumps dispatcher messages too.
+            _checkpointReadOnly=true;
             MessageBox.Show(_window,"Cannot read previous session: "+e.Message+
                "\nThe existing checkpoint has not been overwritten.","Session recovery error",MessageBoxButton.OK,MessageBoxImage.Warning);
-            _checkpointReadOnly=true;
         }
+        finally { _restoringSession=false; }
     }
+    private bool _restoringSession;
     private bool _checkpointReadOnly;
     private bool _legacyEngineBlocked;
     private void SaveCheckpoint()
     {
-        if (_checkpointReadOnly || _disposed) return;
+        if (_restoringSession || _checkpointReadOnly || _disposed) return;
         try
         {
             // Save on meaningful changes, not every progress tick.
@@ -481,16 +487,16 @@ public sealed partial class NativeWindow : IDisposable
         if(_session?.IsRunning==true) return;
         var pending=(custom??_queue.Where(i=>i.Status!="Completed")).Where(i=>i.CanResume).Distinct().ToList();
         if(pending.Count==0)return;
-        var approved=ConfirmDuplicates(pending,true);
-        if(approved==null||approved.Count==0)return;
         var options=ReadOptions();
         try
         {
-            if(!File.Exists(_ytDlp))throw new FileNotFoundException("yt-dlp.exe is missing.",_ytDlp);
+            DependencyCenter.ValidateDownloadTools(_ytDlp);
             if(!string.IsNullOrWhiteSpace(options.Cookies)&&!File.Exists(options.Cookies))
                 throw new FileNotFoundException("Cookie file is missing.",options.Cookies);
             if(string.IsNullOrWhiteSpace(options.Output))throw new ArgumentException("Choose an output directory.");
             OwnedFiles.ValidateTemplate(options.FilenameTemplate);
+            var approved=ConfirmDuplicates(pending,true);
+            if(approved==null||approved.Count==0)return;
             options.PinOutputDirectory();
             OwnedFiles.NoReparseAncestors(Path.Combine(options.OutputDirectory,"__validation__"));
             Directory.CreateDirectory(options.OutputDirectory);

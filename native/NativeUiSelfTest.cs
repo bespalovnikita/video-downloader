@@ -2,6 +2,8 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Markup;
 using System.Xml;
+using System.Runtime.InteropServices;
+using System.Text;
 
 namespace VideoDownloader.Native;
 
@@ -25,6 +27,8 @@ internal static class NativeUiSelfTest
         Window? window=null;
         try
         {
+            Stage("testing startup recovery dialogs and empty-queue settings");
+            VerifyStartupRecovery(root);
             using var input=File.OpenRead(Path.Combine(AppContext.BaseDirectory,"ui","MainWindow.xaml"));
             using var reader=XmlReader.Create(input);
             window=(Window)XamlReader.Load(reader);
@@ -283,4 +287,82 @@ internal static class NativeUiSelfTest
             Stage("PASS");
         }
     }
+
+    private static void VerifyStartupRecovery(string root)
+    {
+        const System.Reflection.BindingFlags methods=System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance;
+        static Window LoadWindow()
+        {
+            using var input=File.OpenRead(Path.Combine(AppContext.BaseDirectory,"ui","MainWindow.xaml"));
+            using var reader=XmlReader.Create(input);
+            return (Window)XamlReader.Load(reader);
+        }
+        var data=new AppPersistence(Path.Combine(root,"startup-profile"));
+        var options=new DownloadOptions {Output=Path.Combine(root,"saved-output"),Cookies=Path.Combine(root,"cookies.txt"),Threads="7",Profile="Music MP3",AudioOnly=true};
+        data.Save([],options);
+        var window=LoadWindow();
+        using(var controller=new NativeWindow(window,data))
+        {
+            var restored=(DownloadOptions)typeof(NativeWindow).GetMethod("ReadOptions",methods)!.Invoke(controller,null)!;
+            if(restored.Output!=options.Output || restored.Cookies!=options.Cookies || restored.Threads!="7" || !restored.AudioOnly)
+                throw new InvalidOperationException("Empty queues must restore saved settings without a dialog.");
+        }
+        window.Close();
+        foreach(bool corrupt in new[]{false,true})
+        {
+            if(corrupt) File.WriteAllText(data.SessionPath,"{invalid checkpoint");
+            else data.Save([new DownloadItem {Url="https://example.com/restore-kept"}],options);
+            string before=File.ReadAllText(data.SessionPath);
+            string title=corrupt?"Session recovery error":"Restore previous session";
+            int button=corrupt?1:6;
+            uint thread=GetCurrentThreadId();
+            Exception? failure=null;
+            bool observed=false;
+            var observer=new System.Windows.Threading.DispatcherTimer {Interval=TimeSpan.FromSeconds(2.5)};
+            observer.Tick+=(_,_)=>
+            {
+                observer.Stop();observed=true;
+                try
+                {
+                    if(File.ReadAllText(data.SessionPath)!=before)
+                        throw new InvalidOperationException("Recovery dialog must preserve the checkpoint while dispatcher timers are running.");
+                }
+                catch(Exception error) {failure=error;}
+                finally {DismissDialog(thread,title,button);}
+            };
+            using var watchdog=new CancellationTokenSource();
+            _=Task.Delay(TimeSpan.FromSeconds(12),watchdog.Token).ContinueWith(task=>
+            {
+                if(!task.IsCanceled) DismissDialog(thread,title,button);
+            },TaskScheduler.Default);
+            window=LoadWindow();NativeWindow? controller=null;
+            observer.Start();
+            try
+            {
+                controller=new NativeWindow(window,data);
+                if(!observed) throw new InvalidOperationException("Recovery dialog must keep the dispatcher responsive.");
+                if(failure!=null) throw failure;
+                if(corrupt && File.ReadAllText(data.SessionPath)!=before)
+                    throw new InvalidOperationException("Invalid checkpoint must remain unchanged after closing the error dialog.");
+                if(!corrupt && ((DataGrid)window.FindName("QueueGrid")!).Items.Count!=1)
+                    throw new InvalidOperationException("Confirmed recovery must retain the saved queue.");
+            }
+            finally {watchdog.Cancel();observer.Stop();controller?.Dispose();window.Close();}
+        }
+    }
+
+    private static void DismissDialog(uint thread,string title,int button)
+    {
+        EnumThreadWindows(thread,(handle,_)=>
+        {
+            var caption=new StringBuilder(256);GetWindowTextW(handle,caption,caption.Capacity);
+            if(caption.ToString()==title) {SendMessageW(handle,0x111,(IntPtr)button,IntPtr.Zero);return false;}
+            return true;
+        },IntPtr.Zero);
+    }
+    private delegate bool EnumWindowsProc(IntPtr window,IntPtr argument);
+    [DllImport("kernel32.dll")] private static extern uint GetCurrentThreadId();
+    [DllImport("user32.dll")] private static extern bool EnumThreadWindows(uint thread,EnumWindowsProc callback,IntPtr argument);
+    [DllImport("user32.dll",CharSet=CharSet.Unicode)] private static extern int GetWindowTextW(IntPtr window,StringBuilder text,int count);
+    [DllImport("user32.dll")] private static extern IntPtr SendMessageW(IntPtr window,uint message,IntPtr wParam,IntPtr lParam);
 }
