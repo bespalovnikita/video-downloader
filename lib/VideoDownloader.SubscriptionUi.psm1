@@ -4,6 +4,7 @@
 $ErrorActionPreference='Stop'
 Import-Module (Join-Path $PSScriptRoot 'VideoDownloader.Subscriptions.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'VideoDownloader.DownloadHistory.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'VideoDownloader.PornHub.psm1') -Force
 $script:SubscriptionWindows=[Collections.Generic.Dictionary[string,object]]::new([StringComparer]::Ordinal)
 $script:ClosingSubscriptionWindows=[Collections.Generic.List[object]]::new()
 
@@ -155,7 +156,8 @@ function Start-VdSubscriptionUiNextCheck($Context) {
                     [pscustomobject]@{Success=$true;Scan=$scan;Error=''}
                 } catch { [pscustomobject]@{Success=$false;Scan=$null;Error=$_.Exception.Message} }
             }
-            $Context.Controls.SubscriptionStatusText.Text='Проверяется: '+$sources[0].Title
+            $label=if (Get-VdPornHubListingUrl $sources[0].Url) {'Проверка публикаций Pornhub (до 15 минут): '}else{'Проверяется: '}
+            $Context.Controls.SubscriptionStatusText.Text=$label+$sources[0].Title
             $Context.Timer.Start()
             Update-VdSubscriptionUiButtons $Context
             return

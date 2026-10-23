@@ -7,6 +7,7 @@
     <UseWPF>true</UseWPF>
   </PropertyGroup>
   <ItemGroup>
+    <Content Include="..\tests\fixtures\pornhub-discovery.json" Link="fixtures\pornhub-discovery.json" CopyToOutputDirectory="PreserveNewest" />
     <ProjectReference Include="..\native\VideoDownloader.Native.csproj"/>
   </ItemGroup>
 </Project>

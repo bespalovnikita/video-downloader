@@ -2,7 +2,8 @@ using System.IO;
 using System.Text.Json;
 using VideoDownloader.Native;
 
-if (StartupDownloadRegressionTests.TryRunFixture(args) || SubscriptionScannerTests.TryRunFixture(args) || LifecycleRegressionTests.TryRunFixture(args) || ReviewRegressionTests.TryRunFixture(args)) return;
+if (PornHubChannelTests.TryRunFixture(args) || StartupDownloadRegressionTests.TryRunFixture(args) || SubscriptionScannerTests.TryRunFixture(args) || LifecycleRegressionTests.TryRunFixture(args) || ReviewRegressionTests.TryRunFixture(args)) return;
+await PornHubChannelTests.RunAsync();
 await StartupDownloadRegressionTests.RunAsync();
 await DependencyInstallTests.RunAsync();
 SubscriptionStoreTests.Run();

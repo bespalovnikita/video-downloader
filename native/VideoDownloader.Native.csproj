@@ -20,5 +20,6 @@
     <Content Include="..\ui\SubscriptionsWindow.xaml" Link="ui\SubscriptionsWindow.xaml" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\assets\app.ico" Link="assets\app.ico" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\yt-dlp.exe" Link="yt-dlp.exe" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\collection-plugins\**\*.py" Link="collection-plugins\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

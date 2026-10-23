@@ -259,7 +259,8 @@ public sealed partial class NativeWindow
                 cancel.Token.ThrowIfCancellationRequested();
                 var source=await Task.Run(()=>SubscriptionStorage.Read().Subscriptions.FirstOrDefault(x=>x.Id==id),cancel.Token);
                 if (source==null || source.Paused) continue;
-                SubscriptionStatus($"Полная проверка {(source.Title.Length>0?source.Title:source.Url)}… Отмена не меняет исходную отметку.");
+                string kind=PornHubChannel.ListingUrl(source.Url)!=null?"Проверка публикаций Pornhub (до 15 минут)":"Полная проверка";
+                SubscriptionStatus($"{kind}: {(source.Title.Length>0?source.Title:source.Url)}… Отмена не меняет исходную отметку.");
                 try
                 {
                     var scan=await Task.Run(()=>scanner.ScanAsync(source,cookies,cancel.Token),cancel.Token);
