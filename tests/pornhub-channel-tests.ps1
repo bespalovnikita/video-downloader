@@ -83,19 +83,22 @@ class VideoDownloaderPornHubFixtureIE(_BaseIE):
         canonical = base.removesuffix('/upload').replace('https://rt.', 'https://www.')
         return pages[str(number)], SimpleNamespace(url=f'{canonical}?page={number}')
 '@ | Set-Content -LiteralPath (Join-Path $extractors 'vd_transport.py') -Encoding utf8
-        function Page([string[]]$Keys,[bool]$More) {
-            $cards=(@($Keys|ForEach-Object {'<li class="pcVideoListItem"><a title="Fixture" href="/view_video.php?viewkey='+$_+'">Video</a></li>'}) -join '')
+        function Page([string[]]$Keys,[bool]$More,[string]$Layout) {
+            $cards=(@($Keys|ForEach-Object {'<li class="videoblock"><a title="Fixture" href="/view_video.php?viewkey='+$_+'">Video</a></li>'}) -join '')
             $next=if($More){'<li class="page_next"><a href="?page=2">Next</a></li>'}else{''}
-            return '<html><body><h1>Fixture channel</h1><ul id="mostRecentVideosSection" data-total-videos="3">'+$cards+'</ul><ul class="pagination">'+$next+'</ul><div id="watchHistory"><li class="videoBox" data-video-vkey="phwrong"></li></div></body></html>'
+            $list=if($Layout -eq 'videoUList') {'<section class="videoUList"><ul class="videos" data-total-videos="3">'+$cards+'</ul></section>'}else{'<ul id="'+$Layout+'" class="videos" data-total-videos="3">'+$cards+'</ul>'}
+            return '<html><body><h1>Fixture channel</h1>'+$list+'<ul class="pagination">'+$next+'</ul><div id="watchHistory"><li class="videoBox" data-video-vkey="phwrong"></li></div></body></html>'
         }
         $env:VD_PH_FIXTURE=Join-Path $dir 'pages.json'
-        @{ '1'=(Page @('phfixture1','phfixture2') $true); '2'=(Page @('phfixture3') $false) } | ConvertTo-Json | Set-Content $env:VD_PH_FIXTURE -Encoding utf8
         $arguments=@('--ignore-config','--no-plugin-dirs','--plugin-dirs',(Join-Path $root 'collection-plugins'),'--plugin-dirs',$fixtureRoot,
             '--use-extractors','videodownloader:ph:fixture','--flat-playlist','--skip-download','--dump-single-json',$source)
-        $result=Invoke-VdSubscriptionProcess -FilePath (Join-Path $root 'yt-dlp.exe') -Arguments $arguments -TimeoutSeconds 30
-        Assert ($result.ExitCode -eq 0) ('Bundled collector failed: '+$result.Stderr)
-        $real=ConvertFrom-VdPornHubScan -Json $result.Stdout -SourceUrl $source
-        Assert ($real.Items.Count -eq 3 -and @($real.Items | Where-Object Url -match 'phwrong').Count -eq 0) 'Real yt-dlp must preserve the manifest and exclude watch history'
+        foreach($layout in @('mostRecentVideosSection','claimedUploadedVideoSection','moreData','channelVideosList','showAllChanelVideos','videoUList')) {
+            @{ '1'=(Page @('phfixture1','phfixture2') $true $layout); '2'=(Page @('phfixture3') $false $layout) } | ConvertTo-Json | Set-Content $env:VD_PH_FIXTURE -Encoding utf8
+            $result=Invoke-VdSubscriptionProcess -FilePath (Join-Path $root 'yt-dlp.exe') -Arguments $arguments -TimeoutSeconds 30
+            Assert ($result.ExitCode -eq 0) ('Bundled collector failed for '+$layout+': '+$result.Stderr)
+            $real=ConvertFrom-VdPornHubScan -Json $result.Stdout -SourceUrl $source
+            Assert ($real.Items.Count -eq 3 -and @($real.Items | Where-Object Url -match 'phwrong').Count -eq 0) ('Real yt-dlp must preserve the manifest and exclude watch history: '+$layout)
+        }
     }
     Write-Host 'Pornhub channel manifest, routing, per-video import and bundled collector: PASS'
 } finally {
