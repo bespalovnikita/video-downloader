@@ -136,6 +136,26 @@ class CollectorTests(unittest.TestCase):
                       LISTING.replace('pornhub.com', 'pornhub.com.evil.example'), LISTING.replace('/upload', '/favorites')):
             self.assertFalse(module._same_source(LISTING, other))
 
+    def test_redirect_cannot_start_at_a_later_page_or_drop_pagination(self):
+        class Redirected(Collector):
+            def _download_webpage_handle(self, base, channel, *args, query=None, **kwargs):
+                html, response = super()._download_webpage_handle(base, channel, *args, query=query, **kwargs)
+                response.url = base + ('?page=7' if query['page'] == 1 else '')
+                return html, response
+        with self.assertRaises(ExtractorError):
+            Redirected({1: page()}).extract(SOURCE)
+        collector = Redirected({1: page(next_page=2), 2: page(('phfixture2',), number=2)})
+        # Keep the first response valid and drop the page query only on page two.
+        download = collector._download_webpage_handle
+        def redirect(base, channel, *args, query=None, **kwargs):
+            html, response = download(base, channel, *args, query=query, **kwargs)
+            if query['page'] == 1:
+                response.url = base + '?page=1'
+            return html, response
+        collector._download_webpage_handle = redirect
+        with self.assertRaises(ExtractorError):
+            collector.extract(SOURCE)
+
     def test_pinned_overlap_is_deduplicated_across_pages(self):
         result = Collector({1: page(('phfixture1', 'phfixture2'), next_page=2, total=3),
                             2: page(('phfixture2', 'phfixture3'), number=2, total=3)}).extract(SOURCE)

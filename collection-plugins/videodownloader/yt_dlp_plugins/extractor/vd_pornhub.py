@@ -169,6 +169,9 @@ class VideoDownloaderPornHubChannelIE(PornHubBaseIE):
                     base, channel_id, f'Publication page {number}', query={'page': number}, impersonate=True)
                 if not _same_source(base, response.url):
                     raise ExtractorError('Publication page redirected to a different source or login', expected=True)
+                actual_page = parse_qs(urlsplit(response.url).query, keep_blank_values=True).get('page', ['1'])
+                if actual_page != [str(number)]:
+                    raise ExtractorError('Publication page redirected to a different page number', expected=True)
                 if len(html.encode('utf-8')) > 8 * 1024 * 1024:
                     raise ExtractorError('Publication HTML exceeds 8 MiB', expected=True)
                 return _Page(html, base, number).result()
