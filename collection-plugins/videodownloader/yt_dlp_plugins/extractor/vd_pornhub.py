@@ -141,7 +141,7 @@ class _Page(HTMLParser):
                 and re.search(r'video|upload|moreData', identifier, re.I) and identifier not in self.candidates):
             self.candidates.append(identifier)
         if attrs.get('id') == 'moreDataBtn' and not disabled and not pagination_excluded:
-            self.navigation.append((node['listing'], 'more', True))
+            self.navigation.append((node['listing'], video_tab, 'more', True))
         relation = (attrs.get('rel') or '').split()
         if tag in ('a', 'link') and attrs.get('href'):
             href = attrs['href']
@@ -150,14 +150,14 @@ class _Page(HTMLParser):
                 target = urlsplit(urljoin(self.listing_url, href))
                 if not _same_source(self.listing_url, target.geturl()):
                     if is_next:
-                        self.navigation.append((node['listing'], 'error', 'Next page changes the publication source'))
+                        self.navigation.append((node['listing'], video_tab, 'error', 'Next page changes the publication source'))
                 else:
                     values = parse_qs(target.query).get('page', ['1'])
                     if len(values) != 1 or not re.fullmatch(r'[1-9]\d*', values[0]):
-                        self.navigation.append((node['listing'], 'error', 'Invalid pagination index'))
+                        self.navigation.append((node['listing'], video_tab, 'error', 'Invalid pagination index'))
                     else:
                         number = int(values[0])
-                        self.navigation.append((node['listing'], 'next' if is_next else 'page', number))
+                        self.navigation.append((node['listing'], video_tab, 'next' if is_next else 'page', number))
         if tag not in _VOID:
             self.stack.append(node)
 
@@ -224,7 +224,7 @@ class _Page(HTMLParser):
         # watch link, malformed card or paging makes a list meaningful instead.
         meaningful = [listing for listing in selected if listing['cards'] or listing['totals'] or listing['empty']
                       or listing['errors'] or listing['unknown_links']
-                      or any(owner is listing for owner, _, _ in self.navigation)]
+                      or any(owner is listing for owner, _, _, _ in self.navigation)]
         selected = meaningful or selected
         for listing in self.lists:
             listing['keys'] = frozenset(key for key, _ in listing['cards'])
@@ -257,7 +257,8 @@ class _Page(HTMLParser):
         empty = any(listing['empty'] for listing in self.lists if id(listing) in owners and listing['keys'] == keys)
         if not unique and not (empty or total == 0):
             raise ExtractorError('Empty publication page has no confirmed empty-state marker', expected=True)
-        navigation = [(kind, value) for owner, kind, value in self.navigation if owner is None or id(owner) in owners]
+        navigation = [(kind, value) for owner, in_tab, kind, value in self.navigation
+                      if (owner is None and (not self.video_tabs or in_tab)) or id(owner) in owners]
         for kind, value in navigation:
             if kind == 'error':
                 raise ExtractorError(value, expected=True)

@@ -147,7 +147,8 @@ class CollectorTests(unittest.TestCase):
                      '<li class="videoblock" data-video-vkey="invalid-key"></li>'
                      '<a rel="next" href="https://other.example/?page=8">Next</a>'
                      '<button id="moreDataBtn">More</button></ul></div>')
-            return html[:start] + '<section id="videosTab"><div class="videoUList">' + main + '</div></section>' + html[end:] + other
+            tail = html[end:].replace('</body>', '</section>' + other + '</body>')
+            return html[:start] + '<section id="videosTab"><div class="videoUList">' + main + '</div>' + tail
         result = Collector({1: variant(page(('phfixture1', 'phfixture2'), next_page=2, total=3)),
                             2: variant(page(('phfixture3',), number=2, total=3))}).extract(SOURCE)
         self.assertEqual([e['id'] for e in result['entries']], ['phfixture1', 'phfixture2', 'phfixture3'])
@@ -169,6 +170,31 @@ class CollectorTests(unittest.TestCase):
                 '</section><a rel="next" href="https://other.example/?page=8">Next</a></div>')
         result = Collector({1: html}).extract(SOURCE)
         self.assertEqual([e['id'] for e in result['entries']], ['phactual'])
+
+    def test_ownerless_navigation_outside_video_tab_is_not_archive_pagination(self):
+        for other in ('<ul class="pagination"><a href="?page=8">Last</a></ul>',
+                      '<a rel="next" href="?page=2">Next</a>',
+                      '<a rel="next" href="https://other.example/?page=8">Next</a>',
+                      '<button id="moreDataBtn">More</button>'):
+            with self.subTest(other=other):
+                html = page().replace('<body>', '<body><section id="videosTab">').replace('</body>', '</section>' + other + '</body>')
+                collector = Collector({1: html})
+                result = collector.extract(SOURCE)
+                self.assertEqual([e['id'] for e in result['entries']], ['phfixture1'])
+                self.assertEqual([n for _, n in collector.calls], [1, 1])
+
+    def test_ownerless_semantic_navigation_inside_video_tab_walks_all_pages(self):
+        for tag in ('nav', 'footer'):
+            with self.subTest(tag=tag):
+                def variant(html):
+                    return html.replace('<body>', '<body><section id="videosTab">').replace(
+                        '<ul class="pagination">', f'<{tag} class="pagination">').replace(
+                        '</ul></body>', f'</{tag}></section></body>')
+                collector = Collector({1: variant(page(('phfixture1', 'phfixture2'), next_page=2, total=3)),
+                                       2: variant(page(('phfixture3',), number=2, total=3))})
+                result = collector.extract(SOURCE)
+                self.assertEqual(len(result['entries']), 3)
+                self.assertEqual([n for _, n in collector.calls], [1, 2, 1])
 
     def test_without_a_video_tab_exact_and_generic_grids_remain_ambiguous(self):
         other = ('<div class="videoUList"><ul class="videos" data-total-videos="9">'

@@ -89,13 +89,16 @@ class VideoDownloaderPornHubFixtureIE(_BaseIE):
             $main='<ul id="mostRecentVideosSection" class="videos" data-total-videos="3">'+$cards+'</ul>'
             $list=switch($Layout) {
                 'videoUList' {'<section class="videoUList"><ul class="videos" data-total-videos="3">'+$cards+'</ul></section>'}
-                'videosTab' {'<section id="videosTab"><div class="videoUList"><ul class="videos" data-total-videos="3">'+$cards+'</ul></div></section><div class="videoUList"><ul id="videoSearchResult" data-total-videos="9"><li class="videoblock" data-video-vkey="phwrong"></li><a rel="next" href="https://other.example/?page=8">Next</a></ul></div>'}
+                'videosTab' {'<div class="videoUList"><ul class="videos" data-total-videos="3">'+$cards+'</ul></div>'}
                 'duplicateLists' {$main+$main.Replace('mostRecentVideosSection','videoSearchResult')}
                 'emptyPlaceholder' {$main+'<ul id="videoSearchResult"></ul>'}
-                'nestedLists' {'<section id="videosTab"><div class="videoUList"><div id="mostRecentVideosSection"><ul class="videos" data-total-videos="3">'+$cards+'</ul></div></div></section>'}
+                'nestedLists' {'<div class="videoUList"><div id="mostRecentVideosSection"><ul class="videos" data-total-videos="3">'+$cards+'</ul></div></div>'}
                 default {'<ul id="'+$Layout+'" class="videos" data-total-videos="3">'+$cards+'</ul>'}
             }
-            return '<html><body><h1>Fixture channel</h1>'+$list+'<ul class="pagination">'+$next+'</ul><div id="watchHistory"><li class="videoBox" data-video-vkey="phwrong"></li></div></body></html>'
+            $content=$list+'<ul class="pagination">'+$next+'</ul>'
+            if($Layout -in @('videosTab','nestedLists')) {$content='<section id="videosTab">'+$content+'</section>'}
+            $outside=if($Layout -eq 'videosTab') {'<div class="videoUList"><ul id="videoSearchResult" data-total-videos="9"><li class="videoblock" data-video-vkey="phwrong"></li><a rel="next" href="https://other.example/?page=8">Next</a></ul></div><button id="moreDataBtn">More</button><ul class="pagination"><a href="?page=8">Last</a></ul><a rel="next" href="https://other.example/?page=8">Next</a>'}else{''}
+            return '<html><body><h1>Fixture channel</h1>'+$content+$outside+'<div id="watchHistory"><li class="videoBox" data-video-vkey="phwrong"></li></div></body></html>'
         }
         $env:VD_PH_FIXTURE=Join-Path $dir 'pages.json'
         $arguments=@('--ignore-config','--no-plugin-dirs','--plugin-dirs',(Join-Path $root 'collection-plugins'),'--plugin-dirs',$fixtureRoot,
