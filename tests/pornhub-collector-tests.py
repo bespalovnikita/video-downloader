@@ -143,7 +143,7 @@ class CollectorTests(unittest.TestCase):
 
     def test_class_based_publication_wrapper_excludes_recommendations(self):
         def variant(html):
-            return html.replace('<ul id="mostRecentVideosSection"', '<section class="videoUList"><ul id="profileGrid" class="videos"').replace(
+            return html.replace('<ul id="mostRecentVideosSection"', '<section class="videoUList withHeader"><ul id="profileGrid" class="videos"').replace(
                 '</ul><ul class="pagination">', '</ul></section><ul class="pagination">', 1)
         unrelated = '<aside class="recommendedVideos"><div class="videoUList"><li class="videoBox" data-video-vkey="phwrong"></li><a rel="next" href="https://other.example/?page=8">Next</a><button id="moreDataBtn">More</button></div></aside>'
         result = Collector({1: variant(page(('phfixture1', 'phfixture2'), next_page=2, total=3, outside=unrelated)),
@@ -170,11 +170,14 @@ class CollectorTests(unittest.TestCase):
             Collector({1: html}).extract(SOURCE)
 
     def test_header_dropdown_grid_is_never_a_publication_archive(self):
-        menu = '<div class="mainMenuDropdown"><div class="videoUList"><ul class="videos"><li class="videoblock" data-video-vkey="phwrong"></li></ul></div></div>'
-        result = Collector({1: page(outside=menu)}).extract(SOURCE)
-        self.assertEqual([e['id'] for e in result['entries']], ['phfixture1'])
-        with self.assertRaises(ExtractorError):
-            Collector({1: menu}).extract(SOURCE)
+        for attributes in ('class="mainMenuDropdown"', 'class="sidebar"', 'id="rightSidebar"',
+                           'class="siteFooter"', 'id="header"', 'role="complementary"'):
+            with self.subTest(attributes=attributes):
+                menu = f'<div {attributes}><div class="videoUList"><ul class="videos"><li class="videoblock" data-video-vkey="phwrong"></li></ul></div></div>'
+                result = Collector({1: page(outside=menu)}).extract(SOURCE)
+                self.assertEqual([e['id'] for e in result['entries']], ['phfixture1'])
+                with self.assertRaises(ExtractorError):
+                    Collector({1: menu}).extract(SOURCE)
 
     def test_unknown_layout_reports_structural_details_without_video_keys(self):
         html = page().replace('mostRecentVideosSection', 'newVideosGrid')
