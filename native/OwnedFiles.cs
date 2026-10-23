@@ -11,9 +11,10 @@ public static class OwnedFiles
 
     public static bool Inside(string root, string candidate)
     {
-        var r=Path.TrimEndingDirectorySeparator(Path.GetFullPath(root))+Path.DirectorySeparatorChar;
+        var r=Path.GetFullPath(root);
+        if (!Path.EndsInDirectorySeparator(r)) r+=Path.DirectorySeparatorChar;
         var p=Path.GetFullPath(candidate);
-        return p.StartsWith(r,Comparison);
+        return p.Length>r.Length && p.StartsWith(r,Comparison);
     }
 
     public static void NoReparseAncestors(string path)

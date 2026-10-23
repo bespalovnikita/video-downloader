@@ -57,6 +57,47 @@ try {
     [void](Remove-VdOwnedFiles -OutputRoot $output -Paths $copy.OwnedPaths)
     Assert (([IO.File]::ReadAllText((Join-Path $output 'new.mp4'))) -eq 'ALREADY HERE') 'Removing a repeated download must preserve the original'
 
+    # Real concurrent runspaces must reserve copy names together with the move.
+    $parallelOutput=Join-Path $dir 'parallel-output'
+    [void][IO.Directory]::CreateDirectory($parallelOutput)
+    $original=Join-Path $parallelOutput 'fixture.mp4'
+    [IO.File]::WriteAllText($original,'ORIGINAL')
+    $gate=[Threading.ManualResetEventSlim]::new($false)
+    $ready=[Threading.CountdownEvent]::new(2)
+    $module=Join-Path (Split-Path -Parent $PSScriptRoot) 'lib/VideoDownloader.Cancellation.psm1'
+    $jobs=@()
+    try {
+        $jobs=@(1..2 | ForEach-Object {
+            $parallelStage=Join-Path $dir "parallel-stage-$_"
+            [void][IO.Directory]::CreateDirectory($parallelStage)
+            [IO.File]::WriteAllText((Join-Path $parallelStage 'fixture.mp4'),"MEDIA $_")
+            1..80 | ForEach-Object { [IO.File]::WriteAllText((Join-Path $parallelStage ('fixture.{0:d3}.srt' -f $_)),'SUBTITLE') }
+            Start-ThreadJob -ArgumentList $module,$parallelStage,$parallelOutput,$gate,$ready -ScriptBlock {
+                param($module,$stage,$output,$gate,$ready)
+                $ErrorActionPreference='Stop'
+                Import-Module $module
+                [void]$ready.Signal();$gate.Wait()
+                Publish-VdStagedFiles -StageDir $stage -OutputRoot $output -MediaPath (Join-Path $stage 'fixture.mp4') -RenameCollisions
+            }
+        })
+        Assert ($ready.Wait(10000)) 'Parallel publishers must become ready'
+        $gate.Set()
+        $done=@($jobs | Wait-Job -Timeout 30)
+        Assert ($done.Count -eq 2 -and @($jobs | Where-Object State -ne 'Completed').Count -eq 0) 'Both parallel publishers must complete'
+        $copies=@($jobs | Receive-Job -ErrorAction Stop)
+        Assert ($copies.Count -eq 2 -and $copies[0].Path -ne $copies[1].Path) 'Parallel workers must choose distinct copy names'
+        Assert ($copies[0].OwnedPaths.Count -eq 81 -and $copies[1].OwnedPaths.Count -eq 81) 'Every copy must retain its complete sidecar batch'
+        Assert (@($copies[0].OwnedPaths | Where-Object {$_ -in $copies[1].OwnedPaths}).Count -eq 0) 'Ownership of parallel copies must be disjoint'
+        [void](Remove-VdOwnedFiles -OutputRoot $parallelOutput -Paths $copies[0].OwnedPaths)
+        Assert (@($copies[1].OwnedPaths | Where-Object {-not [IO.File]::Exists($_)}).Count -eq 0) 'Deleting one parallel copy must preserve the other'
+        Assert ([IO.File]::ReadAllText($original) -eq 'ORIGINAL') 'Parallel publication must preserve pre-existing files'
+    } finally {
+        $gate.Set()
+        $jobs | Stop-Job -ErrorAction SilentlyContinue
+        $jobs | Remove-Job -Force -ErrorAction SilentlyContinue
+        $gate.Dispose();$ready.Dispose()
+    }
+
     $outside=Join-Path $dir "unrelated.mp4"
     [IO.File]::WriteAllText($outside,"DON'T TOUCH")
     Expect-Throw { Remove-VdOwnedFiles -OutputRoot $output -Paths @($outside) } "Refuse deleting outside root"
