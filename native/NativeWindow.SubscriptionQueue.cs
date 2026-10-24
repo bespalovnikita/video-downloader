@@ -27,7 +27,7 @@ public sealed partial class NativeWindow
             if (_queue.Any(existing=>existing.Url==row.Url)) continue;
             row.DeferredToNextStart=_session?.IsRunning==true;
             _queue.Add(row);
-            _previews.Request(row.Url);
+            RequestRowPreview(row);
         }
         Reindex();
         if (_checkpointReadOnly)

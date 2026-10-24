@@ -119,7 +119,7 @@ $controlNames = @(
     "EmbedChaptersCheck","ArchiveCheck","SponsorCheck","AudioOnlyCheck","OutputBox","PickOutputButton",
     "CookiesBox","PickCookiesButton","DependencyStatus","RefreshDepsButton","InstallFfmpegButton",
     "UpdateYtDlpButton","RegisterProtocolButton","OpenAppSettingsButton","SessionStats","OverallProgress","TrayButton","PauseButton",
-    "StopButton","StartButton","SubscriptionsButton"
+    "StopButton","StartButton","SubscriptionsButton","ShowVideoTitlesCheck"
 )
 foreach ($name in $controlNames) {
     Set-Variable -Name $name -Value $window.FindName($name) -Scope Script
@@ -299,11 +299,15 @@ function Get-SessionSettings {
         Sponsor = ($SponsorCheck.IsChecked -eq $true)
         AudioOnly = ($AudioOnlyCheck.IsChecked -eq $true)
         WatchClipboard = ($WatchClipboardCheck.IsChecked -eq $true)
+        ShowVideoTitles = ($ShowVideoTitlesCheck.IsChecked -eq $true)
     }
 }
 
 function Restore-SessionSettings([object]$Settings) {
     if (-not $Settings) { return }
+    if ($ShowVideoTitlesCheck) {
+        $ShowVideoTitlesCheck.IsChecked=($Settings.ShowVideoTitles -is [bool] -and $Settings.ShowVideoTitles -eq $true)
+    }
     foreach ($entry in @(
         @($ProfileCombo,"Profile"), @($QualityCombo,"Quality"), @($CodecCombo,"Codec"),
         @($ContainerCombo,"Container"), @($FragmentsCombo,"Fragments")
@@ -340,6 +344,7 @@ function Get-SessionSnapshot {
             if ($status -notin @("Queued","Running","Completed","Failed","Interrupted")) { $status = "Queued" }
             [ordered]@{
                 Url = [string]$item.Url
+                Title = [string]$item.Title
                 SubscriptionId = [string]$item.SubscriptionId
                 SubscriptionName = [string]$item.SubscriptionName
                 Status = $status
@@ -563,6 +568,7 @@ function Add-Urls([string[]]$Urls,[switch]$FromClipboard,[switch]$ShowPreview) {
         $deferred = $running -and $script:removedUrls.Contains([string]$u)
         $script:queue.Add([pscustomobject]@{
             Order = $script:queue.Count + 1
+            Title = ''
             Url = $u
             State = "Queued"
             Status = "Queued"
@@ -621,7 +627,7 @@ function Add-SubscriptionUrls([string[]]$Urls,[string]$SubscriptionId='',[string
     foreach($url in @($plan.Selected)) {
         if (Find-QueueItem $url) { continue }
         $script:queue.Add([pscustomobject]@{
-            Order=$script:queue.Count+1;Url=$url;State='Queued';Status='Queued';Path='';OwnedPaths=@()
+            Order=$script:queue.Count+1;Url=$url;Title='';State='Queued';Status='Queued';Path='';OwnedPaths=@()
             SubscriptionId=$SubscriptionId;SubscriptionName=$SubscriptionName
             OutputRoot='';RunDir='';StageDir='';CleanupPaths=@();CleanupError='';PendingRemoval=$false
             AttemptFinished=$false;DeferredToNextStart=[bool]$deferred;AttachedToRecovered=$false
@@ -854,6 +860,9 @@ function Set-Download {
                     elseif ($RawError -or $State -eq "Error") { "Failed" }
                     else { "Running" }
     $sourceRow=if($Url){Find-QueueItem $Url}else{$null}
+    if ([string]::IsNullOrWhiteSpace($Title)) {
+        $Title=if ([string]::IsNullOrWhiteSpace([string]$sourceRow.Title)) {''} else {[string]$sourceRow.Title}
+    }
     if (-not $item) {
         $item = [pscustomobject]@{
             Slot = "T$Slot"
@@ -882,6 +891,29 @@ function Set-Download {
         if ($sourceRow) { $item | Add-Member -NotePropertyMembers @{SubscriptionId=[string]$sourceRow.SubscriptionId;SubscriptionName=[string]$sourceRow.SubscriptionName} -Force }
     }
     $DownloadGrid.Items.Refresh()
+}
+
+function Set-VideoTitle([string]$Url,[string]$Title) {
+    if ([string]::IsNullOrWhiteSpace($Url) -or [string]::IsNullOrWhiteSpace($Title)) { return }
+    $changed=$false
+    foreach($row in @($script:queue)+@($script:downloads)) {
+        if ($null -ne $row -and [string]::Equals([string]$row.Url,$Url,[StringComparison]::Ordinal) -and [string]$row.Title -cne $Title) {
+            $row | Add-Member -NotePropertyName Title -NotePropertyValue $Title -Force
+            $changed=$true
+        }
+    }
+    if ($changed) {
+        $QueueGrid.Items.Refresh()
+        $DownloadGrid.Items.Refresh()
+    }
+}
+
+function Update-VideoTitleDisplay {
+    # The shared cell style reads the checkbox through its DataGrid.Tag.
+    # Switching presentation does not enqueue metadata or start a download.
+    $QueueGrid.Items.Refresh()
+    $DownloadGrid.Items.Refresh()
+    Save-SessionCheckpoint
 }
 
 function Update-StartState {
@@ -1034,6 +1066,7 @@ function Tail-Events {
                     Set-QueueState $u "Starting" "Running"
                 }
                 "Title" {
+                    Set-VideoTitle -Url ([string]$event.Url) -Title ([string]$event.Title)
                     $u = [string]$event.Url
                     Set-Download -Slot $slot -State "Preparing" -Title ([string]$event.Title) -Url $u
                     Set-QueueState $u "Preparing"
@@ -1600,7 +1633,8 @@ function Queue-PreviewPrefetch {
     )
 
     if (-not (Is-ValidUrl $Url)) { return }
-    if (Get-CachedPreview $Url) { return }
+    $cached=Get-CachedPreview $Url
+    if ($cached) { Set-VideoTitle -Url $Url -Title ([string]$cached.Title); return }
     if ([string]::Equals($script:previewPrefetchUrl,$Url,[StringComparison]::Ordinal)) { return }
 
     if ($script:previewPrefetchQueued.Contains($Url)) {
@@ -1628,7 +1662,8 @@ function Start-NextPreviewPrefetch {
         $script:previewPrefetchQueue.RemoveAt(0)
         [void]$script:previewPrefetchQueued.Remove($url)
 
-        if (Get-CachedPreview $url) { continue }
+        $cached=Get-CachedPreview $url
+        if ($cached) { Set-VideoTitle -Url $url -Title ([string]$cached.Title); continue }
 
         $cookie = $CookiesBox.Text.Trim()
         $exe = $ytDlp
@@ -1664,6 +1699,7 @@ function Complete-PreviewPrefetch {
         if (-not $r) { throw "Preview prefetch returned no result" }
 
         if ([bool]$r.Success) {
+            Set-VideoTitle -Url $url -Title ([string]$r.Title)
             Save-CachedPreview -Url $url -Preview $r
             if ([string]::Equals($script:previewUrl,$url,[StringComparison]::Ordinal)) {
                 $cached = Get-CachedPreview $url
@@ -1703,6 +1739,7 @@ function Start-Preview([string]$Url) {
     $script:previewUrl = $Url
     $cached = Get-CachedPreview $Url
     if ($cached) {
+        Set-VideoTitle -Url $Url -Title ([string]$cached.Title)
         Show-PreviewResult -Result $cached -FromCache $true
         return
     }
@@ -2154,6 +2191,9 @@ $window.Add_Drop({
         Add-Urls @(Extract-Urls ([string]$e.Data.GetData([System.Windows.DataFormats]::UnicodeText)))
     }
 })
+
+$ShowVideoTitlesCheck.Add_Checked({ Update-VideoTitleDisplay })
+$ShowVideoTitlesCheck.Add_Unchecked({ Update-VideoTitleDisplay })
 
 $ProfileCombo.Add_SelectionChanged({
     if ($ProfileCombo.SelectedItem) { Apply-Profile ([string]$ProfileCombo.SelectedItem) }

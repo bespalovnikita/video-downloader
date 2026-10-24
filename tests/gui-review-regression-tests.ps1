@@ -36,7 +36,7 @@ $ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'ytdl-m
 Assert ($parseErrors.Count -eq 0) 'GUI syntax failed'
 foreach ($name in @(
  'Format-Bytes','Is-ValidUrl','Add-Urls','Add-FileToQueue','Find-QueueItem','Find-Download','Set-Download',
- 'Set-QueueState','Set-QueueFields','Set-RowProgress','Update-TransferBytes','Tail-Events','Reindex-Queue','Register-SubscriptionSuccess',
+ 'Set-QueueState','Set-QueueFields','Set-RowProgress','Update-TransferBytes','Tail-Events','Reindex-Queue','Register-SubscriptionSuccess','Set-VideoTitle',
  'Get-QueueEngineContext','Test-GuiEngineAlive','Show-QueueCleanupFailure','Remove-QueueRowFiles','Remove-QueueRow',
  'Complete-EngineQueue','Clear-QueueEntries','Remove-SelectedQueueEntries','Sync-RecoveredEngine','Initialize-RecoveredEngine',
  'Clean-Temp','Get-SessionSnapshot','Apply-Profile','Add-SubscriptionUrls'
@@ -292,6 +292,7 @@ try {
  $script:SubtitleLangsBox=[pscustomobject]@{Text=''}; $script:PauseButton=[pscustomobject]@{Content='Pause'}
  $script:ArchiveCheck=[pscustomobject]@{IsChecked=$false}; $script:SponsorCheck=[pscustomobject]@{IsChecked=$false}
  $script:WatchClipboardCheck=[pscustomobject]@{IsChecked=$false}
+ $script:ShowVideoTitlesCheck=[pscustomobject]@{IsChecked=$false}
  $script:LogBox=[pscustomobject]@{}; $script:LogBox|Add-Member ScriptMethod Clear {}
  # Execute real persistence mapping with localized ComboBox choices. The saved
  # profile remains the stable English ID accepted by both application runtimes.

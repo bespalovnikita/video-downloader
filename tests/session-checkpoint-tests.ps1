@@ -181,7 +181,7 @@ try {
         foreach ($name in @('RateLimitCombo','ThreadsBox','FilenameTemplateBox','OutputBox','CookiesBox','SubtitleLangsBox')) {
             Set-Variable -Name $name -Value ([pscustomobject]@{Text='default'})
         }
-        foreach ($name in @('WriteSubsCheck','AutoSubsCheck','EmbedSubsCheck','EmbedThumbnailCheck','EmbedMetadataCheck','EmbedChaptersCheck','ArchiveCheck','SponsorCheck','AudioOnlyCheck','WatchClipboardCheck')) {
+        foreach ($name in @('WriteSubsCheck','AutoSubsCheck','EmbedSubsCheck','EmbedThumbnailCheck','EmbedMetadataCheck','EmbedChaptersCheck','ArchiveCheck','SponsorCheck','AudioOnlyCheck','WatchClipboardCheck','ShowVideoTitlesCheck')) {
             Set-Variable -Name $name -Value ([pscustomobject]@{IsChecked=$false})
         }
         $rows=if($case -eq 'completed') {@(@{Url='https://example.com/done';Status='Completed';Path=''})}else{@()}

@@ -235,6 +235,8 @@ Reorder / drag/drop / download selected остаются заблокирова�
 
 ## WPF
 
+- ShowVideoTitlesCheck переключает подписи Queue/Downloads между Url и Title. По умолчанию и при неизвестном заголовке отображай URL; подсказки и действия всегда используют исходный точный URL. Сохраняй Settings.ShowVideoTitles и Queue.Title совместимо в C#/PowerShell. Получай названия через существующий preview worker/кеш и Title-события, обновляя все соответствующие строки, включая невыбранные. Смена режима не запускает сеть, загрузку и дополнительные workers.
+
 - основной UI framework — WPF/XAML;
 - WinForms используется точечно для tray и стандартных dialogs;
 - новые controls должны корректно выглядеть в dark theme;
@@ -326,6 +328,7 @@ pwsh -File .\tests\engine-integration-tests.ps1
 pwsh -File .\tests\subscription-tests.ps1
 pwsh -File .\tests\subscription-folder-tests.ps1
 pwsh -File .\tests\subscription-ui-tests.ps1
+pwsh -STA -File .\tests\title-display-tests.ps1
 pwsh -File .\tests\pornhub-channel-tests.ps1
 ~~~
 

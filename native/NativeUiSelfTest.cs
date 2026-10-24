@@ -57,6 +57,9 @@ internal static class NativeUiSelfTest
             Require(window.Resources.Contains("QueueStatusTextStyle"),"Queue state colors must be present");
             Require(window.Resources.Contains("DownloadStatusTextStyle"),"Download state colors must be present");
 
+            Stage("testing URL and background video title display modes");
+            controller.TestTitleDisplay(root);
+
             Stage("testing live Add while duplicate dialogs pump the dispatcher");
             controller.TestLiveAddDuringDuplicateDialog(root);
 
@@ -302,14 +305,14 @@ internal static class NativeUiSelfTest
             return (Window)XamlReader.Load(reader);
         }
         var data=new AppPersistence(Path.Combine(root,"startup-profile"));
-        var options=new DownloadOptions {Output=Path.Combine(root,"saved-output"),Cookies=Path.Combine(root,"cookies.txt"),Threads="7",Profile="Music MP3",AudioOnly=true};
+        var options=new DownloadOptions {Output=Path.Combine(root,"saved-output"),Cookies=Path.Combine(root,"cookies.txt"),Threads="7",Profile="Music MP3",AudioOnly=true,ShowVideoTitles=true};
         data.Save([],options);
         var window=LoadWindow();
         stage("recovery: restoring empty queue settings");
         using(var controller=new NativeWindow(window,data))
         {
             var restored=(DownloadOptions)typeof(NativeWindow).GetMethod("ReadOptions",methods)!.Invoke(controller,null)!;
-            if(restored.Output!=options.Output || restored.Cookies!=options.Cookies || restored.Threads!="7" || !restored.AudioOnly)
+            if(restored.Output!=options.Output || restored.Cookies!=options.Cookies || restored.Threads!="7" || !restored.AudioOnly || !restored.ShowVideoTitles)
                 throw new InvalidOperationException("Empty queues must restore saved settings without a dialog.");
         }
         window.Close();

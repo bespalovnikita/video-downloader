@@ -278,6 +278,22 @@
             <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
         </Style>
 
+        <Style x:Key="VideoLabelStyle" TargetType="TextBlock" BasedOn="{StaticResource GridTextStyle}">
+            <Setter Property="Text" Value="{Binding Url}"/>
+            <Setter Property="ToolTip" Value="{Binding Url}"/>
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding Tag, RelativeSource={RelativeSource AncestorType=DataGrid}}" Value="True">
+                    <Setter Property="Text" Value="{Binding Title}"/>
+                </DataTrigger>
+                <DataTrigger Binding="{Binding Title, FallbackValue=''}" Value="">
+                    <Setter Property="Text" Value="{Binding Url}"/>
+                </DataTrigger>
+                <DataTrigger Binding="{Binding Title}" Value="{x:Null}">
+                    <Setter Property="Text" Value="{Binding Url}"/>
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+
         <!-- Status colors follow stable Status rather than transient text/percent. -->
         <Style x:Key="QueueStatusTextStyle" TargetType="TextBlock" BasedOn="{StaticResource GridTextStyle}">
             <Setter Property="Foreground" Value="#67D7FD"/>
@@ -408,14 +424,14 @@
                         <Button x:Name="OpenOutputDirectoryButton" Content="📂 Открыть папку загрузок" ToolTip="Открыть настроенную папку назначения в Проводнике"/>
                     </WrapPanel>
 
-                    <DataGrid x:Name="QueueGrid" Grid.Row="3" AllowDrop="True">
+                    <DataGrid x:Name="QueueGrid" Grid.Row="3" AllowDrop="True" Tag="{Binding IsChecked, ElementName=ShowVideoTitlesCheck}">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="#" Binding="{Binding Order}" Width="38" ElementStyle="{StaticResource GridTextStyle}"/>
-                            <DataGridTemplateColumn Header="URL / progress" Width="*" MinWidth="185">
+                            <DataGridTemplateColumn Header="Видео / прогресс" Width="*" MinWidth="185">
                                 <DataGridTemplateColumn.CellTemplate>
                                     <DataTemplate>
                                         <StackPanel Margin="4">
-                                            <TextBlock Text="{Binding Url}" ToolTip="{Binding Url}" TextTrimming="CharacterEllipsis"/>
+                                            <TextBlock Style="{StaticResource VideoLabelStyle}"/>
                                             <ContentControl Content="{Binding}" ContentTemplate="{StaticResource TransferDetails}"/>
                                         </StackPanel>
                                     </DataTemplate>
@@ -427,6 +443,8 @@
                     </DataGrid>
 
                     <StackPanel Grid.Row="4" Margin="0,10,0,0">
+                        <CheckBox x:Name="ShowVideoTitlesCheck" Content="Показывать названия видео вместо URL" IsChecked="False"
+                                  ToolTip="Переключает очередь и список загрузок. Пока название недоступно, отображается URL. Исходная ссылка доступна в подсказке и меню строки."/>
                         <CheckBox x:Name="WatchClipboardCheck" Content="Watch clipboard and auto-add URLs"/>
                         <TextBlock x:Name="ClipboardHint" Text="Use Paste or + Add even during downloads. Drop files/links or reorder rows while idle." Style="{StaticResource MutedText}" TextWrapping="Wrap"/>
                     </StackPanel>
@@ -444,16 +462,16 @@
 
                     <TextBlock Grid.Row="0" Text="Downloads" Style="{StaticResource SectionTitle}"/>
 
-                    <DataGrid x:Name="DownloadGrid" Grid.Row="1" SelectionMode="Single">
+                    <DataGrid x:Name="DownloadGrid" Grid.Row="1" SelectionMode="Single" Tag="{Binding IsChecked, ElementName=ShowVideoTitlesCheck}">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="Slot" Binding="{Binding Slot}" Width="52" ElementStyle="{StaticResource GridTextStyle}"/>
                             <DataGridTextColumn Header="State" Binding="{Binding State}" Width="110" ElementStyle="{StaticResource DownloadStatusTextStyle}"/>
                             <DataGridTextColumn Header="Подписка / папка" Binding="{Binding SubscriptionName}" Width="120" ElementStyle="{StaticResource GridTextStyle}"/>
-                            <DataGridTemplateColumn Header="Video / progress" Width="*" MinWidth="220">
+                            <DataGridTemplateColumn Header="Видео / прогресс" Width="*" MinWidth="220">
                                 <DataGridTemplateColumn.CellTemplate>
                                     <DataTemplate>
                                         <StackPanel Margin="4">
-                                            <TextBlock Text="{Binding Title}" ToolTip="{Binding Url}" TextTrimming="CharacterEllipsis"/>
+                                            <TextBlock Style="{StaticResource VideoLabelStyle}"/>
                                             <ContentControl Content="{Binding}" ContentTemplate="{StaticResource TransferDetails}"/>
                                         </StackPanel>
                                     </DataTemplate>

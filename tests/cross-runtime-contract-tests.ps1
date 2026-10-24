@@ -42,8 +42,8 @@ namespace System.Windows {
     $session=@{Queue=@(
         @{Url='https://example.com/cleanup';Status='Interrupted';PendingRemoval=$true;AttemptFinished=$true;
           CleanupError='Locked file';CleanupPaths=@($owned);StageDir=$stage;RunDir=$run;OutputRoot=$output},
-        @{Url='https://example.com/readded';Status='Queued';DeferredToNextStart=$true;SubscriptionId='source-123';SubscriptionName='123'}
-    );Settings=@{Output=(Join-Path $temp 'different-output')};Engine=$null}
+        @{Url='https://example.com/readded';Status='Queued';DeferredToNextStart=$true;SubscriptionId='source-123';SubscriptionName='123';Title='Название до скачивания'}
+    );Settings=@{Output=(Join-Path $temp 'different-output');ShowVideoTitles=$true};Engine=$null}
     Write-VdSessionCheckpoint -Path $native.SessionPath -Session $session
     $loaded=$native.Restore();$native.Save($loaded.Queue,$loaded.Settings)
     $legacy=Read-VdSessionCheckpoint -Path $native.SessionPath
@@ -51,6 +51,9 @@ namespace System.Windows {
     Assert ($rows[0].PendingRemoval -and $rows[0].CleanupError -and $rows[0].StageDir -eq $stage -and $rows[0].CleanupPaths[0] -eq $owned -and $rows[0].RunDir -eq $run -and $rows[0].OutputRoot -eq $output) 'PowerShell -> C# -> PowerShell must preserve every cleanup field'
     Assert ($rows[1].DeferredToNextStart -and @(Get-VdResumeUrls -Queue $rows).Count -eq 1) 'Only the deferred new attempt may resume'
     Assert ($rows[1].SubscriptionId -ceq 'source-123' -and $rows[1].SubscriptionName -ceq '123' -and $loaded.Queue[1].SubscriptionName -ceq '123') 'PS -> native -> PS checkpoint must retain subscription identity and folder snapshots'
+    Assert ($loaded.Settings.ShowVideoTitles -and $legacy.Settings.ShowVideoTitles -eq $true -and
+        $loaded.Queue[1].Title -ceq 'Название до скачивания' -and $rows[1].Title -ceq 'Название до скачивания') 'Title display preference and prefetched titles must survive PS -> native -> PS without changing URLs'
+    Assert ($rows[0].Title -ceq '' -and -not ([VideoDownloader.Native.DownloadOptions]::new()).ShowVideoTitles) 'Legacy unknown titles and missing display preference must default to URL mode'
     Remove-VdStagingDirectory -StageDir $rows[0].StageDir -RunDir $rows[0].RunDir
     Assert (-not [IO.Directory]::Exists($stage)) 'PowerShell must clean C# staging names after migration'
     $legacyStage=Join-Path $run ('download-1-'+[guid]::NewGuid().ToString('N'))

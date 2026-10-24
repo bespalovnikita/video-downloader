@@ -31,7 +31,7 @@ public sealed class DownloadItem : INotifyPropertyChanged
     public string State { get => _state; set { _state = value; Changed(); } }
     public string Status { get => _status; set { _status = value; Changed(); } }
     public double Progress { get => _progress; set { _progress = value; Changed(); } }
-    public string Title { get => _title; set { _title = value; Changed(); } }
+    public string Title { get => _title; set { _title = value?.Trim() ?? ""; Changed(); } }
     public string Speed { get => _speed; set { _speed = value; Changed(); } }
     public string Downloaded { get => _downloaded; set { _downloaded = value; Changed(); } }
     public string ETA { get => _eta; set { _eta = value; Changed(); } }
@@ -80,6 +80,7 @@ public sealed class DownloadOptions
     public bool Sponsor { get; set; }
     public bool AudioOnly { get; set; }
     public bool WatchClipboard { get; set; }
+    public bool ShowVideoTitles { get; set; }
     public int Parallel => int.TryParse(Threads, out int n) ? Math.Clamp(n,1,32) : 4;
     public int FragmentCount => int.TryParse(Fragments, out int n) ? Math.Clamp(n,1,8) : Math.Min(8,Math.Max(1,Parallel));
     // Resolve exactly once per run. A session spanning midnight must not change

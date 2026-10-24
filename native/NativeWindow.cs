@@ -85,6 +85,8 @@ public sealed partial class NativeWindow : IDisposable
             message=>_window.Dispatcher.BeginInvoke(()=>Log(message)));
         SetupTray();
         BindActions();
+        K("ShowVideoTitlesCheck").Checked+=(_,_)=>SaveCheckpoint();
+        K("ShowVideoTitlesCheck").Unchecked+=(_,_)=>SaveCheckpoint();
         _tick.Tick+=(_,_)=>Tick();
         _clipboardTick.Tick+=(_,_)=>PollClipboard();
         _window.Closing+=OnClosing;
@@ -235,7 +237,7 @@ public sealed partial class NativeWindow : IDisposable
         EmbedThumbnail=Check(K("EmbedThumbnailCheck")),EmbedMetadata=Check(K("EmbedMetadataCheck")),
         EmbedChapters=Check(K("EmbedChaptersCheck")),Archive=Check(K("ArchiveCheck")),
         Sponsor=Check(K("SponsorCheck")),AudioOnly=Check(K("AudioOnlyCheck")),
-        WatchClipboard=Check(K("WatchClipboardCheck"))
+        WatchClipboard=Check(K("WatchClipboardCheck")),ShowVideoTitles=Check(K("ShowVideoTitlesCheck"))
     };
     private void ApplyOptions(DownloadOptions o)
     {
@@ -252,7 +254,8 @@ public sealed partial class NativeWindow : IDisposable
             ("WriteSubsCheck",o.WriteSubs),("AutoSubsCheck",o.AutoSubs),("EmbedSubsCheck",o.EmbedSubs),
             ("EmbedThumbnailCheck",o.EmbedThumbnail),("EmbedMetadataCheck",o.EmbedMetadata),
             ("EmbedChaptersCheck",o.EmbedChapters),("ArchiveCheck",o.Archive),
-            ("SponsorCheck",o.Sponsor),("AudioOnlyCheck",o.AudioOnly),("WatchClipboardCheck",o.WatchClipboard)})
+            ("SponsorCheck",o.Sponsor),("AudioOnlyCheck",o.AudioOnly),("WatchClipboardCheck",o.WatchClipboard),
+            ("ShowVideoTitlesCheck",o.ShowVideoTitles)})
             K(name).IsChecked=value;
     }
     private void TryRestore()
@@ -282,7 +285,7 @@ public sealed partial class NativeWindow : IDisposable
             foreach(var item in previous.Queue)
             {
                 item.Order=_queue.Count+1;_queue.Add(item);
-                _previews.Request(item.Url);
+                RequestRowPreview(item);
             }
             Log($"Restored {_queue.Count} URLs. Downloads will not restart automatically.");
         }
@@ -305,7 +308,7 @@ public sealed partial class NativeWindow : IDisposable
         {
             // Save on meaningful changes, not every progress tick.
             var fingerprint=System.Text.Json.JsonSerializer.Serialize(_queue.Select(i=>new{
-                i.Url,i.Status,i.Path,i.Order,i.OwnedPaths,i.OutputRoot,i.RunDir,i.StageDir,
+                i.Url,i.Title,i.Status,i.Path,i.Order,i.OwnedPaths,i.OutputRoot,i.RunDir,i.StageDir,
                 i.CleanupPaths,i.CleanupError,i.PendingRemoval,i.AttemptFinished,i.DeferredToNextStart,
                 i.SubscriptionId,i.SubscriptionName
             }),AppPersistence.Json)+
@@ -415,7 +418,7 @@ public sealed partial class NativeWindow : IDisposable
             if (_queue.Any(existing=>string.Equals(existing.Url,row.Url,StringComparison.Ordinal))) continue;
             _queue.Add(row);
             added.Add(row);
-            _previews.Request(row.Url,clipboard&&active);
+            RequestRowPreview(row,clipboard&&active);
             if(active)
             {
                 if(ReferenceEquals(_session,session) && session!.IsRunning && session.Add(row)) _sessionUrls.Add(row.Url);
@@ -434,6 +437,19 @@ public sealed partial class NativeWindow : IDisposable
         Reindex();
         T("ClipboardHint").Text=added.Count+" URL(s) added.";
     }
+    private void RequestRowPreview(DownloadItem row,bool priority=false)
+    {
+        var cached=_previews.Get(row.Url);
+        if(cached!=null) ApplyPreviewTitle(cached);
+        else _previews.Request(row.Url,priority);
+    }
+    private void ApplyPreviewTitle(PreviewData data)
+    {
+        if(string.IsNullOrWhiteSpace(data.Title)) return;
+        foreach(var row in _queue.Concat(_downloads).Distinct()
+            .Where(row=>string.Equals(row.Url,data.Url,StringComparison.Ordinal)))
+            row.Title=data.Title.Trim();
+    }
     private void ShowPreview(string url)
     {
         if(!AppPersistence.ValidUrl(url))return;
@@ -448,7 +464,10 @@ public sealed partial class NativeWindow : IDisposable
     }
     private void OnPreviewReady(PreviewData data)
     {
-        if(_disposed || !string.Equals(_previewUrl,data.Url,StringComparison.Ordinal))return;
+        if(_disposed)return;
+        ApplyPreviewTitle(data);
+        SaveCheckpoint();
+        if(!string.Equals(_previewUrl,data.Url,StringComparison.Ordinal))return;
         T("PreviewTitle").Text=data.Title.Length>0?data.Title:"Untitled";
         var summary=new List<string>();
         if(data.PlaylistTitle.Length>0)summary.Add("Playlist: "+data.PlaylistTitle);

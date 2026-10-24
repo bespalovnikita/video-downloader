@@ -83,6 +83,7 @@ function Get-VdRestoredQueue {
         [pscustomobject]@{
             Order = $order
             Url = [string]$item.Url
+            Title = if ([string]::IsNullOrWhiteSpace([string]$item.Title)) { '' } else { [string]$item.Title }
             SubscriptionId = [string]$item.SubscriptionId
             SubscriptionName = [string]$item.SubscriptionName
             State = $display

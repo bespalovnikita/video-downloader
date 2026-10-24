@@ -55,6 +55,10 @@ jobs:
         timeout-minutes: 3
         run: pwsh -NoProfile -STA -File ./tests/subscription-ui-tests.ps1
 
+      - name: URL and video title display modes
+        shell: pwsh
+        run: pwsh -NoProfile -STA -File ./tests/title-display-tests.ps1
+
       - name: Preview metadata and thumbnail deadlines
         shell: pwsh
         run: pwsh -NoProfile -File ./tests/preview-deadline-tests.ps1
