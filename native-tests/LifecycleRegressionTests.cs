@@ -29,6 +29,8 @@ internal static class LifecycleRegressionTests
         string output=args[Array.IndexOf(args,"-o")+1];
         string media=Path.Combine(Path.GetDirectoryName(output)!,"fixture.mp4");
         File.WriteAllText(media,"MEDIA");
+        if (url.Contains("folders-",StringComparison.Ordinal))
+            File.WriteAllText(Path.Combine(Path.GetDirectoryName(output)!,"fixture.info.json"),"{\"fixture\":true}");
         Console.WriteLine("__VD_TITLE__:Fixture");Console.Out.Flush();
         if (url.EndsWith("cancel")) Thread.Sleep(Timeout.Infinite);
         Console.WriteLine("__VD_FILE__:"+media);
@@ -47,6 +49,7 @@ internal static class LifecycleRegressionTests
             Cleanup(Path.Combine(root,"cleanup"));
             await Preview(Path.Combine(root,"preview"));
             await Cancellation(Path.Combine(root,"cancellation"));
+            await SubscriptionFolders(Path.Combine(root,"subscription-folders"));
             Console.WriteLine("PASS: history separators, profile transitions, migration, cleanup, preview deadlines and cancellation");
         }
         finally { Directory.Delete(root,true); }
@@ -236,6 +239,112 @@ internal static class LifecycleRegressionTests
         finally {held?.Dispose();}
         DownloadCleanup.Retry(row);
         Require(row.StageDir=="" && row.CleanupError=="" && File.ReadAllText(sentinel)=="PRESERVE","Retry must clean only the cancelled attempt");
+    }
+
+    private static async Task SubscriptionFolders(string root)
+    {
+        var data=new AppPersistence(Path.Combine(root,"profile"));
+        var options=new DownloadOptions{Output=Path.Combine(root,"output"),Threads="4",EmbedMetadata=false,EmbedChapters=false};
+        string firstRoot=Path.Combine(options.Output,"123"),secondRoot=Path.Combine(options.Output,"Другой канал");
+        Directory.CreateDirectory(firstRoot);Directory.CreateDirectory(secondRoot);
+        string previous=Path.Combine(firstRoot,"fixture.mp4"),sibling=Path.Combine(secondRoot,"keep.mp4");
+        File.WriteAllText(previous,"PREVIOUS");File.WriteAllText(sibling,"SIBLING");
+        var first=new DownloadItem{Url=Prefix+"folders-one",SubscriptionId="source-one",SubscriptionName="123"};
+        var second=new DownloadItem{Url=Prefix+"folders-two",SubscriptionId="source-two",SubscriptionName="Другой канал"};
+        var ordinary=new DownloadItem{Url=Prefix+"folders-ordinary"};
+        var cancelled=new DownloadItem{Url=Prefix+"folders-cancel",SubscriptionId="source-one",SubscriptionName="123"};
+        int cancellation=0;
+        DownloadCoordinator? engine=null;
+        await using(engine=new DownloadCoordinator(Executable(),data,options,item=>
+        {
+            if (item.Url==cancelled.Url && item.Title.Length>0 && Interlocked.Exchange(ref cancellation,1)==0)
+                engine!.Cancel(item);
+        },_=>{}))
+        {
+            foreach(var row in new[]{first,second,ordinary,cancelled}) Require(engine.Add(row),"Mixed subscription queue must be accepted");
+            // The destination is captured by Add, independently of later metadata.
+            first.SubscriptionName="Changed after enqueue";
+            await engine.RunAsync().WaitAsync(TimeSpan.FromSeconds(15));
+        }
+        first.SubscriptionName="123";
+        foreach(var (row,output) in new[]{(first,firstRoot),(second,secondRoot),(ordinary,options.Output)})
+        {
+            Require(row.Status=="Completed" && row.OutputRoot==Path.GetFullPath(output) && row.OwnedPaths.Count==2,
+                "Every item must retain its own media/sidecar publication boundary");
+            Require(row.OwnedPaths.All(path=>OwnedFiles.Inside(output,path) && File.Exists(path)),
+                "Subscription publication must stay inside the captured leaf folder");
+        }
+        Require(cancelled.Status=="Interrupted" && cancelled.AttemptFinished && cancelled.OutputRoot==Path.GetFullPath(firstRoot) &&
+                cancelled.StageDir.Length==0 && cancelled.OwnedPaths.Count==0 && !data.ReadHistory().ContainsKey(cancelled.Url),
+            "Cancelling one subscription item must clean staging without changing its sibling success/history");
+        Require(File.ReadAllText(previous)=="PREVIOUS" && File.ReadAllText(sibling)=="SIBLING" && first.Path!=previous &&
+                !Directory.Exists(Path.Combine(options.Output,"Changed after enqueue")),
+            "Naming collisions and later metadata changes must not overwrite or redirect subscribed downloads");
+
+        data.Save([first,second,ordinary],options);
+        var restored=data.Restore()!;
+        Require(restored.Queue[0].SubscriptionId=="source-one" && restored.Queue[0].SubscriptionName=="123" &&
+                restored.Queue[0].OutputRoot==firstRoot && restored.Queue[1].SubscriptionName=="Другой канал" &&
+                restored.Queue[2].SubscriptionId.Length==0 && restored.Queue[2].SubscriptionName.Length==0,
+            "Checkpoint restart must preserve source/folder snapshots while ordinary rows remain ordinary");
+        string saved=File.ReadAllText(data.SessionPath);
+        File.WriteAllText(data.SessionPath,saved.Replace("\"SubscriptionName\":\"123\"","\"SubscriptionName\":\"../escape\"",StringComparison.Ordinal));
+        Refuses(()=>data.Restore());
+        File.WriteAllText(data.SessionPath,saved.Replace("\"SubscriptionName\":\"123\"","\"SubscriptionName\":null",StringComparison.Ordinal));
+        Refuses(()=>data.Restore());
+        File.WriteAllText(data.SessionPath,saved.Replace("\"SubscriptionId\":\"source-one\"","\"SubscriptionId\":null",StringComparison.Ordinal));
+        Refuses(()=>data.Restore());
+        File.WriteAllText(data.SessionPath,saved);
+
+        var retry=new DownloadItem{Url=first.Url,SubscriptionId=first.SubscriptionId,SubscriptionName=first.SubscriptionName};
+        await using(var repeated=new DownloadCoordinator(Executable(),data,options,_=>{},_=>{}))
+        {
+            Require(repeated.Add(retry),"An explicitly approved retry must be accepted");
+            await repeated.RunAsync().WaitAsync(TimeSpan.FromSeconds(15));
+        }
+        Require(retry.Status=="Completed" && retry.Path!=first.Path && retry.OwnedPaths.All(path=>!first.OwnedPaths.Contains(path)),
+            "A subscription retry must publish a new batch without taking ownership of earlier files");
+        DownloadCleanup.Retry(first);
+        Require(retry.OwnedPaths.All(File.Exists) && second.OwnedPaths.All(File.Exists) && ordinary.OwnedPaths.All(File.Exists) &&
+                File.ReadAllText(previous)=="PREVIOUS" && File.ReadAllText(sibling)=="SIBLING",
+            "Removing an older subscription result must preserve retries, sibling subscriptions and ordinary downloads");
+
+        await using(var rejecting=new DownloadCoordinator(Executable(),data,options,_=>{},_=>{}))
+        {
+            foreach(string folder in new[]{"..","../escape","bad\\nested","C:\\escape","CON"})
+                Refuses(()=>rejecting.Add(new DownloadItem{Url=Prefix+"bad-"+Guid.NewGuid(),SubscriptionName=folder}));
+            Require(rejecting.Outstanding==0,"Invalid folder metadata must be refused before accepting a worker");
+        }
+        string outside=Path.Combine(root,"outside"),linked=Path.Combine(options.Output,"linked");
+        Directory.CreateDirectory(outside);
+        string protectedFile=Path.Combine(outside,"protected.mp4");File.WriteAllText(protectedFile,"OUTSIDE");
+        if (OperatingSystem.IsWindows())
+        {
+            var linkStart=new ProcessStartInfo("cmd.exe"){UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true};
+            foreach(string argument in new[]{"/d","/c","mklink","/J",linked,outside}) linkStart.ArgumentList.Add(argument);
+            using var linkProcess=Process.Start(linkStart)!;
+            await linkProcess.WaitForExitAsync();
+            Require(linkProcess.ExitCode==0,"Subscription junction fixture must be created");
+        }
+        else Directory.CreateSymbolicLink(linked,outside);
+        try
+        {
+            await using var rejectingLink=new DownloadCoordinator(Executable(),data,options,_=>{},_=>{});
+            Refuses(()=>rejectingLink.Add(new DownloadItem{Url=Prefix+"folders-link",SubscriptionName="linked"}));
+            Require(rejectingLink.Outstanding==0 && File.ReadAllText(protectedFile)=="OUTSIDE",
+                "A subscription leaf pointing outside the base must fail before accepting a worker");
+        }
+        finally {Directory.Delete(linked);}
+        var archived=new DownloadOptions{Output=Path.Combine(root,"archive"),Archive=true};
+        await using(var archiveEngine=new DownloadCoordinator(Executable(),data,archived,_=>{},_=>{}))
+        {
+            var row=new DownloadItem{Url=Prefix+"folders-archive",SubscriptionId="source-one",SubscriptionName="123"};
+            Require(archiveEngine.Add(row),"Archived subscription must be accepted");
+            await archiveEngine.RunAsync().WaitAsync(TimeSpan.FromSeconds(15));
+            Require(row.Status=="Completed" && row.OutputRoot==Path.Combine(archived.OutputDirectory,"123"),
+                "Archive keeps its pinned date prefix before the subscription leaf");
+        }
+        Console.WriteLine("PASS: mixed subscription folders, pinned names, restart, collision retry and sibling-safe cancellation/removal");
     }
     private static string Executable()=>Path.Combine(AppContext.BaseDirectory,
         typeof(LifecycleRegressionTests).Assembly.GetName().Name+(OperatingSystem.IsWindows()?".exe":""));

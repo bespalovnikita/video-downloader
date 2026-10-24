@@ -6,14 +6,19 @@ public sealed partial class NativeWindow
 
     // Subscriptions never enter a running coordinator. The explicit Start
     // action remains the boundary for download/history confirmation.
-    private IReadOnlyList<string> QueueSubscriptionUrls(IEnumerable<string> urls)
+    private IReadOnlyList<string> QueueSubscriptionUrls(IEnumerable<string> urls) => QueueSubscriptionUrls(urls,"","");
+
+    private IReadOnlyList<string> QueueSubscriptionUrls(IEnumerable<string> urls,string subscriptionId,string subscriptionName)
     {
         if (_closing || _disposed) return [];
         if (_checkpointReadOnly || _legacyEngineBlocked)
             throw new InvalidOperationException("Очередь недоступна для сохранения. Сначала устраните ошибку восстановления или завершите прежний движок.");
+        if ((subscriptionId.Length==0)!=(subscriptionName.Length==0) ||
+            (subscriptionName.Length>0 && !SubscriptionNames.IsValid(subscriptionName)))
+            throw new ArgumentException("У подписки должно быть безопасное краткое имя папки.");
         var requested=urls.Where(AppPersistence.ValidUrl).Distinct(StringComparer.Ordinal).ToArray();
         var candidates=requested.Where(url=>!_queue.Any(row=>row.Url==url))
-            .Select(url=>new DownloadItem{Url=url}).ToList();
+            .Select(url=>new DownloadItem{Url=url,SubscriptionId=subscriptionId,SubscriptionName=subscriptionName}).ToList();
         var approved=ConfirmDuplicates(candidates,false);
         if (approved==null) return [];
         foreach (var row in approved)
@@ -22,7 +27,7 @@ public sealed partial class NativeWindow
             if (_queue.Any(existing=>existing.Url==row.Url)) continue;
             row.DeferredToNextStart=_session?.IsRunning==true;
             _queue.Add(row);
-            _previews.Request(row.Url);
+            RequestRowPreview(row);
         }
         Reindex();
         if (_checkpointReadOnly)

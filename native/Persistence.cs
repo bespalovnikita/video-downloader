@@ -35,6 +35,9 @@ public sealed class AppPersistence
             if (row.Status == "Completed") { row.State="Done"; row.Progress=100; }
             row.OwnedPaths ??= new List<string>();
             row.CleanupPaths ??= new List<string>();
+            if (row.SubscriptionId is null || row.SubscriptionName is null ||
+                (row.SubscriptionName.Length>0 && !SubscriptionNames.IsValid(row.SubscriptionName)))
+                throw new InvalidDataException("Invalid subscription folder in session checkpoint.");
         }
         // A live legacy worker still owns its checkpoint and may hold the
         // append-only event stream open. Let the GUI see its identity without

@@ -70,7 +70,10 @@ public static class PornHubChannel
             }
             if(pageCounts.Any(n=>n!=0))throw new InvalidDataException("Количество материалов на страницах Pornhub не совпадает.");
             string caption=root.TryGetProperty("title",out var value)&&value.ValueKind==JsonValueKind.String?value.GetString()??"":"";
-            return new(caption.Length>0?caption:sourceUrl,items,"","");
+            string suggestion = new[] { "channel", "uploader", "title" }
+                .Select(name => root.TryGetProperty(name, out var label) && label.ValueKind == JsonValueKind.String ? label.GetString() ?? "" : "")
+                .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)) ?? "";
+            return new(caption.Length>0?caption:sourceUrl,items,"","",suggestion);
         }
         catch(Exception error) when(error is KeyNotFoundException or InvalidOperationException or FormatException or OverflowException)
         {throw new InvalidDataException("Некорректный ответ обработчика каналов Pornhub; прежние результаты сохранены.",error);}

@@ -46,36 +46,38 @@ try {
     }
     function New-TestContext([string]$Directory){
         $controls=@{}
-        foreach($name in @('CheckSubscriptionButton','PauseSubscriptionButton','RemoveSubscriptionButton','CancelSubscriptionCheckButton','QueueSubscriptionItemsButton','SkipSubscriptionItemsButton','OpenSubscriptionItemButton')) {
+        foreach($name in @('CheckSubscriptionButton','PauseSubscriptionButton','RemoveSubscriptionButton','CancelSubscriptionCheckButton','QueueSubscriptionItemsButton','SkipSubscriptionItemsButton','OpenSubscriptionItemButton','SaveSubscriptionNameButton')) {
             $controls[$name]=[pscustomobject]@{IsEnabled=$true;Content=''}
         }
         $controls.SubscriptionGrid=[pscustomobject]@{SelectedItem=$null;ItemsSource=@()}
         $controls.SubscriptionInboxGrid=[pscustomobject]@{SelectedItem=$null;SelectedItems=@();ItemsSource=@()}
         $controls.SubscriptionInboxTitle=[pscustomobject]@{Text=''}
         $controls.SubscriptionStatusText=[pscustomobject]@{Text=''}
+        $controls.SubscriptionNameBox=[pscustomobject]@{Text='';IsEnabled=$false}
         $timer=[pscustomobject]@{Running=$false}
         $timer | Add-Member ScriptMethod Start {$this.Running=$true}
         $timer | Add-Member ScriptMethod Stop {$this.Running=$false}
         $context=@{Directory=$Directory;Controls=$controls;Closed=$false;Updating=$false;Notifying=$false;
-            LastError='';Snapshot=$null;QueueUrls={param($urls) $urls};CookiePathScript={''};Pending=[Collections.Generic.List[string]]::new();
+            LastError='';NameEditorId='';NameEditorSavedValue='';Snapshot=$null;QueueUrls={param($urls) $urls};CookiePathScript={''};Pending=[Collections.Generic.List[string]]::new();
             Job=$null;Cancellation=$null;ActiveId='';Timer=$timer;OwnerClosedHandler=$null;Key=[guid]::NewGuid().ToString('N')}
         $contexts.Add($context)
         return $context
     }
     $directory=Join-Path $temp 'profile'
     $source=Add-VdSubscription -Directory $directory -Url 'https://example.com/source' -DownloadExisting $true
-    $scan=@{Title='Источник';FeedUrl='';Warning='';Items=@(
+    $scan=@{Title='Источник';SuggestedName='Канал 123';FeedUrl='';Warning='';Items=@(
         @{Url='https://example.com/Video';Title='Видео'},@{Url='https://example.com/video';Title='Другое видео'})}
     $snapshot=Apply-VdSubscriptionScan -Directory $directory -Id $source.Id -Scan $scan
     $context=New-TestContext $directory
-    $script:callbackCount=0;$script:callbackInputs=@()
-    $context.QueueUrls={param($urls)
-        $script:callbackCount++;$script:callbackInputs=@($urls)
+    $script:callbackCount=0;$script:callbackInputs=@();$script:callbackSource=$null
+    $context.QueueUrls={param($urls,$subscription)
+        $script:callbackCount++;$script:callbackInputs=@($urls);$script:callbackSource=$subscription
         @('https://example.com/Video','https://example.com/VIDEO','https://unrelated.example/should-not-queue')
     }
     $queued=& $module {param($c,$items) Invoke-VdSubscriptionUiQueue $c $items} $context $snapshot.Items
     $snapshot=Read-VdSubscriptions -Directory $directory
     Assert ($script:callbackCount -eq 1 -and $script:callbackInputs.Count -eq 2 -and $queued.Accepted -eq 1 -and $queued.Remaining -eq 1) 'Queue must use the owner return value, excluding altered/unrequested URLs'
+    Assert ($script:callbackSource.Id -ceq $source.Id -and $script:callbackSource.ShortName -ceq 'Канал 123') 'Owner queue callback must receive the selected source and its detected folder name'
     Assert ($snapshot.Items[0].State -eq 'Queued' -and -not $snapshot.Items[0].InitialQueuePending -and $snapshot.Items[1].State -eq 'New' -and $snapshot.Items[1].InitialQueuePending) 'Rejected initial items must remain recoverable in Inbox'
     Assert ((Read-VdDownloadHistory -Path (Join-Path $directory 'successful-downloads.jsonl')).Count -eq 0) 'Queueing must never count as successful processing'
     $context.QueueUrls={param($urls) $urls} # Idempotent owner accepts an already queued URL.
@@ -88,6 +90,45 @@ try {
     [void]$ordinaryQueue.Remove('https://example.com/video')
     $requeued=& $module {param($c,$items) Invoke-VdSubscriptionUiQueue $c $items} $context @($snapshot.Items[1])
     Assert ($requeued.Accepted -eq 1 -and $ordinaryQueue.Contains('https://example.com/video')) 'A Queued item removed from the ordinary queue must remain available for explicit requeue'
+
+    $context.Controls.SubscriptionGrid.SelectedItem=[pscustomobject]@{Id=$source.Id}
+    & $module {param($c) Update-VdSubscriptionUi $c} $context
+    Assert ($context.Controls.SubscriptionNameBox.Text -ceq 'Канал 123' -and $context.Controls.SubscriptionGrid.SelectedItem.Title -ceq 'Источник') 'Short folder name and complete collection title must be projected separately'
+    $context.Controls.SubscriptionNameBox.Text='123'
+    & $module {param($c) Update-VdSubscriptionUi $c -Reconcile} $context
+    Assert ($context.Controls.SubscriptionNameBox.Text -ceq '123') 'Refreshing subscription results must preserve an unsaved folder-name edit'
+    & $module {param($c) Save-VdSubscriptionUiName $c} $context
+    $renamed=Read-VdSubscriptions -Directory $directory
+    Assert ($renamed.Subscriptions[0].ShortName -ceq '123' -and $context.Controls.SubscriptionGrid.SelectedItem.ShortName -ceq '123' -and $context.Controls.SubscriptionNameBox.Text -ceq '123') 'Saving the short name must persist it and refresh both grid and editor'
+
+    $groupDirectory=Join-Path $temp 'grouped-sources'
+    $groupA=Add-VdSubscription -Directory $groupDirectory -Url 'https://example.com/group/a' -DownloadExisting $true -ShortName 'A'
+    $groupB=Add-VdSubscription -Directory $groupDirectory -Url 'https://example.com/group/b' -DownloadExisting $true -ShortName 'B'
+    $groupScan=@{Title='Same title';FeedUrl='';Warning='';Items=@(@{Url='https://example.com/group/video';Title='Shared URL'})}
+    $null=Apply-VdSubscriptionScan -Directory $groupDirectory -Id $groupA.Id -Scan $groupScan
+    $groupSnapshot=Apply-VdSubscriptionScan -Directory $groupDirectory -Id $groupB.Id -Scan $groupScan
+    $groupContext=New-TestContext $groupDirectory
+    $script:groupCallbacks=[Collections.Generic.List[object]]::new()
+    $groupContext.QueueUrls={param($urls,$subscription)
+        $script:groupCallbacks.Add(@{Id=$subscription.Id;Name=$subscription.ShortName;Urls=@($urls)})
+        if($subscription.ShortName -ceq 'A'){$urls}
+    }
+    $null=& $module {param($c,$items) Invoke-VdSubscriptionUiQueue $c $items} $groupContext $groupSnapshot.Items
+    $groupSnapshot=Read-VdSubscriptions -Directory $groupDirectory
+    Assert ($script:groupCallbacks.Count -eq 2 -and ((@($script:groupCallbacks.Name | Sort-Object) -join ',') -ceq 'A,B')) 'Multiple source groups must preserve their individual folder names across callbacks'
+    Assert (@($groupSnapshot.Items | Where-Object {$_.SubscriptionId -ceq $groupA.Id})[0].State -eq 'Queued' -and @($groupSnapshot.Items | Where-Object {$_.SubscriptionId -ceq $groupB.Id})[0].State -eq 'New') 'Accepting a shared URL in one source must not acknowledge a rejected source group'
+
+    $legacyDirectory=Join-Path $temp 'legacy-name'
+    $legacy=Add-VdSubscription -Directory $legacyDirectory -Url 'https://example.com/legacy' -DownloadExisting $true
+    $legacyScan=@{Title='https://example.com/legacy';FeedUrl='';Warning='';Items=@(@{Url='https://example.com/legacy/video';Title='Legacy material'})}
+    $legacySnapshot=Apply-VdSubscriptionScan -Directory $legacyDirectory -Id $legacy.Id -Scan $legacyScan
+    [void]$legacySnapshot.Subscriptions[0].Remove('ShortName')
+    [IO.File]::WriteAllText((Join-Path $legacyDirectory 'subscriptions.json'),(ConvertTo-Json -InputObject $legacySnapshot -Depth 12 -Compress))
+    $legacyContext=New-TestContext $legacyDirectory
+    $script:legacyFolder=''
+    $legacyContext.QueueUrls={param($urls,$subscription) $script:legacyFolder=$subscription.ShortName;$urls}
+    $legacyResult=& $module {param($c,$items) Invoke-VdSubscriptionUiQueue $c $items} $legacyContext $legacySnapshot.Items
+    Assert ($legacyResult.Accepted -eq 1 -and $script:legacyFolder -ceq ('Подписка '+$legacy.Id.Substring(0,8))) 'Released subscriptions without a name must enqueue before rescan and use a short fallback instead of turning their URL into a folder name'
 
     $other=Add-VdSubscription -Directory $directory -Url 'https://example.com/other-source' -DownloadExisting $true
     $null=Apply-VdSubscriptionScan -Directory $directory -Id $other.Id -Scan $scan
@@ -163,7 +204,7 @@ Export-ModuleMember -Function Invoke-VdSubscriptionScan
     $saved=Read-VdSubscriptions -Directory $workDirectory
     $pending=@($saved.Items | Where-Object SubscriptionId -CEQ $archive.Id)
     Assert ($pending.Count -eq 1 -and $pending[0].InitialQueuePending -and $pending[0].State -eq 'New') 'An owner callback failure must keep the initial archive pending for another manual check'
-    $worker.QueueUrls={param($urls) Add-SubscriptionUrls -Urls $urls}
+    $worker.QueueUrls={param($urls,$subscription) Add-SubscriptionUrls -Urls $urls -SubscriptionId $subscription.Id -SubscriptionName $subscription.ShortName}
     & $module {param($c,$id) Add-VdSubscriptionUiChecks $c @($id)} $worker $archive.Id
     $deadline=[DateTime]::UtcNow.AddSeconds(15)
     while($worker.Job -and [DateTime]::UtcNow -lt $deadline){Start-Sleep -Milliseconds 30;& $module {param($c) Complete-VdSubscriptionUiCheck $c} $worker}
@@ -174,6 +215,13 @@ Export-ModuleMember -Function Invoke-VdSubscriptionScan
         $archiveItems.Count -eq 1 -and $archiveItems[0].State -eq 'Queued' -and -not $archiveItems[0].InitialQueuePending) 'Real owner callback must apply discovery and acknowledge the initial queue without losing history commands'
     Assert ($script:queue.Count -eq 1 -and $script:queue[0].Url -ceq 'https://example.com/discovered' -and
         $script:prefetched.Count -eq 1 -and (Read-VdDownloadHistory -Path $script:historyPath).Count -eq 0) 'Initial import must create an ordinary queued item and preview intent, without recording download success'
+    Assert ($script:queue[0].SubscriptionId -ceq $archive.Id -and $script:queue[0].SubscriptionName -ceq $archiveSource.ShortName -and $script:queue[0].SubscriptionName) 'Production owner callback must capture the source ID and folder name on the ordinary queued row'
+    $capturedName=$script:queue[0].SubscriptionName
+    $worker.Controls.SubscriptionGrid.SelectedItem=[pscustomobject]@{Id=$archive.Id}
+    & $module {param($c) Update-VdSubscriptionUi $c} $worker
+    $worker.Controls.SubscriptionNameBox.Text='Новая папка'
+    & $module {param($c) Save-VdSubscriptionUiName $c} $worker
+    Assert ($script:queue[0].SubscriptionName -ceq $capturedName -and (Read-VdSubscriptions -Directory $workDirectory).Subscriptions.Where({$_.Id -ceq $archive.Id})[0].ShortName -ceq 'Новая папка') 'Renaming a subscription must affect future imports without rewriting already queued jobs'
 
     $slow=Add-VdSubscription -Directory $workDirectory -Url 'https://example.com/slow'
     & $module {param($c,$id) Add-VdSubscriptionUiChecks $c @($id)} $worker $slow.Id
@@ -199,6 +247,10 @@ Export-ModuleMember -Function Invoke-VdSubscriptionScan
             Show-VdSubscriptionsWindow -Owner $owner -Root $root -DataDirectory $wpfDirectory -YtDlpPath 'unused' -CookiePathScript {''} -QueueUrls {throw 'Opening subscriptions must not enqueue'}
             $wpf=& $module {param($o) @($script:SubscriptionWindows.Values | Where-Object {[object]::ReferenceEquals($_.Owner,$o)})[0]} $owner
             Assert ($wpf.Window.IsVisible -and $owner.IsEnabled -and -not $wpf.Controls.DownloadExistingCheck.IsChecked -and $null -eq $wpf.Job) 'Actual PowerShell subscriptions WPF window must open modeless with baseline default and no background scan'
+            Assert ($wpf.Controls.SubscriptionNameBox.Text -ceq 'Проверка WPF' -and $wpf.Controls.NewSubscriptionNameBox.Text -eq '') 'Actual PowerShell WPF controls must expose the detected folder name and optional new-source override'
+            $wpf.Controls.SubscriptionNameBox.Text='123'
+            $wpf.Controls.SaveSubscriptionNameButton.RaiseEvent([Windows.RoutedEventArgs]::new([Windows.Controls.Button]::ClickEvent))
+            Assert ((Read-VdSubscriptions -Directory $wpfDirectory).Subscriptions[0].ShortName -ceq '123' -and $wpf.Controls.SubscriptionNameBox.Text -ceq '123') 'Actual PowerShell Save button must persist the selected short folder name'
             $wpf.Window.UpdateLayout()
             $grid=$wpf.Controls.SubscriptionInboxGrid
             Assert ($grid.Items.Count -eq 1 -and $grid.Items[0].Title -eq 'Материал WPF' -and $grid.Items[0].StateLabel -eq 'Новый') 'Actual PowerShell WPF window must bind the saved inbox projection'

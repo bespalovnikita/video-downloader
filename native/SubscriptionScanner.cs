@@ -283,7 +283,9 @@ public sealed class SubscriptionScanner : IDisposable
             if (Regex.IsMatch(channel, @"^UC[A-Za-z0-9_-]{22}$", RegexOptions.CultureInvariant))
                 feed = "https://www.youtube.com/feeds/videos.xml?channel_id=" + channel;
         }
-        return new(title.Length == 0 ? sourceUrl : title, found, feed, "");
+        string suggestedName = new[] { String(root, "channel"), String(root, "uploader"), title }
+            .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)) ?? "";
+        return new(title.Length == 0 ? sourceUrl : title, found, feed, "", suggestedName);
     }
 
     public static IReadOnlyList<DiscoveredMedia> ParseFeed(string xml, int maxItems = 10_000)

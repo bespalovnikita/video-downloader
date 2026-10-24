@@ -7,6 +7,7 @@ public sealed class SubscriptionDefinition
     public string Id { get; set; } = "";
     public string Url { get; set; } = "";
     public string Title { get; set; } = "";
+    public string ShortName { get; set; } = "";
     public string FeedUrl { get; set; } = "";
     public bool DownloadExisting { get; set; }
     public bool Initialized { get; set; }
@@ -49,4 +50,4 @@ public sealed class SubscriptionSnapshot
 }
 
 public sealed record DiscoveredMedia(string Url, string Title);
-public sealed record SubscriptionScan(string Title, IReadOnlyList<DiscoveredMedia> Items, string FeedUrl, string Warning);
+public sealed record SubscriptionScan(string Title, IReadOnlyList<DiscoveredMedia> Items, string FeedUrl, string Warning, string SuggestedName = "");

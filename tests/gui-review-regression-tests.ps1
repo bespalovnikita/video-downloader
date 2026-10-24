@@ -6,6 +6,7 @@ Import-Module (Join-Path $root 'lib/VideoDownloader.Cancellation.psm1') -Force
 Import-Module (Join-Path $root 'lib/VideoDownloader.LiveQueue.psm1') -Force
 Import-Module (Join-Path $root 'lib/VideoDownloader.Session.psm1') -Force
 Import-Module (Join-Path $root 'lib/VideoDownloader.Profiles.psm1') -Force
+Import-Module (Join-Path $root 'lib/VideoDownloader.SubscriptionNames.psm1') -Force
 
 function Assert([bool]$Value,[string]$Message) { if (-not $Value) { throw $Message } }
 Add-Type @'
@@ -35,7 +36,7 @@ $ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'ytdl-m
 Assert ($parseErrors.Count -eq 0) 'GUI syntax failed'
 foreach ($name in @(
  'Format-Bytes','Is-ValidUrl','Add-Urls','Add-FileToQueue','Find-QueueItem','Find-Download','Set-Download',
- 'Set-QueueState','Set-QueueFields','Set-RowProgress','Update-TransferBytes','Tail-Events','Reindex-Queue','Register-SubscriptionSuccess',
+ 'Set-QueueState','Set-QueueFields','Set-RowProgress','Update-TransferBytes','Tail-Events','Reindex-Queue','Register-SubscriptionSuccess','Set-VideoTitle',
  'Get-QueueEngineContext','Test-GuiEngineAlive','Show-QueueCleanupFailure','Remove-QueueRowFiles','Remove-QueueRow',
  'Complete-EngineQueue','Clear-QueueEntries','Remove-SelectedQueueEntries','Sync-RecoveredEngine','Initialize-RecoveredEngine',
  'Clean-Temp','Get-SessionSnapshot','Apply-Profile','Add-SubscriptionUrls'
@@ -113,12 +114,20 @@ try {
  $runningRow=Add-TestRow
  $ingressBefore=[IO.File]::ReadAllText($script:liveQueuePath)
  $first='https://example.com/subscription/B';$second='https://example.com/subscription/b'
- $accepted=@(Add-SubscriptionUrls @($first,$second,$first))
+ $accepted=@(Add-SubscriptionUrls @($first,$second,$first) -SubscriptionId 'source-123' -SubscriptionName '123')
  Assert ($accepted.Count -eq 2 -and $accepted[0] -ceq $first -and $accepted[1] -ceq $second) 'Subscription queue acceptance must preserve exact URLs and input order'
  Assert ($script:queue.Count -eq 3 -and $script:queue[1].DeferredToNextStart -and $script:queue[2].DeferredToNextStart) 'Subscription jobs must wait for explicit Start even during an active session'
+ Assert ($script:queue[1].SubscriptionId -ceq 'source-123' -and $script:queue[1].SubscriptionName -ceq '123') 'Subscription identity and folder must be captured on newly created queue rows'
  Assert ([IO.File]::ReadAllText($script:liveQueuePath) -ceq $ingressBefore -and $script:sessionTotal -eq 1 -and $script:runUrls.Count -eq 1) 'Subscription import must not enter live ingress, active URL accounting or session totals'
- $acceptedAgain=@(Add-SubscriptionUrls @($first,$second))
+ $acceptedAgain=@(Add-SubscriptionUrls @($first,$second) -SubscriptionId 'other-source' -SubscriptionName 'Renamed')
  Assert ($acceptedAgain.Count -eq 2 -and $script:queue.Count -eq 3) 'Retrying queue acceptance after a lost store acknowledgement must be idempotent'
+ Assert ($script:queue[1].SubscriptionId -ceq 'source-123' -and $script:queue[1].SubscriptionName -ceq '123') 'A later import or source rename must not silently redirect an existing queue row'
+ $null=Add-SubscriptionUrls @($runningRow.Url) -SubscriptionId 'source-123' -SubscriptionName '123'
+ Assert (-not $runningRow.SubscriptionName) 'A preexisting ordinary download must keep its original destination'
+ Set-Download -Slot 1 -State Starting -Url $first
+ Assert ($script:downloads[0].SubscriptionId -ceq 'source-123' -and $script:downloads[0].SubscriptionName -ceq '123') 'Download grid rows must expose the captured subscription name'
+ $refused=$false;try {Add-SubscriptionUrls @('https://example.com/escape') -SubscriptionId 'source-123' -SubscriptionName '../escape' | Out-Null} catch {$refused=$true}
+ Assert ($refused -and $script:queue.Count -eq 3) 'Invalid subscription folders must fail before queue changes'
  $script:checkpointReadOnly=$true
  $refused=$false;try { Add-SubscriptionUrls @('https://example.com/no-save') | Out-Null } catch {$refused=$true}
  Assert ($refused -and $script:queue.Count -eq 3) 'Read-only checkpoint must block durable subscription queue acceptance'
@@ -283,6 +292,7 @@ try {
  $script:SubtitleLangsBox=[pscustomobject]@{Text=''}; $script:PauseButton=[pscustomobject]@{Content='Pause'}
  $script:ArchiveCheck=[pscustomobject]@{IsChecked=$false}; $script:SponsorCheck=[pscustomobject]@{IsChecked=$false}
  $script:WatchClipboardCheck=[pscustomobject]@{IsChecked=$false}
+ $script:ShowVideoTitlesCheck=[pscustomobject]@{IsChecked=$false}
  $script:LogBox=[pscustomobject]@{}; $script:LogBox|Add-Member ScriptMethod Clear {}
  # Execute real persistence mapping with localized ComboBox choices. The saved
  # profile remains the stable English ID accepted by both application runtimes.

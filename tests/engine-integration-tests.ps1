@@ -50,10 +50,17 @@ try {
     }
     Set-Content $queue $parallelSources
     $parallelEvents=Join-Path $dir 'parallel.jsonl'
-    & pwsh -NoProfile -File (Join-Path $dir 'ytdl-manager-v8.ps1') -In $queue -Out $out -Threads 8 -RateLimit 100K -NoProgress -Retries 0 -EventFile $parallelEvents
+    $itemFolders=Join-Path $dir 'item-folders.json'
+    @{Version=1;Items=@(@{Url=$parallelSources[0];Folder='123'},@{Url=$parallelSources[1];Folder='Канал 456'})} |
+        ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $itemFolders -Encoding utf8
+    & pwsh -NoProfile -File (Join-Path $dir 'ytdl-manager-v8.ps1') -In $queue -Out $out -Threads 8 -RateLimit 100K -NoProgress -Retries 0 -EventFile $parallelEvents -ItemFoldersFile $itemFolders
     Assert ($LASTEXITCODE -eq 0) 'Eight-worker download failed'
     $parallelResults=@(Get-Content $parallelEvents | Where-Object {$_} | ConvertFrom-Json | Where-Object Kind -eq Result)
     Assert ($parallelResults.Count -eq 8 -and @($parallelResults | Where-Object { -not $_.Success }).Count -eq 0) 'Every scheduled URL must complete above the default ThreadJob throttle'
+    foreach($result in $parallelResults) {
+        $expectedRoot=if($result.Url -ceq $parallelSources[0]){Join-Path $out '123'}elseif($result.Url -ceq $parallelSources[1]){Join-Path $out 'Канал 456'}else{$out}
+        Assert ($result.OutputRoot -eq $expectedRoot -and [IO.Path]::GetDirectoryName($result.Path) -eq $expectedRoot -and (Test-Path -LiteralPath $result.Path)) 'A mixed queue must route each source into its own folder and keep ordinary URLs at the base'
+    }
     Assert (@(Get-Content $queue | Where-Object {$_}).Count -eq 0) 'Successful engine exit must leave no pending URLs'
     Import-Module (Join-Path $dir 'lib/VideoDownloader.DownloadHistory.psm1') -Force
     $history=Read-VdDownloadHistory -Path (Join-Path $env:LOCALAPPDATA 'VideoDownloader/successful-downloads.jsonl')
@@ -73,10 +80,16 @@ try {
     $cancelSignals=Join-Path $dir 'cancel-markers'
     [void][IO.Directory]::CreateDirectory($cancelSignals)
     $cancelOutput=Join-Path $dir 'cancel-outputs'
+    $cancelFolders=Join-Path $dir 'cancel-folders.json'
+    @{Version=1;Items=@(@{Url=$cancelUrl;Folder='Отменяемая'},@{Url=$keepUrl;Folder='Соседняя'})} |
+        ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $cancelFolders -Encoding utf8
+    $cancelRoot=Join-Path $cancelOutput 'Отменяемая';$keepRoot=Join-Path $cancelOutput 'Соседняя'
+    [void][IO.Directory]::CreateDirectory($cancelRoot)
+    $sentinel=Join-Path $cancelRoot 'existing.txt';[IO.File]::WriteAllText($sentinel,'KEEP EXISTING')
     $testEngine=Join-Path $dir 'ytdl-manager-v8.ps1'
-    $run=Start-ThreadJob -ArgumentList $testEngine,$cancelQueue,$cancelOutput,$cancelEvents,$cancelSignals -ScriptBlock {
-        param($engine,$queueFile,$outDir,$eventsFile,$signals)
-        & pwsh -NoProfile -File $engine -In $queueFile -Out $outDir -Threads 2 -NoProgress -Retries 0 -RateLimit 100K -EventFile $eventsFile -CancelDir $signals
+    $run=Start-ThreadJob -ArgumentList $testEngine,$cancelQueue,$cancelOutput,$cancelEvents,$cancelSignals,$cancelFolders -ScriptBlock {
+        param($engine,$queueFile,$outDir,$eventsFile,$signals,$foldersFile)
+        & pwsh -NoProfile -File $engine -In $queueFile -Out $outDir -Threads 2 -NoProgress -Retries 0 -RateLimit 100K -EventFile $eventsFile -CancelDir $signals -ItemFoldersFile $foldersFile
         if ($LASTEXITCODE -ne 0) { throw "Live cancellation engine exited with $LASTEXITCODE" }
     }
     try {
@@ -105,13 +118,15 @@ try {
         $other=@($cancelResults | Where-Object { $_.Url -ceq $keepUrl })[0]
         Assert ($target.Cancelled -eq $true -and -not $target.Success) 'Targeted URL must report cancellation, not failure/success'
         Assert ($other.Success -eq $true -and -not $other.Cancelled) 'Neighbouring URL must finish despite cancellation'
+        Assert ($target.OutputRoot -eq $cancelRoot -and $other.OutputRoot -eq $keepRoot -and [IO.Path]::GetDirectoryName($other.Path) -eq $keepRoot) 'Cancellation and successful Results must retain their separate subscription output roots'
         Assert (-not $target.Path -and @($target.OwnedPaths).Count -eq 0) 'Cancelled target must own no finished files'
         Assert (Test-Path -LiteralPath $other.Path) 'Uncancelled file must exist in output directory'
         Assert (@($other.OwnedPaths).Count -gt 0) 'Successful cancellable job must report owned output paths'
         $cancelStageDirs=@(Get-ChildItem -LiteralPath (Split-Path -Parent $cancelSignals) -Directory -Filter 'download-*')
         Assert ($cancelStageDirs.Count -eq 0) 'Cancelled and completed staged job directories must be removed'
-        [void](Remove-VdOwnedFiles -OutputRoot $cancelOutput -Paths @($other.OwnedPaths))
+        [void](Remove-VdOwnedFiles -OutputRoot $other.OutputRoot -Paths @($other.OwnedPaths))
         Assert (-not (Test-Path $other.Path)) 'Explicit remove after completion must delete only that URL files'
+        Assert ([IO.File]::ReadAllText($sentinel) -ceq 'KEEP EXISTING') 'Cancelling or removing one subscription must preserve existing files in sibling folders'
     } finally {
         if ($run.State -eq 'Running') { Stop-Job $run -ErrorAction SilentlyContinue }
         Remove-Job $run -Force -ErrorAction SilentlyContinue

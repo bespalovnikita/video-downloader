@@ -200,6 +200,9 @@ Reorder / drag/drop / download selected остаются заблокирова�
 - Первая успешная проверка устанавливает baseline без очереди либо помечает весь существующий набор для очереди (`DownloadExisting`, `InitialQueuePending`) по явному выбору пользователя. Последующие новые URL получают состояние New. Незавершённое добавление исходного набора сохраняй до MarkQueued/Skip.
 - Элементы подписки имеют состояния Baseline/New/Queued/Processed/AlreadyProcessed/Skipped. Реальный успешный результат движка или общая история успехов подтверждают обработку; обнаружение, добавление в очередь, baseline и Skip не являются успехом. Уведомление об уже обработанном URL из другой подписки показывай и подтверждай один раз, сохраняя DuplicateSubscriptionId/DuplicateNotified. Успех только из глобальной истории без известной другой подписки означает Processed без cross-subscription notice. SuccessAttributed сохраняет различие после перезапуска: true только для Processed с подтверждённым успехом ранее поставленного в очередь материала подписки; глобальный успех без такого источника оставляет false и не становится источником уведомления при будущих проверках.
 - Добавление из подписок возвращает реально добавленные URL и отправляет их только в обычную очередь следующего Start. Не вызывай live Add/ingress во время текущей сессии. Не помечай не добавленные или отклонённые ссылки как Queued.
+- Подписка имеет редактируемый ShortName. Пустое имя заполняй только при полном успешном scan из SuggestedName (канал/автор), иначе Title; после назначения не меняй его автоматически. Версию 1 без единственного нового поля ShortName читай с пустым значением, сохраняя строгую проверку остальных полей. Нормализация имени одинакова в C#/PowerShell: один компонент Windows-пути, замена запрещённых символов/control, схлопывание пробелов, обрезка крайних точек/пробелов, предел 80 UTF-16 без разрыва surrogate pair, префикс для device names.
+- Новые задания подписки сохраняют SubscriptionId и снимок SubscriptionName в session.json. Имя закрепляется при enqueue, базовый каталог — при Start: D:\Video\123, с Archive — D:\Video\yyyy-MM-dd\123. Переименование влияет только на будущие добавления; уже существующий URL очереди не переназначай. Старые checkpoint без полей означают обычное задание. Фиксируй фактический OutputRoot каждого задания для публикации/отмены/очистки; не подменяй его общим root сессии после успеха.
+- Резервный GUI передаёт папки движку через -ItemFoldersFile: версия 1, Items с точными Url и Folder, снимок на запуск. Проверяй целиком до DryRun/загрузки: до 16 МиБ/100 000 записей, без повторов URL, только одно безопасное непустое имя папки. Обычные live URL без записи манифеста используют общий каталог. Сохраняй отдельный staging каждого задания, проверки reparse ancestry и OwnedPaths для фактического каталога; summary/result files остаются на уровне сессии.
 - Храни записи атомарно под общим mutex `Local\VideoDownloader.Subscriptions`; Read возвращает отделённый snapshot. Строго проверяй формат версии 1. При повреждённом JSON не перезаписывай и не пересоздавай файл. Удаление подписки не удаляет media, очередь и историю.
 - Проверяй одинаковую семантику в обоих runtimes: первый baseline/очередь, повторное обнаружение, полноту и пределы scan, отказ/отмену, RSS fallback, exact URL, уведомление после реального успеха и однократное подтверждение, сохранность повреждённого JSON, очередь без live-add.
 
@@ -231,6 +234,8 @@ Reorder / drag/drop / download selected остаются заблокирова�
 - Цвета доступны в тёмной теме: completed=green, queued=grey, running=cyan, interrupted=amber, failed=red.
 
 ## WPF
+
+- ShowVideoTitlesCheck переключает подписи Queue/Downloads между Url и Title. По умолчанию и при неизвестном заголовке отображай URL; подсказки и действия всегда используют исходный точный URL. Сохраняй Settings.ShowVideoTitles и Queue.Title совместимо в C#/PowerShell. Получай названия через существующий preview worker/кеш и Title-события, обновляя все соответствующие строки, включая невыбранные. Смена режима не запускает сеть, загрузку и дополнительные workers.
 
 - основной UI framework — WPF/XAML;
 - WinForms используется точечно для tray и стандартных dialogs;
@@ -321,7 +326,9 @@ pwsh -File .\tests\tray-preview-tests.ps1
 pwsh -STA -File .\tests\windows-regression-tests.ps1
 pwsh -File .\tests\engine-integration-tests.ps1
 pwsh -File .\tests\subscription-tests.ps1
+pwsh -File .\tests\subscription-folder-tests.ps1
 pwsh -File .\tests\subscription-ui-tests.ps1
+pwsh -STA -File .\tests\title-display-tests.ps1
 pwsh -File .\tests\pornhub-channel-tests.ps1
 ~~~
 

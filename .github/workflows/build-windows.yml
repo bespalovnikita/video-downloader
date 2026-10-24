@@ -41,6 +41,10 @@ jobs:
         timeout-minutes: 4
         run: pwsh -NoProfile -File ./tests/subscription-tests.ps1
 
+      - name: Per-subscription output routing and safe manifest
+        shell: pwsh
+        run: pwsh -NoProfile -File ./tests/subscription-folder-tests.ps1
+
       - name: Pornhub channel manifests and real bundled collector
         shell: pwsh
         timeout-minutes: 2
@@ -50,6 +54,10 @@ jobs:
         shell: pwsh
         timeout-minutes: 3
         run: pwsh -NoProfile -STA -File ./tests/subscription-ui-tests.ps1
+
+      - name: URL and video title display modes
+        shell: pwsh
+        run: pwsh -NoProfile -STA -File ./tests/title-display-tests.ps1
 
       - name: Preview metadata and thumbnail deadlines
         shell: pwsh
