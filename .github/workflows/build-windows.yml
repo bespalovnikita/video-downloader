@@ -59,6 +59,11 @@ jobs:
         shell: pwsh
         run: pwsh -NoProfile -STA -File ./tests/title-display-tests.ps1
 
+      - name: Video titles from URL, file and subscription
+        shell: pwsh
+        timeout-minutes: 2
+        run: pwsh -NoProfile -STA -File ./tests/title-ingress-tests.ps1
+
       - name: Preview metadata and thumbnail deadlines
         shell: pwsh
         run: pwsh -NoProfile -File ./tests/preview-deadline-tests.ps1
