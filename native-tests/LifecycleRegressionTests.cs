@@ -9,8 +9,22 @@ using VideoDownloader.Native;
 internal static class LifecycleRegressionTests
 {
     private const string Prefix="https://lifecycle-regression.invalid/";
+    private static readonly byte[] PreviewPng=Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAACXBIWXMAAAABAAAAAQBPJcTWAAAADklEQVR4nGP4DwYMEAoAU7oL9ZisIGcAAAAASUVORK5CYII=");
+    private static readonly byte[] PreviewWebP=Convert.FromBase64String("UklGRiQAAABXRUJQVlA4IBgAAAAwAQCdASoCAAIAAgA0JaQAA3AA/vuUAAA=");
+    private static readonly byte[] PreviewAvif=Convert.FromBase64String("AAAAIGZ0eXBhdmlmAAAAAGF2aWZtaWYxbWlhZk1BMUIAAAD5bWV0YQAAAAAAAAAvaGRscgAAAAAAAAAAcGljdAAAAAAAAAAAAAAAAFBpY3R1cmVIYW5kbGVyAAAAAA5waXRtAAAAAAABAAAAHmlsb2MAAAAARAAAAQABAAAAAQAAASEAAAAWAAAAKGlpbmYAAAAAAAEAAAAaaW5mZQIAAAAAAQAAYXYwMUNvbG9yAAAAAGppcHJwAAAAS2lwY28AAAAUaXNwZQAAAAAAAAACAAAAAgAAABBwaXhpAAAAAAMICAgAAAAMYXYxQ4EADAAAAAATY29scm5jbHgAAgACAAIAAAAAF2lwbWEAAAAAAAAAAQABBAECgwQAAAAebWRhdAoFGAA2wCAyDRgAAABQAAAAALASmcg=");
     internal static bool TryRunFixture(string[] args)
     {
+        if(args.Contains("webp_pipe") && args.LastOrDefault()=="pipe:1")
+        {
+            byte[] input=File.ReadAllBytes(args[Array.IndexOf(args,"-i")+1]);
+            string mode=Encoding.ASCII.GetString(input);
+            string? pid=Environment.GetEnvironmentVariable("VD_PREVIEW_CONVERTER_PID");
+            if(pid!=null)File.WriteAllText(pid,Environment.ProcessId.ToString());
+            if(mode.EndsWith("hang",StringComparison.Ordinal))Thread.Sleep(Timeout.Infinite);
+            using var convertedOutput=Console.OpenStandardOutput();convertedOutput.Write(PreviewPng);
+            if(mode.EndsWith("large",StringComparison.Ordinal))convertedOutput.Write(new byte[2_000_001]);
+            return true;
+        }
         string? url=args.LastOrDefault();
         if (url?.StartsWith(Prefix,StringComparison.Ordinal)!=true) return false;
         Require(args.Contains("--ignore-config"),"Every managed yt-dlp call must ignore ambient configuration");
@@ -23,7 +37,8 @@ internal static class LifecycleRegressionTests
         {
             int index=Array.IndexOf(args,"--cookies");
             string thumbnail=index>=0 ? File.ReadAllText(args[index+1]) : "";
-            Console.WriteLine(JsonSerializer.Serialize(new { title="Preview fixture",thumbnail }));
+            if(url.EndsWith("preview-slow-metadata",StringComparison.Ordinal))Thread.Sleep(700);
+            Console.WriteLine(thumbnail.StartsWith('{')?thumbnail:JsonSerializer.Serialize(new { title="Preview fixture",thumbnail }));
             return true;
         }
         string output=args[Array.IndexOf(args,"-o")+1];
@@ -48,6 +63,7 @@ internal static class LifecycleRegressionTests
             Migration(Path.Combine(root,"migration"));
             Cleanup(Path.Combine(root,"cleanup"));
             await Preview(Path.Combine(root,"preview"));
+            await PreviewThumbnails(Path.Combine(root,"preview-thumbnails"));
             await Cancellation(Path.Combine(root,"cancellation"));
             await SubscriptionFolders(Path.Combine(root,"subscription-folders"));
             Console.WriteLine("PASS: history separators, profile transitions, migration, cleanup, preview deadlines and cancellation");
@@ -204,6 +220,138 @@ internal static class LifecycleRegressionTests
                 "A stalled image body must time out while preserving metadata and allowing the next preview");
         }
         finally {stop.Cancel();server.Stop();try{await serving;}catch(OperationCanceledException){} }
+    }
+    private static async Task PreviewThumbnails(string root)
+    {
+        var data=new AppPersistence(root);
+        using var stop=new CancellationTokenSource();
+        var listener=new TcpListener(IPAddress.Loopback,0);listener.Start();
+        string address="http://127.0.0.1:"+((IPEndPoint)listener.LocalEndpoint).Port;
+        var requested=new System.Collections.Concurrent.ConcurrentQueue<string>();
+        var responses=new List<Task>();
+        var server=Task.Run(async()=>
+        {
+            while(!stop.IsCancellationRequested)
+            {
+                var client=await listener.AcceptTcpClientAsync(stop.Token);
+                responses.Add(Task.Run(async()=>
+                {
+                    using(client)
+                    {
+                        var stream=client.GetStream();byte[] request=new byte[4096];
+                        int length=await stream.ReadAsync(request,stop.Token);
+                        string first=Encoding.ASCII.GetString(request,0,length).Split('\r')[0];
+                        string target=first.Split(' ')[1];requested.Enqueue(target);
+                        if(target.StartsWith("/stall",StringComparison.Ordinal))
+                        {
+                            await stream.WriteAsync(Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n"),stop.Token);
+                            await Task.Delay(Timeout.Infinite,stop.Token);return;
+                        }
+                        bool failed=target.StartsWith("/missing",StringComparison.Ordinal);
+                        byte[] bytes=target.StartsWith("/webp-hang",StringComparison.Ordinal)?"RIFF1234WEBPhang"u8.ToArray():
+                            target.StartsWith("/webp-large",StringComparison.Ordinal)?"RIFF1234WEBPlarge"u8.ToArray():
+                            target.StartsWith("/webp",StringComparison.Ordinal)?PreviewWebP:
+                            target.StartsWith("/avif",StringComparison.Ordinal)?PreviewAvif:PreviewPng;
+                        string header=$"HTTP/1.1 {(failed?"404 Not Found":"200 OK")}\r\nContent-Type: application/octet-stream\r\nContent-Length: {(failed?0:bytes.Length)}\r\nConnection: close\r\n\r\n";
+                        await stream.WriteAsync(Encoding.ASCII.GetBytes(header),stop.Token);
+                        if(!failed)await stream.WriteAsync(bytes,stop.Token);
+                    }
+                }));
+            }
+        });
+        string cookies=Path.Combine(root,"preview-json");
+        async Task<(PreviewData Data,string[] Logs)> Fetch(string suffix,object metadata,string? converter=null,TimeSpan? overall=null,TimeSpan? image=null)
+        {
+            File.WriteAllText(cookies,JsonSerializer.Serialize(metadata));
+            var ready=new TaskCompletionSource<PreviewData>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var logs=new System.Collections.Concurrent.ConcurrentQueue<string>();
+            using var service=new PreviewService(Executable(),data,()=>cookies,value=>ready.TrySetResult(value),logs.Enqueue,
+                overall??TimeSpan.FromSeconds(8),image??TimeSpan.FromSeconds(2),converter);
+            service.Request(Prefix+suffix);
+            var result=await ready.Task.WaitAsync(TimeSpan.FromSeconds(12));
+            Require(result.Title=="Thumbnail fixture" && result.Uploader=="Subscription author" && result.MaxHeight==1080,
+                "Thumbnail errors must preserve title, author and video format metadata");
+            return(result,logs.ToArray());
+        }
+        object Metadata(string thumbnail,object[]? thumbnails=null)=>new{title="Thumbnail fixture",uploader="Subscription author",thumbnail,
+            thumbnails=thumbnails??[],formats=new[]{new{vcodec="avc1",height=1080}}};
+        string? previousPid=Environment.GetEnvironmentVariable("VD_PREVIEW_CONVERTER_PID");
+        try
+        {
+            var extensionless=await Fetch("preview-extensionless",Metadata(address+"/image?format=png&signed=1"));
+            Require(Convert.FromBase64String(extensionless.Data.ThumbnailBase64).SequenceEqual(PreviewPng),
+                "An extensionless signed HTTP URL must load according to image bytes instead of its suffix");
+            var fallback=await Fetch("preview-fallback",Metadata(address+"/image-next",[
+                new{url=address+"/missing.png",width=100,height=100},new{url=address+"/image-next",width=1,height=1}]));
+            Require(fallback.Data.ThumbnailBase64.Length>0 && requested.Any(value=>value=="/missing.png") && requested.Any(value=>value=="/image-next"),
+                "A failed preferred image must fall back to another confirmed metadata URL");
+            var missing=await Fetch("preview-missing",Metadata(""));
+            Require(missing.Data.ThumbnailBase64.Length==0,"Missing cover must remain a successful text preview");
+            string unwritable=Path.Combine(data.PreviewDir,Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(Prefix+"preview-cache-unwritable"))).ToLowerInvariant()+".json");
+            Directory.CreateDirectory(unwritable);
+            var uncached=await Fetch("preview-cache-unwritable",Metadata(""));
+            Require(uncached.Data.Title=="Thumbnail fixture" && uncached.Logs.Any(value=>value.Contains("cache write failed")),
+                "A cache write failure must not prevent available metadata from reaching the UI");
+            var converted=await Fetch("preview-webp",Metadata(address+"/webp"),Executable());
+            Require(Convert.FromBase64String(converted.Data.ThumbnailBase64).SequenceEqual(PreviewPng),
+                "WebP must pass downloaded bytes through a bounded converter and return PNG");
+            string real=DependencyCenter.Executable(OperatingSystem.IsWindows()?"ffmpeg.exe":"ffmpeg");
+            if(File.Exists(real))
+            {
+                var actual=await Fetch("preview-webp-real",Metadata(address+"/webp"),real);
+                Require(Convert.FromBase64String(actual.Data.ThumbnailBase64).AsSpan().StartsWith(new byte[]{0x89,0x50,0x4e,0x47}),
+                    "Installed FFmpeg must convert a real tiny WebP into a real PNG");
+                var avif=await Fetch("preview-avif-real",Metadata(address+"/avif"),real);
+                Require(Convert.FromBase64String(avif.Data.ThumbnailBase64).AsSpan().StartsWith(new byte[]{0x89,0x50,0x4e,0x47}),
+                    "AVIF alternatives must also convert to the same WPF-compatible PNG representation");
+            }
+            var unavailable=await Fetch("preview-webp-unavailable",Metadata(address+"/webp"),Path.Combine(root,"no-ffmpeg"));
+            Require(unavailable.Data.ThumbnailBase64.Length==0 && unavailable.Logs.Any(value=>value.Contains("needs FFmpeg")),
+                "Without FFmpeg, unsupported cover must keep useful text metadata");
+            using(var refreshed=new PreviewService("unused",data,()=>"",_=>{},_=>{},ffmpegPath:Executable()))
+                Require(refreshed.Get(Prefix+"preview-webp-unavailable")==null,
+                    "A text-only disk cache must retry its missing converter after FFmpeg becomes available");
+            string installedConverter=Path.Combine(root,"installed-ffmpeg");
+            File.WriteAllText(cookies,JsonSerializer.Serialize(Metadata(address+"/webp")));
+            var installReady=new TaskCompletionSource<PreviewData>(TaskCreationOptions.RunContinuationsAsynchronously);
+            using(var waiting=new PreviewService(Executable(),data,()=>cookies,p=>installReady.TrySetResult(p),_=>{},ffmpegPath:installedConverter))
+            {
+                string waitingUrl=Prefix+"preview-webp-install";waiting.Request(waitingUrl);
+                await installReady.Task.WaitAsync(TimeSpan.FromSeconds(8));
+                Require(waiting.Get(waitingUrl)?.Title=="Thumbnail fixture","The same missing converter result must remain cacheable while FFmpeg is absent");
+                File.WriteAllText(installedConverter,"Installed after the request");
+                Require(waiting.Get(waitingUrl)==null,"An in-memory missing converter result must refresh after installing FFmpeg in the same app run");
+            }
+            var broken=await Fetch("preview-webp-broken-converter",Metadata(address+"/webp"),installedConverter);
+            Require(broken.Data.ThumbnailBase64.Length==0 && broken.Logs.Any(value=>value.Contains("could not start")),
+                "An installed but invalid FFmpeg executable must not erase valid text metadata");
+            string pid=Path.Combine(root,"converter.pid");Environment.SetEnvironmentVariable("VD_PREVIEW_CONVERTER_PID",pid);
+            var timeout=await Fetch("preview-webp-timeout",Metadata(address+"/webp-hang"),Executable(),image:TimeSpan.FromSeconds(1));
+            int converterPid=int.Parse(File.ReadAllText(pid));
+            Require(timeout.Data.ThumbnailBase64.Length==0 && !ProcessAlive(converterPid),
+                "A timed-out converter must terminate without dropping parsed metadata");
+            var large=await Fetch("preview-webp-large",Metadata(address+"/webp-large"),Executable());
+            Require(large.Data.ThumbnailBase64.Length==0 && large.Logs.Any(value=>value.Contains("2MB")),
+                "Converted output must obey the same 2MB image limit");
+            var total=await Fetch("preview-slow-metadata",Metadata(address+"/stall"),overall:TimeSpan.FromMilliseconds(2500),image:TimeSpan.FromSeconds(5));
+            Require(total.Data.ThumbnailBase64.Length==0 && total.Logs.Any(value=>value.Contains("Thumbnail timed out")),
+                "The overall deadline during image retrieval must preserve completed metadata");
+
+            string staleUrl=Prefix+"preview-legacy-thumbnail";
+            string file=Path.Combine(data.PreviewDir,Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(staleUrl))).ToLowerInvariant()+".json");
+            File.WriteAllText(file,JsonSerializer.Serialize(new{CacheVersion=1,Url=staleUrl,SavedAtUtc=DateTime.UtcNow,Title="Old",Uploader="",PlaylistTitle="",Extractor="",Codecs="",DynamicRange="",Duration=0,ThumbnailBase64="",ThumbnailError="no JPEG/PNG thumbnail was provided by yt-dlp"}));
+            using var reader=new PreviewService("unused",data,()=>"",_=>{},_=>{});
+            Require(reader.Get(staleUrl)==null && !File.Exists(file),"Only legacy suffix-rejected cache results must be retried after upgrade");
+            Console.WriteLine("PASS: thumbnail URL fallback, WebP conversion, deadlines and metadata preservation");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("VD_PREVIEW_CONVERTER_PID",previousPid);
+            stop.Cancel();listener.Stop();
+            try{await server;}catch(OperationCanceledException){}
+            try{await Task.WhenAll(responses);}catch(OperationCanceledException){}
+        }
+        static bool ProcessAlive(int pid){try{using var process=Process.GetProcessById(pid);return !process.HasExited;}catch(ArgumentException){return false;}}
     }
     private static async Task Cancellation(string root)
     {

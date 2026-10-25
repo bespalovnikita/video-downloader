@@ -317,10 +317,41 @@ internal static class NativeUiSelfTest
         }
         window.Close();
         stage("recovery: empty queue settings restored");
-        foreach(bool corrupt in new[]{false,true})
+        var subscriptions=new SubscriptionStore(Path.GetDirectoryName(data.SessionPath)!);
+        var source=subscriptions.Add("https://example.invalid/recovery-source",false);
+        const string missingTitleUrl="https://example.invalid/recovery-title";
+        const string urlTitleUrl="https://example.invalid/recovery-url-title";
+        const string realTitleUrl="https://example.invalid/recovery-real-title";
+        const string upperTitleUrl="https://example.invalid/recovery-Video";
+        const string lowerTitleUrl="https://example.invalid/recovery-video";
+        subscriptions.ApplyScan(source.Id,new SubscriptionScan("Канал",
+            [new DiscoveredMedia(missingTitleUrl,"Название из подписки"),new DiscoveredMedia(urlTitleUrl,"Название вместо URL"),
+             new DiscoveredMedia(realTitleUrl,"Обнаруженное название"),new DiscoveredMedia(upperTitleUrl,"Другое видео")],"",""),[]);
+        byte[] validSubscriptions=File.ReadAllBytes(subscriptions.Path);
+        foreach(string url in new[]{missingTitleUrl,urlTitleUrl,realTitleUrl,lowerTitleUrl})
         {
+            string cacheFile=Path.Combine(data.PreviewDir,
+                Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(url))).ToLowerInvariant()+".json");
+            AppPersistence.AtomicWrite(cacheFile,System.Text.Json.JsonSerializer.Serialize(new {
+                CacheVersion=1,PreviewFetchVersion=2,SavedAtUtc=DateTime.UtcNow,Url=url,Success=true,
+                Title="",Uploader="",PlaylistTitle="",Duration=0,Extractor="",MaxHeight=0,MaxFps=0,
+                Codecs="",DynamicRange="",ThumbnailBase64=""
+            },AppPersistence.Json));
+        }
+        foreach(string recoveryCase in new[]{"valid","corrupt subscriptions","missing subscriptions","corrupt checkpoint"})
+        {
+            bool corrupt=recoveryCase=="corrupt checkpoint";
+            if(recoveryCase=="missing subscriptions")File.Delete(subscriptions.Path);
+            else if(recoveryCase=="corrupt subscriptions")File.WriteAllText(subscriptions.Path,"{invalid subscriptions");
+            else File.WriteAllBytes(subscriptions.Path,validSubscriptions);
+            var savedRows=new[]{
+                new DownloadItem {Url=missingTitleUrl,SubscriptionId=source.Id,SubscriptionName="Legacy folder"},
+                new DownloadItem {Url=urlTitleUrl,Title=urlTitleUrl,SubscriptionId=source.Id,SubscriptionName="Legacy folder"},
+                new DownloadItem {Url=realTitleUrl,Title="Уже известное название",SubscriptionId=source.Id,SubscriptionName="Legacy folder"},
+                new DownloadItem {Url=lowerTitleUrl,SubscriptionId=source.Id,SubscriptionName="Legacy folder"}
+            };
             if(corrupt) File.WriteAllText(data.SessionPath,"{invalid checkpoint");
-            else data.Save([new DownloadItem {Url="https://example.com/restore-kept"}],options);
+            else data.Save(savedRows,options);
             string before=File.ReadAllText(data.SessionPath);
             string title=corrupt?"Session recovery error":"Restore previous session";
             int button=corrupt?1:6;
@@ -356,8 +387,23 @@ internal static class NativeUiSelfTest
                 if(failure!=null) throw failure;
                 if(corrupt && File.ReadAllText(data.SessionPath)!=before)
                     throw new InvalidOperationException("Invalid checkpoint must remain unchanged after closing the error dialog.");
-                if(!corrupt && ((DataGrid)window.FindName("QueueGrid")!).Items.Count!=1)
-                    throw new InvalidOperationException("Confirmed recovery must retain the saved queue.");
+                if(!corrupt)
+                {
+                    var rows=((DataGrid)window.FindName("QueueGrid")!).Items.Cast<DownloadItem>().ToArray();
+                    if(rows.Length!=savedRows.Length)
+                        throw new InvalidOperationException("Confirmed recovery must retain the saved queue.");
+                    string[] expectedTitles=recoveryCase=="valid"
+                        ? ["Название из подписки","Название вместо URL","Уже известное название",""]
+                        : ["",urlTitleUrl,"Уже известное название",""];
+                    if(!rows.Select(row=>row.Title).SequenceEqual(expectedTitles) ||
+                        rows.Any(row=>row.SubscriptionId!=source.Id || row.SubscriptionName!="Legacy folder"))
+                        throw new InvalidOperationException("Restored title repair must use exact subscription/URL pairs and preserve real titles and routing.");
+                    if((bool)typeof(NativeWindow).GetField("_checkpointReadOnly",methods)!.GetValue(controller)!)
+                        throw new InvalidOperationException("An unavailable optional subscription store must not block queue recovery.");
+                    if(recoveryCase=="missing subscriptions" && File.Exists(subscriptions.Path) ||
+                        recoveryCase=="corrupt subscriptions" && File.ReadAllText(subscriptions.Path)!="{invalid subscriptions")
+                        throw new InvalidOperationException("Restoring titles must not recreate or overwrite the optional subscription store.");
+                }
             }
             finally {watchdog.Cancel();observer.Stop();controller?.Dispose();window.Close();}
         }

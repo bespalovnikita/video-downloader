@@ -6,7 +6,7 @@ Import-Module (Join-Path $root 'lib/VideoDownloader.Session.psm1')
 Import-Module (Join-Path $root 'lib/VideoDownloader.Profiles.psm1')
 function Assert([bool]$Value,[string]$Message){if(-not $Value){throw $Message}}
 $ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'ytdl-manager-gui.ps1'),[ref]$null,[ref]$null)
-foreach($name in @('Set-VideoTitle','Update-VideoTitleDisplay','Set-Download','Find-Download','Find-QueueItem',
+foreach($name in @('Set-VideoTitle','Get-PreviewDisplayTitle','Update-VideoTitleDisplay','Set-Download','Find-Download','Find-QueueItem',
     'Queue-PreviewPrefetch','Start-NextPreviewPrefetch','Complete-PreviewPrefetch','Get-SessionSettings','Restore-SessionSettings','Get-SessionSnapshot')) {
     $node=$ast.Find({param($n)$n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name},$true)
     Assert ($null -ne $node) "Missing production function $name"
@@ -50,6 +50,9 @@ try {
     Assert ($script:downloads[0].Title -ceq 'Кэшированное видео') 'Downloads must inherit the known queue title before engine metadata arrives'
     Set-VideoTitle -Url $upper -Title 'Название движка'
     Assert ($script:queue[0].Title -ceq 'Название движка' -and $script:downloads[0].Title -ceq 'Название движка' -and $script:queue[1].Title -ceq '') 'A title event must update both lists using ordinal URL identity'
+    Set-VideoTitle -Url $upper -Title $upper
+    Assert ($script:queue[0].Title -ceq 'Название движка' -and (Get-PreviewDisplayTitle -Url $upper -Title '') -ceq 'Название движка' -and
+        (Get-PreviewDisplayTitle -Url $upper -Title $upper) -ceq 'Название движка') 'An empty or URL-only preview result must preserve a known discovery/engine title in the panel and queue'
 
     # Receive an actual completed ThreadJob through the production completion
     # handler. The row is not selected, and no second fetch is queued.
@@ -80,6 +83,20 @@ try {
     $legacy=@{Queue=@(@{Url=$upper;Status='Queued'});Settings=@{}}
     Restore-SessionSettings $legacy.Settings
     Assert (-not $ShowVideoTitlesCheck.IsChecked -and @(Get-VdRestoredQueue -Session $legacy)[0].Title -ceq '') 'Released checkpoints without a preference or title must keep URL mode and fallback'
+
+    Import-Module (Join-Path $root 'lib/VideoDownloader.PreviewCache.psm1')
+    $script:previewCacheDir=Join-Path $temp 'preview-cache';$script:previewCacheTtlHours=72
+    $script:previewMemoryCache=@{};$ytDlp=Join-Path $temp 'yt-dlp.exe'
+    $oldImageFailure=[pscustomobject]@{Title='Известное название';ThumbnailBase64='';ThumbnailError='no JPEG/PNG thumbnail was provided by yt-dlp'}
+    $oldRecord=Write-VdPreviewCache -CacheDir $script:previewCacheDir -Url $upper -Preview $oldImageFailure
+    $script:previewMemoryCache[$upper]=$oldRecord
+    $realCache=$ast.Find({param($n)$n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-CachedPreview'},$true)
+    & {
+        param($definition,$url)
+        . ([scriptblock]::Create($definition))
+        Assert ($null -eq (Get-CachedPreview $url)) 'A legacy suffix-only image failure must not survive in GUI memory after the disk cache becomes retryable'
+    } $realCache.Extent.Text $upper
+    Assert (-not $script:previewMemoryCache.ContainsKey($upper) -and $null -eq $script:previewPrefetchJob) 'Expiring only the failed thumbnail cache must not launch a second worker'
 
     if($IsWindows) {
         Add-Type -AssemblyName PresentationFramework

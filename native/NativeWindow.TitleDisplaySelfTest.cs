@@ -73,6 +73,12 @@ public sealed partial class NativeWindow
             Require(T("PreviewTitle").Text==panelBefore,"A background title must leave the selected preview panel alone");
             OnPreviewReady(Metadata(known.Url,"   "));
             Require(known.Title=="Название из фоновых метаданных","An empty metadata title must preserve an already known title");
+            _previewUrl=known.Url;
+            OnPreviewReady(Metadata(known.Url,known.Url));
+            Require(known.Title=="Название из фоновых метаданных" && T("PreviewTitle").Text==known.Title,
+                "An empty or URL-only full preview must keep the discovered video name in the panel");
+            OnPreviewReady(Metadata(known.Url,""));
+            Require(T("PreviewTitle").Text==known.Title,"A missing image and empty title must not erase a known subscription title");
 
             var cache=Metadata(cached.Url,"Название из кеша");
             string file=Path.Combine(_storage.PreviewDir,

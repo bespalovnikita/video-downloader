@@ -16,28 +16,35 @@ public sealed class PreviewService : IDisposable
     private readonly List<string> _pending=new();
     private readonly HashSet<string> _known=new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string,PreviewData> _cache=new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string,string> _thumbnailErrors=new(StringComparer.Ordinal);
     private readonly SemaphoreSlim _signal=new(0);
     private readonly CancellationTokenSource _stop=new();
     private readonly object _gate=new();
     private readonly HttpClient _http=new(){Timeout=Timeout.InfiniteTimeSpan};
     private readonly TimeSpan _requestTimeout;
     private readonly TimeSpan _thumbnailTimeout;
+    private readonly string? _ffmpegOverride;
     private readonly Task _worker;
     public PreviewService(string exe,AppPersistence data,Func<string> cookiePath,Action<PreviewData> ready,Action<string> log,
-        TimeSpan? requestTimeout=null,TimeSpan? thumbnailTimeout=null)
+        TimeSpan? requestTimeout=null,TimeSpan? thumbnailTimeout=null,string? ffmpegPath=null)
     {
         _requestTimeout=requestTimeout??TimeSpan.FromSeconds(30);
         _thumbnailTimeout=thumbnailTimeout??TimeSpan.FromSeconds(12);
         if (_requestTimeout<=TimeSpan.Zero || _thumbnailTimeout<=TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(requestTimeout));
         _exe=exe;_cacheDir=data.PreviewDir;_cookiePath=cookiePath;_ready=ready;_log=log;
+        _ffmpegOverride=ffmpegPath;
         Directory.CreateDirectory(_cacheDir);
         _worker=Task.Run(Worker);
     }
     private string CacheFile(string url) => Path.Combine(_cacheDir,Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(url))).ToLowerInvariant()+".json");
     public PreviewData? Get(string url)
     {
-        if (_cache.TryGetValue(url,out var value) && DateTime.UtcNow-value.SavedAtUtc<TimeSpan.FromHours(72)) return value;
+        if (_cache.TryGetValue(url,out var value) && DateTime.UtcNow-value.SavedAtUtc<TimeSpan.FromHours(72))
+        {
+            if(value.ThumbnailBase64.Length>0 || !_thumbnailErrors.TryGetValue(url,out string? previousError) || !ConverterNowAvailable(previousError)) return value;
+            _cache.TryRemove(url,out _);_thumbnailErrors.TryRemove(url,out _);
+        }
         string path=CacheFile(url);
         if (!File.Exists(path)) return null;
         try
@@ -46,6 +53,11 @@ public sealed class PreviewService : IDisposable
             var root=doc.RootElement;
             if (root.GetProperty("CacheVersion").GetInt32()!=1 ||
                 root.GetProperty("Url").GetString()!=url) throw new InvalidDataException("Invalid preview cache identity");
+            if (Str(root,"ThumbnailBase64").Length==0 &&
+                ((Str(root,"ThumbnailError")=="no JPEG/PNG thumbnail was provided by yt-dlp" &&
+                (!root.TryGetProperty("PreviewFetchVersion",out var fetchVersion) || !fetchVersion.TryGetInt32(out int version) || version<2)) ||
+                ConverterNowAvailable(Str(root,"ThumbnailError"))))
+                throw new InvalidDataException("Retry a legacy thumbnail result rejected only by its URL suffix.");
             var entry=JsonSerializer.Deserialize<PreviewData>(root.GetRawText(),AppPersistence.Json);
             if (entry!=null)
                 entry=entry with { SavedAtUtc=entry.SavedAtUtc.Kind==DateTimeKind.Unspecified
@@ -55,7 +67,7 @@ public sealed class PreviewService : IDisposable
                 Extractor:not null, Codecs:not null, DynamicRange:not null, ThumbnailBase64:not null } &&
                 entry.Duration>=0 && entry.Duration<TimeSpan.MaxValue.TotalSeconds &&
                 DateTime.UtcNow-entry.SavedAtUtc<TimeSpan.FromHours(72)) {
-                _cache[url]=entry;return entry;
+                _cache[url]=entry;_thumbnailErrors[url]=Str(root,"ThumbnailError");return entry;
             }
         }
         catch(Exception) { }
@@ -95,16 +107,21 @@ public sealed class PreviewService : IDisposable
             {
                 using var deadline=CancellationTokenSource.CreateLinkedTokenSource(_stop.Token);
                 deadline.CancelAfter(_requestTimeout);
-                var data=await FetchAsync(url,deadline.Token).ConfigureAwait(false);
+                var fetched=await FetchAsync(url,deadline.Token).ConfigureAwait(false);
+                var data=fetched.Data;
                 if (data!=null)
                 {
+                    if (_stop.IsCancellationRequested) break;
                     _cache[url]=data;
+                    _thumbnailErrors[url]=fetched.ThumbnailError;
                     var contents=JsonSerializer.Serialize(new {
-                        CacheVersion=1, data.SavedAtUtc, data.Url, Success=true,
+                        CacheVersion=1, PreviewFetchVersion=2, data.SavedAtUtc, data.Url, Success=true, fetched.ThumbnailError,
                         data.Title,data.PlaylistTitle,data.Uploader,data.Duration,
                         data.ThumbnailBase64,data.Extractor,data.MaxHeight,data.MaxFps,data.Codecs,data.DynamicRange
                     },AppPersistence.Json);
-                    AppPersistence.AtomicWrite(CacheFile(url),contents);
+                    try { AppPersistence.AtomicWrite(CacheFile(url),contents); }
+                    catch(Exception error) when(error is IOException or UnauthorizedAccessException)
+                    { _log("Preview cache write failed: "+error.Message); }
                     _ready(data);
                 }
             }
@@ -123,7 +140,7 @@ public sealed class PreviewService : IDisposable
         if (json.TryGetProperty(name,out var v) && v.ValueKind==JsonValueKind.Number && v.TryGetDouble(out var n)) return n;
         return 0;
     }
-    private async Task<PreviewData?> FetchAsync(string url,CancellationToken token)
+    private async Task<(PreviewData Data,string ThumbnailError)> FetchAsync(string url,CancellationToken token)
     {
         var psi=new ProcessStartInfo(_exe) {
             UseShellExecute=false,CreateNoWindow=true,
@@ -162,43 +179,146 @@ public sealed class PreviewService : IDisposable
             string dr=Str(fmt,"dynamic_range");
             if(dr!="" && dr!="SDR" && dr!="None") ranges.Add(dr);
         }
-        string thumb=Str(j,"thumbnail");
-        if(thumb=="" && j.TryGetProperty("thumbnails",out var thumbs) && thumbs.ValueKind==JsonValueKind.Array)
-        {
-            foreach(var t in thumbs.EnumerateArray())
-            {
-                var candidate=Str(t,"url");
-                if(candidate.StartsWith("https://",StringComparison.OrdinalIgnoreCase))thumb=candidate;
-            }
-        }
-        string base64="";
-        if (Uri.TryCreate(thumb,UriKind.Absolute,out var uri) && (uri.Scheme=="https"||uri.Scheme=="http"))
+        var candidates=new List<(string Url,double Area)>();
+        if(j.TryGetProperty("thumbnails",out var thumbs) && thumbs.ValueKind==JsonValueKind.Array)
+            foreach(var thumbnail in thumbs.EnumerateArray())
+                if(thumbnail.ValueKind==JsonValueKind.Object)
+                    candidates.Add((Str(thumbnail,"url"),Number(thumbnail,"width")*Number(thumbnail,"height")));
+        candidates.Add((Str(j,"thumbnail"),0));
+        var seen=new HashSet<string>(StringComparer.Ordinal);
+        var images=candidates.Where(candidate=>
+                Uri.TryCreate(candidate.Url,UriKind.Absolute,out var address) && address.Scheme is "https" or "http" &&
+                !string.IsNullOrWhiteSpace(address.Host) && seen.Add(candidate.Url))
+            .OrderByDescending(candidate=>
+                Path.GetExtension(new Uri(candidate.Url).AbsolutePath).ToLowerInvariant() is ".jpg" or ".jpeg" or ".png")
+            .ThenByDescending(candidate=>candidate.Area).Take(16).ToArray();
+        string base64="",thumbnailError="";
+        if (images.Length>0)
         {
             using var imageDeadline=CancellationTokenSource.CreateLinkedTokenSource(token);
             imageDeadline.CancelAfter(_thumbnailTimeout);
+            long received=0;
+            foreach(var image in images)
+            {
+                try
+                {
+                    var imageToken=imageDeadline.Token;
+                    imageToken.ThrowIfCancellationRequested();
+                    using var request=new HttpRequestMessage(HttpMethod.Get,image.Url);
+                    request.Headers.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) VideoDownloader/1.0");
+                    request.Headers.TryAddWithoutValidation("Accept","image/jpeg,image/png,image/gif,image/bmp,image/tiff,*/*;q=0.1");
+                    if(Uri.TryCreate(url,UriKind.Absolute,out var referer) && referer.Scheme is "http" or "https")
+                        request.Headers.Referrer=new UriBuilder(referer){UserName="",Password="",Path="/",Query="",Fragment=""}.Uri;
+                    using var response=await _http.SendAsync(request,HttpCompletionOption.ResponseHeadersRead,imageToken).ConfigureAwait(false);
+                    response.EnsureSuccessStatusCode();
+                    if (response.Content.Headers.ContentLength>2_000_000-received) throw new IOException("Thumbnail exceeds 2MB");
+                    using var stream=await response.Content.ReadAsStreamAsync(imageToken).ConfigureAwait(false);
+                    using var buffer=new MemoryStream();
+                    var chunk=new byte[16384];
+                    int read;
+                    while((read=await stream.ReadAsync(chunk.AsMemory(0,(int)Math.Min(chunk.Length,2_000_001-received)),imageToken).ConfigureAwait(false))>0)
+                    {
+                        received+=read;
+                        if(received>2_000_000)throw new IOException("Thumbnail exceeds 2MB");
+                        buffer.Write(chunk,0,read);
+                    }
+                    byte[] bytes=buffer.ToArray();
+                    if(WebPImage(bytes) || AvifImage(bytes)) bytes=await ConvertWebPAsync(bytes,imageToken).ConfigureAwait(false);
+                    if(!SupportedImage(bytes)) throw new IOException("Thumbnail response is not a supported JPEG, PNG, GIF, BMP or TIFF image.");
+                    base64=Convert.ToBase64String(bytes);
+                    thumbnailError="";
+                    break;
+                }
+                catch(HttpRequestException e){thumbnailError=e.Message;_log("Thumbnail request failed: "+e.Message);}
+                catch(IOException e){thumbnailError=e.Message;_log("Thumbnail unavailable: "+e.Message);}
+                catch(OperationCanceledException) when (!_stop.IsCancellationRequested)
+                {
+                    // Once metadata is parsed, an image or total request timeout
+                    // must not throw away the title, author or format summary.
+                    _log("Thumbnail timed out for "+url);
+                    thumbnailError="Thumbnail timed out";
+                    break;
+                }
+                if(received>=2_000_000) break;
+            }
+        }
+        return (new PreviewData(url,Str(j,"title"),Str(j,"uploader"),playlist,Number(j,"duration"),
+            Str(j,"extractor"),maxHeight,maxFps,string.Join(", ",codecs),string.Join(", ",ranges),base64,DateTime.UtcNow),thumbnailError);
+    }
+    private static bool SupportedImage(ReadOnlySpan<byte> bytes) =>
+        bytes.StartsWith(new byte[]{0xff,0xd8,0xff}) ||
+        bytes.StartsWith(new byte[]{0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a}) ||
+        bytes.StartsWith("GIF87a"u8) || bytes.StartsWith("GIF89a"u8) || bytes.StartsWith("BM"u8) ||
+        bytes.StartsWith(new byte[]{0x49,0x49,0x2a,0x00}) || bytes.StartsWith(new byte[]{0x4d,0x4d,0x00,0x2a}) ||
+        bytes.StartsWith(new byte[]{0x00,0x00,0x01,0x00});
+    private static bool WebPImage(ReadOnlySpan<byte> bytes) =>
+        bytes.Length>=12 && bytes[..4].SequenceEqual("RIFF"u8) && bytes.Slice(8,4).SequenceEqual("WEBP"u8);
+    private static bool AvifImage(ReadOnlySpan<byte> bytes) =>
+        bytes.Length>=12 && bytes.Slice(4,4).SequenceEqual("ftyp"u8) &&
+        (bytes.Slice(8,4).SequenceEqual("avif"u8) || bytes.Slice(8,4).SequenceEqual("avis"u8));
+
+    private string FfmpegExecutable => _ffmpegOverride??DependencyCenter.Executable(OperatingSystem.IsWindows()?"ffmpeg.exe":"ffmpeg");
+    private bool ConverterNowAvailable(string error) =>
+        (error=="WebP/AVIF thumbnail needs FFmpeg; text metadata is available." ||
+         error=="WebP/AVIF thumbnail requires FFmpeg; text metadata is still available.") && File.Exists(FfmpegExecutable);
+
+    private async Task<byte[]> ConvertWebPAsync(byte[] bytes,CancellationToken token)
+    {
+        string ffmpeg=FfmpegExecutable;
+        if(!File.Exists(ffmpeg)) throw new IOException("WebP/AVIF thumbnail needs FFmpeg; text metadata is available.");
+        token.ThrowIfCancellationRequested();
+        string scratch=Path.Combine(Path.GetTempPath(),"vd-preview-image-"+Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(scratch);
+        try
+        {
+            string input=Path.Combine(scratch,AvifImage(bytes)?"thumbnail.avif":"thumbnail.webp");
+            await File.WriteAllBytesAsync(input,bytes,token).ConfigureAwait(false);
+            var start=new ProcessStartInfo(ffmpeg){UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true};
+            foreach(string argument in new[]{"-hide_banner","-v","error","-nostdin","-max_alloc","67108864","-max_pixels","16777216","-protocol_whitelist","file,pipe","-f",AvifImage(bytes)?"mov":"webp_pipe","-i",input,
+                "-frames:v","1","-threads","1","-vf","scale=720:720:force_original_aspect_ratio=decrease","-f","image2pipe","-c:v","png","pipe:1"})
+                start.ArgumentList.Add(argument);
+            using var child=ManagedChildProcess.Start(start);
+            var process=child.Process;
+            using var stop=CancellationTokenSource.CreateLinkedTokenSource(token);
+            using var kill=stop.Token.Register(()=>{try{if(!process.HasExited)process.Kill(true);}catch(InvalidOperationException){}catch(System.ComponentModel.Win32Exception){} });
+            async Task<byte[]> ReadOutput()
+            {
+                using var buffer=new MemoryStream();
+                byte[] chunk=new byte[16384];int count;
+                try
+                {
+                    while((count=await child.StandardOutput.BaseStream.ReadAsync(chunk,stop.Token).ConfigureAwait(false))>0)
+                    {
+                        if(buffer.Length+count>2_000_000)throw new IOException("Converted thumbnail exceeds 2MB");
+                        buffer.Write(chunk,0,count);
+                    }
+                    return buffer.ToArray();
+                }
+                catch{stop.Cancel();throw;}
+            }
+            async Task DrainErrors()
+            {
+                byte[] chunk=new byte[4096];
+                while(await child.StandardError.BaseStream.ReadAsync(chunk,stop.Token).ConfigureAwait(false)>0) { }
+            }
+            var output=ReadOutput();var errors=DrainErrors();
             try
             {
-                var imageToken=imageDeadline.Token;
-                using var response=await _http.GetAsync(uri,HttpCompletionOption.ResponseHeadersRead,imageToken).ConfigureAwait(false);
-                response.EnsureSuccessStatusCode();
-                if (response.Content.Headers.ContentLength is > 2_000_000) throw new IOException("Thumbnail exceeds 2MB");
-                using var stream=await response.Content.ReadAsStreamAsync(imageToken).ConfigureAwait(false);
-                using var buffer=new MemoryStream();
-                var chunk=new byte[16384];
-                int read;
-                while((read=await stream.ReadAsync(chunk,imageToken).ConfigureAwait(false))>0)
-                {
-                    if(buffer.Length+read>2_000_000)throw new IOException("Thumbnail exceeds 2MB");
-                    buffer.Write(chunk,0,read);
-                }
-                base64=Convert.ToBase64String(buffer.ToArray());
+                await Task.WhenAll(output,errors,process.WaitForExitAsync(stop.Token)).ConfigureAwait(false);
+                token.ThrowIfCancellationRequested();
+                if(process.ExitCode!=0 || !SupportedImage(output.Result))throw new IOException("FFmpeg could not convert the WebP thumbnail; text metadata is available.");
+                return output.Result;
             }
-            catch(HttpRequestException e){_log("Thumbnail request failed: "+e.Message);}
-            catch(IOException e){_log("Thumbnail unavailable: "+e.Message);}
-            catch(OperationCanceledException) when (!token.IsCancellationRequested){_log("Thumbnail timed out for "+url);}
+            finally
+            {
+                try{if(!process.HasExited)process.Kill(true);}catch(InvalidOperationException){}catch(System.ComponentModel.Win32Exception){}
+                await process.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
+                try{await Task.WhenAll(output,errors).ConfigureAwait(false);}catch { }
+            }
         }
-        return new PreviewData(url,Str(j,"title"),Str(j,"uploader"),playlist,Number(j,"duration"),
-            Str(j,"extractor"),maxHeight,maxFps,string.Join(", ",codecs),string.Join(", ",ranges),base64,DateTime.UtcNow);
+        catch(System.ComponentModel.Win32Exception error)
+        { throw new IOException("FFmpeg could not start for thumbnail conversion; text metadata is available.",error); }
+        finally { try{Directory.Delete(scratch,true);}catch(IOException){}catch(UnauthorizedAccessException){} }
     }
     public void Dispose()
     {
