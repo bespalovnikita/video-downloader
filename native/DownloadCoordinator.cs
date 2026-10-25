@@ -18,6 +18,7 @@ public sealed class DownloadCoordinator : IAsyncDisposable
     private readonly ConcurrentDictionary<string,Process> _processes=new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string,byte> _queued=new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string,DownloadItem> _items=new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string,string> _outputRoots=new(StringComparer.Ordinal);
     // Tombstones outlive a worker's CTS registration and prevent cancellation races.
     private readonly ConcurrentDictionary<string,byte> _cancelled=new(StringComparer.Ordinal);
     private readonly CancellationTokenSource _stop=new();
@@ -120,14 +121,20 @@ public sealed class DownloadCoordinator : IAsyncDisposable
     }
     public bool Add(DownloadItem item)
     {
+        if (!IsRunning || _stop.IsCancellationRequested) return false;
+        string outputRoot=SubscriptionNames.ResolveOutputDirectory(_options.OutputDirectory,item.SubscriptionName);
+        OwnedFiles.NoReparseAncestors(Path.Combine(outputRoot,"__check__"));
         if (!IsRunning || _stop.IsCancellationRequested || !_queued.TryAdd(item.Url,0)) return false;
         Interlocked.Increment(ref _outstanding);
         item.AttemptFinished=false;
+        item.OutputRoot=outputRoot;
+        _outputRoots[item.Url]=outputRoot;
         _items[item.Url]=item;
         if (!_queue.Writer.TryWrite(item))
         {
             _queued.TryRemove(item.Url,out _);
             _items.TryRemove(item.Url,out _);
+            _outputRoots.TryRemove(item.Url,out _);
             item.AttemptFinished=true;
             Interlocked.Decrement(ref _outstanding);
             return false;
@@ -245,7 +252,7 @@ public sealed class DownloadCoordinator : IAsyncDisposable
                     {
                         item.Path=result.Path;item.OwnedPaths=result.OwnedPaths.ToList();
                         item.CleanupPaths=[];
-                        item.OutputRoot=_options.OutputDirectory;
+                        item.OutputRoot=_outputRoots[item.Url];
                         item.Progress=100;item.Speed="";item.ETA="";
                         item.Status="Completed";item.State="Done";
                         try { _data.AppendSuccess(item.Url); }
@@ -376,9 +383,11 @@ public sealed class DownloadCoordinator : IAsyncDisposable
 
     private async Task<DownloadResult> DownloadAsync(DownloadItem item,CancellationToken ct)
     {
+        string outputRoot=_outputRoots[item.Url];
+        OwnedFiles.NoReparseAncestors(Path.Combine(outputRoot,"__check__"));
         string stage=Path.Combine(_stageRoot,Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(stage);
-        item.RunDir=_stageRoot;item.StageDir=stage;item.OutputRoot=_options.OutputDirectory;
+        item.RunDir=_stageRoot;item.StageDir=stage;item.OutputRoot=outputRoot;
         _changed(item);
         string mediaPath="";
         var streamed=new Dictionary<string,long>(StringComparer.Ordinal);
@@ -452,7 +461,7 @@ public sealed class DownloadCoordinator : IAsyncDisposable
                                 "yt-dlp did not produce the requested container: "+_options.Container,transferred);
                         // Publication updates the row's manifest after each move,
                         // so even a failed rollback retains exact cleanup paths.
-                        var published=OwnedFiles.Publish(stage,_options.OutputDirectory,mediaPath,
+                        var published=OwnedFiles.Publish(stage,outputRoot,mediaPath,
                             paths=>item.CleanupPaths=paths.ToList(),renameCollisions:true);
                         if (ct.IsCancellationRequested || _cancelled.ContainsKey(item.Url))
                         {

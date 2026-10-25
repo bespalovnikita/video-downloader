@@ -9,7 +9,7 @@ public sealed class SubscriptionStore
     private const long MaxFileBytes = 128L * 1024 * 1024;
     private static readonly JsonSerializerOptions Json = new() { WriteIndented = false };
     private static readonly string[] DefinitionProperties =
-    ["Id", "Url", "Title", "FeedUrl", "DownloadExisting", "Initialized", "Paused",
+    ["Id", "Url", "Title", "ShortName", "FeedUrl", "DownloadExisting", "Initialized", "Paused",
      "LastAttemptUtc", "LastSuccessUtc", "LastError", "LastWarning"];
     private static readonly string[] ItemProperties =
     ["SubscriptionId", "Url", "Title", "State", "DiscoveredAtUtc", "InitialQueuePending", "SuccessAttributed",
@@ -24,10 +24,12 @@ public sealed class SubscriptionStore
 
     public SubscriptionSnapshot Read() => Locked(ReadCore);
 
-    public SubscriptionDefinition Add(string url, bool downloadExisting, string feedUrl = "")
+    public SubscriptionDefinition Add(string url, bool downloadExisting, string feedUrl = "", string shortName = "")
     {
         RequireUrl(url);
         RequireOptionalUrl(feedUrl);
+        ArgumentNullException.ThrowIfNull(shortName);
+        if (shortName.Length > 0) ArgumentException.ThrowIfNullOrWhiteSpace(shortName);
         return Update(snapshot =>
         {
             if (snapshot.Subscriptions.Any(s => s.Url.Equals(url, StringComparison.Ordinal)))
@@ -35,7 +37,8 @@ public sealed class SubscriptionStore
             var source = new SubscriptionDefinition
             {
                 Id = Guid.NewGuid().ToString("N"), Url = url, Title = url,
-                FeedUrl = feedUrl, DownloadExisting = downloadExisting
+                FeedUrl = feedUrl, DownloadExisting = downloadExisting,
+                ShortName = shortName.Length > 0 ? SubscriptionNames.Normalize(shortName) : ""
             };
             snapshot.Subscriptions.Add(source);
             return source;
@@ -93,6 +96,12 @@ public sealed class SubscriptionStore
             }
             ReconcileSuccess(snapshot, reconcile);
             source.Title = string.IsNullOrWhiteSpace(scan.Title) ? source.Url : scan.Title;
+            if (source.ShortName.Length == 0)
+            {
+                string suggestion = string.IsNullOrWhiteSpace(scan.SuggestedName) ? scan.Title : scan.SuggestedName;
+                if (Uri.TryCreate(suggestion, UriKind.Absolute, out var suggestedUrl) && suggestedUrl.Scheme is "http" or "https") suggestion = "";
+                source.ShortName = SubscriptionNames.Normalize(suggestion, "Подписка " + source.Id[..Math.Min(8, source.Id.Length)]);
+            }
             if (scan.FeedUrl.Length > 0) source.FeedUrl = scan.FeedUrl;
             source.Initialized = true;
             source.LastAttemptUtc = now;
@@ -120,6 +129,13 @@ public sealed class SubscriptionStore
         Find(snapshot, id).Paused = paused;
         return 0;
     });
+
+    public void SetShortName(string id, string name)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        string normalized = SubscriptionNames.Normalize(name);
+        Update(snapshot => { Find(snapshot, id).ShortName = normalized; return 0; });
+    }
 
     public void Remove(string id) => Update(snapshot =>
     {
@@ -315,7 +331,7 @@ public sealed class SubscriptionStore
                 var items = root.GetProperty("Items");
                 if (sources.ValueKind != JsonValueKind.Array || items.ValueKind != JsonValueKind.Array)
                     throw new InvalidDataException("Ожидались списки подписок и материалов.");
-                foreach (var source in sources.EnumerateArray()) RequireProperties(source, DefinitionProperties);
+                foreach (var source in sources.EnumerateArray()) RequireProperties(source, DefinitionProperties, ["ShortName"]);
                 foreach (var item in items.EnumerateArray()) RequireProperties(item, ItemProperties);
                 var snapshot = root.Deserialize<SubscriptionSnapshot>(Json)
                     ?? throw new InvalidDataException("Пустой файл подписок.");
@@ -329,14 +345,15 @@ public sealed class SubscriptionStore
         }
     }
 
-    private static void RequireProperties(JsonElement element, string[] required)
+    private static void RequireProperties(JsonElement element, string[] required, string[]? optional = null)
     {
         if (element.ValueKind != JsonValueKind.Object) throw new InvalidDataException("Ожидался JSON-объект.");
         var names = new HashSet<string>(StringComparer.Ordinal);
         foreach (var property in element.EnumerateObject())
             if (!required.Contains(property.Name, StringComparer.Ordinal) || !names.Add(property.Name))
                 throw new InvalidDataException("Неизвестное или повторяющееся поле подписок.");
-        if (names.Count != required.Length) throw new InvalidDataException("Отсутствует обязательное поле подписок.");
+        if (required.Any(name => !names.Contains(name) && !(optional?.Contains(name, StringComparer.Ordinal) ?? false)))
+            throw new InvalidDataException("Отсутствует обязательное поле подписок.");
     }
 
     private static void Validate(SubscriptionSnapshot snapshot)
@@ -348,7 +365,9 @@ public sealed class SubscriptionStore
         foreach (var source in snapshot.Subscriptions)
         {
             if (source is null || string.IsNullOrWhiteSpace(source.Id) || !ids.Add(source.Id) ||
-                source.Title is null || source.LastError is null || source.LastWarning is null)
+                source.Title is null || source.ShortName is null ||
+                (source.ShortName.Length > 0 && !SubscriptionNames.IsValid(source.ShortName)) ||
+                source.LastError is null || source.LastWarning is null)
                 throw new InvalidDataException("Повторяющаяся или повреждённая подписка.");
             RequireUrl(source.Url);
             RequireOptionalUrl(source.FeedUrl);

@@ -68,7 +68,7 @@ try {
     # Exercise actual GUI functions without starting the GUI or touching user state.
     $tokens=$null; $errors=$null
     $ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'ytdl-manager-gui.ps1'),[ref]$tokens,[ref]$errors)
-    foreach ($name in @('Format-Bytes','Find-Download','Set-Download','Find-QueueItem','Set-QueueState','Set-QueueFields','Set-RowProgress','Update-TransferBytes','Tail-Events','Reindex-Queue','Register-SubscriptionSuccess')) {
+    foreach ($name in @('Format-Bytes','Find-Download','Set-Download','Find-QueueItem','Set-QueueState','Set-QueueFields','Set-RowProgress','Update-TransferBytes','Tail-Events','Reindex-Queue','Register-SubscriptionSuccess','Set-VideoTitle')) {
         $node=$ast.Find({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name},$true)
         . ([scriptblock]::Create($node.Extent.Text))
     }

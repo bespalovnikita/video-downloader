@@ -7,6 +7,7 @@ $ErrorActionPreference='Stop'
 Import-Module (Join-Path $PSScriptRoot 'VideoDownloader.Subscriptions.psm1')
 Import-Module (Join-Path $PSScriptRoot 'VideoDownloader.DownloadHistory.psm1')
 Import-Module (Join-Path $PSScriptRoot 'VideoDownloader.PornHub.psm1')
+Import-Module (Join-Path $PSScriptRoot 'VideoDownloader.SubscriptionNames.psm1')
 $script:SubscriptionWindows=[Collections.Generic.Dictionary[string,object]]::new([StringComparer]::Ordinal)
 $script:ClosingSubscriptionWindows=[Collections.Generic.List[object]]::new()
 
@@ -21,7 +22,7 @@ function Get-VdSubscriptionUiRows($Snapshot,[string]$SelectedId='') {
         $source=$_
         $last=if ($source.LastSuccessUtc) { ([DateTimeOffset]$source.LastSuccessUtc).LocalDateTime.ToString('g') } else { 'Ещё не проверялась' }
         $state=if ($source.Paused) { 'Приостановлена' } elseif ($source.LastError) { 'Ошибка проверки' } elseif ($source.Initialized) { 'Готова' } else { 'Нужна первая проверка' }
-        [pscustomobject]@{Id=[string]$source.Id;Title=[string]$source.Title;Url=[string]$source.Url;Paused=[bool]$source.Paused;
+        [pscustomobject]@{Id=[string]$source.Id;Title=[string]$source.Title;ShortName=[string]$source.ShortName;Url=[string]$source.Url;Paused=[bool]$source.Paused;
             StatusLabel=$state;LastSuccessLabel=$last;Message=(@($source.LastError,$source.LastWarning) | Where-Object {$_}) -join ' | '}
     })
     $labels=@{New='Новый';Queued='В очереди';Processed='Обработан';AlreadyProcessed='Обработан в другой подписке';Skipped='Пропущен'}
@@ -46,13 +47,26 @@ function Invoke-VdSubscriptionUiQueue($Context,[AllowEmptyCollection()][object[]
     if ($urls.Count -eq 0) { return @{Accepted=0;Remaining=0} }
     # The owner callback only enqueues for a future manual Start. Its return is
     # authoritative, including an URL already present in the ordinary queue.
-    $returned=@(& $Context.QueueUrls ([string[]]@($urls)))
     $accepted=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
-    foreach ($url in $returned) {
-        if ($url -is [string] -and $urls.Contains($url)) { [void]$accepted.Add($url) }
-    }
     foreach ($group in @($eligible | Group-Object SubscriptionId)) {
-        $selected=[string[]]@($group.Group | Where-Object {$accepted.Contains([string]$_.Url)} | ForEach-Object {[string]$_.Url})
+        $source=@($snapshot.Subscriptions | Where-Object {$_.Id -ceq $group.Name} | Select-Object -First 1)
+        if ($source.Count -eq 0) { continue }
+        # Pass a detached source with a safe fallback for released v1 records
+        # that have not yet completed a scan with automatic name detection.
+        $ownerSource=[pscustomobject]($source[0].Clone())
+        if (-not $ownerSource.ShortName) {
+            $suggestion=if (Test-VdSubscriptionUrl ([string]$ownerSource.Title)) {''} else {[string]$ownerSource.Title}
+            $fallback='Подписка '+$ownerSource.Id.Substring(0,[Math]::Min(8,$ownerSource.Id.Length))
+            $ownerSource.ShortName=ConvertTo-VdSubscriptionName -Name $suggestion -Fallback $fallback
+        }
+        $groupUrls=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+        foreach ($item in $group.Group) { [void]$groupUrls.Add([string]$item.Url) }
+        $groupAccepted=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+        $returned=@(& $Context.QueueUrls ([string[]]@($groupUrls)) $ownerSource)
+        foreach ($url in $returned) {
+            if ($url -is [string] -and $groupUrls.Contains($url)) { [void]$groupAccepted.Add($url);[void]$accepted.Add($url) }
+        }
+        $selected=[string[]]@($group.Group | Where-Object {$groupAccepted.Contains([string]$_.Url)} | ForEach-Object {[string]$_.Url})
         if ($selected.Count -gt 0) { $null=Set-VdSubscriptionItemsQueued -Directory $Context.Directory -Id $group.Name -Urls $selected }
     }
     return @{Accepted=$accepted.Count;Remaining=$urls.Count-$accepted.Count}
@@ -85,6 +99,27 @@ function Update-VdSubscriptionUiButtons($Context) {
     $Context.Controls.QueueSubscriptionItemsButton.IsEnabled=@($selected | Where-Object {$_.State -in @('New','Skipped','Queued')}).Count -gt 0
     $Context.Controls.SkipSubscriptionItemsButton.IsEnabled=@($selected | Where-Object {$_.State -eq 'New'}).Count -gt 0
     $Context.Controls.OpenSubscriptionItemButton.IsEnabled=($selected.Count -gt 0)
+    $Context.Controls.SubscriptionNameBox.IsEnabled=($null -ne $source)
+    $Context.Controls.SaveSubscriptionNameButton.IsEnabled=($null -ne $source -and -not [string]::IsNullOrWhiteSpace($Context.Controls.SubscriptionNameBox.Text))
+}
+
+function Update-VdSubscriptionUiName($Context,$Source) {
+    $id=if ($Source) {[string]$Source.Id} else {''}
+    $name=if ($Source) {[string]$Source.ShortName} else {''}
+    # Rebinding the grids or observing a download must not erase a typed name.
+    if ($Context.NameEditorId -cne $id -or $Context.NameEditorSavedValue -cne $name) {
+        $Context.Controls.SubscriptionNameBox.Text=$name
+        $Context.NameEditorId=$id
+        $Context.NameEditorSavedValue=$name
+    }
+}
+
+function Save-VdSubscriptionUiName($Context) {
+    $selected=$Context.Controls.SubscriptionGrid.SelectedItem
+    if (-not $selected) { return }
+    $null=Set-VdSubscriptionShortName -Directory $Context.Directory -Id $selected.Id -Name ([string]$Context.Controls.SubscriptionNameBox.Text)
+    Update-VdSubscriptionUi $Context -SelectId $selected.Id
+    $Context.Controls.SubscriptionStatusText.Text='Краткое имя сохранено. Новые задания будут сохраняться в эту подпапку; уже добавленные задания сохранят прежнюю папку.'
 }
 
 function Update-VdSubscriptionUi($Context,[switch]$Reconcile,[string]$SelectId='') {
@@ -103,6 +138,7 @@ function Update-VdSubscriptionUi($Context,[switch]$Reconcile,[string]$SelectId='
         $choice=@($rows.Subscriptions | Where-Object {$_.Id -ceq $selected} | Select-Object -First 1)
         if ($choice.Count -eq 0 -and $rows.Subscriptions.Count -gt 0) { $choice=@($rows.Subscriptions[0]) }
         $Context.Controls.SubscriptionGrid.SelectedItem=if ($choice.Count -gt 0) {$choice[0]} else {$null}
+        Update-VdSubscriptionUiName $Context $Context.Controls.SubscriptionGrid.SelectedItem
         $selected=if ($choice.Count -gt 0) {[string]$choice[0].Id} else {''}
         $rows=Get-VdSubscriptionUiRows $snapshot $selected
         $Context.Controls.SubscriptionInboxGrid.ItemsSource=@($rows.Inbox)
@@ -281,7 +317,7 @@ function Show-VdSubscriptionsWindow {
     } finally {if($reader){$reader.Dispose()}}
     $window.Owner=$Owner
     $controls=@{}
-    foreach($name in @('SubscriptionUrlBox','SubscriptionFeedBox','DownloadExistingCheck','AddSubscriptionButton','SubscriptionGrid',
+    foreach($name in @('SubscriptionUrlBox','SubscriptionFeedBox','NewSubscriptionNameBox','SubscriptionNameBox','SaveSubscriptionNameButton','DownloadExistingCheck','AddSubscriptionButton','SubscriptionGrid',
         'CheckSubscriptionButton','CheckAllSubscriptionsButton','CancelSubscriptionCheckButton','PauseSubscriptionButton',
         'RemoveSubscriptionButton','SubscriptionInboxTitle','SubscriptionInboxGrid','QueueSubscriptionItemsButton',
         'SkipSubscriptionItemsButton','OpenSubscriptionItemButton','SubscriptionStatusText')) {
@@ -291,7 +327,7 @@ function Show-VdSubscriptionsWindow {
     $context=@{Key=$key;Owner=$Owner;Window=$window;Controls=$controls;Directory=[IO.Path]::GetFullPath($DataDirectory);
         StoreModule=(Join-Path $PSScriptRoot 'VideoDownloader.Subscriptions.psm1');YtDlpPath=$YtDlpPath;
         CookiePathScript=$CookiePathScript;QueueUrls=$QueueUrls;Snapshot=$null;Closed=$false;Updating=$false;Notifying=$false;
-        LastError='';Pending=[Collections.Generic.List[string]]::new();Job=$null;Cancellation=$null;ActiveId='';OwnerClosedHandler=$null;
+        LastError='';NameEditorId='';NameEditorSavedValue='';Pending=[Collections.Generic.List[string]]::new();Job=$null;Cancellation=$null;ActiveId='';OwnerClosedHandler=$null;
         Timer=[Windows.Threading.DispatcherTimer]::new()}
     $context.Timer.Interval=[TimeSpan]::FromMilliseconds(200)
     $context.Timer.Add_Tick((New-VdSubscriptionUiHandler $context {param($c) Complete-VdSubscriptionUiCheck $c} -AllowClosed))
@@ -300,11 +336,13 @@ function Show-VdSubscriptionsWindow {
     $Owner.Add_Closed($context.OwnerClosedHandler)
     $controls.AddSubscriptionButton.Add_Click((New-VdSubscriptionUiHandler $context {param($c)
         $null=Get-VdSubscriptionUiHistory $c.Directory
-        $source=Add-VdSubscription -Directory $c.Directory -Url $c.Controls.SubscriptionUrlBox.Text.Trim() -FeedUrl $c.Controls.SubscriptionFeedBox.Text.Trim() -DownloadExisting ([bool]$c.Controls.DownloadExistingCheck.IsChecked)
-        $c.Controls.SubscriptionUrlBox.Text='';$c.Controls.SubscriptionFeedBox.Text=''
+        $source=Add-VdSubscription -Directory $c.Directory -Url $c.Controls.SubscriptionUrlBox.Text.Trim() -FeedUrl $c.Controls.SubscriptionFeedBox.Text.Trim() -ShortName $c.Controls.NewSubscriptionNameBox.Text.Trim() -DownloadExisting ([bool]$c.Controls.DownloadExistingCheck.IsChecked)
+        $c.Controls.SubscriptionUrlBox.Text='';$c.Controls.SubscriptionFeedBox.Text='';$c.Controls.NewSubscriptionNameBox.Text=''
         Update-VdSubscriptionUi $c -SelectId $source.Id
         Add-VdSubscriptionUiChecks $c @([string]$source.Id)
     }))
+    $controls.SaveSubscriptionNameButton.Add_Click((New-VdSubscriptionUiHandler $context {param($c) Save-VdSubscriptionUiName $c}))
+    $controls.SubscriptionNameBox.Add_TextChanged((New-VdSubscriptionUiHandler $context {param($c) Update-VdSubscriptionUiButtons $c}))
     $controls.CheckSubscriptionButton.Add_Click((New-VdSubscriptionUiHandler $context {param($c)
         if($c.Controls.SubscriptionGrid.SelectedItem){Add-VdSubscriptionUiChecks $c @([string]$c.Controls.SubscriptionGrid.SelectedItem.Id)}
     }))

@@ -59,7 +59,8 @@ function ConvertFrom-VdPornHubScan {
         $items.Add(@{Url=$entry.url;Title=$title})
     }
     if (@($counts | Where-Object {$_ -ne 0}).Count) { throw 'Количество материалов на страницах Pornhub не совпадает.' }
-    return @{Title=$(if($root.title -is [string] -and $root.title){$root.title}else{$SourceUrl});Items=@($items.ToArray());FeedUrl='';Warning=''}
+    $suggestedName=@('channel','uploader','title' | ForEach-Object {$root[$_]} | Where-Object {$_ -is [string] -and -not [string]::IsNullOrWhiteSpace($_)} | Select-Object -First 1)
+    return @{Title=$(if($root.title -is [string] -and $root.title){$root.title}else{$SourceUrl});Items=@($items.ToArray());FeedUrl='';Warning='';SuggestedName=$(if($suggestedName.Count){[string]$suggestedName[0]}else{''})}
 }
 
 Export-ModuleMember -Function Get-VdPornHubListingUrl,Get-VdPornHubCollectorDirectory,ConvertFrom-VdPornHubScan

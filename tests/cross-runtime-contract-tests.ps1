@@ -1,7 +1,7 @@
 #requires -Version 7.4
 $ErrorActionPreference='Stop'
 $root=Split-Path -Parent $PSScriptRoot
-foreach ($module in @('Session','DownloadHistory','Cancellation','Profiles','Subscriptions')) {
+foreach ($module in @('Session','DownloadHistory','Cancellation','Profiles','Subscriptions','SubscriptionNames')) {
     Import-Module (Join-Path $root "lib/VideoDownloader.$module.psm1") -Force
 }
 function Assert([bool]$Value,[string]$Message) {if(-not $Value){throw $Message}}
@@ -22,8 +22,11 @@ namespace System.Windows {
  public class Dispatcher { public bool CheckAccess()=>true; public object BeginInvoke(Action action){action();return new();} }
 }
 '@ | Set-Content -LiteralPath $platform
-    $sources=@('Models','Persistence','ProfileCatalog','OwnedFiles','DownloadCleanup','SubscriptionModels','SubscriptionStore') | ForEach-Object {Join-Path $root "native/$_.cs"}
+    $sources=@('Models','Persistence','ProfileCatalog','OwnedFiles','DownloadCleanup','SubscriptionNames','SubscriptionModels','SubscriptionStore') | ForEach-Object {Join-Path $root "native/$_.cs"}
     Add-Type -Path (@($platform)+$sources) -CompilerOptions '/nullable:enable'
+    foreach($name in @('123','Канал: новый / архив','CON.txt','..','  Видео  канала.  ',('а'*79+'😀'),'LPT¹','video?')) {
+        Assert ((ConvertTo-VdSubscriptionName -Name $name) -ceq [VideoDownloader.Native.SubscriptionNames]::Normalize($name)) 'Both runtimes must derive identical Windows-safe short folder names'
+    }
     $native=[VideoDownloader.Native.AppPersistence]::new((Join-Path $temp 'profile'))
     $seed='{"Version":1,"Url":"https://example.com/старый"}'
     [IO.File]::WriteAllText($native.HistoryPath,$seed,[Text.UTF8Encoding]::new($false))
@@ -39,14 +42,18 @@ namespace System.Windows {
     $session=@{Queue=@(
         @{Url='https://example.com/cleanup';Status='Interrupted';PendingRemoval=$true;AttemptFinished=$true;
           CleanupError='Locked file';CleanupPaths=@($owned);StageDir=$stage;RunDir=$run;OutputRoot=$output},
-        @{Url='https://example.com/readded';Status='Queued';DeferredToNextStart=$true}
-    );Settings=@{Output=(Join-Path $temp 'different-output')};Engine=$null}
+        @{Url='https://example.com/readded';Status='Queued';DeferredToNextStart=$true;SubscriptionId='source-123';SubscriptionName='123';Title='Название до скачивания'}
+    );Settings=@{Output=(Join-Path $temp 'different-output');ShowVideoTitles=$true};Engine=$null}
     Write-VdSessionCheckpoint -Path $native.SessionPath -Session $session
     $loaded=$native.Restore();$native.Save($loaded.Queue,$loaded.Settings)
     $legacy=Read-VdSessionCheckpoint -Path $native.SessionPath
     $rows=@(Get-VdRestoredQueue -Session $legacy)
     Assert ($rows[0].PendingRemoval -and $rows[0].CleanupError -and $rows[0].StageDir -eq $stage -and $rows[0].CleanupPaths[0] -eq $owned -and $rows[0].RunDir -eq $run -and $rows[0].OutputRoot -eq $output) 'PowerShell -> C# -> PowerShell must preserve every cleanup field'
     Assert ($rows[1].DeferredToNextStart -and @(Get-VdResumeUrls -Queue $rows).Count -eq 1) 'Only the deferred new attempt may resume'
+    Assert ($rows[1].SubscriptionId -ceq 'source-123' -and $rows[1].SubscriptionName -ceq '123' -and $loaded.Queue[1].SubscriptionName -ceq '123') 'PS -> native -> PS checkpoint must retain subscription identity and folder snapshots'
+    Assert ($loaded.Settings.ShowVideoTitles -and $legacy.Settings.ShowVideoTitles -eq $true -and
+        $loaded.Queue[1].Title -ceq 'Название до скачивания' -and $rows[1].Title -ceq 'Название до скачивания') 'Title display preference and prefetched titles must survive PS -> native -> PS without changing URLs'
+    Assert ($rows[0].Title -ceq '' -and -not ([VideoDownloader.Native.DownloadOptions]::new()).ShowVideoTitles) 'Legacy unknown titles and missing display preference must default to URL mode'
     Remove-VdStagingDirectory -StageDir $rows[0].StageDir -RunDir $rows[0].RunDir
     Assert (-not [IO.Directory]::Exists($stage)) 'PowerShell must clean C# staging names after migration'
     $legacyStage=Join-Path $run ('download-1-'+[guid]::NewGuid().ToString('N'))
@@ -87,6 +94,11 @@ namespace System.Windows {
     } -SuccessfulUrls @() | Out-Null
     $subscriptionStore=[VideoDownloader.Native.SubscriptionStore]::new($subscriptionDir)
     Assert ($subscriptionStore.Read().Items[0].State -eq 'Baseline') 'Native must preserve a PowerShell initial baseline'
+    Assert ($subscriptionStore.Read().Subscriptions[0].ShortName -ceq 'Первый источник') 'Native must preserve the PowerShell auto-generated subscription short name'
+    $subscriptionStore.SetShortName($sourceA.Id,'123')
+    Assert ((Read-VdSubscriptions -Directory $subscriptionDir).Subscriptions[0].ShortName -ceq '123') 'Native rename must be visible in PowerShell'
+    $null=Set-VdSubscriptionShortName -Directory $subscriptionDir -Id $sourceA.Id -Name 'Канал: архив'
+    Assert ($subscriptionStore.Read().Subscriptions[0].ShortName -ceq 'Канал_ архив') 'PowerShell rename must preserve the same sanitized folder in native'
     $sourceB=$subscriptionStore.Add('https://example.org/playlist?list=other',$true,'')
     $scanItems=[Collections.Generic.List[VideoDownloader.Native.DiscoveredMedia]]::new()
     $scanItems.Add([VideoDownloader.Native.DiscoveredMedia]::new($mediaUrl,'Материал'))

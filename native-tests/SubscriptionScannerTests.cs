@@ -136,6 +136,15 @@ internal static class SubscriptionScannerTests
                 var youtube = SubscriptionScanner.ParseMetadata(metadata, "https://www.youtube.com/@offline");
                 Require(youtube.FeedUrl == "https://www.youtube.com/feeds/videos.xml?channel_id=" + channel,
                     "YouTube collection metadata can discover its optional Atom feed");
+                var named = SubscriptionScanner.ParseMetadata(JsonSerializer.Serialize(new {
+                    title = "Длинный плейлист", channel = "Канал 123", uploader = "Автор", entries = new[] { Entry(MediaA, "Media") }
+                }), Prefix + "generic");
+                Require(named.Title == "Длинный плейлист" && named.SuggestedName == "Канал 123",
+                    "Folder suggestion must prefer the channel while retaining the full collection title");
+                var uploader = SubscriptionScanner.ParseMetadata(JsonSerializer.Serialize(new {
+                    title = "Плейлист", uploader = "Автор", entries = new[] { Entry(MediaA, "Media") }
+                }), Prefix + "generic");
+                Require(uploader.SuggestedName == "Автор", "Uploader name must be the next folder suggestion before the collection title");
                 Require(SubscriptionScanner.ParseMetadata(metadata, Prefix + "generic").Items.Count == 1,
                     "Automatic YouTube feed support must not restrict generic yt-dlp collections");
                 const string videoId = "AbCdEf012_-";
