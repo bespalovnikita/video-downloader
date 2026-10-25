@@ -168,9 +168,19 @@ try {
     # Execute the actual GUI restore functions: a round-trip of the storage
     # module alone cannot detect an early return before applying settings.
     Import-Module (Join-Path $root 'lib/VideoDownloader.Profiles.psm1') -Force
-    foreach ($name in @('Restore-PreviousSession','Restore-SessionSettings')) {
+    Add-Type @'
+namespace VdSessionTitle {
+ public enum MessageBoxButton { OK, YesNo }
+ public enum MessageBoxImage { Warning, Question }
+ public enum MessageBoxResult { Yes, No }
+ public static class MessageBox {
+  public static MessageBoxResult Show(params object[] args) { return MessageBoxResult.Yes; }
+ }
+}
+'@
+    foreach ($name in @('Restore-PreviousSession','Restore-SessionSettings','Restore-SubscriptionQueueTitles')) {
         $node=$guiAst.Find({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name},$true)
-        . ([scriptblock]::Create($node.Extent.Text))
+        . ([scriptblock]::Create($node.Extent.Text.Replace('[System.Windows.MessageBox','[VdSessionTitle.MessageBox')))
     }
     function Import-CompletedUrlsToHistory {}
     $script:sessionPath=$path
@@ -193,6 +203,65 @@ try {
             $ThreadsBox.Text -eq '7' -and $AudioOnlyCheck.IsChecked -and $ProfileCombo.SelectedItem -eq 'Музыка MP3') "GUI settings must restore with a $case queue"
         Assert-Vd (-not $script:restoringSession) 'Applying saved settings must release the save guard'
     }
+
+    # Repair PR34 checkpoints whose subscription titles were discarded at queue
+    # import. Use the actual restore controller and actual strict store reader.
+    Import-Module (Join-Path $root 'lib/VideoDownloader.Subscriptions.psm1')
+    $script:subscriptionsDirectory=Join-Path $dir 'separate-subscriptions-profile'
+    $source=Add-VdSubscription -Directory $script:subscriptionsDirectory -Url 'https://example.com/recovery-source' -DownloadExisting $true
+    $otherSource=Add-VdSubscription -Directory $script:subscriptionsDirectory -Url 'https://example.com/other-recovery-source'
+    $upper='https://example.com/recovery/Video';$lower='https://example.com/recovery/video'
+    $real='https://example.com/recovery/real';$fallback='https://example.com/recovery/fallback'
+    $wrongSource='https://example.com/recovery/wrong-source';$ordinary='https://example.com/recovery/ordinary';$raw='https://example.com/recovery/raw'
+    $scan=@{Title='Названия';FeedUrl='';Warning='';Items=@(
+        @{Url=$upper;Title='Известное название'},@{Url=$real;Title='Другая версия названия'},
+        @{Url=$fallback;Title='Название вместо ссылки'},@{Url=$wrongSource;Title='Другой источник'},
+        @{Url=$ordinary;Title='Не переносить в обычную очередь'},@{Url=$raw;Title=$raw})}
+    $null=Apply-VdSubscriptionScan -Directory $script:subscriptionsDirectory -Id $source.Id -Scan $scan
+    $storePath=Join-Path $script:subscriptionsDirectory 'subscriptions.json'
+    $originalStore=[IO.File]::ReadAllText($storePath)
+    $oldQueue=@(
+        @{Url=$upper;Status='Queued';SubscriptionId=$source.Id;SubscriptionName='123'},
+        @{Url=$lower;Status='Queued';SubscriptionId=$source.Id;SubscriptionName='123'},
+        @{Url=$real;Title='Уже известное название';Status='Queued';SubscriptionId=$source.Id;SubscriptionName='123'},
+        @{Url=$fallback;Title=$fallback;Status='Queued';SubscriptionId=$source.Id;SubscriptionName='123'},
+        @{Url=$wrongSource;Status='Queued';SubscriptionId=$otherSource.Id;SubscriptionName='456'},
+        @{Url=$ordinary;Status='Queued'},@{Url=$raw;Status='Queued';SubscriptionId=$source.Id;SubscriptionName='123'})
+    $script:subscriptionReadCount=0;$script:subscriptionReadModule=Get-Module VideoDownloader.Subscriptions
+    function Read-VdSubscriptions([string]$Directory) {
+        $script:subscriptionReadCount++
+        & $script:subscriptionReadModule {param($profileDirectory) Read-VdSubscriptions -Directory $profileDirectory} $Directory
+    }
+    $script:titleRecoveryLogs=[Collections.Generic.List[string]]::new()
+    function Log-Line([string]$Text) {$script:titleRecoveryLogs.Add($Text)}
+    function Initialize-RecoveredEngine($Engine) {$script:recoveredEngine=$Engine}
+    function Sync-RecoveredEngine {return $true}
+    $script:titlesBeforeRestorePreview=[Collections.Generic.Dictionary[string,string]]::new([StringComparer]::Ordinal)
+    function Queue-PreviewPrefetch([string]$Url) {$script:titlesBeforeRestorePreview[$Url]=[string](Find-QueueItem $Url).Title}
+    $script:failedUrls=[Collections.Generic.List[string]]::new()
+    $script:queue.Clear()
+    Write-VdSessionCheckpoint -Path $path -Session @{Queue=$oldQueue;Settings=@{};Engine=$null}
+    Restore-PreviousSession
+    Assert-Vd ($script:subscriptionReadCount -eq 1 -and (Find-QueueItem $upper).Title -ceq 'Известное название' -and $script:titlesBeforeRestorePreview[$upper] -ceq 'Известное название') 'Restore must load the subscription store once and seed known titles before preview starts'
+    Assert-Vd ((Find-QueueItem $lower).Title -ceq '' -and (Find-QueueItem $wrongSource).Title -ceq '' -and (Find-QueueItem $ordinary).Title -ceq '' -and (Find-QueueItem $raw).Title -ceq '') 'Recovery must match the exact subscription ID and URL and ignore ordinary rows or URL-only titles'
+    Assert-Vd ((Find-QueueItem $real).Title -ceq 'Уже известное название' -and (Find-QueueItem $fallback).Title -ceq 'Название вместо ссылки' -and (Find-QueueItem $upper).SubscriptionName -ceq '123') 'Recovery must preserve real titles and routing while enriching an exact URL placeholder'
+    Assert-Vd ([IO.File]::ReadAllText($storePath) -ceq $originalStore -and -not $script:restoringSession) 'Reading known titles must not rewrite the subscriptions store or retain the save guard'
+    Write-VdSessionCheckpoint -Path $path -Session (Get-SessionSnapshot)
+    Assert-Vd (@(Get-VdRestoredQueue -Session (Read-VdSessionCheckpoint -Path $path))[0].Title -ceq 'Известное название') 'Recovered title must survive the next real GUI checkpoint mapping'
+
+    [IO.File]::WriteAllText($storePath,'{broken subscriptions')
+    $script:queue.Clear();$script:subscriptionReadCount=0
+    Write-VdSessionCheckpoint -Path $path -Session @{Queue=$oldQueue;Settings=@{};Engine=$null}
+    Restore-PreviousSession
+    Assert-Vd ($script:queue.Count -eq $oldQueue.Count -and $script:subscriptionReadCount -eq 1 -and $script:titleRecoveryLogs.Count -gt 0 -and [IO.File]::ReadAllText($storePath) -ceq '{broken subscriptions') 'A corrupt subscriptions file must leave the ordinary queue restorable and its bytes unchanged'
+    Remove-Item -LiteralPath $storePath
+    $script:queue.Clear();$script:subscriptionReadCount=0
+    Restore-PreviousSession
+    Assert-Vd ($script:queue.Count -eq $oldQueue.Count -and $script:subscriptionReadCount -eq 0 -and -not [IO.File]::Exists($storePath)) 'Missing optional subscription metadata must not be recreated or block queue restoration'
+    Remove-Variable -Name subscriptionsDirectory -Scope Script
+    $script:queue.Clear()
+    Restore-PreviousSession
+    Assert-Vd ($script:queue.Count -eq $oldQueue.Count) 'A restore harness without an explicit subscriptions directory must use the actual checkpoint folder safely'
 
     [IO.File]::WriteAllText($path,'truncated json')
     Assert-Throws { Read-VdSessionCheckpoint -Path $path | Out-Null } "Corrupt checkpoint must fail, not silently reset"

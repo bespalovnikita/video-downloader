@@ -417,6 +417,54 @@ function Initialize-RecoveredEngine([object]$Engine) {
     $script:recoveredEventCursor = @{ Offset=0L }
 }
 
+function Restore-SubscriptionQueueTitles {
+    param([AllowEmptyCollection()][object[]]$Items)
+    $pending=@($Items | Where-Object {
+        $_.SubscriptionId -and $_.Url -and
+        ([string]::IsNullOrWhiteSpace([string]$_.Title) -or [string]::Equals([string]$_.Title,[string]$_.Url,[StringComparison]::Ordinal))
+    })
+    if ($pending.Count -eq 0) { return }
+    try {
+        $directoryVariable=Get-Variable -Name subscriptionsDirectory -Scope Script -ErrorAction SilentlyContinue
+        $directory=if($directoryVariable){[string]$directoryVariable.Value}else{''}
+        if (-not $directory) {
+            $sessionVariable=Get-Variable -Name sessionPath -Scope Script -ErrorAction SilentlyContinue
+            if (-not $sessionVariable -or -not $sessionVariable.Value) { return }
+            $directory=Split-Path -Parent ([string]$sessionVariable.Value)
+        }
+        if (-not $directory -or -not [IO.File]::Exists((Join-Path $directory 'subscriptions.json'))) { return }
+        $wanted=[Collections.Generic.Dictionary[string,object]]::new([StringComparer]::Ordinal)
+        foreach($row in $pending) {
+            $id=[string]$row.SubscriptionId
+            if (-not $wanted.ContainsKey($id)) { $wanted[$id]=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal) }
+            [void]$wanted[$id].Add([string]$row.Url)
+        }
+        # One detached snapshot covers the entire restored queue. Title recovery
+        # must never start discovery or rewrite a missing/damaged subscriptions file.
+        $snapshot=Read-VdSubscriptions -Directory $directory
+        $titles=[Collections.Generic.Dictionary[string,object]]::new([StringComparer]::Ordinal)
+        foreach($item in $snapshot.Items) {
+            $id=[string]$item.SubscriptionId;$url=[string]$item.Url;$title=([string]$item.Title).Trim()
+            if ($wanted.ContainsKey($id) -and $wanted[$id].Contains($url) -and $title -and
+                -not [string]::Equals($title,$url,[StringComparison]::Ordinal)) {
+                if (-not $titles.ContainsKey($id)) { $titles[$id]=[Collections.Generic.Dictionary[string,string]]::new([StringComparer]::Ordinal) }
+                $titles[$id][$url]=$title
+            }
+        }
+        foreach($row in $pending) {
+            $id=[string]$row.SubscriptionId;$url=[string]$row.Url
+            if ($titles.ContainsKey($id) -and $titles[$id].ContainsKey($url)) {
+                $row | Add-Member -NotePropertyName Title -NotePropertyValue $titles[$id][$url] -Force
+            }
+        }
+    } catch {
+        # Broken optional metadata must not prevent ordinary queue restoration.
+        if (Get-Command Log-Line -CommandType Function -ErrorAction SilentlyContinue) {
+            Log-Line ('Не удалось восстановить названия из подписок: '+$_.Exception.Message)
+        }
+    }
+}
+
 function Restore-PreviousSession {
     $checkpoint = $null
     try {
@@ -469,6 +517,7 @@ function Restore-PreviousSession {
     }
     $script:restoringSession = $true
     try {
+        Restore-SubscriptionQueueTitles -Items $items
         Initialize-RecoveredEngine $checkpoint.Engine
         foreach ($item in $items) {
             if (-not $item.RunDir -and -not $item.DeferredToNextStart -and $script:recoveredEngine) {
@@ -610,16 +659,34 @@ function Add-Urls([string[]]$Urls,[switch]$FromClipboard,[switch]$ShowPreview) {
     }
 }
 
-function Add-SubscriptionUrls([string[]]$Urls,[string]$SubscriptionId='',[string]$SubscriptionName='') {
+function Add-SubscriptionUrls([string[]]$Urls,[string]$SubscriptionId='',[string]$SubscriptionName='',[Collections.IDictionary]$Titles=$null) {
     if ($script:checkpointReadOnly) { throw 'Очередь недоступна для сохранения. Сначала устраните ошибку восстановления.' }
     if (([bool]$SubscriptionId -ne [bool]$SubscriptionName) -or
         ($SubscriptionName -and -not (Test-VdSubscriptionName -Name $SubscriptionName))) { throw 'У подписки должно быть безопасное краткое имя папки.' }
     $seen=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     $requested=[Collections.Generic.List[string]]::new()
     foreach($url in $Urls) { if ((Is-ValidUrl $url) -and $seen.Add($url)) { $requested.Add($url) } }
+    # Clone even a PowerShell hashtable with an ordinal comparer. A title for
+    # /Video must never be applied to the distinct URL /video.
+    $discoveredTitles=[Collections.Generic.Dictionary[string,string]]::new([StringComparer]::Ordinal)
+    if ($null -ne $Titles) {
+        foreach($entry in $Titles.GetEnumerator()) {
+            $key=[string]$entry.Key;$title=([string]$entry.Value).Trim()
+            if ($seen.Contains($key) -and $title -and -not [string]::Equals($title,$key,[StringComparison]::Ordinal)) {
+                $discoveredTitles[$key]=$title
+            }
+        }
+    }
     $newUrls=@($requested | Where-Object { -not (Find-QueueItem $_) })
     $plan=Confirm-DuplicateDownloads -Urls $newUrls
     if ($plan.Cancelled) { return @() }
+    foreach($url in $requested) {
+        $row=Find-QueueItem $url
+        if ($row -and $discoveredTitles.ContainsKey($url) -and
+            ([string]::IsNullOrWhiteSpace([string]$row.Title) -or [string]::Equals([string]$row.Title,$url,[StringComparison]::Ordinal))) {
+            $row | Add-Member -NotePropertyName Title -NotePropertyValue $discoveredTitles[$url] -Force
+        }
+    }
     # Keep subscription jobs out of incoming.txt and the recovered engine.
     # Start remains the user's explicit action, even while other jobs run.
     $deferred=($script:proc -and -not $script:proc.HasExited) -or
@@ -627,7 +694,7 @@ function Add-SubscriptionUrls([string[]]$Urls,[string]$SubscriptionId='',[string
     foreach($url in @($plan.Selected)) {
         if (Find-QueueItem $url) { continue }
         $script:queue.Add([pscustomobject]@{
-            Order=$script:queue.Count+1;Url=$url;Title='';State='Queued';Status='Queued';Path='';OwnedPaths=@()
+            Order=$script:queue.Count+1;Url=$url;Title=$(if($discoveredTitles.ContainsKey($url)){$discoveredTitles[$url]}else{''});State='Queued';Status='Queued';Path='';OwnedPaths=@()
             SubscriptionId=$SubscriptionId;SubscriptionName=$SubscriptionName
             OutputRoot='';RunDir='';StageDir='';CleanupPaths=@();CleanupError='';PendingRemoval=$false
             AttemptFinished=$false;DeferredToNextStart=[bool]$deferred;AttachedToRecovered=$false
@@ -895,6 +962,7 @@ function Set-Download {
 
 function Set-VideoTitle([string]$Url,[string]$Title) {
     if ([string]::IsNullOrWhiteSpace($Url) -or [string]::IsNullOrWhiteSpace($Title)) { return }
+    if ([string]::Equals($Title.Trim(),$Url,[StringComparison]::Ordinal)) { return }
     $changed=$false
     foreach($row in @($script:queue)+@($script:downloads)) {
         if ($null -ne $row -and [string]::Equals([string]$row.Url,$Url,[StringComparison]::Ordinal) -and [string]$row.Title -cne $Title) {
@@ -1540,7 +1608,8 @@ function Get-CachedPreview([string]$Url) {
         try {
             $savedAt = ([DateTimeOffset]$entry.SavedAtUtc).UtcDateTime
 
-            if (([DateTime]::UtcNow - $savedAt).TotalHours -lt $script:previewCacheTtlHours) {
+            if (([DateTime]::UtcNow - $savedAt).TotalHours -lt $script:previewCacheTtlHours -and
+                -not (Test-VdPreviewCacheRefreshNeeded -Preview $entry -YtDlpPath ([string]$ytDlp))) {
                 return $entry
             }
         } catch {}
@@ -1548,7 +1617,7 @@ function Get-CachedPreview([string]$Url) {
         $script:previewMemoryCache.Remove($Url)
     }
 
-    $entry = Read-VdPreviewCache -CacheDir $script:previewCacheDir -Url $Url -TtlHours $script:previewCacheTtlHours
+    $entry = Read-VdPreviewCache -CacheDir $script:previewCacheDir -Url $Url -TtlHours $script:previewCacheTtlHours -YtDlpPath ([string]$ytDlp)
     if ($entry) {
         $script:previewMemoryCache[$Url] = $entry
         return $entry
@@ -1567,10 +1636,20 @@ function Save-CachedPreview([string]$Url,[object]$Preview) {
     }
 }
 
+function Get-PreviewDisplayTitle([string]$Url,[string]$Title='',[string]$Fallback='Название пока недоступно') {
+    if (-not [string]::IsNullOrWhiteSpace($Title) -and -not [string]::Equals($Title.Trim(),$Url,[StringComparison]::Ordinal)) { return $Title.Trim() }
+    foreach($row in @($script:queue)+@($script:downloads)) {
+        if ($null -ne $row -and [string]::Equals([string]$row.Url,$Url,[StringComparison]::Ordinal) -and
+            -not [string]::IsNullOrWhiteSpace([string]$row.Title) -and -not [string]::Equals([string]$row.Title,$Url,[StringComparison]::Ordinal)) { return [string]$row.Title }
+    }
+    return $Fallback
+}
+
 function Show-PreviewResult([object]$Result,[bool]$FromCache=$false) {
     if (-not $Result) { return }
 
-    $PreviewTitle.Text = if ($Result.Title) { [string]$Result.Title } else { "Untitled" }
+    $resultUrl=if($Result.Url){[string]$Result.Url}else{[string]$script:previewUrl}
+    $PreviewTitle.Text = Get-PreviewDisplayTitle -Url $resultUrl -Title ([string]$Result.Title)
 
     $duration = ""
     if ($Result.Duration -gt 0) {
@@ -1710,7 +1789,7 @@ function Complete-PreviewPrefetch {
             if ([string]::IsNullOrWhiteSpace($message)) { $message = "yt-dlp could not prefetch preview" }
             Log-Line ("Preview prefetch failed for ${url}: " + $message)
             if ([string]::Equals($script:previewUrl,$url,[StringComparison]::Ordinal)) {
-                $PreviewTitle.Text = "Preview unavailable"
+                $PreviewTitle.Text = Get-PreviewDisplayTitle -Url $url -Fallback 'Не удалось получить метаданные'
                 $PreviewMeta.Text = $message
                 $PreviewFormats.Text = ""
                 $PreviewImage.Source = $null
@@ -1720,7 +1799,7 @@ function Complete-PreviewPrefetch {
         $message = $_.Exception.Message
         Log-Line ("Preview prefetch failed for ${url}: " + $message)
         if ([string]::Equals($script:previewUrl,$url,[StringComparison]::Ordinal)) {
-            $PreviewTitle.Text = "Preview unavailable"
+            $PreviewTitle.Text = Get-PreviewDisplayTitle -Url $url -Fallback 'Не удалось получить метаданные'
             $PreviewMeta.Text = $message
             $PreviewFormats.Text = ""
             $PreviewImage.Source = $null
@@ -1744,7 +1823,7 @@ function Start-Preview([string]$Url) {
         return
     }
 
-    $PreviewTitle.Text = "Preparing preview..."
+    $PreviewTitle.Text = Get-PreviewDisplayTitle -Url $Url -Fallback 'Получаем метаданные…'
     $PreviewMeta.Text = "Background prefetch · " + $Url
     $PreviewFormats.Text = ""
     $PreviewImage.Source = $null
@@ -2108,7 +2187,7 @@ $OpenAppSettingsButton.Add_Click({ Open-AppSettingsFolder })
 $SubscriptionsButton.Add_Click({
     try {
         Show-VdSubscriptionsWindow -Owner $window -Root $root -DataDirectory $script:subscriptionsDirectory -YtDlpPath $ytDlp `
-            -CookiePathScript { [string]$CookiesBox.Text } -QueueUrls { param($urls,$source) Add-SubscriptionUrls -Urls $urls -SubscriptionId ([string]$source.Id) -SubscriptionName ([string]$source.ShortName) }
+            -CookiePathScript { [string]$CookiesBox.Text } -QueueUrls { param($urls,$source,$titles) Add-SubscriptionUrls -Urls $urls -SubscriptionId ([string]$source.Id) -SubscriptionName ([string]$source.ShortName) -Titles $titles }
     } catch {
         [System.Windows.MessageBox]::Show($window,$_.Exception.Message,'Подписки',[System.Windows.MessageBoxButton]::OK,[System.Windows.MessageBoxImage]::Warning) | Out-Null
     }

@@ -26,11 +26,22 @@ foreach($command in @('Read-VdDownloadHistory','Add-VdSuccessfulDownloadUrl','Re
 }
 $module=Get-Module VideoDownloader.SubscriptionUi
 # Keep the real owner's history/duplicate/queue code across the module callback.
-foreach($name in @('Confirm-DuplicateDownloads','Add-SubscriptionUrls','Is-ValidUrl','Find-QueueItem')) {
+foreach($name in @('Confirm-DuplicateDownloads','Add-SubscriptionUrls','Is-ValidUrl','Find-QueueItem','Get-SessionSnapshot')) {
     $function=$guiAst.EndBlock.Statements | Where-Object {$_ -is [Management.Automation.Language.FunctionDefinitionAst] -and $_.Name -eq $name}
     Assert ($null -ne $function) "Missing production GUI function: $name"
     . ([scriptblock]::Create($function.Extent.Text))
 }
+# Keep the actual owner callback too: a hand-written test callback could hide
+# the GUI dropping metadata between the subscriptions module and main queue.
+$showSubscriptions=$guiAst.Find({param($node) $node -is [Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Show-VdSubscriptionsWindow'},$true)
+$ownerQueueCallback=$null
+for($index=0;$index -lt $showSubscriptions.CommandElements.Count-1;$index++) {
+    $element=$showSubscriptions.CommandElements[$index]
+    if($element -is [Management.Automation.Language.CommandParameterAst] -and $element.ParameterName -eq 'QueueUrls') {
+        $ownerQueueCallback=$showSubscriptions.CommandElements[$index+1].ScriptBlock.GetScriptBlock()
+    }
+}
+Assert ($null -ne $ownerQueueCallback) 'Main subscriptions button must provide an owner queue callback'
 $temp=Join-Path ([IO.Path]::GetTempPath()) ('vd-subscription-ui-'+[guid]::NewGuid().ToString('N'))
 [void][IO.Directory]::CreateDirectory($temp)
 $contexts=[Collections.Generic.List[object]]::new()
@@ -69,15 +80,17 @@ try {
         @{Url='https://example.com/Video';Title='Видео'},@{Url='https://example.com/video';Title='Другое видео'})}
     $snapshot=Apply-VdSubscriptionScan -Directory $directory -Id $source.Id -Scan $scan
     $context=New-TestContext $directory
-    $script:callbackCount=0;$script:callbackInputs=@();$script:callbackSource=$null
-    $context.QueueUrls={param($urls,$subscription)
-        $script:callbackCount++;$script:callbackInputs=@($urls);$script:callbackSource=$subscription
+    $script:callbackCount=0;$script:callbackInputs=@();$script:callbackSource=$null;$script:callbackTitles=$null
+    $context.QueueUrls={param($urls,$subscription,$titles)
+        $script:callbackCount++;$script:callbackInputs=@($urls);$script:callbackSource=$subscription;$script:callbackTitles=$titles
         @('https://example.com/Video','https://example.com/VIDEO','https://unrelated.example/should-not-queue')
     }
     $queued=& $module {param($c,$items) Invoke-VdSubscriptionUiQueue $c $items} $context $snapshot.Items
     $snapshot=Read-VdSubscriptions -Directory $directory
     Assert ($script:callbackCount -eq 1 -and $script:callbackInputs.Count -eq 2 -and $queued.Accepted -eq 1 -and $queued.Remaining -eq 1) 'Queue must use the owner return value, excluding altered/unrequested URLs'
     Assert ($script:callbackSource.Id -ceq $source.Id -and $script:callbackSource.ShortName -ceq 'Канал 123') 'Owner queue callback must receive the selected source and its detected folder name'
+    Assert ($script:callbackTitles.Count -eq 2 -and $script:callbackTitles['https://example.com/Video'] -ceq 'Видео' -and
+        $script:callbackTitles['https://example.com/video'] -ceq 'Другое видео') 'Owner callback must preserve discovery titles separately for exact case-distinct URLs'
     Assert ($snapshot.Items[0].State -eq 'Queued' -and -not $snapshot.Items[0].InitialQueuePending -and $snapshot.Items[1].State -eq 'New' -and $snapshot.Items[1].InitialQueuePending) 'Rejected initial items must remain recoverable in Inbox'
     Assert ((Read-VdDownloadHistory -Path (Join-Path $directory 'successful-downloads.jsonl')).Count -eq 0) 'Queueing must never count as successful processing'
     $context.QueueUrls={param($urls) $urls} # Idempotent owner accepts an already queued URL.
@@ -191,11 +204,19 @@ Export-ModuleMember -Function Invoke-VdSubscriptionScan
     # must still be able to read history after importing the subscriptions UI.
     $script:historyPath=Join-Path $workDirectory 'successful-downloads.jsonl'
     $script:queue=[Collections.ObjectModel.ObservableCollection[object]]::new()
-    $script:checkpointReadOnly=$false;$script:lastSessionError='';$script:proc=$null;$script:recoveredEngine=$null
+    $script:checkpointReadOnly=$false;$script:lastSessionError='';$script:proc=$null;$script:activeEngine=$null;$script:recoveredEngine=$null
+    $script:sessionPath=Join-Path $workDirectory 'main-session.json'
     $script:ClipboardHint=[pscustomobject]@{Text=''}
     $script:prefetched=[Collections.Generic.List[string]]::new()
-    function Queue-PreviewPrefetch([string]$Url) {$script:prefetched.Add($Url)}
-    function Reindex-Queue {}
+    $script:titlesAtPrefetch=[Collections.Generic.Dictionary[string,string]]::new([StringComparer]::Ordinal)
+    $script:failPrefetch=$false
+    function Queue-PreviewPrefetch([string]$Url) {
+        $script:prefetched.Add($Url)
+        $script:titlesAtPrefetch[$Url]=[string](Find-QueueItem $Url).Title
+        if($script:failPrefetch){throw 'Preview unavailable'}
+    }
+    function Get-SessionSettings {return @{}}
+    function Reindex-Queue {Write-VdSessionCheckpoint -Path $script:sessionPath -Session (Get-SessionSnapshot)}
     $archive=Add-VdSubscription -Directory $workDirectory -Url 'https://example.com/archive' -DownloadExisting $true
     $worker.QueueUrls={throw 'Owner queue callback failed'}
     & $module {param($c,$id) Add-VdSubscriptionUiChecks $c @($id)} $worker $archive.Id
@@ -204,7 +225,7 @@ Export-ModuleMember -Function Invoke-VdSubscriptionScan
     $saved=Read-VdSubscriptions -Directory $workDirectory
     $pending=@($saved.Items | Where-Object SubscriptionId -CEQ $archive.Id)
     Assert ($pending.Count -eq 1 -and $pending[0].InitialQueuePending -and $pending[0].State -eq 'New') 'An owner callback failure must keep the initial archive pending for another manual check'
-    $worker.QueueUrls={param($urls,$subscription) Add-SubscriptionUrls -Urls $urls -SubscriptionId $subscription.Id -SubscriptionName $subscription.ShortName}
+    $worker.QueueUrls=$ownerQueueCallback
     & $module {param($c,$id) Add-VdSubscriptionUiChecks $c @($id)} $worker $archive.Id
     $deadline=[DateTime]::UtcNow.AddSeconds(15)
     while($worker.Job -and [DateTime]::UtcNow -lt $deadline){Start-Sleep -Milliseconds 30;& $module {param($c) Complete-VdSubscriptionUiCheck $c} $worker}
@@ -216,12 +237,30 @@ Export-ModuleMember -Function Invoke-VdSubscriptionScan
     Assert ($script:queue.Count -eq 1 -and $script:queue[0].Url -ceq 'https://example.com/discovered' -and
         $script:prefetched.Count -eq 1 -and (Read-VdDownloadHistory -Path $script:historyPath).Count -eq 0) 'Initial import must create an ordinary queued item and preview intent, without recording download success'
     Assert ($script:queue[0].SubscriptionId -ceq $archive.Id -and $script:queue[0].SubscriptionName -ceq $archiveSource.ShortName -and $script:queue[0].SubscriptionName) 'Production owner callback must capture the source ID and folder name on the ordinary queued row'
+    Assert ($script:queue[0].Title -ceq 'Обнаружено' -and $script:titlesAtPrefetch['https://example.com/discovered'] -ceq 'Обнаружено') 'The production import must publish its known discovery title before asynchronous preview starts'
+    $restoredImport=@(Get-VdRestoredQueue -Session (Read-VdSessionCheckpoint -Path $script:sessionPath))
+    Assert ($restoredImport[0].Title -ceq 'Обнаружено' -and $restoredImport[0].Status -eq 'Queued') 'The production snapshot must preserve the discovered title before any download or preview result'
     $capturedName=$script:queue[0].SubscriptionName
     $worker.Controls.SubscriptionGrid.SelectedItem=[pscustomobject]@{Id=$archive.Id}
     & $module {param($c) Update-VdSubscriptionUi $c} $worker
     $worker.Controls.SubscriptionNameBox.Text='Новая папка'
     & $module {param($c) Save-VdSubscriptionUiName $c} $worker
     Assert ($script:queue[0].SubscriptionName -ceq $capturedName -and (Read-VdSubscriptions -Directory $workDirectory).Subscriptions.Where({$_.Id -ceq $archive.Id})[0].ShortName -ceq 'Новая папка') 'Renaming a subscription must affect future imports without rewriting already queued jobs'
+
+    # A broken preview must not erase the useful discovery title or claim an
+    # unsuccessful queue acknowledgement. A retry accepts the same row once.
+    $failedPreview=Add-VdSubscription -Directory $workDirectory -Url 'https://example.com/preview-failure' -DownloadExisting $true
+    $failedPreviewUrl='https://example.com/known-before-preview'
+    $scanWithTitle=@{Title='Источник';FeedUrl='';Warning='';Items=@(@{Url=$failedPreviewUrl;Title='Название из подписки'})}
+    $failedSnapshot=Apply-VdSubscriptionScan -Directory $workDirectory -Id $failedPreview.Id -Scan $scanWithTitle
+    $script:failPrefetch=$true;$refused=$false
+    try {& $module {param($c,$items) Invoke-VdSubscriptionUiQueue $c $items} $worker @($failedSnapshot.Items | Where-Object SubscriptionId -CEQ $failedPreview.Id) | Out-Null} catch {$refused=$true}
+    $failedRow=Find-QueueItem $failedPreviewUrl
+    Assert ($refused -and $failedRow.Title -ceq 'Название из подписки' -and $script:titlesAtPrefetch[$failedPreviewUrl] -ceq 'Название из подписки') 'Preview failure must leave the title visible immediately on the accepted main queue row'
+    Assert (@((Read-VdSubscriptions -Directory $workDirectory).Items | Where-Object SubscriptionId -CEQ $failedPreview.Id)[0].State -eq 'New') 'A failed owner callback must leave the subscription item pending for idempotent retry'
+    $script:failPrefetch=$false
+    $retry=& $module {param($c,$items) Invoke-VdSubscriptionUiQueue $c $items} $worker @($failedSnapshot.Items | Where-Object SubscriptionId -CEQ $failedPreview.Id)
+    Assert ($retry.Accepted -eq 1 -and @($script:queue | Where-Object Url -CEQ $failedPreviewUrl).Count -eq 1 -and $failedRow.Title -ceq 'Название из подписки' -and $null -eq $script:proc) 'Retry after preview failure must keep one named queued item without starting downloads'
 
     $slow=Add-VdSubscription -Directory $workDirectory -Url 'https://example.com/slow'
     & $module {param($c,$id) Add-VdSubscriptionUiChecks $c @($id)} $worker $slow.Id

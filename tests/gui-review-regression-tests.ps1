@@ -114,16 +114,22 @@ try {
  $runningRow=Add-TestRow
  $ingressBefore=[IO.File]::ReadAllText($script:liveQueuePath)
  $first='https://example.com/subscription/B';$second='https://example.com/subscription/b'
- $accepted=@(Add-SubscriptionUrls @($first,$second,$first) -SubscriptionId 'source-123' -SubscriptionName '123')
+ $titles=[Collections.Generic.Dictionary[string,string]]::new([StringComparer]::Ordinal)
+ $titles[$first]='Первый ролик';$titles[$second]='Второй ролик'
+ $accepted=@(Add-SubscriptionUrls @($first,$second,$first) -SubscriptionId 'source-123' -SubscriptionName '123' -Titles $titles)
  Assert ($accepted.Count -eq 2 -and $accepted[0] -ceq $first -and $accepted[1] -ceq $second) 'Subscription queue acceptance must preserve exact URLs and input order'
  Assert ($script:queue.Count -eq 3 -and $script:queue[1].DeferredToNextStart -and $script:queue[2].DeferredToNextStart) 'Subscription jobs must wait for explicit Start even during an active session'
  Assert ($script:queue[1].SubscriptionId -ceq 'source-123' -and $script:queue[1].SubscriptionName -ceq '123') 'Subscription identity and folder must be captured on newly created queue rows'
+ Assert ($script:queue[1].Title -ceq 'Первый ролик' -and $script:queue[2].Title -ceq 'Второй ролик') 'Import must seed distinct discovery titles on exact case-sensitive URLs'
  Assert ([IO.File]::ReadAllText($script:liveQueuePath) -ceq $ingressBefore -and $script:sessionTotal -eq 1 -and $script:runUrls.Count -eq 1) 'Subscription import must not enter live ingress, active URL accounting or session totals'
- $acceptedAgain=@(Add-SubscriptionUrls @($first,$second) -SubscriptionId 'other-source' -SubscriptionName 'Renamed')
+ $titles[$first]='Другая версия заголовка'
+ $acceptedAgain=@(Add-SubscriptionUrls @($first,$second) -SubscriptionId 'other-source' -SubscriptionName 'Renamed' -Titles $titles)
  Assert ($acceptedAgain.Count -eq 2 -and $script:queue.Count -eq 3) 'Retrying queue acceptance after a lost store acknowledgement must be idempotent'
  Assert ($script:queue[1].SubscriptionId -ceq 'source-123' -and $script:queue[1].SubscriptionName -ceq '123') 'A later import or source rename must not silently redirect an existing queue row'
- $null=Add-SubscriptionUrls @($runningRow.Url) -SubscriptionId 'source-123' -SubscriptionName '123'
+ Assert ($script:queue[1].Title -ceq 'Первый ролик') 'An existing real title must survive another subscription import'
+ $null=Add-SubscriptionUrls @($runningRow.Url) -SubscriptionId 'source-123' -SubscriptionName '123' -Titles @{$runningRow.Url='Название обычной строки'}
  Assert (-not $runningRow.SubscriptionName) 'A preexisting ordinary download must keep its original destination'
+ Assert ($runningRow.Title -ceq 'Название обычной строки') 'An existing blank ordinary row may receive useful discovery metadata without reassignment'
  Set-Download -Slot 1 -State Starting -Url $first
  Assert ($script:downloads[0].SubscriptionId -ceq 'source-123' -and $script:downloads[0].SubscriptionName -ceq '123') 'Download grid rows must expose the captured subscription name'
  $refused=$false;try {Add-SubscriptionUrls @('https://example.com/escape') -SubscriptionId 'source-123' -SubscriptionName '../escape' | Out-Null} catch {$refused=$true}
@@ -131,6 +137,16 @@ try {
  $script:checkpointReadOnly=$true
  $refused=$false;try { Add-SubscriptionUrls @('https://example.com/no-save') | Out-Null } catch {$refused=$true}
  Assert ($refused -and $script:queue.Count -eq 3) 'Read-only checkpoint must block durable subscription queue acceptance'
+
+ Reset-State
+ $upper='https://example.com/discovery/Video';$lower='https://example.com/discovery/video'
+ $null=Add-SubscriptionUrls @($lower) -SubscriptionId 'source-123' -SubscriptionName '123' -Titles @{$upper='Нельзя применять к другому регистру'}
+ Assert ($script:queue[0].Title -ceq '') 'A case-insensitive caller hashtable must not leak its title onto a distinct exact URL'
+ $script:queue[0].Title=$lower
+ $null=Add-SubscriptionUrls @($lower) -Titles @{$lower='Настоящее название'}
+ Assert ($script:queue[0].Title -ceq 'Настоящее название') 'An exact URL used as fallback title must be replaced by a useful discovery title'
+ $null=Add-SubscriptionUrls @($upper) -SubscriptionId 'source-123' -SubscriptionName '123' -Titles @{$upper=$upper}
+ Assert ($script:queue[1].Title -ceq '') 'A discovery fallback URL must not be mistaken for a real title'
 
  Reset-State
  $row=Add-TestRow

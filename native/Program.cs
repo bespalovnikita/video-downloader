@@ -15,7 +15,13 @@ public static class Program
     {
         if(args.Contains("--ui-self-test",StringComparer.OrdinalIgnoreCase))
         {
-            NativeUiSelfTest.Run();
+            try { NativeUiSelfTest.Run(); }
+            catch(Exception error)
+            {
+                var result=Environment.GetEnvironmentVariable("VD_NATIVE_UI_TEST_RESULT");
+                if(!string.IsNullOrWhiteSpace(result))File.WriteAllText(result,"FAIL: "+error);
+                Environment.ExitCode=1;
+            }
             return;
         }
         if(args.Contains("--cli",StringComparer.OrdinalIgnoreCase))

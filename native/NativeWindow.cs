@@ -282,6 +282,7 @@ public sealed partial class NativeWindow : IDisposable
             if (previous.Queue.Count==0) return;
             if (MessageBox.Show(_window,$"Restore previous queue ({previous.Queue.Count} URLs)?\nCompleted downloads will not restart automatically.",
                     "Restore previous session",MessageBoxButton.YesNo,MessageBoxImage.Question)!=MessageBoxResult.Yes) return;
+            RestoreSubscriptionQueueTitles(previous.Queue);
             foreach(var item in previous.Queue)
             {
                 item.Order=_queue.Count+1;_queue.Add(item);
@@ -445,10 +446,16 @@ public sealed partial class NativeWindow : IDisposable
     }
     private void ApplyPreviewTitle(PreviewData data)
     {
-        if(string.IsNullOrWhiteSpace(data.Title)) return;
+        if(string.IsNullOrWhiteSpace(data.Title) || string.Equals(data.Title.Trim(),data.Url,StringComparison.Ordinal)) return;
         foreach(var row in _queue.Concat(_downloads).Distinct()
             .Where(row=>string.Equals(row.Url,data.Url,StringComparison.Ordinal)))
             row.Title=data.Title.Trim();
+    }
+    private string PreviewDisplayTitle(string url,string title,string fallback)
+    {
+        if(!string.IsNullOrWhiteSpace(title) && !string.Equals(title.Trim(),url,StringComparison.Ordinal)) return title.Trim();
+        return _queue.Concat(_downloads).Where(row=>string.Equals(row.Url,url,StringComparison.Ordinal))
+            .Select(row=>row.Title).FirstOrDefault(value=>!string.IsNullOrWhiteSpace(value) && !string.Equals(value,url,StringComparison.Ordinal)) ?? fallback;
     }
     private void ShowPreview(string url)
     {
@@ -456,7 +463,7 @@ public sealed partial class NativeWindow : IDisposable
         _previewUrl=url;
         var data=_previews.Get(url);
         if(data!=null){OnPreviewReady(data);return;}
-        T("PreviewTitle").Text="Preparing preview...";
+        T("PreviewTitle").Text=PreviewDisplayTitle(url,"","Получаем метаданные…");
         T("PreviewMeta").Text=url;
         T("PreviewFormats").Text="";
         F<Image>("PreviewImage").Source=null;
@@ -468,7 +475,7 @@ public sealed partial class NativeWindow : IDisposable
         ApplyPreviewTitle(data);
         SaveCheckpoint();
         if(!string.Equals(_previewUrl,data.Url,StringComparison.Ordinal))return;
-        T("PreviewTitle").Text=data.Title.Length>0?data.Title:"Untitled";
+        T("PreviewTitle").Text=PreviewDisplayTitle(data.Url,data.Title,"Название пока недоступно");
         var summary=new List<string>();
         if(data.PlaylistTitle.Length>0)summary.Add("Playlist: "+data.PlaylistTitle);
         if(data.Uploader.Length>0)summary.Add(data.Uploader);

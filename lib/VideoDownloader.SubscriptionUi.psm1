@@ -60,9 +60,13 @@ function Invoke-VdSubscriptionUiQueue($Context,[AllowEmptyCollection()][object[]
             $ownerSource.ShortName=ConvertTo-VdSubscriptionName -Name $suggestion -Fallback $fallback
         }
         $groupUrls=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
-        foreach ($item in $group.Group) { [void]$groupUrls.Add([string]$item.Url) }
+        $groupTitles=[Collections.Generic.Dictionary[string,string]]::new([StringComparer]::Ordinal)
+        foreach ($item in $group.Group) {
+            [void]$groupUrls.Add([string]$item.Url)
+            $groupTitles[[string]$item.Url]=[string]$item.Title
+        }
         $groupAccepted=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
-        $returned=@(& $Context.QueueUrls ([string[]]@($groupUrls)) $ownerSource)
+        $returned=@(& $Context.QueueUrls ([string[]]@($groupUrls)) $ownerSource $groupTitles)
         foreach ($url in $returned) {
             if ($url -is [string] -and $groupUrls.Contains($url)) { [void]$groupAccepted.Add($url);[void]$accepted.Add($url) }
         }

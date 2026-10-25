@@ -397,7 +397,9 @@ public sealed partial class NativeWindow
         var reconciled=await Task.Run(()=>SubscriptionStorage.ReconcileSuccess(_storage.ReadHistory().Keys));
         var eligibleKeys=reconciled.Items.Where(x=>x.State is "New" or "Skipped" or "Queued")
             .Select(x=>(x.SubscriptionId,x.Url)).ToHashSet();
-        candidates=candidates.Where(x=>eligibleKeys.Contains((x.SubscriptionId,x.Url))).ToArray();
+        var currentItems=reconciled.Items.ToDictionary(x=>(x.SubscriptionId,x.Url));
+        candidates=candidates.Where(x=>eligibleKeys.Contains((x.SubscriptionId,x.Url)))
+            .Select(x=>currentItems[(x.SubscriptionId,x.Url)]).ToArray();
         if (candidates.Count==0) return 0;
         var sources=reconciled.Subscriptions.ToDictionary(x=>x.Id,StringComparer.Ordinal);
         var acknowledgements=new List<(string Id,string[] Urls)>();
@@ -410,7 +412,8 @@ public sealed partial class NativeWindow
             string name=source.ShortName.Length>0?source.ShortName:SubscriptionNames.Normalize(suggestion,
                 "Подписка "+source.Id[..Math.Min(8,source.Id.Length)]);
             var requested=group.Select(x=>x.Url).ToHashSet(StringComparer.Ordinal);
-            var accepted=QueueSubscriptionUrls(requested,source.Id,name).Where(requested.Contains).Distinct(StringComparer.Ordinal).ToArray();
+            var titles=group.ToDictionary(x=>x.Url,x=>x.Title,StringComparer.Ordinal);
+            var accepted=QueueSubscriptionUrls(requested,source.Id,name,titles).Where(requested.Contains).Distinct(StringComparer.Ordinal).ToArray();
             if (accepted.Length==0) continue;
             acknowledgements.Add((group.Key,accepted));
             acceptedUrls.UnionWith(accepted);
