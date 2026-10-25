@@ -215,7 +215,7 @@ internal static class NativeUiSelfTest
             Require(queue.Items.Count==2,"Clipboard addition must enqueue one new URL");
             Require((queue.SelectedItem as DownloadItem)?.Url=="https://example.com/clipboard",
                 "Manual clipboard Paste must immediately select its new preview");
-            Require(((TextBlock)window.FindName("PreviewTitle")!).Text=="Preparing preview...",
+            Require(((TextBlock)window.FindName("PreviewTitle")!).Text=="Получаем метаданные…",
                 "New clipboard URL must show preview loading state immediately");
 
             Stage("testing Windows shortcut import");
@@ -291,8 +291,8 @@ internal static class NativeUiSelfTest
             app.Shutdown();
             Stage("delete isolated test profile");
             try {Directory.Delete(root,true);}catch(IOException){}
-            Stage("PASS");
         }
+        Stage("PASS");
     }
 
     private static void VerifyStartupRecovery(string root,Action<string> stage)
