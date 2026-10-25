@@ -89,6 +89,11 @@ function Reset-State {
  $script:QueueGrid=[pscustomobject]@{Items=$items}; $script:DownloadGrid=[pscustomobject]@{Items=$items}
  $script:QueueCount=[pscustomobject]@{Text=''}; $script:OverallProgress=[pscustomobject]@{Value=0}
  $script:ClipboardHint=[pscustomobject]@{Text=''}
+ $script:previewUrl=''
+ $script:PreviewTitle=[pscustomobject]@{Text=''}
+ $script:PreviewMeta=[pscustomobject]@{Text=''}
+ $script:PreviewFormats=[pscustomobject]@{Text=''}
+ $script:PreviewImage=[pscustomobject]@{Source=$null}
  $script:checkpointReadOnly=$false; $script:lastSessionError=''
  $script:saveCount=0; $script:failDelete=$false
  [VdGuiReview.MessageBox]::WarningCount=0; [VdGuiReview.MessageBox]::BeforeAnswer=$null
@@ -127,9 +132,14 @@ try {
  Assert ($acceptedAgain.Count -eq 2 -and $script:queue.Count -eq 3) 'Retrying queue acceptance after a lost store acknowledgement must be idempotent'
  Assert ($script:queue[1].SubscriptionId -ceq 'source-123' -and $script:queue[1].SubscriptionName -ceq '123') 'A later import or source rename must not silently redirect an existing queue row'
  Assert ($script:queue[1].Title -ceq 'Первый ролик') 'An existing real title must survive another subscription import'
+ $script:previewUrl=$runningRow.Url
+ $PreviewTitle.Text='Не удалось получить метаданные';$PreviewMeta.Text='Сведения об ошибке';$PreviewFormats.Text='Известный формат'
+ $previousImage=[object]::new();$PreviewImage.Source=$previousImage
  $null=Add-SubscriptionUrls @($runningRow.Url) -SubscriptionId 'source-123' -SubscriptionName '123' -Titles @{$runningRow.Url='Название обычной строки'}
  Assert (-not $runningRow.SubscriptionName) 'A preexisting ordinary download must keep its original destination'
  Assert ($runningRow.Title -ceq 'Название обычной строки') 'An existing blank ordinary row may receive useful discovery metadata without reassignment'
+ Assert ($PreviewTitle.Text -ceq 'Название обычной строки' -and $PreviewMeta.Text -ceq 'Сведения об ошибке' -and
+     $PreviewFormats.Text -ceq 'Известный формат' -and [object]::ReferenceEquals($PreviewImage.Source,$previousImage)) 'Enriching the selected existing row must immediately update only its preview label'
  Set-Download -Slot 1 -State Starting -Url $first
  Assert ($script:downloads[0].SubscriptionId -ceq 'source-123' -and $script:downloads[0].SubscriptionName -ceq '123') 'Download grid rows must expose the captured subscription name'
  $refused=$false;try {Add-SubscriptionUrls @('https://example.com/escape') -SubscriptionId 'source-123' -SubscriptionName '../escape' | Out-Null} catch {$refused=$true}
@@ -143,8 +153,10 @@ try {
  $null=Add-SubscriptionUrls @($lower) -SubscriptionId 'source-123' -SubscriptionName '123' -Titles @{$upper='Нельзя применять к другому регистру'}
  Assert ($script:queue[0].Title -ceq '') 'A case-insensitive caller hashtable must not leak its title onto a distinct exact URL'
  $script:queue[0].Title=$lower
+ $script:previewUrl=$upper;$PreviewTitle.Text='Другое выбранное видео'
  $null=Add-SubscriptionUrls @($lower) -Titles @{$lower='Настоящее название'}
  Assert ($script:queue[0].Title -ceq 'Настоящее название') 'An exact URL used as fallback title must be replaced by a useful discovery title'
+ Assert ($PreviewTitle.Text -ceq 'Другое выбранное видео') 'A case-distinct selected preview must not be changed by enriching another row'
  $null=Add-SubscriptionUrls @($upper) -SubscriptionId 'source-123' -SubscriptionName '123' -Titles @{$upper=$upper}
  Assert ($script:queue[1].Title -ceq '') 'A discovery fallback URL must not be mistaken for a real title'
 

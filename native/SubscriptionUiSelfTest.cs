@@ -16,6 +16,7 @@ public sealed partial class NativeWindow
     {
         var originalQueue=_queue.ToArray();
         var originalSession=_session;
+        string originalPreviewUrl=_previewUrl;
         string? sourceId=null;
         string suffix=Guid.NewGuid().ToString("N");
         string baselineUrl="https://example.com/subscription-ui-baseline/"+suffix;
@@ -67,6 +68,16 @@ public sealed partial class NativeWindow
             // It therefore exercises the real Queue button without prefetch.
             var queuedRow=new DownloadItem{Url=queueUrl};
             _queue.Add(queuedRow);
+            string selectedCache=Path.Combine(_storage.PreviewDir,
+                Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(queueUrl))).ToLowerInvariant()+".json");
+            AppPersistence.AtomicWrite(selectedCache,JsonSerializer.Serialize(new {
+                CacheVersion=1,PreviewFetchVersion=2,SavedAtUtc=DateTime.UtcNow,Url=queueUrl,Success=true,
+                Title="",Uploader="",PlaylistTitle="",Duration=0,Extractor="",MaxHeight=0,MaxFps=0,
+                Codecs="",DynamicRange="",ThumbnailBase64=""
+            },AppPersistence.Json));
+            Q.SelectedItem=queuedRow;
+            T("PreviewTitle").Text="Не удалось получить метаданные";
+            T("PreviewMeta").Text="Сохранённая ошибка запроса";
             OpenSubscriptions();
             WaitFor(()=>_subscriptionsWindow!=null && SubscriptionSources.Items.Cast<SubscriptionSourceView>().Any(x=>x.Id==sourceId),
                 "Modeless subscriptions window must bind persisted sources");
@@ -119,6 +130,8 @@ public sealed partial class NativeWindow
                 "Accepting a URL already in the ordinary queue must preserve its existing source and folder");
             Require(queuedRow.Title=="Добавить вручную",
                 "Discovery must fill an existing empty title even when no preview request is started");
+            Require(T("PreviewTitle").Text==queuedRow.Title && T("PreviewMeta").Text=="Сохранённая ошибка запроса",
+                "Importing a selected existing URL must immediately replace only its panel title without a metadata request");
             Require(SubscriptionStorage.Read().Items.Single(x=>x.SubscriptionId==sourceId && x.Url==queueUrl).State!="Processed",
                 "Queue acceptance must not claim successful processing");
             Require(queueButton.IsEnabled,"Queued materials must support manual requeue after ordinary queue removal");
@@ -133,6 +146,13 @@ public sealed partial class NativeWindow
             queueButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             WaitFor(()=>!_subscriptionMutation,"Importing an URL-fallback title must finish");
             Require(queuedRow.Title=="Добавить вручную","A stored URL fallback must be enriched with the discovery title");
+            _previewUrl=caseUrl;
+            T("PreviewTitle").Text="Другое выбранное видео";
+            queuedRow.Title="";
+            queueButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            WaitFor(()=>!_subscriptionMutation,"Importing an unselected existing row must finish");
+            Require(queuedRow.Title=="Добавить вручную" && T("PreviewTitle").Text=="Другое выбранное видео",
+                "Enriching a different URL must leave the selected preview title alone");
 
             foreach(string url in new[]{freshUrl,caseUrl})
             {
@@ -213,6 +233,7 @@ public sealed partial class NativeWindow
             if (sourceId!=null) SubscriptionStorage.Remove(sourceId);
             _queue.Clear();
             foreach (var row in originalQueue) _queue.Add(row);
+            _previewUrl=originalPreviewUrl;
             Reindex();
         }
     }

@@ -63,6 +63,10 @@ public sealed partial class NativeWindow
         PreviewData Metadata(string url,string title)=>new(url,title,"","",0,"",0,0,"","","",DateTime.UtcNow);
         try
         {
+            var tinyImage=PreviewImage.Decode(Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAACXBIWXMAAAABAAAAAQBPJcTWAAAADklEQVR4nGP4DwYMEAoAU7oL9ZisIGcAAAAASUVORK5CYII="));
+            Require(tinyImage.PixelWidth==2 && tinyImage.PixelHeight==2,"Thumbnail decoding must not enlarge small source images");
+            var portrait=PreviewImage.Decode(Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAPoCAYAAAAftpReAAAAIUlEQVR4nO3EMQEAAAzDoPg33anYBwetliRJkiRJkqTPDnx1yJqP8XqtAAAAAElFTkSuQmCC"));
+            Require(portrait.PixelWidth<=720 && portrait.PixelHeight<=720,"Portrait thumbnails must fit both display dimensions");
             foreach(var row in new[]{known,caseDistinct,unknown,cached})_queue.Add(row);
             _downloads.Add(known);_downloads.Add(unknown);
             _previewUrl=prefix+"selected-preview";
@@ -79,6 +83,17 @@ public sealed partial class NativeWindow
                 "An empty or URL-only full preview must keep the discovered video name in the panel");
             OnPreviewReady(Metadata(known.Url,""));
             Require(T("PreviewTitle").Text==known.Title,"A missing image and empty title must not erase a known subscription title");
+            OnPreviewFailed(known.Url,"Metadata fixture failed");
+            Require(T("PreviewTitle").Text==known.Title && T("PreviewMeta").Text=="Metadata fixture failed",
+                "A metadata failure must end loading while keeping the subscription title");
+            OnPreviewFailed(caseDistinct.Url,"Unselected failure");
+            Require(T("PreviewMeta").Text=="Metadata fixture failed",
+                "A stale failure for another exact URL must not alter the selected preview");
+            _previewUrl=unknown.Url;
+            T("PreviewTitle").Text="Получаем метаданные…";
+            OnPreviewFailed(unknown.Url,"Timeout fixture");
+            Require(T("PreviewTitle").Text=="Не удалось получить метаданные" && T("PreviewMeta").Text=="Timeout fixture",
+                "A failed preview without a known title must replace its loading indicator with an error");
 
             var cache=Metadata(cached.Url,"Название из кеша");
             string file=Path.Combine(_storage.PreviewDir,

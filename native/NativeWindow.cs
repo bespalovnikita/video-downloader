@@ -82,7 +82,8 @@ public sealed partial class NativeWindow : IDisposable
         B("CookiesBox").TextChanged+=(_,_)=>Volatile.Write(ref _previewCookies,B("CookiesBox").Text);
         _previews=new PreviewService(_ytDlp,_storage,()=>Volatile.Read(ref _previewCookies),
             data=>_window.Dispatcher.BeginInvoke(()=>OnPreviewReady(data)),
-            message=>_window.Dispatcher.BeginInvoke(()=>Log(message)));
+            message=>_window.Dispatcher.BeginInvoke(()=>Log(message)),
+            failed:(url,error)=>_window.Dispatcher.BeginInvoke(()=>OnPreviewFailed(url,error)));
         SetupTray();
         BindActions();
         K("ShowVideoTitlesCheck").Checked+=(_,_)=>SaveCheckpoint();
@@ -469,6 +470,14 @@ public sealed partial class NativeWindow : IDisposable
         F<Image>("PreviewImage").Source=null;
         _previews.Request(url,true);
     }
+    private void OnPreviewFailed(string url,string error)
+    {
+        if(_disposed || !string.Equals(_previewUrl,url,StringComparison.Ordinal))return;
+        T("PreviewTitle").Text=PreviewDisplayTitle(url,"","Не удалось получить метаданные");
+        T("PreviewMeta").Text=error;
+        T("PreviewFormats").Text="";
+        F<Image>("PreviewImage").Source=null;
+    }
     private void OnPreviewReady(PreviewData data)
     {
         if(_disposed)return;
@@ -487,11 +496,7 @@ public sealed partial class NativeWindow : IDisposable
         try
         {
             var bytes=Convert.FromBase64String(data.ThumbnailBase64);
-            using var memory=new MemoryStream(bytes);
-            var bitmap=new BitmapImage();
-            bitmap.BeginInit();bitmap.CacheOption=BitmapCacheOption.OnLoad;
-            bitmap.DecodePixelWidth=720;bitmap.StreamSource=memory;bitmap.EndInit();bitmap.Freeze();
-            F<Image>("PreviewImage").Source=bitmap;
+            F<Image>("PreviewImage").Source=PreviewImage.Decode(bytes);
         }
         catch(Exception e){Log("Thumbnail decode failed: "+e.Message);F<Image>("PreviewImage").Source=null;}
     }

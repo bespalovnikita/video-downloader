@@ -49,6 +49,8 @@ public sealed partial class NativeWindow
         {
             if ((string.IsNullOrWhiteSpace(row.Title) || string.Equals(row.Title,row.Url,StringComparison.Ordinal)) &&
                 discoveredTitles.TryGetValue(row.Url,out string? title)) row.Title=title;
+            if (string.Equals(_previewUrl,row.Url,StringComparison.Ordinal) && !string.IsNullOrWhiteSpace(row.Title) &&
+                !string.Equals(row.Title,row.Url,StringComparison.Ordinal)) T("PreviewTitle").Text=row.Title;
         }
         Reindex();
         if (_checkpointReadOnly)

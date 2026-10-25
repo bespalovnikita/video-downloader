@@ -13,6 +13,8 @@ public sealed class PreviewService : IDisposable
     private readonly Func<string> _cookiePath;
     private readonly Action<PreviewData> _ready;
     private readonly Action<string> _log;
+    private readonly Action<string,string>? _failed;
+    private readonly Func<byte[],bool> _thumbnailValidator;
     private readonly List<string> _pending=new();
     private readonly HashSet<string> _known=new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string,PreviewData> _cache=new(StringComparer.Ordinal);
@@ -26,7 +28,8 @@ public sealed class PreviewService : IDisposable
     private readonly string? _ffmpegOverride;
     private readonly Task _worker;
     public PreviewService(string exe,AppPersistence data,Func<string> cookiePath,Action<PreviewData> ready,Action<string> log,
-        TimeSpan? requestTimeout=null,TimeSpan? thumbnailTimeout=null,string? ffmpegPath=null)
+        TimeSpan? requestTimeout=null,TimeSpan? thumbnailTimeout=null,string? ffmpegPath=null,
+        Action<string,string>? failed=null,Func<byte[],bool>? thumbnailValidator=null)
     {
         _requestTimeout=requestTimeout??TimeSpan.FromSeconds(30);
         _thumbnailTimeout=thumbnailTimeout??TimeSpan.FromSeconds(12);
@@ -34,6 +37,7 @@ public sealed class PreviewService : IDisposable
             throw new ArgumentOutOfRangeException(nameof(requestTimeout));
         _exe=exe;_cacheDir=data.PreviewDir;_cookiePath=cookiePath;_ready=ready;_log=log;
         _ffmpegOverride=ffmpegPath;
+        _failed=failed;_thumbnailValidator=thumbnailValidator??PreviewImage.IsValid;
         Directory.CreateDirectory(_cacheDir);
         _worker=Task.Run(Worker);
     }
@@ -66,7 +70,8 @@ public sealed class PreviewService : IDisposable
             if (entry is { Title:not null, Uploader:not null, PlaylistTitle:not null,
                 Extractor:not null, Codecs:not null, DynamicRange:not null, ThumbnailBase64:not null } &&
                 entry.Duration>=0 && entry.Duration<TimeSpan.MaxValue.TotalSeconds &&
-                DateTime.UtcNow-entry.SavedAtUtc<TimeSpan.FromHours(72)) {
+                DateTime.UtcNow-entry.SavedAtUtc<TimeSpan.FromHours(72) &&
+                (entry.ThumbnailBase64.Length==0 || _thumbnailValidator(Convert.FromBase64String(entry.ThumbnailBase64)))) {
                 _cache[url]=entry;_thumbnailErrors[url]=Str(root,"ThumbnailError");return entry;
             }
         }
@@ -126,8 +131,16 @@ public sealed class PreviewService : IDisposable
                 }
             }
             catch(OperationCanceledException) when (_stop.IsCancellationRequested){break;}
-            catch(OperationCanceledException){_log("Preview timed out for "+url);}
-            catch(Exception e){_log("Preview unavailable for "+url+": "+e.Message);}
+            catch(OperationCanceledException)
+            {
+                _log("Preview timed out for "+url);
+                _failed?.Invoke(url,"Время получения метаданных истекло.");
+            }
+            catch(Exception e)
+            {
+                _log("Preview unavailable for "+url+": "+e.Message);
+                if(!_stop.IsCancellationRequested)_failed?.Invoke(url,e.Message);
+            }
             finally { lock(_gate) { _known.Remove(url); } }
         }
     }
@@ -225,6 +238,8 @@ public sealed class PreviewService : IDisposable
                     byte[] bytes=buffer.ToArray();
                     if(WebPImage(bytes) || AvifImage(bytes)) bytes=await ConvertWebPAsync(bytes,imageToken).ConfigureAwait(false);
                     if(!SupportedImage(bytes)) throw new IOException("Thumbnail response is not a supported JPEG, PNG, GIF, BMP or TIFF image.");
+                    if(!_thumbnailValidator(bytes))throw new IOException("Thumbnail image is damaged or exceeds the preview dimensions limit.");
+                    imageToken.ThrowIfCancellationRequested();
                     base64=Convert.ToBase64String(bytes);
                     thumbnailError="";
                     break;
@@ -275,7 +290,7 @@ public sealed class PreviewService : IDisposable
             await File.WriteAllBytesAsync(input,bytes,token).ConfigureAwait(false);
             var start=new ProcessStartInfo(ffmpeg){UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true};
             foreach(string argument in new[]{"-hide_banner","-v","error","-nostdin","-max_alloc","67108864","-max_pixels","16777216","-protocol_whitelist","file,pipe","-f",AvifImage(bytes)?"mov":"webp_pipe","-i",input,
-                "-frames:v","1","-threads","1","-vf","scale=720:720:force_original_aspect_ratio=decrease","-f","image2pipe","-c:v","png","pipe:1"})
+                "-frames:v","1","-threads","1","-vf","scale=w='min(720,iw)':h='min(720,ih)':force_original_aspect_ratio=decrease","-f","image2pipe","-c:v","png","pipe:1"})
                 start.ArgumentList.Add(argument);
             using var child=ManagedChildProcess.Start(start);
             var process=child.Process;
