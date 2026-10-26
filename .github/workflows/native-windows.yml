@@ -7,6 +7,8 @@ on:
       - 'native-tests/**'
       - 'collection-plugins/**'
       - 'tests/pornhub-collector-tests.py'
+      - 'tests/fixtures/**'
+      - 'tests/russian-ui-tests.ps1'
       - 'ui/**'
       - '.github/workflows/native-windows.yml'
       - '.github/scripts/ReleaseVersion.psm1'
@@ -58,6 +60,7 @@ jobs:
         timeout-minutes: 2
         run: |
           $env:VD_NATIVE_UI_TEST_RESULT = Join-Path $env:RUNNER_TEMP 'native-ui-result.txt'
+          $env:VD_NATIVE_TITLE_FIXTURE = (Resolve-Path 'native-tests/bin/Release/net8.0-windows/VideoDownloader.NativeTests.exe').Path
           $exe = (Resolve-Path 'native/bin/Release/net8.0-windows/win-x64/VideoDownloader.exe').Path
           $app = Start-Process -FilePath $exe -ArgumentList '--ui-self-test' -PassThru
           $deadline = [DateTime]::UtcNow.AddSeconds(90)

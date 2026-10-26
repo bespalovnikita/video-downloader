@@ -1,0 +1,111 @@
+{
+  "Version": 1,
+  "Subscriptions": [
+    {
+      "Id": "legacy-source-a",
+      "Url": "https://legacy.example/Collection?list=Exact",
+      "Title": "Первый источник",
+      "FeedUrl": "https://legacy.example/feed.xml",
+      "DownloadExisting": false,
+      "Initialized": true,
+      "Paused": true,
+      "LastAttemptUtc": "2026-10-18T10:00:00Z",
+      "LastSuccessUtc": "2026-10-17T10:00:00Z",
+      "LastError": "Previous scan failed",
+      "LastWarning": "RSS unavailable"
+    },
+    {
+      "Id": "legacy-source-b",
+      "Url": "https://legacy.example/collection?list=Exact",
+      "Title": "Второй источник",
+      "ShortName": "Архив",
+      "FeedUrl": "",
+      "DownloadExisting": true,
+      "Initialized": true,
+      "Paused": false,
+      "LastAttemptUtc": "2026-10-18T10:00:00Z",
+      "LastSuccessUtc": "2026-10-18T10:00:00Z",
+      "LastError": "",
+      "LastWarning": ""
+    }
+  ],
+  "Items": [
+    {
+      "SubscriptionId": "legacy-source-a",
+      "Url": "https://legacy.example/Video?token=Exact",
+      "Title": "Уведомление уже показано",
+      "State": "AlreadyProcessed",
+      "DiscoveredAtUtc": "2026-10-17T10:00:00Z",
+      "InitialQueuePending": false,
+      "SuccessAttributed": false,
+      "DuplicateSubscriptionId": "removed-source",
+      "DuplicateNotified": true
+    },
+    {
+      "SubscriptionId": "legacy-source-b",
+      "Url": "https://legacy.example/Video?token=Exact",
+      "Title": "Уведомление ожидает показа",
+      "State": "AlreadyProcessed",
+      "DiscoveredAtUtc": "2026-10-17T10:00:00Z",
+      "InitialQueuePending": false,
+      "SuccessAttributed": false,
+      "DuplicateSubscriptionId": "removed-source",
+      "DuplicateNotified": false
+    },
+    {
+      "SubscriptionId": "legacy-source-a",
+      "Url": "https://legacy.example/video?token=Exact",
+      "Title": "Точный регистр пути",
+      "State": "New",
+      "DiscoveredAtUtc": "2026-10-18T10:00:00Z",
+      "InitialQueuePending": false,
+      "SuccessAttributed": false,
+      "DuplicateSubscriptionId": "",
+      "DuplicateNotified": false
+    },
+    {
+      "SubscriptionId": "legacy-source-a",
+      "Url": "https://legacy.example/Video?token=exact",
+      "Title": "Точный регистр query",
+      "State": "Skipped",
+      "DiscoveredAtUtc": "2026-10-18T10:00:00Z",
+      "InitialQueuePending": false,
+      "SuccessAttributed": false,
+      "DuplicateSubscriptionId": "",
+      "DuplicateNotified": false
+    },
+    {
+      "SubscriptionId": "legacy-source-a",
+      "Url": "https://legacy.example/baseline",
+      "Title": "Исходный снимок",
+      "State": "Baseline",
+      "DiscoveredAtUtc": "2026-10-17T10:00:00Z",
+      "InitialQueuePending": false,
+      "SuccessAttributed": false,
+      "DuplicateSubscriptionId": "",
+      "DuplicateNotified": false
+    },
+    {
+      "SubscriptionId": "legacy-source-b",
+      "Url": "https://legacy.example/initial-backlog",
+      "Title": "Ещё не поставлено в очередь",
+      "State": "New",
+      "DiscoveredAtUtc": "2026-10-18T10:00:00Z",
+      "InitialQueuePending": true,
+      "SuccessAttributed": false,
+      "DuplicateSubscriptionId": "",
+      "DuplicateNotified": false
+    },
+    {
+      "SubscriptionId": "legacy-source-b",
+      "Url": "https://legacy.example/global-only",
+      "Title": "Ранее скачано обычным URL",
+      "State": "Processed",
+      "DiscoveredAtUtc": "2026-10-18T10:00:00Z",
+      "InitialQueuePending": false,
+      "SuccessAttributed": false,
+      "DuplicateSubscriptionId": "",
+      "DuplicateNotified": false
+    }
+  ]
+}

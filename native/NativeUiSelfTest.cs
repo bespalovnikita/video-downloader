@@ -27,6 +27,10 @@ internal static class NativeUiSelfTest
         Window? window=null;
         try
         {
+            Stage("testing cold title ingress through metadata worker");
+            NativeWindow.TestColdTitleIngress(root);
+            Stage("testing duplicate-history dialog choices");
+            NativeWindow.TestDuplicateHistoryChoices(root);
             Stage("testing startup recovery dialogs and empty-queue settings");
             VerifyStartupRecovery(root,Stage);
             using var input=File.OpenRead(Path.Combine(AppContext.BaseDirectory,"ui","MainWindow.xaml"));
@@ -59,6 +63,9 @@ internal static class NativeUiSelfTest
 
             Stage("testing URL and background video title display modes");
             controller.TestTitleDisplay(root);
+
+            Stage("testing tray visibility, protocol and native IPC");
+            controller.TestTrayAndProtocolIngress(root);
 
             Stage("testing live Add while duplicate dialogs pump the dispatcher");
             controller.TestLiveAddDuringDuplicateDialog(root);

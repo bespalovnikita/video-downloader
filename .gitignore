@@ -1,0 +1,8 @@
+**/bin/
+**/obj/
+**/__pycache__/
+*.pyc
+/dist/
+/work/
+/.vs/
+*.user

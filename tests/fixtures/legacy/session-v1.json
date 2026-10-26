@@ -1,0 +1,91 @@
+{
+  "Version": 1,
+  "SavedAtUtc": "2026-10-18T10:00:00Z",
+  "Settings": {
+    "Profile": "Music MP3",
+    "Quality": "Best",
+    "Codec": "Auto",
+    "Container": "Auto",
+    "RateLimit": "2M",
+    "Threads": "3",
+    "Fragments": "2",
+    "FilenameTemplate": "%(title)s [%(id)s].%(ext)s",
+    "Output": "__SELECTED_OUTPUT__",
+    "Cookies": "__COOKIES_FILE__",
+    "SubtitleLangs": "ru.*,en.*",
+    "WriteSubs": true,
+    "AutoSubs": false,
+    "EmbedSubs": false,
+    "EmbedThumbnail": true,
+    "EmbedMetadata": true,
+    "EmbedChapters": false,
+    "Archive": false,
+    "Sponsor": true,
+    "AudioOnly": true,
+    "WatchClipboard": true,
+    "ShowVideoTitles": true
+  },
+  "Queue": [
+    {
+      "Order": 1,
+      "Url": "https://legacy.example/cleanup-saved?token=Exact",
+      "Status": "Interrupted",
+      "State": "Cleanup failed",
+      "Title": "Название из прежней очереди",
+      "SubscriptionId": "legacy-source-a",
+      "SubscriptionName": "123",
+      "PendingRemoval": true,
+      "AttemptFinished": true,
+      "CleanupError": "Locked file from checkpoint",
+      "CleanupPaths": ["__SAVED_MEDIA__"],
+      "OwnedPaths": ["__SAVED_MEDIA__"],
+      "Path": "__SAVED_MEDIA__",
+      "OutputRoot": "__ORIGINAL_OUTPUT__",
+      "RunDir": "__RUN_DIR__",
+      "StageDir": "__SAVED_STAGE__",
+      "TransferredBytes": 321
+    },
+    {
+      "Order": 2,
+      "Url": "https://legacy.example/next-start",
+      "Status": "Queued",
+      "Title": "Повторно добавленный материал",
+      "DeferredToNextStart": true,
+      "SubscriptionId": "legacy-source-a",
+      "SubscriptionName": "123"
+    },
+    {
+      "Order": 3,
+      "Url": "https://legacy.example/Video?token=Exact",
+      "Status": "Running",
+      "Title": "Материал из финального события",
+      "SubscriptionId": "legacy-source-a",
+      "SubscriptionName": "123"
+    },
+    {
+      "Order": 4,
+      "Url": "https://legacy.example/video?token=Exact",
+      "Status": "Running",
+      "Title": "Другой регистр пути"
+    },
+    {
+      "Order": 5,
+      "Url": "https://legacy.example/cleanup-event",
+      "Status": "Running"
+    },
+    {
+      "Order": 6,
+      "Url": "https://legacy.example/unowned-result",
+      "Status": "Completed",
+      "Path": "__UNOWNED_MEDIA__"
+    }
+  ],
+  "Engine": {
+    "Pid": 2147483647,
+    "StartedUtc": "2000-01-01T00:00:00Z",
+    "EventsPath": "__EVENTS_FILE__",
+    "RunDir": "__RUN_DIR__",
+    "OutputRoot": "__ORIGINAL_OUTPUT__",
+    "CancelDir": "__CANCEL_DIR__"
+  }
+}

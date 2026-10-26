@@ -34,10 +34,7 @@ public static class Program
         {
             try
             {
-                using var client=new NamedPipeClientStream(".",PipeName,PipeDirection.Out);
-                client.Connect(1200);
-                using var writer=new StreamWriter(client,new UTF8Encoding(false)) { AutoFlush=true };
-                writer.WriteLine(JsonSerializer.Serialize(args));
+                ForwardArguments(args);
             }
             catch(Exception e)
             {
@@ -80,13 +77,21 @@ public static class Program
             try { singleton.ReleaseMutex(); }catch(ApplicationException){}
         }
     }
-    private static async Task ListenForSecondaryInstancesAsync(NativeWindow ui,CancellationToken cancel)
+    internal static void ForwardArguments(string[] args,string? pipeName=null)
+    {
+        using var client=new NamedPipeClientStream(".",pipeName??PipeName,PipeDirection.Out);
+        client.Connect(1200);
+        using var writer=new StreamWriter(client,new UTF8Encoding(false)) { AutoFlush=true };
+        writer.WriteLine(JsonSerializer.Serialize(args));
+    }
+
+    internal static async Task ListenForSecondaryInstancesAsync(NativeWindow ui,CancellationToken cancel,string? pipeName=null)
     {
         while (!cancel.IsCancellationRequested)
         {
             try
             {
-                await using var pipe=new NamedPipeServerStream(PipeName,PipeDirection.In,1,
+                await using var pipe=new NamedPipeServerStream(pipeName??PipeName,PipeDirection.In,1,
                     PipeTransmissionMode.Byte,PipeOptions.Asynchronous|PipeOptions.CurrentUserOnly);
                 await pipe.WaitForConnectionAsync(cancel).ConfigureAwait(false);
                 using var reader=new StreamReader(pipe,Encoding.UTF8,leaveOpen:true);
