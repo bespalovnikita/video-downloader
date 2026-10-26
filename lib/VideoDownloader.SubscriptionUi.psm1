@@ -167,34 +167,133 @@ function Update-VdSubscriptionUi($Context,[switch]$Reconcile,[string]$SelectId='
     finally { $Context.Updating=$false }
 }
 
+function Update-VdSubscriptionUiProgress($Context) {
+    if ($Context.Closed -or -not $Context.CheckProgress) {return}
+    $state=$Context.CheckProgress
+    $controls=$Context.Controls
+    $controls.SubscriptionCheckProgressPanel.Visibility='Visible'
+    $controls.SubscriptionCheckSourceText.Text=$state.SourceTitle
+    $controls.SubscriptionCheckSourceText.ToolTip=$state.SourceUrl
+    $controls.SubscriptionCheckStageText.Text=$state.StageText
+    $controls.SubscriptionCheckCountText.Text="Проверено: $($state.Completed) из $($state.Total) • Успешно: $($state.Succeeded) • Ошибок: $($state.Failed)"+$(if($state.Skipped){" • Пропущено: $($state.Skipped)"}else{''})
+    $elapsed=$state.Watch.Elapsed
+    $controls.SubscriptionCheckElapsedText.Text='Прошло: '+$elapsed.ToString('hh\:mm\:ss')
+    $details=[Collections.Generic.List[string]]::new()
+    if($null -ne $state.ItemCount){$details.Add("Материалов в полном списке: $($state.ItemCount)")}
+    if($null -ne $state.MetadataBytes){$details.Add(('Метаданные: {0:N1} КиБ' -f ($state.MetadataBytes/1024.0)))}
+    if($state.Message){$details.Add([string]$state.Message)}
+    $controls.SubscriptionCheckDetailText.Text=$details -join ' • '
+    $controls.SubscriptionCheckOverallProgress.Maximum=[Math]::Max(1,$state.Total)
+    $controls.SubscriptionCheckOverallProgress.Value=[Math]::Min($state.Completed,$state.Total)
+    $controls.SubscriptionCheckActivityProgress.IsIndeterminate=($state.Running -and -not $state.Cancelled)
+}
+
+function Set-VdSubscriptionUiProgressStage($Context,[string]$Stage,$Record=$null) {
+    if ($Context.Closed -or -not $Context.CheckProgress -or -not $Context.CheckProgress.Running -or $Context.CheckProgress.Cancelled){return}
+    $text=switch($Stage) {
+        'Enumerating' {'Получаем полный список материалов'}
+        'Parsing' {'Разбираем полный список'}
+        'Feed' {'Проверяем RSS / Atom'}
+        'Ready' {'Полный список получен'}
+        'Saving' {'Сравниваем и сохраняем результат'}
+        'Queueing' {'Добавляем материалы в очередь'}
+        default {return}
+    }
+    $Context.CheckProgress.StageText=$text
+    if($Record){
+        if($null -ne $Record.ItemCount){$Context.CheckProgress.ItemCount=[int]$Record.ItemCount}
+        if($null -ne $Record.MetadataBytes){$Context.CheckProgress.MetadataBytes=[long]$Record.MetadataBytes}
+    }
+    Update-VdSubscriptionUiProgress $Context
+}
+
+function Start-VdSubscriptionUiProgress($Context,[int]$Added) {
+    if($Added -le 0){return}
+    if(-not $Context.CheckProgress -or -not $Context.CheckProgress.Running){
+        $Context.CheckProgress=@{Running=$true;Cancelled=$false;Total=0;Completed=0;Succeeded=0;Failed=0;Skipped=0;
+            SourceTitle='Подготовка проверки';SourceUrl='';StageText='Подготовка проверки';ItemCount=$null;MetadataBytes=$null;Message='';
+            Watch=[Diagnostics.Stopwatch]::StartNew()}
+    }
+    $Context.CheckProgress.Total+=$Added
+    Update-VdSubscriptionUiProgress $Context
+}
+
+function Finish-VdSubscriptionUiProgress($Context) {
+    if(-not $Context.CheckProgress -or -not $Context.CheckProgress.Running){return}
+    $state=$Context.CheckProgress
+    $state.Running=$false;$state.Watch.Stop()
+    $state.StageText=if($state.Cancelled){'Проверка отменена'}elseif($state.Failed){'Проверка завершена с ошибками'}else{'Проверка завершена'}
+    Update-VdSubscriptionUiProgress $Context
+}
+
+function Receive-VdSubscriptionUiProgress($Context) {
+    if($Context.Applying){Update-VdSubscriptionUiProgress $Context;return}
+    if(-not $Context.ProgressQueue){Update-VdSubscriptionUiProgress $Context;return}
+    $last=$null;$entry=$null
+    # Progress is a side channel: it never enters the scan result or touches
+    # WPF in the worker runspace. Bound the work done on each dispatcher tick.
+    for($count=0;$count -lt 128 -and $Context.ProgressQueue.TryDequeue([ref]$entry);$count++) {
+        if(-not $Context.Closed -and $Context.CheckProgress -and $Context.CheckProgress.Running -and
+            -not $Context.CheckProgress.Cancelled -and -not ($Context.Cancellation -and $Context.Cancellation.IsCancellationRequested) -and $entry.CheckId -ceq $Context.CheckId -and $entry.SourceId -ceq $Context.ActiveId){$last=$entry.Progress}
+        $entry=$null
+    }
+    if($last){Set-VdSubscriptionUiProgressStage $Context ([string]$last.Stage) $last}
+    Update-VdSubscriptionUiProgress $Context
+}
+
 function Add-VdSubscriptionUiChecks($Context,[AllowEmptyCollection()][string[]]$Ids) {
+    if($Context.Closed){return}
+    if($Context.CheckProgress -and $Context.CheckProgress.Running -and $Context.CheckProgress.Cancelled){
+        $Context.Controls.SubscriptionStatusText.Text='Дождитесь завершения отмены перед новой проверкой.'
+        return
+    }
     $snapshot=Read-VdSubscriptions -Directory $Context.Directory
+    $added=0
     foreach ($id in $Ids) {
         $source=@($snapshot.Subscriptions | Where-Object {$_.Id -ceq $id -and -not $_.Paused} | Select-Object -First 1)
         if ($source.Count -eq 0 -or $Context.ActiveId -ceq $id -or $Context.Pending.Contains($id)) { continue }
-        $Context.Pending.Add($id)
+        $Context.Pending.Add($id);$added++
     }
+    Start-VdSubscriptionUiProgress $Context $added
     Start-VdSubscriptionUiNextCheck $Context
 }
 
 function Start-VdSubscriptionUiNextCheck($Context) {
-    if ($Context.Closed -or $Context.Job) { return }
+    # Cancellation remains owned while a completed result is being applied.
+    # Modal owner dialogs can pump this timer; do not start another worker then.
+    if ($Context.Closed -or $Context.Job -or $Context.Cancellation) { return }
     while ($Context.Pending.Count -gt 0) {
         $id=$Context.Pending[0];$Context.Pending.RemoveAt(0)
         try {
             $snapshot=Read-VdSubscriptions -Directory $Context.Directory
             $sources=@($snapshot.Subscriptions | Where-Object {$_.Id -ceq $id -and -not $_.Paused} | Select-Object -First 1)
-            if ($sources.Count -eq 0) { continue }
+            if ($sources.Count -eq 0) {
+                if($Context.CheckProgress){$Context.CheckProgress.Total--;$Context.CheckProgress.Skipped++;Update-VdSubscriptionUiProgress $Context}
+                continue
+            }
             $null=Get-VdSubscriptionUiHistory $Context.Directory
             $cookie=[string](& $Context.CookiePathScript)
             $Context.Cancellation=[Threading.CancellationTokenSource]::new()
             $Context.ActiveId=$id
-            $Context.Job=Start-ThreadJob -ArgumentList $Context.StoreModule,$Context.YtDlpPath,$sources[0],$cookie,$Context.Cancellation.Token -ScriptBlock {
-                param($module,$exe,$source,$cookiePath,$token)
+            $Context.CheckId=[guid]::NewGuid().ToString('N')
+            $Context.ProgressQueue=[Collections.Concurrent.ConcurrentQueue[object]]::new()
+            $Context.CheckProgress.SourceTitle=if($sources[0].Title){[string]$sources[0].Title}else{[string]$sources[0].Url}
+            $Context.CheckProgress.SourceUrl=[string]$sources[0].Url
+            $Context.CheckProgress.ItemCount=$null;$Context.CheckProgress.MetadataBytes=$null;$Context.CheckProgress.Message=''
+            Set-VdSubscriptionUiProgressStage $Context 'Enumerating'
+            $Context.Job=Start-ThreadJob -ArgumentList $Context.StoreModule,$Context.YtDlpPath,$sources[0],$cookie,$Context.Cancellation.Token,$Context.ProgressQueue,$Context.CheckId -ScriptBlock {
+                param($module,$exe,$source,$cookiePath,$token,$progressQueue,$checkId)
                 $ErrorActionPreference='Stop'
                 try {
                     Import-Module $module -Force
-                    $scan=Invoke-VdSubscriptionScan -YtDlpPath $exe -Subscription $source -CookiePath $cookiePath -CancellationToken $token
+                    $sourceId=[string]$source.Id
+                    $report={param($record)
+                        $progressQueue.Enqueue([pscustomobject]@{CheckId=$checkId;SourceId=$sourceId;Progress=$record})
+                        # A closed dispatcher must not allow an unbounded backlog.
+                        $discard=$null
+                        while($progressQueue.Count -gt 256 -and $progressQueue.TryDequeue([ref]$discard)){$discard=$null}
+                    }.GetNewClosure()
+                    $scan=Invoke-VdSubscriptionScan -YtDlpPath $exe -Subscription $source -CookiePath $cookiePath -CancellationToken $token -ProgressScript $report
                     [pscustomobject]@{Success=$true;Scan=$scan;Error=''}
                 } catch { [pscustomobject]@{Success=$false;Scan=$null;Error=$_.Exception.Message} }
             }
@@ -206,25 +305,29 @@ function Start-VdSubscriptionUiNextCheck($Context) {
         } catch {
             $failure=$_.Exception.Message
             if ($Context.Cancellation) {$Context.Cancellation.Dispose();$Context.Cancellation=$null}
-            $Context.ActiveId=''
+            $Context.ActiveId='';$Context.CheckId='';$Context.ProgressQueue=$null
+            if($Context.CheckProgress){$Context.CheckProgress.Failed++;$Context.CheckProgress.Completed++;$Context.CheckProgress.Message=$failure;Update-VdSubscriptionUiProgress $Context}
             try {$null=Set-VdSubscriptionFailure -Directory $Context.Directory -Id $id -Error $failure} catch { }
             Show-VdSubscriptionUiError $Context ('Проверка не началась: '+$failure)
         }
     }
+    Finish-VdSubscriptionUiProgress $Context
     $Context.Timer.Stop()
     Update-VdSubscriptionUiButtons $Context
 }
 
 function Complete-VdSubscriptionUiCheck($Context) {
+    Receive-VdSubscriptionUiProgress $Context
     if (-not $Context.Job) {
         if ($Context.Closed) {$Context.Timer.Stop()} else {Start-VdSubscriptionUiNextCheck $Context}
         return
     }
     if ($Context.Job.State -notin @('Completed','Failed','Stopped')) { return }
+    $Context.Applying=$true
     $id=$Context.ActiveId
     $completionCancellation=$Context.Cancellation
     $cancelled=$Context.Cancellation.IsCancellationRequested
-    $result=$null
+    $result=$null;$success=$false;$failed=$false;$skipped=$false
     try {
         $output=@(Receive-Job -Job $Context.Job -ErrorAction Stop)
         $result=@($output | Where-Object {$null -ne $_ -and $_.PSObject.Properties['Success']} | Select-Object -Last 1)
@@ -233,7 +336,7 @@ function Complete-VdSubscriptionUiCheck($Context) {
     } catch { $result=[pscustomobject]@{Success=$false;Scan=$null;Error=$_.Exception.Message} }
     finally {
         Remove-Job -Job $Context.Job -Force -ErrorAction SilentlyContinue
-        $Context.Job=$null;$Context.ActiveId=''
+        $Context.Job=$null
     }
     try {
         $snapshot=Read-VdSubscriptions -Directory $Context.Directory
@@ -241,31 +344,47 @@ function Complete-VdSubscriptionUiCheck($Context) {
         if ($source.Count -gt 0) {
             if ($cancelled) {
                 $null=Set-VdSubscriptionFailure -Directory $Context.Directory -Id $id -Error 'Проверка отменена пользователем; предыдущие результаты сохранены.'
+                if(-not $Context.CheckProgress.Cancelled){$skipped=$true}
             } elseif ($result.Success -and -not $source[0].Paused -and -not $Context.Closed) {
+                Set-VdSubscriptionUiProgressStage $Context 'Saving' ([pscustomobject]@{ItemCount=@($result.Scan.Items).Count;MetadataBytes=$null})
                 $history=Get-VdSubscriptionUiHistory $Context.Directory
                 $snapshot=Apply-VdSubscriptionScan -Directory $Context.Directory -Id $id -Scan $result.Scan -SuccessfulUrls $history -CancellationToken $completionCancellation.Token
+                $success=$true
+                if($result.Scan.Title){$Context.CheckProgress.SourceTitle=[string]$result.Scan.Title}
                 $initial=@($snapshot.Items | Where-Object {$_.SubscriptionId -ceq $id -and $_.State -eq 'New' -and $_.InitialQueuePending})
                 $status='Полная проверка завершена. Новые материалы доступны во входящих.'
                 if ($initial.Count -gt 0) {
+                    Set-VdSubscriptionUiProgressStage $Context 'Queueing'
                     $queued=Invoke-VdSubscriptionUiQueue $Context $initial
                     $status="В очередь добавлено: $($queued.Accepted). Запуск — кнопкой Start."
                     if ($queued.Remaining -gt 0) {$status+=" Не добавлено: $($queued.Remaining); материалы сохранены во входящих."}
                 }
                 if ($result.Scan.Warning) {$status+=' Предупреждение: '+$result.Scan.Warning}
+                $Context.CheckProgress.Message=$status
                 $Context.Controls.SubscriptionStatusText.Text=$status
             } elseif (-not $result.Success) {
+                $failed=$true;$Context.CheckProgress.Message=[string]$result.Error
                 $null=Set-VdSubscriptionFailure -Directory $Context.Directory -Id $id -Error ([string]$result.Error)
                 if (-not $Context.Closed) {Show-VdSubscriptionUiError $Context ('Полная проверка не завершена: '+$result.Error)}
-            }
-        }
+            } else {$skipped=$true}
+        } else {$skipped=$true}
     } catch {
+        $failed=$true;$Context.CheckProgress.Message=$_.Exception.Message
         try {$null=Set-VdSubscriptionFailure -Directory $Context.Directory -Id $id -Error $_.Exception.Message} catch { }
         if (-not $Context.Closed) {Show-VdSubscriptionUiError $Context ('Результат проверки не применён: '+$_.Exception.Message)}
     } finally {
+        if($Context.CheckProgress){
+            if($success -and -not $failed){$Context.CheckProgress.Succeeded++}
+            if($failed){$Context.CheckProgress.Failed++}
+            if($success -or $failed){$Context.CheckProgress.Completed++}
+            if($skipped){$Context.CheckProgress.Skipped++;$Context.CheckProgress.Total--}
+        }
+        $Context.ActiveId='';$Context.CheckId='';$Context.ProgressQueue=$null;$Context.Applying=$false
         if ([object]::ReferenceEquals($Context.Cancellation,$completionCancellation)) { $Context.Cancellation=$null }
         $completionCancellation.Dispose()
     }
     if ($Context.Closed) {
+        Finish-VdSubscriptionUiProgress $Context
         $Context.Timer.Stop()
         [void]$script:ClosingSubscriptionWindows.Remove($Context)
         return
@@ -277,6 +396,12 @@ function Complete-VdSubscriptionUiCheck($Context) {
 function Stop-VdSubscriptionUiChecks($Context) {
     $Context.Pending.Clear()
     if ($Context.Cancellation) {$Context.Cancellation.Cancel()}
+    if($Context.CheckProgress -and $Context.CheckProgress.Running){
+        $Context.CheckProgress.Cancelled=$true;$Context.CheckProgress.Watch.Stop()
+        $Context.CheckProgress.StageText='Отмена проверки…'
+        Update-VdSubscriptionUiProgress $Context
+        if(-not $Context.Job -and -not $Context.Cancellation){Finish-VdSubscriptionUiProgress $Context;$Context.Timer.Stop()}
+    }
     if (-not $Context.Closed) {
         $Context.Controls.SubscriptionStatusText.Text='Проверка отменяется. Предыдущие результаты сохраняются.'
         Update-VdSubscriptionUiButtons $Context
@@ -324,14 +449,16 @@ function Show-VdSubscriptionsWindow {
     foreach($name in @('SubscriptionUrlBox','SubscriptionFeedBox','NewSubscriptionNameBox','SubscriptionNameBox','SaveSubscriptionNameButton','DownloadExistingCheck','AddSubscriptionButton','SubscriptionGrid',
         'CheckSubscriptionButton','CheckAllSubscriptionsButton','CancelSubscriptionCheckButton','PauseSubscriptionButton',
         'RemoveSubscriptionButton','SubscriptionInboxTitle','SubscriptionInboxGrid','QueueSubscriptionItemsButton',
-        'SkipSubscriptionItemsButton','OpenSubscriptionItemButton','SubscriptionStatusText')) {
+        'SkipSubscriptionItemsButton','OpenSubscriptionItemButton','SubscriptionStatusText','SubscriptionCheckProgressPanel',
+        'SubscriptionCheckSourceText','SubscriptionCheckStageText','SubscriptionCheckCountText','SubscriptionCheckElapsedText','SubscriptionCheckDetailText',
+        'SubscriptionCheckOverallProgress','SubscriptionCheckActivityProgress')) {
         $controls[$name]=$window.FindName($name)
         if($null -eq $controls[$name]) {throw "В разметке подписок отсутствует элемент $name."}
     }
     $context=@{Key=$key;Owner=$Owner;Window=$window;Controls=$controls;Directory=[IO.Path]::GetFullPath($DataDirectory);
         StoreModule=(Join-Path $PSScriptRoot 'VideoDownloader.Subscriptions.psm1');YtDlpPath=$YtDlpPath;
         CookiePathScript=$CookiePathScript;QueueUrls=$QueueUrls;Snapshot=$null;Closed=$false;Updating=$false;Notifying=$false;
-        LastError='';NameEditorId='';NameEditorSavedValue='';Pending=[Collections.Generic.List[string]]::new();Job=$null;Cancellation=$null;ActiveId='';OwnerClosedHandler=$null;
+        LastError='';NameEditorId='';NameEditorSavedValue='';Pending=[Collections.Generic.List[string]]::new();Job=$null;Cancellation=$null;ActiveId='';CheckId='';ProgressQueue=$null;CheckProgress=$null;Applying=$false;OwnerClosedHandler=$null;
         Timer=[Windows.Threading.DispatcherTimer]::new()}
     $context.Timer.Interval=[TimeSpan]::FromMilliseconds(200)
     $context.Timer.Add_Tick((New-VdSubscriptionUiHandler $context {param($c) Complete-VdSubscriptionUiCheck $c} -AllowClosed))

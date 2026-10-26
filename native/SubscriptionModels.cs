@@ -51,3 +51,4 @@ public sealed class SubscriptionSnapshot
 
 public sealed record DiscoveredMedia(string Url, string Title);
 public sealed record SubscriptionScan(string Title, IReadOnlyList<DiscoveredMedia> Items, string FeedUrl, string Warning, string SuggestedName = "");
+public sealed record SubscriptionScanProgress(string Stage, int? ItemCount = null, long? MetadataBytes = null);

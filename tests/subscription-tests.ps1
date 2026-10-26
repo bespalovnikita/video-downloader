@@ -208,10 +208,68 @@ try {
         Expect-Error { Invoke-VdSubscriptionScan -YtDlpPath 'injected-no-executable' -Subscription $source -ProcessRunner $partialRunner -FeedLoader { $rss } } 'Incomplete-page warnings must reject an otherwise successful metadata response'
     }
 
+    # Progress is separate from the completed scan. It reports actual phases
+    # and only supplies an item count after full metadata has been parsed.
+    $progressJson='{"title":"Progress source","entries":[{"url":"https://other.example/one"},{"url":"https://other.example/two","title":"Two"}]}'
+    $progressRunner={@{ExitCode=0;Stdout=$progressJson;Stderr=''}}.GetNewClosure()
+    $progressEvents=[Collections.Generic.List[object]]::new()
+    $reportProgress={param($event) [void]$progressEvents.Add($event);'ignored observer output'}.GetNewClosure()
+    $progressResult=@(Invoke-VdSubscriptionScan -YtDlpPath 'injected-no-executable' -Subscription $source -ProcessRunner $progressRunner -FeedLoader {$rss} -ProgressScript $reportProgress)
+    Assert ($progressResult.Count -eq 1 -and $progressResult[0].Title -ceq 'Progress source' -and
+        $progressResult[0].Items.Count -eq 2 -and $progressResult[0].Items[0].Title -ceq 'From RSS') 'Progress output must not leak into or replace the real scan result'
+    Assert ((@($progressEvents.Stage) -join '|') -ceq 'Enumerating|Parsing|Feed|Ready') 'The progress phases must follow complete metadata before optional feed enrichment'
+    Assert ($null -eq $progressEvents[0].ItemCount -and $null -eq $progressEvents[0].MetadataBytes -and
+        $null -eq $progressEvents[1].ItemCount -and $progressEvents[1].MetadataBytes -eq [Text.Encoding]::UTF8.GetByteCount($progressJson) -and
+        $progressEvents[2].ItemCount -eq 2 -and $progressEvents[3].ItemCount -eq 2) 'Unknown totals must remain unknown; confirmed counts and bytes must reflect the actual response'
+    $noFeed=@{Url=$source.Url;FeedUrl=''}
+    $progressEvents.Clear()
+    $scan=Invoke-VdSubscriptionScan -YtDlpPath 'injected-no-executable' -Subscription $noFeed -ProcessRunner $progressRunner -ProgressScript $reportProgress
+    Assert ((@($progressEvents.Stage) -join '|') -ceq 'Enumerating|Parsing|Ready' -and $scan.Items.Count -eq 2) 'A scan without a feed must not display a fictitious feed phase'
+    $progressEvents.Clear()
+    $scan=Invoke-VdSubscriptionScan -YtDlpPath 'injected-no-executable' -Subscription $source -ProcessRunner $progressRunner -FeedLoader {throw 'Progress feed unavailable'} -ProgressScript $reportProgress
+    Assert ($progressEvents[-1].Stage -ceq 'Ready' -and $scan.Warning -match 'Progress feed unavailable' -and $scan.Items.Count -eq 2) 'Optional RSS failure must retain successful full results and report them ready for saving'
+    $scan=Invoke-VdSubscriptionScan -YtDlpPath 'injected-no-executable' -Subscription $noFeed -ProcessRunner $progressRunner -ProgressScript {throw 'Observer unavailable'}
+    Assert ($scan.Items.Count -eq 2) 'An optional progress consumer failure must not change metadata or fail the scan'
+    $noisyResult=@(Invoke-VdSubscriptionScan -YtDlpPath 'injected-no-executable' -Subscription $noFeed -ProcessRunner $progressRunner -ProgressScript {
+        Write-Error 'Observer nonterminating error' -ErrorAction Continue
+        Write-Warning 'Observer warning'
+        'Observer output'
+    } *>&1)
+    Assert ($noisyResult.Count -eq 1 -and $noisyResult[0].Items.Count -eq 2) 'Progress consumer error/warning streams must remain isolated from the real scan result'
+    foreach($badRunner in @(
+        {@{ExitCode=1;Stdout='';Stderr='Failed'}},
+        {@{ExitCode=0;Stdout='{}';Stderr=''}}
+    )) {
+        $progressEvents.Clear()
+        Expect-Error {Invoke-VdSubscriptionScan -YtDlpPath 'injected-no-executable' -Subscription $source -ProcessRunner $badRunner -ProgressScript $reportProgress} 'Failed or incomplete metadata must reject the scan with progress enabled'
+        Assert (@($progressEvents | Where-Object Stage -eq 'Ready').Count -eq 0) 'A failed scan must never report ready or a fabricated final item total'
+    }
+    $progressCancellation=[Threading.CancellationTokenSource]::new()
+    $cancelEvents=[Collections.Generic.List[object]]::new()
+    try {
+        $cancelProgress={param($event) [void]$cancelEvents.Add($event);if($event.Stage -ceq 'Parsing'){$progressCancellation.Cancel()}}.GetNewClosure()
+        Expect-Error {Invoke-VdSubscriptionScan -YtDlpPath 'injected-no-executable' -Subscription $source -ProcessRunner $progressRunner -CancellationToken $progressCancellation.Token -ProgressScript $cancelProgress} 'Cancellation between metadata receipt and parsing must still abort the scan'
+        Assert ((@($cancelEvents.Stage) -join '|') -ceq 'Enumerating|Parsing') 'Cancellation must stop before feed/ready progress is emitted'
+    } finally {$progressCancellation.Dispose()}
+
     # Exercise actual bounded native process I/O, timeout and cancellation, offline.
     $pwsh=(Get-Process -Id $PID).Path
     $result=Invoke-VdSubscriptionProcess -FilePath $pwsh -Arguments @('-NoProfile','-Command','[Console]::Out.Write("metadata"); [Console]::Error.Write("diagnostic")')
     Assert ($result.ExitCode -eq 0 -and $result.Stdout -ceq 'metadata' -and $result.Stderr -ceq 'diagnostic') 'Worker must drain stdout and stderr independently'
+    $byteProgress=[Collections.Generic.List[object]]::new()
+    $byteWatch=[Diagnostics.Stopwatch]::StartNew()
+    $byteReporter={param($event) [void]$byteProgress.Add(@{Record=$event;At=$byteWatch.ElapsedMilliseconds});'ignored child observer output'}.GetNewClosure()
+    $streamCommand='[Console]::Out.Write("first");[Console]::Out.Flush();Start-Sleep -Milliseconds 300;[Console]::Out.Write("second");[Console]::Out.Flush();Start-Sleep -Milliseconds 300;[Console]::Out.Write("third");[Console]::Out.Flush()'
+    $streamed=@(Invoke-VdSubscriptionProcess -FilePath $pwsh -Arguments @('-NoProfile','-Command',$streamCommand) -ProgressScript $byteReporter)
+    Assert ($streamed.Count -eq 1 -and $streamed[0].Stdout -ceq 'firstsecondthird' -and $streamed[0].ExitCode -eq 0) 'Real process byte progress must not contaminate either process output or its return record'
+    Assert ($byteProgress.Count -ge 1) 'Real streamed stdout must publish measured metadata bytes'
+    $lastBytes=0L;$lastAt=$null
+    foreach($sample in $byteProgress) {
+        Assert ($sample.Record.Stage -ceq 'Enumerating' -and $null -eq $sample.Record.ItemCount -and
+            $sample.Record.MetadataBytes -gt $lastBytes -and $sample.Record.MetadataBytes -le 16) 'Byte progress must remain cumulative actual stdout, without guessed video totals'
+        if($null -ne $lastAt){Assert ($sample.At-$lastAt -ge 200) 'Byte progress must be throttled instead of flooding the UI for every read'}
+        $lastBytes=$sample.Record.MetadataBytes;$lastAt=$sample.At
+    }
     Expect-Error { Invoke-VdSubscriptionProcess -FilePath $pwsh -Arguments @('-NoProfile','-Command','[Console]::Out.Write(("x"*4096)); Start-Sleep -Seconds 30') -MaxOutputBytes 128 } 'Native stdout limit must stop its process'
     $timer=[Diagnostics.Stopwatch]::StartNew()
     Expect-Error { Invoke-VdSubscriptionProcess -FilePath $pwsh -Arguments @('-NoProfile','-Command','Start-Sleep -Seconds 30') -TimeoutSeconds .2 } 'Native scan must enforce its deadline'

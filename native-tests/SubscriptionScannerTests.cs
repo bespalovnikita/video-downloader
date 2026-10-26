@@ -64,6 +64,17 @@ internal static class SubscriptionScannerTests
             for (int n = 0; n < 1024; n++) Console.Error.WriteLine(block);
             if (mode == "stderr-incomplete") Console.Error.WriteLine("WARNING: incomplete playlist enumeration");
         }
+        if (mode == "slow-output")
+        {
+            string response = config.RootElement.GetProperty("Response").GetString()!;
+            for (int offset = 0; offset < response.Length; offset += 1024)
+            {
+                Console.Write(response.Substring(offset, Math.Min(1024, response.Length - offset)));
+                Console.Out.Flush();
+                Thread.Sleep(80);
+            }
+            return true;
+        }
         Console.WriteLine(config.RootElement.GetProperty("Response").GetString());
         return true;
     }
@@ -122,6 +133,54 @@ internal static class SubscriptionScannerTests
                     "An unchanged feed must never suppress the next full yt-dlp enumeration");
                 Require(!source.Initialized && source.LastSuccessUtc == null,
                     "Scanner must return detached discovery data without advancing persisted subscription state");
+            });
+
+            await Check("scan progress reports real stages, bytes and item counts without changing results", async directory =>
+            {
+                string response = Collection(Entry(MediaA, ""), Entry(MediaB, new string('x', 8192)));
+                string config = Fixture(directory, response, "slow-output");
+                using var http = Http((_, _) => Task.FromResult(Xml(Rss((MediaA, "Feed title")))));
+                using var scanner = new SubscriptionScanner(TestExecutable(), http);
+                var source = Source("progress"); source.FeedUrl = "https://feeds.example.org/progress.xml";
+                var progress = new ProgressLog();
+                var scan = await scanner.ScanAsync(source, config, CancellationToken.None, progress).WaitAsync(TimeSpan.FromSeconds(15));
+                var events = progress.Events;
+                Require(events.Select(value => value.Value.Stage).Distinct().SequenceEqual(new[] { "Enumerating", "Parsing", "Feed", "Ready" }),
+                    "Progress must follow full enumeration, validation, optional feed, then readiness");
+                Require(events.Where(value => value.Value.Stage == "Enumerating").All(value => value.Value.ItemCount == null),
+                    "The scanner must not invent the number of videos before complete metadata is validated");
+                var bytes = events.Where(value => value.Value.Stage == "Enumerating" && value.Value.MetadataBytes > 0).ToArray();
+                Require(bytes.Length > 0 && bytes.All(value => value.Value.MetadataBytes <= Encoding.UTF8.GetByteCount(response)),
+                    "A streaming metadata response must report bytes actually received before process completion");
+                Require(bytes.Zip(bytes.Skip(1), (first, second) => second.At - first.At).All(delay => delay >= TimeSpan.FromMilliseconds(240)),
+                    "Live pipe updates must be throttled to at most four per second");
+                Require(events.Last().Value.ItemCount == 2 && events.Last().Value.MetadataBytes == Encoding.UTF8.GetByteCount(response) &&
+                    scan.Items.Count == 2 && scan.Items.Single(item => item.Url == MediaA).Title == "Feed title",
+                    "Ready progress must reflect the validated collection without replacing the returned discovery data");
+                Require(!source.Initialized && source.LastSuccessUtc == null,
+                    "Displaying progress must not mark the subscription saved or advance its baseline");
+
+                var disconnectedObserver = new ThrowingProgress();
+                var repeated = await scanner.ScanAsync(source, config, CancellationToken.None, disconnectedObserver).WaitAsync(TimeSpan.FromSeconds(15));
+                Require(repeated.Items.SequenceEqual(scan.Items) && disconnectedObserver.Calls > 0,
+                    "An unavailable progress display must not corrupt or abort otherwise complete metadata");
+            });
+
+            await Check("failed and cancelled metadata never report ready progress", async directory =>
+            {
+                string config = Fixture(directory, Collection(Entry(MediaA, "Partial")), "nonzero");
+                using var scanner = new SubscriptionScanner(TestExecutable());
+                var failed = new ProgressLog();
+                await RefusesAsync(() => scanner.ScanAsync(Source("progress-failed"), config, CancellationToken.None, failed),
+                    "A process error must remain a failed scan when progress is enabled");
+                Require(failed.Events.Count > 0 && failed.Events.All(value => value.Value.Stage != "Ready"),
+                    "Failed enumeration must never tell the UI that a full result is ready");
+                using var cancelled = new CancellationTokenSource();
+                cancelled.Cancel();
+                var stopped = new ProgressLog();
+                await RefusesAsync(() => scanner.ScanAsync(Source("progress-cancelled"), config, cancelled.Token, stopped),
+                    "A cancelled scan cannot return a complete result");
+                Require(stopped.Events.Count == 0, "Already-cancelled work must not publish a misleading active or ready phase");
             });
 
             await Check("RSS and Atom parsers merge exact item links without platform restrictions", _ =>
@@ -201,9 +260,12 @@ internal static class SubscriptionScannerTests
                         _ => Xml("<rss><broken>") }));
                     var source = Source("feed-fallback"); source.FeedUrl = "https://feeds.example.org/optional.xml";
                     using var scanner = new SubscriptionScanner(TestExecutable(), http);
-                    var scan = await scanner.ScanAsync(source, config, CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(15));
+                    var progress = new ProgressLog();
+                    var scan = await scanner.ScanAsync(source, config, CancellationToken.None, progress).WaitAsync(TimeSpan.FromSeconds(15));
                     Require(scan.Items.Count == 1 && scan.Items[0].Url == MediaA && scan.Warning.Length > 0,
                         "Optional feed failure must preserve successful full enumeration and report its warning: " + scenario);
+                    Require(progress.Events.Last().Value is { Stage: "Ready", ItemCount: 1 },
+                        "An optional feed warning must still report the complete metadata ready for saving");
                     if (oversizedBody != null) Require(oversizedBody.BytesRead < oversizedBody.TotalBytes,
                         "The feed byte cap must stop a chunked response early, before consuming its entire oversized body");
                 }
@@ -255,13 +317,16 @@ internal static class SubscriptionScannerTests
                     using var cancellation = new CancellationTokenSource();
                     var options = new SubscriptionScannerOptions { ScanTimeout = cancel ? TimeSpan.FromSeconds(15) : TimeSpan.FromSeconds(2) };
                     using var scanner = new SubscriptionScanner(TestExecutable(), null, options);
-                    Task<SubscriptionScan> pending = scanner.ScanAsync(Source("hang"), config, cancellation.Token);
+                    var progress = new ProgressLog();
+                    Task<SubscriptionScan> pending = scanner.ScanAsync(Source("hang"), config, cancellation.Token, progress);
                     try
                     {
                         await WaitUntil(() => File.Exists(Path.Combine(directory, "child.pid")), pending, TimeSpan.FromSeconds(10));
                         var watch = Stopwatch.StartNew();
                         if (cancel) cancellation.Cancel();
                         await RefusesAsync(async () => await pending, "Cancelled/timed-out scans must not return a successful result");
+                        Require(progress.Events.All(value => value.Value.Stage != "Ready"),
+                            "Cancelled/timed-out native work must not emit a ready result after cleanup");
                         Require(watch.Elapsed < TimeSpan.FromSeconds(4), "Cancellation/timeout must release the scanner promptly");
                         await WaitUntil(() => !IsAlive(ReadPid(directory, "parent.pid")) && !IsAlive(ReadPid(directory, "child.pid")), null, TimeSpan.FromSeconds(2));
                     }
@@ -288,6 +353,18 @@ internal static class SubscriptionScannerTests
     private static string Escape(string value) => System.Security.SecurityElement.Escape(value)!;
     private static HttpResponseMessage Xml(string body) => new(HttpStatusCode.OK) { Content = new StringContent(body, Encoding.UTF8, "application/xml") };
     private static HttpClient Http(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> handler) => new(new Handler(handler));
+    private sealed class ProgressLog : IProgress<SubscriptionScanProgress>
+    {
+        private readonly Stopwatch _watch = Stopwatch.StartNew();
+        private readonly System.Collections.Concurrent.ConcurrentQueue<(SubscriptionScanProgress Value, TimeSpan At)> _events = new();
+        internal IReadOnlyList<(SubscriptionScanProgress Value, TimeSpan At)> Events => _events.ToArray();
+        public void Report(SubscriptionScanProgress value) => _events.Enqueue((value, _watch.Elapsed));
+    }
+    private sealed class ThrowingProgress : IProgress<SubscriptionScanProgress>
+    {
+        internal int Calls { get; private set; }
+        public void Report(SubscriptionScanProgress value) { Calls++;throw new InvalidOperationException("Fixture display closed"); }
+    }
     private sealed class Handler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> send) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token) => send(request, token);
