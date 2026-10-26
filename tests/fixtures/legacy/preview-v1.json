@@ -1,0 +1,17 @@
+{
+  "CacheVersion": 1,
+  "SavedAtUtc": "__CACHE_SAVED_AT_UTC__",
+  "Url": "https://legacy.example/Video?token=Exact",
+  "Success": true,
+  "Title": "Название из прежнего кеша",
+  "PlaylistTitle": "Старый плейлист",
+  "Uploader": "Название канала",
+  "Duration": 123.5,
+  "ThumbnailBase64": "",
+  "ThumbnailError": "thumbnail temporarily unavailable",
+  "Extractor": "legacy:fixture",
+  "MaxHeight": 1080,
+  "MaxFps": 60,
+  "Codecs": "H264, VP9",
+  "DynamicRange": "HDR"
+}

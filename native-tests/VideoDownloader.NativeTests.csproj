@@ -8,6 +8,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Content Include="..\tests\fixtures\pornhub-discovery.json" Link="fixtures\pornhub-discovery.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\tests\fixtures\legacy\**\*" Link="fixtures\legacy\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <ProjectReference Include="..\native\VideoDownloader.Native.csproj"/>
   </ItemGroup>
 </Project>

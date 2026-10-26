@@ -1,0 +1,7 @@
+{"Kind":"Progress","Url":"https://legacy.example/video?token=Exact","Percent":100}
+{"Kind":"Result","Url":"https://legacy.example/next-start","Success":true,"Path":"__FINISHED_MEDIA__","OwnedPaths":["__FINISHED_MEDIA__"],"OutputRoot":"__ORIGINAL_OUTPUT__"}
+{"Kind":"Result","Url":"https://legacy.example/Video?token=Exact","Success":true,"Cancelled":false,"Path":"__FINISHED_MEDIA__","OwnedPaths":["__FINISHED_MEDIA__","__FINISHED_SIDECAR__"],"OutputRoot":"__ORIGINAL_OUTPUT__","StageDir":"__FINISHED_STAGE__","CleanupPaths":[],"CleanupError":""}
+{"Kind":"Result","Url":"https://legacy.example/cleanup-event","Success":false,"Cancelled":true,"Path":"__EVENT_MEDIA__","OwnedPaths":["__EVENT_MEDIA__"],"OutputRoot":"__ORIGINAL_OUTPUT__","StageDir":"__EVENT_STAGE__","CleanupPaths":["__EVENT_MEDIA__"],"CleanupError":"Locked file from Result"}
+{"Kind":"Result","Url":"https://legacy.example/video?token=exact","Success":true,"Path":"wrong-query.mp4"}
+{"Kind":"Result","Url":"https://legacy.example/video?token=Exact","Success":"true"}
+{"Kind":"Result","Url":"https://legacy.example/video?token=Exact","Success":

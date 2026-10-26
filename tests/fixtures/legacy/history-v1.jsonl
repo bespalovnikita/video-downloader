@@ -1,0 +1,6 @@
+{"Version":1,"Url":"https://legacy.example/Video?token=Exact"}
+{"Version":1,"Url":"https://legacy.example/video?token=Exact","CompletedAtUtc":"2026-10-18T10:00:00Z"}
+{"Version":1,"Url":"https://legacy.example/Video?token=Exact","CompletedAtUtc":"2026-10-18T11:00:00+01:00"}
+{"Version":1,"Url":"https://legacy.example/Video?token=Exact","CompletedAtUtc":"2026-10-17T10:00:00Z"}
+{"Version":1,"Url":"https://legacy.example/Video?token=exact","CompletedAtUtc":"2026-10-18T12:00:00Z"}
+{"Version":1,"Url":"https://legacy.example/no-timestamp"}

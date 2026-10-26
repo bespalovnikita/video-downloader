@@ -26,7 +26,7 @@ public sealed partial class NativeWindow : IDisposable
     private readonly DispatcherTimer _tick=new(){Interval=TimeSpan.FromMilliseconds(400)};
     private readonly DispatcherTimer _clipboardTick=new(){Interval=TimeSpan.FromMilliseconds(950)};
     private readonly Forms.NotifyIcon _tray=new();
-    private readonly string _ytDlp=DependencyCenter.Executable("yt-dlp.exe");
+    private readonly string _ytDlp;
     private readonly Dictionary<string,string> _finalStates=new(StringComparer.Ordinal);
     private readonly HashSet<string> _sessionUrls=new(StringComparer.Ordinal);
     private readonly Dictionary<string,long> _transferred=new(StringComparer.Ordinal);
@@ -61,9 +61,15 @@ public sealed partial class NativeWindow : IDisposable
     private static string Pick(ComboBox c)=>c.SelectedItem?.ToString()??c.Text;
 
     public NativeWindow(Window window,AppPersistence? persistence=null)
+        : this(window,persistence,DependencyCenter.Executable("yt-dlp.exe")) { }
+
+    // The isolated UI test uses a metadata fixture process through the same
+    // production worker. Normal startup always resolves the packaged yt-dlp.
+    internal NativeWindow(Window window,AppPersistence? persistence,string ytDlpExecutable)
     {
         _window=window;
         _storage=persistence??new AppPersistence();
+        _ytDlp=ytDlpExecutable;
         Q.ItemsSource=_queue;
         D.ItemsSource=_downloads;
         foreach(var (control,values) in new (string,string[])[]{
