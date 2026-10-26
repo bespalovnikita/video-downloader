@@ -147,7 +147,7 @@ $script:pausedPids = @()
 $script:isPaused = $false
 $script:stopping = $false
 $script:previewUrl = ""
-$script:previewMemoryCache = @{}
+$script:previewMemoryCache = [Collections.Generic.Dictionary[string,object]]::new([StringComparer]::Ordinal)
 $script:previewCacheTtlHours = 72
 $script:previewCacheDir = Join-Path $env:LOCALAPPDATA "VideoDownloader\preview-cache"
 $script:previewPrefetchQueue = [Collections.Generic.List[string]]::new()
@@ -685,6 +685,11 @@ function Add-SubscriptionUrls([string[]]$Urls,[string]$SubscriptionId='',[string
         if ($row -and $discoveredTitles.ContainsKey($url) -and
             ([string]::IsNullOrWhiteSpace([string]$row.Title) -or [string]::Equals([string]$row.Title,$url,[StringComparison]::Ordinal))) {
             $row | Add-Member -NotePropertyName Title -NotePropertyValue $discoveredTitles[$url] -Force
+            if ([string]::Equals($script:previewUrl,$url,[StringComparison]::Ordinal)) {
+                # Enrich the selected label without restarting metadata work or
+                # replacing its existing image, formats or error information.
+                $PreviewTitle.Text = [string]$row.Title
+            }
         }
     }
     # Keep subscription jobs out of incoming.txt and the recovered engine.
@@ -1608,13 +1613,14 @@ function Get-CachedPreview([string]$Url) {
         try {
             $savedAt = ([DateTimeOffset]$entry.SavedAtUtc).UtcDateTime
 
-            if (([DateTime]::UtcNow - $savedAt).TotalHours -lt $script:previewCacheTtlHours -and
+            if ([string]::Equals([string]$entry.Url,$Url,[StringComparison]::Ordinal) -and
+                ([DateTime]::UtcNow - $savedAt).TotalHours -lt $script:previewCacheTtlHours -and
                 -not (Test-VdPreviewCacheRefreshNeeded -Preview $entry -YtDlpPath ([string]$ytDlp))) {
                 return $entry
             }
         } catch {}
 
-        $script:previewMemoryCache.Remove($Url)
+        [void]$script:previewMemoryCache.Remove($Url)
     }
 
     $entry = Read-VdPreviewCache -CacheDir $script:previewCacheDir -Url $Url -TtlHours $script:previewCacheTtlHours -YtDlpPath ([string]$ytDlp)
@@ -1628,12 +1634,16 @@ function Get-CachedPreview([string]$Url) {
 
 function Save-CachedPreview([string]$Url,[object]$Preview) {
     if ([string]::IsNullOrWhiteSpace($Url) -or -not $Preview) { return }
+    $record = New-VdPreviewCacheRecord -Url $Url -Preview $Preview
+    # Disk persistence is optional for an already fetched preview. Keep the
+    # current app session usable even if the disk is full or unwritable.
+    $script:previewMemoryCache[$Url] = $record
     try {
-        $record = Write-VdPreviewCache -CacheDir $script:previewCacheDir -Url $Url -Preview $Preview
-        if ($record) { $script:previewMemoryCache[$Url] = $record }
+        $null = Write-VdPreviewCache -CacheDir $script:previewCacheDir -Url $Url -Preview $record
     } catch {
         Log-Line ("Preview cache write failed: " + $_.Exception.Message)
     }
+    return $record
 }
 
 function Get-PreviewDisplayTitle([string]$Url,[string]$Title='',[string]$Fallback='Название пока недоступно') {
@@ -1679,13 +1689,23 @@ function Show-PreviewResult([object]$Result,[bool]$FromCache=$false) {
         $stream = $null
         try {
             $bytes = [Convert]::FromBase64String([string]$Result.ThumbnailBase64)
+            if ($bytes.Length -gt 2000000) { throw 'Thumbnail exceeds 2MB.' }
             $stream = [IO.MemoryStream]::new($bytes,$false)
+            $decoder = [System.Windows.Media.Imaging.BitmapDecoder]::Create($stream,
+                [System.Windows.Media.Imaging.BitmapCreateOptions]::IgnoreColorProfile,
+                [System.Windows.Media.Imaging.BitmapCacheOption]::None)
+            if ($decoder.Frames.Count -lt 1) { throw 'Thumbnail has no image frames.' }
+            $width=[int]$decoder.Frames[0].PixelWidth;$height=[int]$decoder.Frames[0].PixelHeight
+            if ($width -le 0 -or $height -le 0 -or [long]$width*$height -gt 16777216) { throw 'Thumbnail dimensions exceed the preview limit.' }
+            $stream.Position=0
 
             $bitmap = [System.Windows.Media.Imaging.BitmapImage]::new()
             $bitmap.BeginInit()
             $bitmap.CacheOption = [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad
             $bitmap.CreateOptions = [System.Windows.Media.Imaging.BitmapCreateOptions]::IgnoreColorProfile
-            $bitmap.DecodePixelWidth = 720
+            $scale = [Math]::Min(1.0,720.0/[Math]::Max($width,$height))
+            $bitmap.DecodePixelWidth = [Math]::Max(1,[int][Math]::Round($width*$scale))
+            $bitmap.DecodePixelHeight = [Math]::Max(1,[int][Math]::Round($height*$scale))
             $bitmap.StreamSource = $stream
             $bitmap.EndInit()
             $bitmap.Freeze()
@@ -1779,10 +1799,9 @@ function Complete-PreviewPrefetch {
 
         if ([bool]$r.Success) {
             Set-VideoTitle -Url $url -Title ([string]$r.Title)
-            Save-CachedPreview -Url $url -Preview $r
+            $record = Save-CachedPreview -Url $url -Preview $r
             if ([string]::Equals($script:previewUrl,$url,[StringComparison]::Ordinal)) {
-                $cached = Get-CachedPreview $url
-                if ($cached) { Show-PreviewResult -Result $cached -FromCache $true }
+                Show-PreviewResult -Result $record
             }
         } else {
             $message = [string]$r.Error

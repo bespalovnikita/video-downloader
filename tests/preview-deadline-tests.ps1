@@ -2,6 +2,8 @@
 $ErrorActionPreference='Stop'
 $root=Split-Path -Parent $PSScriptRoot
 Import-Module (Join-Path $root 'lib/VideoDownloader.PreviewCache.psm1') -Force
+. (Join-Path $PSScriptRoot 'fixtures/PreviewImageValidation.ps1')
+Enable-VdTestPreviewImageValidation -Module (Get-Module VideoDownloader.PreviewCache)
 function Assert([bool]$Value,[string]$Message){if(-not $Value){throw $Message}}
 $temp=Join-Path ([IO.Path]::GetTempPath()) ('vd-preview-deadlines-'+[guid]::NewGuid().ToString('N'))
 [void][IO.Directory]::CreateDirectory($temp)
@@ -77,6 +79,7 @@ public sealed class VdPreviewDeadlineServer : IDisposable {
  readonly CancellationTokenSource stop=new CancellationTokenSource();
  readonly Task worker;
  public string BaseUrl {get;private set;}
+ public readonly System.Collections.Concurrent.ConcurrentQueue<string> Requests=new System.Collections.Concurrent.ConcurrentQueue<string>();
  public VdPreviewDeadlineServer(){
   listener.Start();BaseUrl="http://127.0.0.1:"+((IPEndPoint)listener.LocalEndpoint).Port;
   worker=Task.Run(async()=>{while(!stop.IsCancellationRequested){
@@ -84,8 +87,11 @@ public sealed class VdPreviewDeadlineServer : IDisposable {
     var stream=client.GetStream();var buffer=new byte[4096];
     int count=await stream.ReadAsync(buffer,stop.Token);
     string request=Encoding.ASCII.GetString(buffer,0,count);
+    Requests.Enqueue(request.Split(' ')[1]);
     bool stall=request.Contains("/stall");bool large=request.Contains("/large");bool bad=request.Contains("/bad");bool unsupported=request.Contains("/unsupported");bool webp=request.Contains("/real-webp");
     byte[] image=webp?Convert.FromBase64String("UklGRiQAAABXRUJQVlA4IBgAAAAwAQCdASoCAAIAAgA0JaQAA3AA/vuUAAA="):unsupported?Encoding.ASCII.GetBytes("unsupported image"):Convert.FromBase64String(Png);
+    if(request.Contains("/damaged.png"))Array.Resize(ref image,8);
+    if(request.Contains("/truncated.png"))Array.Resize(ref image,40);
     string header="HTTP/1.1 "+(bad?"404 Not Found":"200 OK")+"\r\nContent-Type: image/png\r\nContent-Length: "+(bad?0:large?2000001:stall?100:image.Length)+"\r\n\r\n";
     await stream.WriteAsync(Encoding.ASCII.GetBytes(header),stop.Token);
     if(stall){
@@ -120,6 +126,14 @@ public sealed class VdPreviewDeadlineServer : IDisposable {
     [IO.File]::WriteAllText($cookies,($fallbackMetadata|ConvertTo-Json -Depth 5 -Compress))
     $fallback=Get-VdPreviewData -YtDlpPath $exe -Url 'https://example.com/fallback' -CookiePath $cookies -TimeoutSeconds 5
     Assert ($fallback.Success -and $fallback.Title -eq 'Fallback title' -and $fallback.Uploader -eq 'Author' -and $fallback.Duration -eq 42 -and $fallback.ThumbnailBase64 -eq [VdPreviewDeadlineServer]::Png -and $fallback.ThumbnailUrl -ceq $fallbackMetadata.thumbnail) 'A bad or unsupported first image must allow a later valid thumbnail without losing metadata'
+    foreach($damagedPath in @('/damaged.png','/truncated.png')) {
+        $damagedMetadata=@{title='Useful title';thumbnail=$server.BaseUrl+'/normal.png?after-damaged=1';thumbnails=@(
+            @{url=$server.BaseUrl+$damagedPath;width=1920;height=1080})}
+        [IO.File]::WriteAllText($cookies,($damagedMetadata|ConvertTo-Json -Depth 4 -Compress))
+        $damaged=Get-VdPreviewData -YtDlpPath $exe -Url 'https://example.com/damaged-fallback' -CookiePath $cookies -TimeoutSeconds 5
+        Assert ($damaged.Success -and $damaged.Title -eq 'Useful title' -and $damaged.ThumbnailBase64 -eq [VdPreviewDeadlineServer]::Png -and
+            $damaged.ThumbnailUrl -ceq $damagedMetadata.thumbnail -and -not $damaged.ThumbnailError -and $server.Requests.ToArray() -contains $damagedPath) 'A PNG signature or readable header without decodable pixels must not mask a valid fallback image'
+    }
     $fallbackMetadata.thumbnail=$server.BaseUrl+'/bad'
     $fallbackMetadata.thumbnails=@(@{url=$server.BaseUrl+'/unsupported'})
     [IO.File]::WriteAllText($cookies,($fallbackMetadata|ConvertTo-Json -Depth 5 -Compress))
@@ -130,6 +144,8 @@ public sealed class VdPreviewDeadlineServer : IDisposable {
     if($realConverter) {
         $converted=Get-VdPreviewData -YtDlpPath $exe -Url 'https://example.com/webp' -CookiePath $cookies -TimeoutSeconds 10
         Assert ($converted.Success -and $converted.ThumbnailBase64 -and -not $converted.ThumbnailError -and $converted.ThumbnailBase64.StartsWith('iVBOR')) 'A WebP thumbnail must convert to a WPF-compatible PNG through the existing FFmpeg'
+        $convertedBytes=[Convert]::FromBase64String($converted.ThumbnailBase64)
+        Assert ([Convert]::ToHexString($convertedBytes[16..23]) -ceq '0000000200000002') 'Conversion must preserve tiny thumbnail dimensions instead of enlarging them to 720 pixels'
     }
     $module=Get-Module VideoDownloader.PreviewCache
     try {
@@ -167,6 +183,15 @@ Start-Sleep -Seconds 60
     $converterPid=[int][IO.File]::ReadAllText((Join-Path $temp 'converter.pid'))
     Assert (-not (Get-Process -Id $converterPid -ErrorAction SilentlyContinue)) 'A timed-out thumbnail converter must terminate its own process'
     $cacheDir=Join-Path $temp 'cache'
+    $damagedCache=[pscustomobject]@{Title='Known title';ThumbnailBase64='iVBORw0KGgo=';ThumbnailValidationVersion=1;PreviewFetchVersion=2}
+    $null=Write-VdPreviewCache -CacheDir $cacheDir -Url 'https://example.com/damaged-cache' -Preview $damagedCache
+    Assert ($null -eq (Read-VdPreviewCache -CacheDir $cacheDir -Url 'https://example.com/damaged-cache')) 'A damaged image on disk must refresh even when its previous validation marker claims success'
+    $oldDamaged=[pscustomobject]@{Title='Known title';ThumbnailBase64='iVBORw0KGgo='}
+    Assert (Test-VdPreviewCacheRefreshNeeded $oldDamaged) 'An old in-memory signature-only image must refresh without manual cache deletion'
+    $healthyCache=[pscustomobject]@{Title='Healthy title';ThumbnailBase64=[VdPreviewDeadlineServer]::Png}
+    $null=Write-VdPreviewCache -CacheDir $cacheDir -Url 'https://example.com/healthy-cache' -Preview $healthyCache
+    $healthy=Read-VdPreviewCache -CacheDir $cacheDir -Url 'https://example.com/healthy-cache'
+    Assert ($healthy.Title -eq 'Healthy title' -and $healthy.ThumbnailValidationVersion -eq 1 -and -not (Test-VdPreviewCacheRefreshNeeded $healthy)) 'A healthy legacy cached image must remain usable after bounded decoding and must not trigger a fetch loop'
     $oldFailure=[pscustomobject]@{Title='Old title';ThumbnailBase64='';ThumbnailError='no JPEG/PNG thumbnail was provided by yt-dlp'}
     $null=Write-VdPreviewCache -CacheDir $cacheDir -Url 'https://example.com/old' -Preview $oldFailure
     Assert ($null -eq (Read-VdPreviewCache -CacheDir $cacheDir -Url 'https://example.com/old')) 'An old extension-filter rejection must be retried after upgrade instead of staying cached for 72 hours'

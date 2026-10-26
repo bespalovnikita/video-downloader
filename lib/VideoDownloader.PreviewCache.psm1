@@ -76,7 +76,16 @@ function Get-VdPreviewCachePath {
 
 function Test-VdPreviewCacheRefreshNeeded {
     param([AllowNull()][object]$Preview,[string]$YtDlpPath='')
-    if($null -eq $Preview -or [string](Get-VdPropertyValue $Preview 'ThumbnailBase64' '')){return $false}
+    if($null -eq $Preview){return $false}
+    $thumbnail=[string](Get-VdPropertyValue $Preview 'ThumbnailBase64' '')
+    if($thumbnail){
+        if([int](Get-VdPropertyValue $Preview 'ThumbnailValidationVersion' 0) -ge 1){return $false}
+        try {
+            if(-not (Test-VdPreviewImageBytes ([Convert]::FromBase64String($thumbnail)))){return $true}
+            $Preview | Add-Member -NotePropertyName ThumbnailValidationVersion -NotePropertyValue 1 -Force
+            return $false
+        } catch {return $true}
+    }
     $errorText=[string](Get-VdPropertyValue $Preview 'ThumbnailError' '')
     if($errorText -ceq 'no JPEG/PNG thumbnail was provided by yt-dlp' -and [int](Get-VdPropertyValue $Preview 'PreviewFetchVersion' 0) -lt 2){return $true}
     return $errorText -cin @('WebP/AVIF thumbnail requires FFmpeg; text metadata is still available.',
@@ -105,6 +114,46 @@ function Test-VdThumbnailBytes([byte[]]$Bytes) {
     return $false
 }
 
+function Test-VdPreviewImageBytes {
+    param([byte[]]$Bytes,[Threading.CancellationToken]$CancellationToken=[Threading.CancellationToken]::None)
+    if($Bytes.Length -gt 2000000 -or -not (Test-VdThumbnailBytes $Bytes)){return $false}
+    $CancellationToken.ThrowIfCancellationRequested()
+    $headerStream=$null;$imageStream=$null
+    try {
+        Add-Type -AssemblyName PresentationCore -ErrorAction Stop
+        $headerStream=[IO.MemoryStream]::new($Bytes,$false)
+        $decoder=[Windows.Media.Imaging.BitmapDecoder]::Create($headerStream,
+            [Windows.Media.Imaging.BitmapCreateOptions]::IgnoreColorProfile,[Windows.Media.Imaging.BitmapCacheOption]::None)
+        if($decoder.Frames.Count -lt 1){return $false}
+        $width=[int]$decoder.Frames[0].PixelWidth;$height=[int]$decoder.Frames[0].PixelHeight
+        if($width -le 0 -or $height -le 0 -or [long]$width*$height -gt 16777216){return $false}
+        $CancellationToken.ThrowIfCancellationRequested()
+        $imageStream=[IO.MemoryStream]::new($Bytes,$false)
+        $bitmap=[Windows.Media.Imaging.BitmapImage]::new()
+        $bitmap.BeginInit()
+        $bitmap.CacheOption=[Windows.Media.Imaging.BitmapCacheOption]::OnLoad
+        $bitmap.CreateOptions=[Windows.Media.Imaging.BitmapCreateOptions]::IgnoreColorProfile
+        $scale=[Math]::Min(1.0,720.0/[Math]::Max($width,$height))
+        $bitmap.DecodePixelWidth=[Math]::Max(1,[int][Math]::Round($width*$scale))
+        $bitmap.DecodePixelHeight=[Math]::Max(1,[int][Math]::Round($height*$scale))
+        $bitmap.StreamSource=$imageStream
+        $bitmap.EndInit()
+        $stride=[int][Math]::Ceiling($bitmap.PixelWidth*$bitmap.Format.BitsPerPixel/8.0)
+        if($stride -le 0 -or [long]$stride*$bitmap.PixelHeight -gt 16777216){return $false}
+        $pixels=[byte[]]::new($stride*$bitmap.PixelHeight)
+        # Force the decoder to read the raster; a valid header alone is not an image.
+        $bitmap.CopyPixels($pixels,$stride,0)
+        $bitmap.Freeze()
+        $CancellationToken.ThrowIfCancellationRequested()
+        return $true
+    } catch [OperationCanceledException] {throw}
+      catch {return $false}
+    finally {
+        if($imageStream){$imageStream.Dispose()}
+        if($headerStream){$headerStream.Dispose()}
+    }
+}
+
 function ConvertTo-VdPreviewPng {
     param([byte[]]$Bytes,[string]$YtDlpPath,[Threading.CancellationToken]$CancellationToken)
     $isWebP=$Bytes.Length -ge 12 -and [Text.Encoding]::ASCII.GetString($Bytes,0,4) -ceq 'RIFF' -and [Text.Encoding]::ASCII.GetString($Bytes,8,4) -ceq 'WEBP'
@@ -123,7 +172,7 @@ function ConvertTo-VdPreviewPng {
         $start.UseShellExecute=$false;$start.CreateNoWindow=$true
         $start.RedirectStandardOutput=$true;$start.RedirectStandardError=$true
         $arguments=@('-hide_banner','-loglevel','error','-nostdin','-max_alloc','67108864','-max_pixels','16777216','-protocol_whitelist','file,pipe','-i',$inputFile,
-            '-frames:v','1','-an','-vf','scale=720:720:force_original_aspect_ratio=decrease','-f','image2pipe','-c:v','png','pipe:1')
+            '-frames:v','1','-an','-vf',"scale=w='min(720,iw)':h='min(720,ih)':force_original_aspect_ratio=decrease",'-f','image2pipe','-c:v','png','pipe:1')
         foreach($argument in $arguments){[void]$start.ArgumentList.Add($argument)}
         $process=[Diagnostics.Process]::new();$process.StartInfo=$start
         if(-not $process.Start()){throw 'Cannot start FFmpeg for thumbnail conversion.'}
@@ -188,6 +237,9 @@ function Read-VdPreviewCache {
             Remove-Item $path -Force -ErrorAction SilentlyContinue
             return $null
         }
+        # Disk contents have not yet been decoded by this process. Do not trust
+        # a validation marker left by an older process or a damaged cache file.
+        $record | Add-Member -NotePropertyName ThumbnailValidationVersion -NotePropertyValue 0 -Force
         if (Test-VdPreviewCacheRefreshNeeded $record -YtDlpPath $YtDlpPath) {
             Remove-Item $path -Force -ErrorAction SilentlyContinue
             return $null
@@ -207,20 +259,15 @@ function Read-VdPreviewCache {
     }
 }
 
-function Write-VdPreviewCache {
+function New-VdPreviewCacheRecord {
     param(
-        [Parameter(Mandatory=$true)][string]$CacheDir,
         [Parameter(Mandatory=$true)][string]$Url,
         [Parameter(Mandatory=$true)][object]$Preview
     )
-
-    New-Item -ItemType Directory -Path $CacheDir -Force | Out-Null
-    $path = Get-VdPreviewCachePath -CacheDir $CacheDir -Url $Url
-    $tempPath = $path + ".tmp-" + [guid]::NewGuid().ToString("N")
-
     $record = [ordered]@{
         CacheVersion = 1
         PreviewFetchVersion = [int](Get-VdPropertyValue -InputObject $Preview -Name 'PreviewFetchVersion' -Default 0)
+        ThumbnailValidationVersion = [int](Get-VdPropertyValue -InputObject $Preview -Name 'ThumbnailValidationVersion' -Default 0)
         SavedAtUtc = [DateTime]::UtcNow.ToString("o",[Globalization.CultureInfo]::InvariantCulture)
         Url = $Url
         Success = $true
@@ -238,6 +285,19 @@ function Write-VdPreviewCache {
         Codecs = [string](Get-VdPropertyValue -InputObject $Preview -Name "Codecs" -Default "")
         DynamicRange = [string](Get-VdPropertyValue -InputObject $Preview -Name "DynamicRange" -Default "")
     }
+    return [pscustomobject]$record
+}
+
+function Write-VdPreviewCache {
+    param(
+        [Parameter(Mandatory=$true)][string]$CacheDir,
+        [Parameter(Mandatory=$true)][string]$Url,
+        [Parameter(Mandatory=$true)][object]$Preview
+    )
+    New-Item -ItemType Directory -Path $CacheDir -Force | Out-Null
+    $path = Get-VdPreviewCachePath -CacheDir $CacheDir -Url $Url
+    $tempPath = $path + ".tmp-" + [guid]::NewGuid().ToString("N")
+    $record=New-VdPreviewCacheRecord -Url $Url -Preview $Preview
 
     try {
         $json = $record | ConvertTo-Json -Depth 4
@@ -407,6 +467,9 @@ function Get-VdPreviewData {
                         if (-not (Test-VdThumbnailBytes $bytes)) {
                             $bytes=ConvertTo-VdPreviewPng -Bytes $bytes -YtDlpPath $YtDlpPath -CancellationToken $imageDeadline.Token
                         }
+                        if(-not (Test-VdPreviewImageBytes -Bytes $bytes -CancellationToken $imageDeadline.Token)){
+                            throw 'Thumbnail image could not be decoded safely.'
+                        }
                         $thumbnailBase64=[Convert]::ToBase64String($bytes)
                         $thumbnailUrl=$candidateUrl
                         $thumbnailError=''
@@ -438,6 +501,7 @@ function Get-VdPreviewData {
             ThumbnailBase64 = $thumbnailBase64
             ThumbnailUrl = $thumbnailUrl
             ThumbnailError = $thumbnailError
+            ThumbnailValidationVersion = 1
             PreviewFetchVersion = 2
             Extractor = [string](Get-VdPropertyValue -InputObject $source -Name "extractor_key" -Default "")
             MaxHeight = [int]$formatSummary.MaxHeight
@@ -461,4 +525,4 @@ function Get-VdPreviewData {
     }
 }
 
-Export-ModuleMember -Function Get-VdPreviewCachePath,Read-VdPreviewCache,Write-VdPreviewCache,Remove-VdExpiredPreviewCache,Get-VdPreviewData,Test-VdPreviewCacheRefreshNeeded
+Export-ModuleMember -Function Get-VdPreviewCachePath,Read-VdPreviewCache,Write-VdPreviewCache,New-VdPreviewCacheRecord,Remove-VdExpiredPreviewCache,Get-VdPreviewData,Test-VdPreviewCacheRefreshNeeded

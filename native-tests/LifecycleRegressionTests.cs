@@ -28,6 +28,10 @@ internal static class LifecycleRegressionTests
         string? url=args.LastOrDefault();
         if (url?.StartsWith(Prefix,StringComparison.Ordinal)!=true) return false;
         Require(args.Contains("--ignore-config"),"Every managed yt-dlp call must ignore ambient configuration");
+        if(url.EndsWith("preview-fail",StringComparison.Ordinal))
+        {
+            Console.Error.WriteLine("Fixture metadata denied");Environment.ExitCode=1;return true;
+        }
         if (url.EndsWith("preview-hang"))
         {
             Thread.Sleep(Timeout.Infinite);
@@ -190,11 +194,18 @@ internal static class LifecycleRegressionTests
         var data=new AppPersistence(root);
         var next=new TaskCompletionSource<PreviewData>(TaskCreationOptions.RunContinuationsAsynchronously);
         var logs=new System.Collections.Concurrent.ConcurrentQueue<string>();
-        using(var previews=new PreviewService(Executable(),data,()=>"",p=>next.TrySetResult(p),logs.Enqueue,TimeSpan.FromSeconds(2)))
+        var failures=new System.Collections.Concurrent.ConcurrentQueue<(string Url,string Error)>();
+        using(var previews=new PreviewService(Executable(),data,()=>"",p=>next.TrySetResult(p),logs.Enqueue,TimeSpan.FromSeconds(2),
+            failed:(url,error)=>failures.Enqueue((url,error))))
         {
-            previews.Request(Prefix+"preview-hang");previews.Request(Prefix+"preview-next");
+            previews.Request(Prefix+"preview-hang");previews.Request(Prefix+"preview-fail");previews.Request(Prefix+"preview-next");
             var result=await next.Task.WaitAsync(TimeSpan.FromSeconds(12));
             Require(result.Url==Prefix+"preview-next" && logs.Any(l=>l.Contains("timed out")),"A hung metadata process must time out and release the only preview worker");
+            Require(failures.Count==2 && failures.Any(value=>value.Url==Prefix+"preview-hang" && value.Error.Contains("истекло")) &&
+                failures.Any(value=>value.Url==Prefix+"preview-fail" && value.Error.Contains("Fixture metadata denied")),
+                "Timeout and process failure must notify their exact URL before the worker recovers for the next request");
+            Require(previews.Get(Prefix+"preview-hang")==null && previews.Get(Prefix+"preview-fail")==null,
+                "Failed metadata must not become a successful cache entry");
         }
         using var stop=new CancellationTokenSource();
         var server=new TcpListener(IPAddress.Loopback,0);server.Start();
@@ -249,6 +260,7 @@ internal static class LifecycleRegressionTests
                         }
                         bool failed=target.StartsWith("/missing",StringComparison.Ordinal);
                         byte[] bytes=target.StartsWith("/webp-hang",StringComparison.Ordinal)?"RIFF1234WEBPhang"u8.ToArray():
+                            target.StartsWith("/damaged",StringComparison.Ordinal)?new byte[]{0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a}:
                             target.StartsWith("/webp-large",StringComparison.Ordinal)?"RIFF1234WEBPlarge"u8.ToArray():
                             target.StartsWith("/webp",StringComparison.Ordinal)?PreviewWebP:
                             target.StartsWith("/avif",StringComparison.Ordinal)?PreviewAvif:PreviewPng;
@@ -285,6 +297,16 @@ internal static class LifecycleRegressionTests
                 new{url=address+"/missing.png",width=100,height=100},new{url=address+"/image-next",width=1,height=1}]));
             Require(fallback.Data.ThumbnailBase64.Length>0 && requested.Any(value=>value=="/missing.png") && requested.Any(value=>value=="/image-next"),
                 "A failed preferred image must fall back to another confirmed metadata URL");
+            var damaged=await Fetch("preview-damaged",Metadata(address+"/valid-after-damage",[
+                new{url=address+"/damaged.png",width=100,height=100},new{url=address+"/valid-after-damage",width=1,height=1}]));
+            Require(Convert.FromBase64String(damaged.Data.ThumbnailBase64).SequenceEqual(PreviewPng) &&
+                requested.Any(value=>value=="/damaged.png") && requested.Any(value=>value=="/valid-after-damage"),
+                "A plausible PNG signature without an image frame must be rejected before accepting a valid backup");
+            var onlyDamaged=await Fetch("preview-only-damaged",Metadata(address+"/damaged.png"));
+            Require(onlyDamaged.Data.ThumbnailBase64.Length==0,"An undecodable cover must remain a text-only successful preview");
+            using(var textReader=new PreviewService("unused",data,()=>"",_=>throw new Exception("A valid text-only cache must not refetch"),_=>{}))
+                Require(textReader.Get(Prefix+"preview-only-damaged")?.Title=="Thumbnail fixture",
+                    "A fresh image failure must stay cacheable without an endless retry loop");
             var missing=await Fetch("preview-missing",Metadata(""));
             Require(missing.Data.ThumbnailBase64.Length==0,"Missing cover must remain a successful text preview");
             string unwritable=Path.Combine(data.PreviewDir,Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(Prefix+"preview-cache-unwritable"))).ToLowerInvariant()+".json");
@@ -301,9 +323,13 @@ internal static class LifecycleRegressionTests
                 var actual=await Fetch("preview-webp-real",Metadata(address+"/webp"),real);
                 Require(Convert.FromBase64String(actual.Data.ThumbnailBase64).AsSpan().StartsWith(new byte[]{0x89,0x50,0x4e,0x47}),
                     "Installed FFmpeg must convert a real tiny WebP into a real PNG");
+                Require(Convert.ToHexString(Convert.FromBase64String(actual.Data.ThumbnailBase64).AsSpan(16,8))=="0000000200000002",
+                    "WebP conversion must retain tiny source dimensions instead of enlarging them to 720 pixels");
                 var avif=await Fetch("preview-avif-real",Metadata(address+"/avif"),real);
                 Require(Convert.FromBase64String(avif.Data.ThumbnailBase64).AsSpan().StartsWith(new byte[]{0x89,0x50,0x4e,0x47}),
                     "AVIF alternatives must also convert to the same WPF-compatible PNG representation");
+                Require(Convert.ToHexString(Convert.FromBase64String(avif.Data.ThumbnailBase64).AsSpan(16,8))=="0000000200000002",
+                    "AVIF conversion must retain tiny source dimensions");
             }
             var unavailable=await Fetch("preview-webp-unavailable",Metadata(address+"/webp"),Path.Combine(root,"no-ffmpeg"));
             Require(unavailable.Data.ThumbnailBase64.Length==0 && unavailable.Logs.Any(value=>value.Contains("needs FFmpeg")),
@@ -342,6 +368,22 @@ internal static class LifecycleRegressionTests
             File.WriteAllText(file,JsonSerializer.Serialize(new{CacheVersion=1,Url=staleUrl,SavedAtUtc=DateTime.UtcNow,Title="Old",Uploader="",PlaylistTitle="",Extractor="",Codecs="",DynamicRange="",Duration=0,ThumbnailBase64="",ThumbnailError="no JPEG/PNG thumbnail was provided by yt-dlp"}));
             using var reader=new PreviewService("unused",data,()=>"",_=>{},_=>{});
             Require(reader.Get(staleUrl)==null && !File.Exists(file),"Only legacy suffix-rejected cache results must be retried after upgrade");
+            string corruptUrl=Prefix+"preview-corrupt-cache";
+            string corruptFile=Path.Combine(data.PreviewDir,Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(corruptUrl))).ToLowerInvariant()+".json");
+            File.WriteAllText(corruptFile,JsonSerializer.Serialize(new{CacheVersion=1,PreviewFetchVersion=2,Url=corruptUrl,SavedAtUtc=DateTime.UtcNow,
+                Title="Corrupt image",Uploader="",PlaylistTitle="",Extractor="",Codecs="",DynamicRange="",Duration=0,
+                ThumbnailBase64="iVBORw0KGgo="}));
+            Require(reader.Get(corruptUrl)==null && !File.Exists(corruptFile),
+                "Previously cached image headers without a complete frame must be evicted before reaching the UI");
+            File.WriteAllText(cookies,JsonSerializer.Serialize(Metadata(address+"/valid-after-cache")));
+            var cacheReady=new TaskCompletionSource<PreviewData>(TaskCreationOptions.RunContinuationsAsynchronously);
+            using(var repaired=new PreviewService(Executable(),data,()=>cookies,value=>cacheReady.TrySetResult(value),_=>{}))
+            {
+                repaired.Request(corruptUrl);
+                var recovered=await cacheReady.Task.WaitAsync(TimeSpan.FromSeconds(8));
+                Require(recovered.ThumbnailBase64.Length>0 && repaired.Get(corruptUrl)?.ThumbnailBase64==recovered.ThumbnailBase64,
+                    "An evicted broken cache must fetch once and retain the valid recovered image");
+            }
             Console.WriteLine("PASS: thumbnail URL fallback, WebP conversion, deadlines and metadata preservation");
         }
         finally

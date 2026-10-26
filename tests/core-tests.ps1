@@ -45,6 +45,8 @@ Write-Host "Core parser/retry tests passed."
 
 $previewCacheModule = Join-Path $root "lib\VideoDownloader.PreviewCache.psm1"
 $previewModule = Import-Module $previewCacheModule -Force -PassThru
+. (Join-Path $PSScriptRoot 'fixtures/PreviewImageValidation.ps1')
+Enable-VdTestPreviewImageValidation -Module $previewModule
 
 $cacheRoot = Join-Path ([IO.Path]::GetTempPath()) ("video-downloader-preview-cache-test-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $cacheRoot -Force | Out-Null
@@ -56,7 +58,7 @@ try {
         PlaylistTitle = ""
         Uploader = "Uploader"
         Duration = 123.0
-        ThumbnailBase64 = "AAECAwQ="
+        ThumbnailBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAACXBIWXMAAAABAAAAAQBPJcTWAAAADklEQVR4nGP4DwYMEAoAU7oL9ZisIGcAAAAASUVORK5CYII="
         ThumbnailUrl = "https://example.com/thumb.jpg"
         ThumbnailError = ""
         Extractor = "Example"

@@ -53,6 +53,9 @@ public sealed partial class NativeWindow
         var originalQueue=_queue.ToArray();
         var originalDownloads=_downloads.ToArray();
         var originalSession=_session;
+        var originalSessionTask=_sessionTask;
+        var originalSelection=Q.SelectedItem;
+        string originalInput=B("UrlInput").Text;
         string originalPreview=_previewUrl;
         bool? originalMode=K("ShowVideoTitlesCheck").IsChecked;
         string prefix="https://example.invalid/title-display/"+Guid.NewGuid().ToString("N")+"/";
@@ -61,8 +64,68 @@ public sealed partial class NativeWindow
         var unknown=new DownloadItem{Url=prefix+"unknown",Title=" \t "};
         var cached=new DownloadItem{Url=prefix+"cached"};
         PreviewData Metadata(string url,string title)=>new(url,title,"","",0,"",0,0,"","","",DateTime.UtcNow);
+        void SeedCache(PreviewData data)
+        {
+            string file=Path.Combine(_storage.PreviewDir,
+                Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(data.Url))).ToLowerInvariant()+".json");
+            AppPersistence.AtomicWrite(file,JsonSerializer.Serialize(new {
+                CacheVersion=1,data.Url,data.Title,data.SavedAtUtc,data.Uploader,data.PlaylistTitle,data.Duration,
+                data.Extractor,data.MaxHeight,data.MaxFps,data.Codecs,data.DynamicRange,data.ThumbnailBase64
+            },AppPersistence.Json));
+        }
         try
         {
+            // Exercise the actual entry routes with fresh local cache records.
+            // This verifies ingestion -> prefetch/cache -> rendered title without
+            // clicking a row or Start. Cold metadata extraction is a separate test.
+            string urlEntry=prefix+"add-url",textEntry=prefix+"file-txt",shortcutEntry=prefix+"file-url",subscriptionEntry=prefix+"subscription";
+            var routeTitles=new Dictionary<string,string>(StringComparer.Ordinal) {
+                [urlEntry]="Видео из URL",[textEntry]="Видео из TXT",
+                [shortcutEntry]="Видео из InternetShortcut",[subscriptionEntry]="Видео из подписки"
+            };
+            foreach(var pair in routeTitles)SeedCache(Metadata(pair.Key,pair.Key==subscriptionEntry?"":pair.Value));
+            string beforeRoutesPanel=T("PreviewTitle").Text;
+            B("UrlInput").Text=urlEntry;
+            F<Button>("AddUrlButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Require(B("UrlInput").Text.Length==0,"The actual Add button must consume the URL field");
+            string routeFiles=Path.Combine(testRoot,"title-input-routes-"+Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(routeFiles);
+            string textFile=Path.Combine(routeFiles,"videos.txt"),shortcutFile=Path.Combine(routeFiles,"video.url");
+            File.WriteAllText(textFile,textEntry+Environment.NewLine,Encoding.UTF8);
+            File.WriteAllText(shortcutFile,"[InternetShortcut]\r\nURL="+shortcutEntry+"\r\n",Encoding.UTF8);
+            ReceiveArguments([textFile,shortcutFile]);
+            var subscriptionAccepted=QueueSubscriptionUrls([subscriptionEntry],Guid.NewGuid().ToString("N"),"Тестовая подписка",
+                new Dictionary<string,string>(StringComparer.Ordinal){[subscriptionEntry]=routeTitles[subscriptionEntry]});
+            Require(subscriptionAccepted.SequenceEqual(new[]{subscriptionEntry}),"The subscription callback must accept its exact URL");
+            Require(_queue.Count==originalQueue.Length+routeTitles.Count && ReferenceEquals(Q.SelectedItem,originalSelection) &&
+                    _previewUrl==originalPreview && T("PreviewTitle").Text==beforeRoutesPanel,
+                "URL/file/subscription ingestion must preserve selection and the current preview without a row click");
+            foreach(var pair in routeTitles)
+            {
+                var row=_queue.Single(item=>item.Url==pair.Key);
+                Require(row.Title==pair.Value && row.Status=="Queued" && row.Path.Length==0,
+                    "Every added route must expose its known video title before download: "+pair.Key);
+                K("ShowVideoTitlesCheck").IsChecked=false;
+                RenderedLabel(Q,row,row.Url);
+                K("ShowVideoTitlesCheck").IsChecked=true;
+                RenderedLabel(Q,row,pair.Value);
+            }
+            SaveCheckpoint();
+            var routeCheckpoint=_storage.Restore()!;
+            Require(routeTitles.All(pair=>routeCheckpoint.Queue.Single(row=>row.Url==pair.Key).Title==pair.Value),
+                "Titles from URL, TXT, InternetShortcut and subscription entry routes must survive checkpoint persistence");
+            Require(ReferenceEquals(_session,originalSession) && ReferenceEquals(_sessionTask,originalSessionTask) &&
+                    _downloads.SequenceEqual(originalDownloads),"Checking imported names must not start any download");
+            Console.WriteLine("PASS: native title entry routes URL, TXT, InternetShortcut and subscription (warm cache; no row click or Start)");
+            foreach(var row in _queue.Where(row=>routeTitles.ContainsKey(row.Url)).ToArray())_queue.Remove(row);
+            B("UrlInput").Text=originalInput;
+            K("ShowVideoTitlesCheck").IsChecked=originalMode;
+            Reindex();
+
+            var tinyImage=PreviewImage.Decode(Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAACXBIWXMAAAABAAAAAQBPJcTWAAAADklEQVR4nGP4DwYMEAoAU7oL9ZisIGcAAAAASUVORK5CYII="));
+            Require(tinyImage.PixelWidth==2 && tinyImage.PixelHeight==2,"Thumbnail decoding must not enlarge small source images");
+            var portrait=PreviewImage.Decode(Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAPoCAYAAAAftpReAAAAIUlEQVR4nO3EMQEAAAzDoPg33anYBwetliRJkiRJkqTPDnx1yJqP8XqtAAAAAElFTkSuQmCC"));
+            Require(portrait.PixelWidth<=720 && portrait.PixelHeight<=720,"Portrait thumbnails must fit both display dimensions");
             foreach(var row in new[]{known,caseDistinct,unknown,cached})_queue.Add(row);
             _downloads.Add(known);_downloads.Add(unknown);
             _previewUrl=prefix+"selected-preview";
@@ -79,14 +142,20 @@ public sealed partial class NativeWindow
                 "An empty or URL-only full preview must keep the discovered video name in the panel");
             OnPreviewReady(Metadata(known.Url,""));
             Require(T("PreviewTitle").Text==known.Title,"A missing image and empty title must not erase a known subscription title");
+            OnPreviewFailed(known.Url,"Metadata fixture failed");
+            Require(T("PreviewTitle").Text==known.Title && T("PreviewMeta").Text=="Metadata fixture failed",
+                "A metadata failure must end loading while keeping the subscription title");
+            OnPreviewFailed(caseDistinct.Url,"Unselected failure");
+            Require(T("PreviewMeta").Text=="Metadata fixture failed",
+                "A stale failure for another exact URL must not alter the selected preview");
+            _previewUrl=unknown.Url;
+            T("PreviewTitle").Text="Получаем метаданные…";
+            OnPreviewFailed(unknown.Url,"Timeout fixture");
+            Require(T("PreviewTitle").Text=="Не удалось получить метаданные" && T("PreviewMeta").Text=="Timeout fixture",
+                "A failed preview without a known title must replace its loading indicator with an error");
 
             var cache=Metadata(cached.Url,"Название из кеша");
-            string file=Path.Combine(_storage.PreviewDir,
-                Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(cached.Url))).ToLowerInvariant()+".json");
-            AppPersistence.AtomicWrite(file,JsonSerializer.Serialize(new {
-                CacheVersion=1,cache.Url,cache.Title,cache.SavedAtUtc,cache.Uploader,cache.PlaylistTitle,cache.Duration,
-                cache.Extractor,cache.MaxHeight,cache.MaxFps,cache.Codecs,cache.DynamicRange,cache.ThumbnailBase64
-            },AppPersistence.Json));
+            SeedCache(cache);
             RequestRowPreview(cached);
             Require(cached.Title==cache.Title,"A cache hit must fill a queued title without requiring another metadata callback");
 
@@ -109,6 +178,7 @@ public sealed partial class NativeWindow
         {
             _queue.Clear();foreach(var row in originalQueue)_queue.Add(row);
             _downloads.Clear();foreach(var row in originalDownloads)_downloads.Add(row);
+            B("UrlInput").Text=originalInput;
             _previewUrl=originalPreview;
             K("ShowVideoTitlesCheck").IsChecked=originalMode;
             Reindex();

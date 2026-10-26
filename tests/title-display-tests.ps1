@@ -14,7 +14,7 @@ foreach($name in @('Set-VideoTitle','Get-PreviewDisplayTitle','Update-VideoTitle
 }
 function Is-ValidUrl([string]$Url){return $Url.StartsWith('https://',[StringComparison]::Ordinal)}
 function Get-CachedPreview([string]$Url){if($script:testCache.ContainsKey($Url)){return $script:testCache[$Url]};return $null}
-function Save-CachedPreview([string]$Url,$Preview){$script:testCache[$Url]=$Preview}
+function Save-CachedPreview([string]$Url,$Preview){$script:testCache[$Url]=$Preview;return $Preview}
 function Log-Line([string]$Text){}
 function Show-PreviewResult{throw 'An unselected background preview must not steal the visible preview'}
 function Save-SessionCheckpoint{$script:savedSnapshots++}
@@ -98,8 +98,72 @@ try {
     } $realCache.Extent.Text $upper
     Assert (-not $script:previewMemoryCache.ContainsKey($upper) -and $null -eq $script:previewPrefetchJob) 'Expiring only the failed thumbnail cache must not launch a second worker'
 
+    # Exercise the real memory/disk orchestration, including its production
+    # initializer. A test-only ordinal map would hide the released @{} defect.
+    & {
+        $initializer=$ast.EndBlock.Statements | Where-Object {
+            $_ -is [Management.Automation.Language.AssignmentStatementAst] -and
+            $_.Left -is [Management.Automation.Language.VariableExpressionAst] -and
+            $_.Left.VariablePath.UserPath -eq 'script:previewMemoryCache'
+        }
+        Assert ($null -ne $initializer) 'The production preview cache initializer must exist'
+        . ([scriptblock]::Create($initializer.Extent.Text))
+        foreach($name in @('Get-CachedPreview','Save-CachedPreview')) {
+            $definition=$ast.Find({param($n)$n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name},$true)
+            . ([scriptblock]::Create($definition.Extent.Text))
+        }
+        $script:previewCacheDir=Join-Path $temp 'exact-cache'
+        $upperRecord=Save-CachedPreview -Url $upper -Preview ([pscustomobject]@{Title='Название Video'})
+        Assert ($null -eq (Get-CachedPreview $lower)) 'A case-distinct URL must not reuse another video from memory'
+        $script:previewMemoryCache[$lower]=$upperRecord
+        Assert ($null -eq (Get-CachedPreview $lower)) 'A memory entry with a mismatched exact Url must be rejected even under the requested key'
+        $null=Save-CachedPreview -Url $lower -Preview ([pscustomobject]@{Title='Название video'})
+        Assert ((Get-CachedPreview $upper).Title -ceq 'Название Video' -and (Get-CachedPreview $lower).Title -ceq 'Название video' -and
+            $script:previewMemoryCache.Count -eq 2) 'Case-distinct videos must keep separate cached identities and names'
+
+        # Keep the production save/completion handlers and an actual ThreadJob;
+        # substitute only the disk failure and platform rendering boundary.
+        function Write-VdPreviewCache {param($CacheDir,$Url,$Preview) throw [IO.IOException]::new('Fixture: cache disk is full')}
+        $script:renderedPreview=$null;$script:previewRenderCalls=0
+        function Show-PreviewResult {param($Result,$FromCache) $script:renderedPreview=$Result;$script:previewRenderCalls++}
+        $failedDiskUrl='https://example.org/cache-write-failure'
+        $script:previewUrl=$failedDiskUrl;$script:previewPrefetchUrl=$failedDiskUrl
+        $script:previewPrefetchJob=Start-ThreadJob {
+            [pscustomobject]@{Success=$true;Title='Полученное видео';Uploader='Автор';Duration=42;MaxHeight=1080;
+                PreviewFetchVersion=2;ThumbnailValidationVersion=1;
+                ThumbnailBase64='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGP4DwQACfsD/fteaysAAAAASUVORK5CYII='}
+        }
+        $null=Wait-Job $script:previewPrefetchJob -Timeout 10
+        Complete-PreviewPrefetch
+        Assert ($script:previewRenderCalls -eq 1 -and $script:renderedPreview.Title -ceq 'Полученное видео' -and
+            $script:renderedPreview.Uploader -ceq 'Автор' -and $script:renderedPreview.Duration -eq 42 -and
+            $script:renderedPreview.MaxHeight -eq 1080 -and $script:renderedPreview.ThumbnailBase64) 'A disk cache failure must still display the successful text, formats and image'
+        $memoryResult=Get-CachedPreview $failedDiskUrl
+        Assert ($memoryResult.Url -ceq $failedDiskUrl -and $memoryResult.Title -ceq 'Полученное видео' -and
+            -not (Test-Path -LiteralPath (Get-VdPreviewCachePath -CacheDir $script:previewCacheDir -Url $failedDiskUrl))) 'A failed disk write must retain a complete usable memory entry without requiring a disk reread'
+        Queue-PreviewPrefetch -Url $failedDiskUrl
+        Assert ($null -eq $script:previewPrefetchJob -and $script:previewPrefetchQueue.Count -eq 0) 'Revisiting a preview after disk failure must use memory without refetching metadata'
+    }
+
     if($IsWindows) {
         Add-Type -AssemblyName PresentationFramework
+        & {
+            $definition=$ast.Find({param($n)$n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Show-PreviewResult'},$true)
+            . ([scriptblock]::Create($definition.Extent.Text))
+            $PreviewTitle=[pscustomobject]@{Text=''};$PreviewMeta=[pscustomobject]@{Text=''}
+            $PreviewFormats=[pscustomobject]@{Text=''};$PreviewImage=[pscustomobject]@{Source=$null}
+            foreach($size in @(@(2,3,2,3),@(2,2000,1,720),@(2000,2,720,1))) {
+                $width=$size[0];$height=$size[1];$stride=$width*4
+                $source=[Windows.Media.Imaging.BitmapSource]::Create($width,$height,96,96,[Windows.Media.PixelFormats]::Bgra32,$null,[byte[]]::new($stride*$height),$stride)
+                $encoder=[Windows.Media.Imaging.PngBitmapEncoder]::new()
+                $encoder.Frames.Add([Windows.Media.Imaging.BitmapFrame]::Create($source))
+                $stream=[IO.MemoryStream]::new()
+                try {$encoder.Save($stream);$image=[Convert]::ToBase64String($stream.ToArray())} finally {$stream.Dispose()}
+                $result=New-VdPreviewCacheRecord -Url $upper -Preview ([pscustomobject]@{Title='Проверка размеров';ThumbnailBase64=$image})
+                Show-PreviewResult -Result $result
+                Assert ($PreviewImage.Source.PixelWidth -eq $size[2] -and $PreviewImage.Source.PixelHeight -eq $size[3]) 'Actual WPF previews must bound the longest side to 720 without enlarging small images'
+            }
+        }
         [xml]$xml=Get-Content (Join-Path $root 'ui/MainWindow.xaml') -Raw
         $reader=[Xml.XmlNodeReader]::new($xml)
         try{$window=[Windows.Markup.XamlReader]::Load($reader)}finally{$reader.Dispose()}
