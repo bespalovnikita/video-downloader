@@ -4,6 +4,8 @@ using System.Text;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 
 namespace VideoDownloader.Native;
@@ -51,6 +53,12 @@ public sealed partial class NativeWindow
             if (failure!=null) throw new InvalidOperationException(error,failure);
             Require(condition(),error+" | "+(_subscriptionsWindow==null?"window closed":SubscriptionControl<TextBlock>("SubscriptionStatusText").Text));
         }
+        void DrainProgressCallbacks()
+        {
+            bool drained=false;
+            _=Dispatcher.BeginInvoke(DispatcherPriority.ContextIdle,new Action(()=>drained=true));
+            WaitFor(()=>drained,"Progress callbacks must drain through the real WPF dispatcher");
+        }
         try
         {
             var definition=SubscriptionStorage.Add("https://example.com/subscription-ui-source/"+suffix,false);
@@ -87,6 +95,104 @@ public sealed partial class NativeWindow
             Require(SubscriptionControl<TextBox>("SubscriptionFeedBox")!=null,"Optional RSS / Atom input must be available");
             Require(SubscriptionControl<TextBox>("NewSubscriptionNameBox").Text.Length==0,
                 "A new subscription name must default to automatic channel detection");
+            Require(SubscriptionControl<Border>("SubscriptionCheckProgressPanel").Visibility==Visibility.Collapsed,
+                "An idle subscriptions window must not show a fictitious check");
+            var progressSource=new SubscriptionDefinition {Id=sourceId,Url=definition.Url,Title="Источник прогресса"};
+            long progressBatch=BeginSubscriptionCheckProgress(window,3);
+            StartSubscriptionCheckSource(progressBatch,progressSource);
+            var firstProgress=CreateSubscriptionCheckObserver(progressBatch,sourceId);
+            Require(SubscriptionControl<Border>("SubscriptionCheckProgressPanel").Visibility==Visibility.Visible &&
+                    SubscriptionControl<ProgressBar>("SubscriptionCheckActivityProgress").IsIndeterminate &&
+                    SubscriptionControl<ProgressBar>("SubscriptionCheckOverallProgress").Value==0 &&
+                    SubscriptionControl<ProgressBar>("SubscriptionCheckOverallProgress").Maximum==3,
+                "A real progress card must animate a running scan without inventing completion inside an unknown collection");
+            Require(SubscriptionControl<TextBlock>("SubscriptionCheckSourceText").Text==progressSource.Title &&
+                    (string)SubscriptionControl<TextBlock>("SubscriptionCheckSourceText").ToolTip==progressSource.Url,
+                "The progress card must identify the current source and exact URL");
+            Task.Run(()=>firstProgress.Report(new("Enumerating",MetadataBytes:1024))).GetAwaiter().GetResult();
+            DrainProgressCallbacks();
+            Require(SubscriptionControl<TextBlock>("SubscriptionCheckDetailText").Text.Contains("после полного обхода") &&
+                    SubscriptionControl<TextBlock>("SubscriptionCheckDetailText").Text.Contains("1 KB"),
+                "Enumerating must show real received bytes while the material count remains unknown");
+            firstProgress.Report(new("Parsing",3,2048));
+            firstProgress.Report(new("Feed",3,2048));
+            DrainProgressCallbacks();
+            Require(SubscriptionControl<TextBlock>("SubscriptionCheckStageText").Text.Contains("RSS / Atom") &&
+                    SubscriptionControl<TextBlock>("SubscriptionCheckDetailText").Text.Contains("полном списке: 3"),
+                "Confirmed item counts and RSS stage must reach actual WPF controls");
+            var previewResult=Environment.GetEnvironmentVariable("VD_NATIVE_UI_TEST_RESULT");
+            if(!string.IsNullOrWhiteSpace(previewResult))
+            {
+                // Export the actual isolated WPF window for visual inspection,
+                // without recording the user's settings or opening a browser.
+                window.UpdateLayout();
+                var content=(FrameworkElement)window.Content;
+                int width=(int)Math.Ceiling(content.ActualWidth),height=(int)Math.Ceiling(content.ActualHeight);
+                var drawing=new DrawingVisual();
+                using(var context=drawing.RenderOpen())
+                    context.DrawRectangle(new VisualBrush(content),null,new Rect(0,0,width,height));
+                var image=new RenderTargetBitmap(width,height,96,96,PixelFormats.Pbgra32);
+                image.Render(drawing);
+                var encoder=new PngBitmapEncoder();encoder.Frames.Add(BitmapFrame.Create(image));
+                using var file=File.Create(Path.Combine(Path.GetDirectoryName(previewResult)!,"subscription-progress.png"));
+                encoder.Save(file);
+            }
+            SetSubscriptionCheckStage(progressBatch,sourceId,5,"Сравниваем и сохраняем результат…");
+            firstProgress.Report(new("Ready",3,2048));
+            firstProgress.Report(new("Enumerating",MetadataBytes:1));
+            DrainProgressCallbacks();
+            Require(SubscriptionControl<TextBlock>("SubscriptionCheckStageText").Text=="Сравниваем и сохраняем результат…" &&
+                    SubscriptionControl<ProgressBar>("SubscriptionCheckOverallProgress").Value==0,
+                "Late backend callbacks cannot overwrite saving or claim source completion before persistence");
+            CompleteSubscriptionCheckSource(progressBatch,sourceId);
+            var nextProgressSource=new SubscriptionDefinition {Id=sourceId+"-next",Url=definition.Url+"/next",Title="Следующий источник"};
+            StartSubscriptionCheckSource(progressBatch,nextProgressSource);
+            firstProgress.Report(new("Parsing",999,99999));
+            DrainProgressCallbacks();
+            Require(SubscriptionControl<TextBlock>("SubscriptionCheckSourceText").Text==nextProgressSource.Title &&
+                    !SubscriptionControl<TextBlock>("SubscriptionCheckDetailText").Text.Contains("999"),
+                "A late report for the previous exact source must not alter the next source");
+            SetSubscriptionCheckStage(progressBatch,nextProgressSource.Id,7,"Источник не проверен: тестовая ошибка");
+            CompleteSubscriptionCheckSource(progressBatch,nextProgressSource.Id);
+            SkipSubscriptionCheckSource(progressBatch);
+            FinishSubscriptionCheckProgress(progressBatch,false,1,1,0);
+            Require(SubscriptionControl<ProgressBar>("SubscriptionCheckOverallProgress").Value==2 &&
+                    SubscriptionControl<ProgressBar>("SubscriptionCheckOverallProgress").Maximum==2 &&
+                    SubscriptionControl<TextBlock>("SubscriptionCheckCountText").Text.Contains("пропущено: 1") &&
+                    SubscriptionControl<TextBlock>("SubscriptionCheckStageText").Text=="Проверка завершена с ошибками" &&
+                    !SubscriptionControl<ProgressBar>("SubscriptionCheckActivityProgress").IsIndeterminate && _subscriptionCheckTimer==null,
+                "Completed attempts, skipped sources and errors must produce an honest terminal card without a running timer");
+            string finishedElapsed=SubscriptionControl<TextBlock>("SubscriptionCheckElapsedText").Text;
+            firstProgress.Report(new("Feed",999));
+            DrainProgressCallbacks();
+            Require(SubscriptionControl<TextBlock>("SubscriptionCheckElapsedText").Text==finishedElapsed &&
+                    SubscriptionControl<TextBlock>("SubscriptionCheckStageText").Text=="Проверка завершена с ошибками",
+                "Terminal progress must reject queued callbacks and freeze elapsed time");
+            using(var progressCancellation=new CancellationTokenSource())
+            {
+                _subscriptionCancellation=progressCancellation;
+                long cancelledBatch=BeginSubscriptionCheckProgress(window,2);
+                StartSubscriptionCheckSource(cancelledBatch,progressSource);
+                var cancelledProgress=CreateSubscriptionCheckObserver(cancelledBatch,sourceId);
+                string initialElapsed=SubscriptionControl<TextBlock>("SubscriptionCheckElapsedText").Text;
+                WaitFor(()=>SubscriptionControl<TextBlock>("SubscriptionCheckElapsedText").Text!=initialElapsed,
+                    "Elapsed time must update while the real WPF dispatcher remains responsive");
+                UpdateSubscriptionButtons();
+                SubscriptionControl<Button>("CancelSubscriptionCheckButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                cancelledProgress.Report(new("Parsing",999));
+                DrainProgressCallbacks();
+                Require(progressCancellation.IsCancellationRequested && SubscriptionControl<TextBlock>("SubscriptionCheckStageText").Text=="Отменяем проверку…" &&
+                        !_subscriptionCheckClock.IsRunning && _subscriptionCheckTimer==null &&
+                        !SubscriptionControl<ProgressBar>("SubscriptionCheckActivityProgress").IsIndeterminate,
+                    "The real cancel button must stop incoming progress while cancellation is acknowledged");
+                FinishSubscriptionCheckProgress(cancelledBatch,true,0,0,0);
+                Require(SubscriptionControl<TextBlock>("SubscriptionCheckStageText").Text=="Проверка отменена" &&
+                        SubscriptionControl<ProgressBar>("SubscriptionCheckOverallProgress").Value==0 &&
+                        !SubscriptionControl<ProgressBar>("SubscriptionCheckActivityProgress").IsIndeterminate && _subscriptionCheckTimer==null,
+                    "Cancellation must preserve partial source completion and stop the activity and elapsed timer");
+                _subscriptionCancellation=null;
+                UpdateSubscriptionButtons();
+            }
             SubscriptionSources.SelectedItem=SubscriptionSources.Items.Cast<SubscriptionSourceView>().Single(x=>x.Id==sourceId);
             var nameBox=SubscriptionControl<TextBox>("SubscriptionNameBox");
             Require(nameBox.Text=="Канал 123" && ((SubscriptionSourceView)SubscriptionSources.SelectedItem).ShortName=="Канал 123",
@@ -219,7 +325,20 @@ public sealed partial class NativeWindow
                 _subscriptionCancellation=null;
                 UpdateSubscriptionButtons();
             }
+            long closingBatch=BeginSubscriptionCheckProgress(window,1);
+            StartSubscriptionCheckSource(closingBatch,progressSource);
+            var closingProgress=CreateSubscriptionCheckObserver(closingBatch,sourceId);
             window.Close();
+            Require(_subscriptionCheckTimer==null && !_subscriptionCheckActive,
+                "Closing the subscriptions window must stop its independent progress timer");
+            OpenSubscriptions();
+            WaitFor(()=>_subscriptionsWindow!=null && SubscriptionSources.Items.Cast<SubscriptionSourceView>().Any(x=>x.Id==sourceId),
+                "Reopening subscriptions must create a fresh progress presentation");
+            closingProgress.Report(new("Parsing",999));
+            DrainProgressCallbacks();
+            Require(SubscriptionControl<Border>("SubscriptionCheckProgressPanel").Visibility==Visibility.Collapsed,
+                "A callback from a closed window must not reopen progress in its replacement");
+            _subscriptionsWindow!.Close();
             var afterClose=SubscriptionStorage.Read();
             var source=afterClose.Subscriptions.Single(x=>x.Id==sourceId);
             Require(source.LastAttemptUtc==beforeOpen.LastAttemptUtc && source.LastSuccessUtc==beforeOpen.LastSuccessUtc,

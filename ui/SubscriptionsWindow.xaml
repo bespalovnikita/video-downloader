@@ -90,10 +90,10 @@
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
-            <RowDefinition Height="2*" MinHeight="120"/>
+            <RowDefinition Height="2*" MinHeight="80"/>
             <RowDefinition Height="10"/>
             <RowDefinition Height="Auto"/>
-            <RowDefinition Height="3*" MinHeight="120"/>
+            <RowDefinition Height="3*" MinHeight="80"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
@@ -139,6 +139,30 @@
             </WrapPanel>
             <TextBlock Text="Материалы сохраняются в подпапку с этим именем, например D:\Video\123. Изменение имени действует на новые задания."
                        Foreground="#B3BBCD" TextWrapping="Wrap" FontSize="11" Margin="0,5,0,0"/>
+            <Border x:Name="SubscriptionCheckProgressPanel" Visibility="Collapsed" Background="#1B2433"
+                    BorderBrush="#35456D" BorderThickness="1" CornerRadius="7" Padding="10,8" Margin="0,10,0,0">
+                <Grid>
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                    <TextBlock x:Name="SubscriptionCheckSourceText" Text="Проверка подписок" FontWeight="SemiBold"
+                               TextTrimming="CharacterEllipsis" Margin="0,0,14,0"/>
+                    <TextBlock Grid.Column="1" x:Name="SubscriptionCheckCountText" Text="Проверено: 0 / 0"
+                               Foreground="#B3BBCD" Margin="0,0,18,0"/>
+                    <TextBlock Grid.Column="2" x:Name="SubscriptionCheckElapsedText" Text="Прошло: 00:00" Foreground="#B3BBCD"/>
+                    <TextBlock Grid.Row="1" x:Name="SubscriptionCheckStageText" Text="Подготовка…"
+                               Foreground="#9CC9FF" TextTrimming="CharacterEllipsis" Margin="0,4,14,0"/>
+                    <TextBlock Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" x:Name="SubscriptionCheckDetailText"
+                               Foreground="#B3BBCD" TextTrimming="CharacterEllipsis" HorizontalAlignment="Right" Margin="0,4,0,0"/>
+                    <ProgressBar Grid.Row="2" Grid.ColumnSpan="3" x:Name="SubscriptionCheckOverallProgress"
+                                 Minimum="0" Maximum="1" Value="0" Height="6" Margin="0,7,0,0"
+                                 Foreground="#6366F1" Background="#303644" BorderThickness="0"
+                                 ToolTip="Количество завершённых проверок источников"/>
+                    <ProgressBar Grid.Row="3" Grid.ColumnSpan="3" x:Name="SubscriptionCheckActivityProgress"
+                                 IsIndeterminate="False" Height="3" Margin="0,3,0,0"
+                                 Foreground="#56C9BB" Background="#303644" BorderThickness="0"
+                                 ToolTip="Работа с текущим источником"/>
+                </Grid>
+            </Border>
         </StackPanel>
         <DataGrid Grid.Row="3" x:Name="SubscriptionGrid" SelectionMode="Single">
             <DataGrid.RowStyle>

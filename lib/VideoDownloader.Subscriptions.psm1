@@ -333,14 +333,29 @@ function Confirm-VdSubscriptionDuplicates {
     }
 }
 
+function Send-VdSubscriptionScanProgress {
+    param([AllowNull()][scriptblock]$ProgressScript,
+        [ValidateSet('Enumerating','Parsing','Feed','Ready')][string]$Stage,
+        [Nullable[int]]$ItemCount=$null,[Nullable[long]]$MetadataBytes=$null)
+    if ($ProgressScript) {
+        # Progress is an optional side channel. Consumer output/errors must not
+        # become metadata, alter the scan result, or interrupt the owned child.
+        try {
+            & $ProgressScript ([pscustomobject]@{Stage=$Stage;ItemCount=$ItemCount;MetadataBytes=$MetadataBytes}) *> $null
+        } catch { }
+    }
+}
+
 function Invoke-VdSubscriptionProcess {
     param([Parameter(Mandatory)][string]$FilePath,[Parameter(Mandatory)][AllowEmptyCollection()][string[]]$Arguments,
         [Threading.CancellationToken]$CancellationToken=[Threading.CancellationToken]::None,
-        [ValidateRange(0.05,900)][double]$TimeoutSeconds=180,[ValidateRange(1,33554432)][int]$MaxOutputBytes=33554432)
+        [ValidateRange(0.05,900)][double]$TimeoutSeconds=180,[ValidateRange(1,33554432)][int]$MaxOutputBytes=33554432,
+        [scriptblock]$ProgressScript)
     $deadline=[Threading.CancellationTokenSource]::CreateLinkedTokenSource($CancellationToken,[Threading.CancellationToken]::None)
     $deadline.CancelAfter([TimeSpan]::FromSeconds($TimeoutSeconds))
     $process=[Diagnostics.Process]::new(); $started=$false
     $output=[IO.MemoryStream]::new(); $errors=[IO.MemoryStream]::new()
+    $progressWatch=[Diagnostics.Stopwatch]::StartNew();$lastProgressMilliseconds=0L
     try {
         $deadline.Token.ThrowIfCancellationRequested()
         $start=[Diagnostics.ProcessStartInfo]::new($FilePath)
@@ -359,6 +374,10 @@ function Invoke-VdSubscriptionProcess {
                 else {
                     if ($output.Length+$count -gt $MaxOutputBytes) { throw 'Ответ yt-dlp превышает предел 32 МиБ.' }
                     $output.Write($outBuffer,0,$count)
+                    if ($ProgressScript -and $progressWatch.ElapsedMilliseconds-$lastProgressMilliseconds -ge 250) {
+                        Send-VdSubscriptionScanProgress -ProgressScript $ProgressScript -Stage Enumerating -MetadataBytes $output.Length
+                        $lastProgressMilliseconds=$progressWatch.ElapsedMilliseconds
+                    }
                     $stdout=$process.StandardOutput.BaseStream.ReadAsync($outBuffer,0,$outBuffer.Length,$deadline.Token)
                 }
             }
@@ -506,13 +525,16 @@ function Invoke-VdSubscriptionScan {
     param([Parameter(Mandatory)][string]$YtDlpPath,[Parameter(Mandatory)]$Subscription,[string]$CookiePath='',
         [Threading.CancellationToken]$CancellationToken=[Threading.CancellationToken]::None,
         [scriptblock]$ProcessRunner,[scriptblock]$FeedLoader,[ValidateRange(0.05,180)][double]$TimeoutSeconds=180,
-        [ValidateRange(0.05,900)][double]$ChannelTimeoutSeconds=900)
+        [ValidateRange(0.05,900)][double]$ChannelTimeoutSeconds=900,[scriptblock]$ProgressScript)
     if (-not (Test-VdSubscriptionUrl ([string]$Subscription.Url))) { throw 'Некорректный URL подписки.' }
     $deadline=[Threading.CancellationTokenSource]::CreateLinkedTokenSource($CancellationToken,[Threading.CancellationToken]::None)
     $channel=[bool](Get-VdPornHubListingUrl ([string]$Subscription.Url))
     $effectiveTimeout=if($channel){$ChannelTimeoutSeconds}else{$TimeoutSeconds}
     $deadline.CancelAfter([TimeSpan]::FromSeconds($effectiveTimeout))
     try {
+        $deadline.Token.ThrowIfCancellationRequested()
+        Send-VdSubscriptionScanProgress -ProgressScript $ProgressScript -Stage Enumerating
+        $deadline.Token.ThrowIfCancellationRequested()
         $arguments=@('--ignore-config','--dump-single-json','--skip-download','--abort-on-error','--encoding','utf-8','--impersonate','chrome')
         if ($channel) {
             $arguments+=@('--no-plugin-dirs','--plugin-dirs',(Get-VdPornHubCollectorDirectory),'--use-extractors','videodownloader:pornhub:channel',
@@ -521,17 +543,23 @@ function Invoke-VdSubscriptionScan {
         if ($CookiePath) { $arguments+=@('--cookies',$CookiePath) }
         $arguments+=@('--',[string]$Subscription.Url)
         if ($ProcessRunner) { $result=& $ProcessRunner $YtDlpPath $arguments $deadline.Token $effectiveTimeout 33554432 }
-        else { $result=Invoke-VdSubscriptionProcess -FilePath $YtDlpPath -Arguments $arguments -CancellationToken $deadline.Token -TimeoutSeconds $effectiveTimeout }
+        else { $result=Invoke-VdSubscriptionProcess -FilePath $YtDlpPath -Arguments $arguments -CancellationToken $deadline.Token -TimeoutSeconds $effectiveTimeout -ProgressScript $ProgressScript }
         $deadline.Token.ThrowIfCancellationRequested()
         # Match the native scanner: extractors may report a partial page in a
         # warning and still exit successfully. Such output cannot set baseline.
         $incompleteDiagnostic='(?i)\bERROR:|\bincomplete\b|\btruncat\w*|\bpartial (?:playlist|collection)|\b(?:unable|failed) to (?:download|extract|retrieve).*(?:page|playlist|entries)|\bgiving up after'
         if ($result.ExitCode -ne 0 -or [string]$result.Stderr -match $incompleteDiagnostic) { throw ('Не удалось полностью проверить подписку: '+[string]$result.Stderr) }
+        $metadataBytes=[long][Text.Encoding]::UTF8.GetByteCount([string]$result.Stdout)
+        Send-VdSubscriptionScanProgress -ProgressScript $ProgressScript -Stage Parsing -MetadataBytes $metadataBytes
+        $deadline.Token.ThrowIfCancellationRequested()
         $scan=if($channel){ConvertFrom-VdPornHubScan -Json ([string]$result.Stdout) -SourceUrl ([string]$Subscription.Url)}
             else{ConvertFrom-VdSubscriptionMetadata -Json ([string]$result.Stdout) -SourceUrl ([string]$Subscription.Url)}
+        $deadline.Token.ThrowIfCancellationRequested()
         if ($Subscription.FeedUrl) { $scan.FeedUrl=[string]$Subscription.FeedUrl }
         if ($scan.FeedUrl) {
             try {
+                Send-VdSubscriptionScanProgress -ProgressScript $ProgressScript -Stage Feed -ItemCount @($scan.Items).Count -MetadataBytes $metadataBytes
+                $deadline.Token.ThrowIfCancellationRequested()
                 if ($FeedLoader) { $xml=& $FeedLoader $scan.FeedUrl $deadline.Token }
                 else { $xml=Read-VdSubscriptionFeed -Url $scan.FeedUrl -CancellationToken $deadline.Token }
                 $feed=ConvertFrom-VdSubscriptionFeed -Xml ([string]$xml)
@@ -550,6 +578,8 @@ function Invoke-VdSubscriptionScan {
                 $scan.Warning='RSS/Atom недоступна; использован полный обход yt-dlp. '+$_.Exception.Message
             }
         }
+        $deadline.Token.ThrowIfCancellationRequested()
+        Send-VdSubscriptionScanProgress -ProgressScript $ProgressScript -Stage Ready -ItemCount @($scan.Items).Count -MetadataBytes $metadataBytes
         $deadline.Token.ThrowIfCancellationRequested()
         return $scan
     } catch {

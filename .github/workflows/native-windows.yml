@@ -82,6 +82,12 @@ jobs:
           if ((Get-Content -LiteralPath $env:VD_NATIVE_UI_TEST_RESULT -Raw).Trim() -ne 'PASS') {
             throw 'Native WPF interaction regression did not pass'
           }
+      - name: Upload subscription progress preview
+        uses: actions/upload-artifact@v4
+        with:
+          name: Subscription-progress-preview
+          path: ${{ runner.temp }}/subscription-progress.png
+          if-no-files-found: error
       - name: Publish native portable EXE
         shell: pwsh
         run: |

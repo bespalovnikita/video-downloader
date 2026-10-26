@@ -48,7 +48,8 @@ public sealed class SubscriptionScanner : IDisposable
         _http = httpClient ?? new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
     }
 
-    public async Task<SubscriptionScan> ScanAsync(SubscriptionDefinition source, string cookiePath, CancellationToken token)
+    public async Task<SubscriptionScan> ScanAsync(SubscriptionDefinition source, string cookiePath, CancellationToken token,
+        IProgress<SubscriptionScanProgress>? progress = null)
     {
         ArgumentNullException.ThrowIfNull(source);
         if (!ValidUrl(source.Url)) throw new ArgumentException("Источник должен быть HTTP(S) URL.", nameof(source));
@@ -57,17 +58,31 @@ public sealed class SubscriptionScanner : IDisposable
         deadline.CancelAfter(channel?_limits.ChannelScanTimeout:_limits.ScanTimeout);
         try
         {
-            // Always enumerate first, including when the feed has not changed.
-            string metadata = await EnumerateAsync(source.Url, cookiePath, deadline.Token).ConfigureAwait(false);
             deadline.Token.ThrowIfCancellationRequested();
+            ReportProgress(progress, new("Enumerating", MetadataBytes: 0));
+            // Always enumerate first, including when the feed has not changed.
+            string metadata = await EnumerateAsync(source.Url, cookiePath, deadline.Token, progress).ConfigureAwait(false);
+            deadline.Token.ThrowIfCancellationRequested();
+            long metadataBytes = Encoding.UTF8.GetByteCount(metadata);
+            ReportProgress(progress, new("Parsing", MetadataBytes: metadataBytes));
             SubscriptionScan scan = channel?PornHubChannel.ParseScan(metadata,source.Url,_limits.MaxItems,_limits.MaxChannelPages)
                 :ParseMetadata(metadata, source.Url, _limits.MaxItems);
             deadline.Token.ThrowIfCancellationRequested();
+            ReportProgress(progress, new("Parsing", scan.Items.Count, metadataBytes));
+            SubscriptionScan Complete(SubscriptionScan result)
+            {
+                deadline.Token.ThrowIfCancellationRequested();
+                ReportProgress(progress, new("Ready", result.Items.Count, metadataBytes));
+                deadline.Token.ThrowIfCancellationRequested();
+                return result;
+            }
             string feedUrl = string.IsNullOrWhiteSpace(source.FeedUrl) ? scan.FeedUrl : source.FeedUrl;
-            if (feedUrl.Length == 0) return scan;
-            if (!ValidUrl(feedUrl)) return scan with { FeedUrl = feedUrl, Warning = "URL ленты некорректен; использован полный обход yt-dlp." };
+            if (feedUrl.Length == 0) return Complete(scan);
+            if (!ValidUrl(feedUrl)) return Complete(scan with { FeedUrl = feedUrl, Warning = "URL ленты некорректен; использован полный обход yt-dlp." });
             using var feedDeadline = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token);
             feedDeadline.CancelAfter(_limits.FeedTimeout);
+            deadline.Token.ThrowIfCancellationRequested();
+            ReportProgress(progress, new("Feed", scan.Items.Count, metadataBytes));
             try
             {
                 using var response = await _http.GetAsync(feedUrl, HttpCompletionOption.ResponseHeadersRead, feedDeadline.Token).ConfigureAwait(false);
@@ -85,19 +100,19 @@ public sealed class SubscriptionScanner : IDisposable
                 var urls = new HashSet<string>(scan.Items.Select(item => item.Url), StringComparer.Ordinal);
                 int unconfirmed = feed.Count(item => !urls.Contains(item.Url));
                 deadline.Token.ThrowIfCancellationRequested();
-                return scan with {
+                return Complete(scan with {
                     Items = confirmed, FeedUrl = feedUrl,
                     Warning = unconfirmed == 0 ? "" : $"Элементов ленты, не подтверждённых полным обходом: {unconfirmed}."
-                };
+                });
             }
             catch (OperationCanceledException) when (!deadline.IsCancellationRequested)
             {
-                return scan with { FeedUrl = feedUrl, Warning = "Лента не ответила вовремя; использован полный обход yt-dlp." };
+                return Complete(scan with { FeedUrl = feedUrl, Warning = "Лента не ответила вовремя; использован полный обход yt-dlp." });
             }
             catch (Exception error) when (error is HttpRequestException or IOException or InvalidDataException or XmlException or DecoderFallbackException)
             {
                 deadline.Token.ThrowIfCancellationRequested();
-                return scan with { FeedUrl = feedUrl, Warning = "Лента недоступна; использован полный обход yt-dlp. " + error.Message };
+                return Complete(scan with { FeedUrl = feedUrl, Warning = "Лента недоступна; использован полный обход yt-dlp. " + error.Message });
             }
         }
         catch (OperationCanceledException) when (!token.IsCancellationRequested)
@@ -106,7 +121,16 @@ public sealed class SubscriptionScanner : IDisposable
         }
     }
 
-    private async Task<string> EnumerateAsync(string url, string cookiePath, CancellationToken token)
+    private static void ReportProgress(IProgress<SubscriptionScanProgress>? progress, SubscriptionScanProgress value)
+    {
+        // Display observers are a side channel; they cannot change whether a
+        // complete scan succeeds or cause the metadata pipes to stop draining.
+        try { progress?.Report(value); }
+        catch(Exception error) { Debug.WriteLine("Subscription progress observer failed: " + error.Message); }
+    }
+
+    private async Task<string> EnumerateAsync(string url, string cookiePath, CancellationToken token,
+        IProgress<SubscriptionScanProgress>? progress)
     {
         token.ThrowIfCancellationRequested();
         var start = new ProcessStartInfo(_ytDlpPath) {
@@ -147,7 +171,14 @@ public sealed class SubscriptionScanner : IDisposable
         });
         async Task<byte[]> ReadOutput(Stream stream, int maximum)
         {
-            try { return await ReadBoundedAsync(stream, maximum, stop.Token).ConfigureAwait(false); }
+            var reporting = Stopwatch.StartNew();
+            void Received(long bytes)
+            {
+                if (reporting.Elapsed < TimeSpan.FromMilliseconds(250)) return;
+                reporting.Restart();
+                ReportProgress(progress, new("Enumerating", MetadataBytes: bytes));
+            }
+            try { return await ReadBoundedAsync(stream, maximum, stop.Token, progress is null ? null : Received).ConfigureAwait(false); }
             catch { stop.Cancel(); throw; }
         }
         var stdout = ReadOutput(child.StandardOutput.BaseStream, _limits.MaxMetadataBytes);
@@ -198,7 +229,8 @@ public sealed class SubscriptionScanner : IDisposable
         return (Encoding.UTF8.GetString(retained.ToArray()), incomplete);
     }
 
-    private static async Task<byte[]> ReadBoundedAsync(Stream stream, int maximum, CancellationToken token)
+    private static async Task<byte[]> ReadBoundedAsync(Stream stream, int maximum, CancellationToken token,
+        Action<long>? received = null)
     {
         using var output = new MemoryStream();
         byte[] buffer = new byte[16 * 1024];
@@ -207,6 +239,7 @@ public sealed class SubscriptionScanner : IDisposable
         {
             if (output.Length + count > maximum) throw new InvalidDataException("Превышен допустимый размер ответа.");
             output.Write(buffer, 0, count);
+            received?.Invoke(output.Length);
         }
         return output.ToArray();
     }

@@ -64,13 +64,19 @@ try {
         $controls.SubscriptionInboxGrid=[pscustomobject]@{SelectedItem=$null;SelectedItems=@();ItemsSource=@()}
         $controls.SubscriptionInboxTitle=[pscustomobject]@{Text=''}
         $controls.SubscriptionStatusText=[pscustomobject]@{Text=''}
+        $controls.SubscriptionCheckProgressPanel=[pscustomobject]@{Visibility='Collapsed'}
+        foreach($name in @('SubscriptionCheckSourceText','SubscriptionCheckStageText','SubscriptionCheckCountText','SubscriptionCheckElapsedText','SubscriptionCheckDetailText')) {
+            $controls[$name]=[pscustomobject]@{Text='';ToolTip=''}
+        }
+        $controls.SubscriptionCheckOverallProgress=[pscustomobject]@{Maximum=1.0;Value=0.0}
+        $controls.SubscriptionCheckActivityProgress=[pscustomobject]@{IsIndeterminate=$false}
         $controls.SubscriptionNameBox=[pscustomobject]@{Text='';IsEnabled=$false}
         $timer=[pscustomobject]@{Running=$false}
         $timer | Add-Member ScriptMethod Start {$this.Running=$true}
         $timer | Add-Member ScriptMethod Stop {$this.Running=$false}
         $context=@{Directory=$Directory;Controls=$controls;Closed=$false;Updating=$false;Notifying=$false;
             LastError='';NameEditorId='';NameEditorSavedValue='';Snapshot=$null;QueueUrls={param($urls) $urls};CookiePathScript={''};Pending=[Collections.Generic.List[string]]::new();
-            Job=$null;Cancellation=$null;ActiveId='';Timer=$timer;OwnerClosedHandler=$null;Key=[guid]::NewGuid().ToString('N')}
+            Job=$null;Cancellation=$null;ActiveId='';CheckId='';ProgressQueue=$null;CheckProgress=$null;Timer=$timer;OwnerClosedHandler=$null;Key=[guid]::NewGuid().ToString('N')}
         $contexts.Add($context)
         return $context
     }
@@ -178,11 +184,19 @@ try {
     $scanner=Join-Path $temp 'OfflineScanner.psm1'
     @'
 function Invoke-VdSubscriptionScan {
- param($YtDlpPath,$Subscription,$CookiePath,[Threading.CancellationToken]$CancellationToken)
+ param($YtDlpPath,$Subscription,$CookiePath,[Threading.CancellationToken]$CancellationToken,[scriptblock]$ProgressScript)
+ & $ProgressScript ([pscustomobject]@{Stage='Enumerating';ItemCount=$null;MetadataBytes=512})
+ if($Subscription.Url.EndsWith('/error')){throw 'Offline scan failure'}
  if($Subscription.Url.EndsWith('/slow')){
   while(-not $CancellationToken.IsCancellationRequested){Start-Sleep -Milliseconds 10}
   $CancellationToken.ThrowIfCancellationRequested()
  }
+ Start-Sleep -Milliseconds 120
+ & $ProgressScript ([pscustomobject]@{Stage='Parsing';ItemCount=$null;MetadataBytes=1024})
+ Start-Sleep -Milliseconds 120
+ & $ProgressScript ([pscustomobject]@{Stage='Feed';ItemCount=1;MetadataBytes=1024})
+ Start-Sleep -Milliseconds 120
+ & $ProgressScript ([pscustomobject]@{Stage='Ready';ItemCount=1;MetadataBytes=1024})
  @{Title='Фоновая проверка';FeedUrl='';Warning='';Items=@(@{Url='https://example.com/discovered';Title='Обнаружено'})}
 }
 Export-ModuleMember -Function Invoke-VdSubscriptionScan
@@ -195,10 +209,64 @@ Export-ModuleMember -Function Invoke-VdSubscriptionScan
     $watch=[Diagnostics.Stopwatch]::StartNew()
     & $module {param($c,$id) Add-VdSubscriptionUiChecks $c @($id)} $worker $background.Id
     Assert ($watch.Elapsed.TotalSeconds -lt 3 -and $null -ne $worker.Job -and $worker.Timer.Running) 'Manual check must return while discovery executes in a ThreadJob'
+    Assert ($worker.Controls.SubscriptionCheckProgressPanel.Visibility -eq 'Visible' -and
+        $worker.Controls.SubscriptionCheckActivityProgress.IsIndeterminate -and
+        $worker.Controls.SubscriptionCheckOverallProgress.Maximum -eq 1 -and $worker.Controls.SubscriptionCheckOverallProgress.Value -eq 0 -and
+        $worker.Controls.SubscriptionCheckSourceText.ToolTip -ceq $background.Url -and
+        $worker.Controls.SubscriptionCheckStageText.Text -eq 'Получаем полный список материалов') 'Starting a check must expose source, real source-count progress and an animated unknown-length scan'
+    $observedStages=[Collections.Generic.HashSet[string]]::new()
     $deadline=[DateTime]::UtcNow.AddSeconds(15)
-    while($worker.Job -and [DateTime]::UtcNow -lt $deadline){Start-Sleep -Milliseconds 30;& $module {param($c) Complete-VdSubscriptionUiCheck $c} $worker}
+    while($worker.Job -and [DateTime]::UtcNow -lt $deadline){Start-Sleep -Milliseconds 30;& $module {param($c) Complete-VdSubscriptionUiCheck $c} $worker;[void]$observedStages.Add($worker.Controls.SubscriptionCheckStageText.Text)}
     $saved=Read-VdSubscriptions -Directory $workDirectory
     Assert ($null -eq $worker.Job -and $saved.Subscriptions[0].Initialized -and $saved.Items[0].State -eq 'Baseline' -and -not $worker.Timer.Running) 'Completion observer must apply a complete scan, preserve baseline mode and release job/timer'
+    Assert ($observedStages.Contains('Разбираем полный список') -and $observedStages.Contains('Проверяем RSS / Atom') -and
+        $worker.Controls.SubscriptionCheckStageText.Text -eq 'Проверка завершена' -and
+        $worker.Controls.SubscriptionCheckOverallProgress.Value -eq 1 -and -not $worker.Controls.SubscriptionCheckActivityProgress.IsIndeterminate -and
+        $worker.Controls.SubscriptionCheckDetailText.Text -like '*Материалов в полном списке: 1*' -and
+        $worker.Controls.SubscriptionCheckDetailText.Text -like '*Метаданные: 1*' -and
+        $worker.Controls.SubscriptionCheckElapsedText.Text -like 'Прошло: *') 'Real ThreadJob progress must pass through translated stages, confirmed counts and a stopped successful summary'
+
+    # An event from a prior source/check cannot mutate the current card.
+    $lateQueue=[Collections.Concurrent.ConcurrentQueue[object]]::new()
+    $worker.ProgressQueue=$lateQueue
+    $lateQueue.Enqueue([pscustomobject]@{CheckId='old-check';SourceId=$background.Id;Progress=[pscustomobject]@{Stage='Feed';ItemCount=999;MetadataBytes=999}})
+    $terminalStage=$worker.Controls.SubscriptionCheckStageText.Text
+    & $module {param($c) Receive-VdSubscriptionUiProgress $c} $worker
+    Assert ($worker.Controls.SubscriptionCheckStageText.Text -ceq $terminalStage -and $worker.Controls.SubscriptionCheckDetailText.Text -notlike '*999*') 'Terminal and stale progress events must not reopen or corrupt the completed card'
+    $worker.ProgressQueue=$null
+
+    # A batch reports actual completed sources and remains cancellable with
+    # a visible clock while one source has an unknown collection length.
+    $progressDirectory=Join-Path $temp 'progress-batch'
+    $slowProgress=Add-VdSubscription -Directory $progressDirectory -Url 'https://example.com/slow'
+    $pendingProgress=Add-VdSubscription -Directory $progressDirectory -Url 'https://example.com/pending'
+    $batch=New-TestContext $progressDirectory;$batch.StoreModule=$scanner;$batch.YtDlpPath='unused'
+    & $module {param($c,$ids) Add-VdSubscriptionUiChecks $c $ids} $batch @($slowProgress.Id,$pendingProgress.Id,$slowProgress.Id)
+    Assert ($batch.CheckProgress.Total -eq 2 -and $batch.Pending.Count -eq 1) 'A batch must count exact distinct active subscriptions only once'
+    Start-Sleep -Milliseconds 1100
+    & $module {param($c) Complete-VdSubscriptionUiCheck $c} $batch
+    Assert ($batch.Controls.SubscriptionCheckElapsedText.Text -ne 'Прошло: 00:00:00' -and $batch.Controls.SubscriptionCheckActivityProgress.IsIndeterminate) 'The dispatcher observer must update elapsed time while waiting for a collection'
+    & $module {param($c) Stop-VdSubscriptionUiChecks $c} $batch
+    $cancelStage=$batch.Controls.SubscriptionCheckStageText.Text
+    & $module {param($c,$id) Add-VdSubscriptionUiChecks $c @($id)} $batch $pendingProgress.Id
+    Assert ($batch.Pending.Count -eq 0 -and $batch.Controls.SubscriptionStatusText.Text -like '*завершения отмены*') 'A new check must wait for cancellation cleanup instead of reviving an already cancelled batch'
+    $batch.ProgressQueue.Enqueue([pscustomobject]@{CheckId=$batch.CheckId;SourceId=$batch.ActiveId;Progress=[pscustomobject]@{Stage='Ready';ItemCount=999;MetadataBytes=999}})
+    & $module {param($c) Receive-VdSubscriptionUiProgress $c} $batch
+    Assert ($batch.Pending.Count -eq 0 -and -not $batch.Controls.SubscriptionCheckActivityProgress.IsIndeterminate -and
+        $batch.Controls.SubscriptionCheckStageText.Text -ceq $cancelStage -and $batch.Controls.SubscriptionCheckDetailText.Text -notlike '*999*') 'Cancellation must clear pending checks, stop animation and reject late ready events'
+    $deadline=[DateTime]::UtcNow.AddSeconds(15)
+    while($batch.Job -and [DateTime]::UtcNow -lt $deadline){Start-Sleep -Milliseconds 30;& $module {param($c) Complete-VdSubscriptionUiCheck $c} $batch}
+    Assert ($batch.Controls.SubscriptionCheckStageText.Text -eq 'Проверка отменена' -and $batch.CheckProgress.Completed -eq 0 -and
+        $batch.Controls.SubscriptionCheckOverallProgress.Value -eq 0 -and -not $batch.Timer.Running -and -not $batch.CheckProgress.Watch.IsRunning) 'Cancelled batches must retain honest partial progress and release their timer and clock'
+
+    $failedProgress=Add-VdSubscription -Directory $progressDirectory -Url 'https://example.com/error'
+    & $module {param($c,$ids) Add-VdSubscriptionUiChecks $c $ids} $batch @($pendingProgress.Id,$failedProgress.Id)
+    $deadline=[DateTime]::UtcNow.AddSeconds(15)
+    while($batch.Job -and [DateTime]::UtcNow -lt $deadline){Start-Sleep -Milliseconds 30;& $module {param($c) Complete-VdSubscriptionUiCheck $c} $batch}
+    Assert ($batch.Controls.SubscriptionCheckStageText.Text -eq 'Проверка завершена с ошибками' -and $batch.CheckProgress.Failed -eq 1 -and
+        $batch.CheckProgress.Completed -eq 2 -and $batch.CheckProgress.Total -eq 2 -and $batch.CheckProgress.Succeeded -eq 1 -and
+        $batch.Controls.SubscriptionCheckDetailText.Text -like '*Offline scan failure*' -and -not $batch.Controls.SubscriptionCheckActivityProgress.IsIndeterminate) 'A batch must count actual successful and failed sources and show a final error result rather than successful progress'
+
 
     # Initial archive import invokes the actual main GUI queue callback, which
     # must still be able to read history after importing the subscriptions UI.
@@ -225,7 +293,15 @@ Export-ModuleMember -Function Invoke-VdSubscriptionScan
     $saved=Read-VdSubscriptions -Directory $workDirectory
     $pending=@($saved.Items | Where-Object SubscriptionId -CEQ $archive.Id)
     Assert ($pending.Count -eq 1 -and $pending[0].InitialQueuePending -and $pending[0].State -eq 'New') 'An owner callback failure must keep the initial archive pending for another manual check'
-    $worker.QueueUrls=$ownerQueueCallback
+    $worker.QueueUrls={param($urls,$source,$titles)
+        $stage=$worker.Controls.SubscriptionCheckStageText.Text
+        $queue=$worker.ProgressQueue
+        $queue.Enqueue([pscustomobject]@{CheckId=$worker.CheckId;SourceId=$worker.ActiveId;Progress=[pscustomobject]@{Stage='Enumerating';ItemCount=$null;MetadataBytes=999999}})
+        & $module {param($c) Complete-VdSubscriptionUiCheck $c} $worker
+        Assert ($worker.Applying -and $null -eq $worker.Job -and $worker.Controls.SubscriptionCheckStageText.Text -ceq $stage -and
+            $worker.Controls.SubscriptionCheckDetailText.Text -notlike '*976*') 'A modal owner callback must not let late worker progress replace the save/queue phase or start another worker'
+        & $ownerQueueCallback $urls $source $titles
+    }
     & $module {param($c,$id) Add-VdSubscriptionUiChecks $c @($id)} $worker $archive.Id
     $deadline=[DateTime]::UtcNow.AddSeconds(15)
     while($worker.Job -and [DateTime]::UtcNow -lt $deadline){Start-Sleep -Milliseconds 30;& $module {param($c) Complete-VdSubscriptionUiCheck $c} $worker}
@@ -240,6 +316,7 @@ Export-ModuleMember -Function Invoke-VdSubscriptionScan
     Assert ($script:queue[0].Title -ceq 'Обнаружено' -and $script:titlesAtPrefetch['https://example.com/discovered'] -ceq 'Обнаружено') 'The production import must publish its known discovery title before asynchronous preview starts'
     $restoredImport=@(Get-VdRestoredQueue -Session (Read-VdSessionCheckpoint -Path $script:sessionPath))
     Assert ($restoredImport[0].Title -ceq 'Обнаружено' -and $restoredImport[0].Status -eq 'Queued') 'The production snapshot must preserve the discovered title before any download or preview result'
+    $worker.QueueUrls=$ownerQueueCallback
     $capturedName=$script:queue[0].SubscriptionName
     $worker.Controls.SubscriptionGrid.SelectedItem=[pscustomobject]@{Id=$archive.Id}
     & $module {param($c) Update-VdSubscriptionUi $c} $worker
@@ -286,6 +363,16 @@ Export-ModuleMember -Function Invoke-VdSubscriptionScan
             Show-VdSubscriptionsWindow -Owner $owner -Root $root -DataDirectory $wpfDirectory -YtDlpPath 'unused' -CookiePathScript {''} -QueueUrls {throw 'Opening subscriptions must not enqueue'}
             $wpf=& $module {param($o) @($script:SubscriptionWindows.Values | Where-Object {[object]::ReferenceEquals($_.Owner,$o)})[0]} $owner
             Assert ($wpf.Window.IsVisible -and $owner.IsEnabled -and -not $wpf.Controls.DownloadExistingCheck.IsChecked -and $null -eq $wpf.Job) 'Actual PowerShell subscriptions WPF window must open modeless with baseline default and no background scan'
+            Assert ($wpf.Controls.SubscriptionCheckProgressPanel.Visibility -eq 'Collapsed') 'The actual progress card must stay hidden until a manual check'
+            & $module {param($c) Start-VdSubscriptionUiProgress $c 2;$c.CheckProgress.SourceTitle='Источник WPF';$c.CheckProgress.SourceUrl='https://example.com/wpf';Set-VdSubscriptionUiProgressStage $c 'Feed' ([pscustomobject]@{ItemCount=12;MetadataBytes=2048})} $wpf
+            $wpf.Window.UpdateLayout()
+            Assert ($wpf.Controls.SubscriptionCheckProgressPanel.IsVisible -and $wpf.Controls.SubscriptionCheckActivityProgress.IsIndeterminate -and
+                $wpf.Controls.SubscriptionCheckOverallProgress.Maximum -eq 2 -and $wpf.Controls.SubscriptionCheckStageText.Text -eq 'Проверяем RSS / Atom' -and
+                $wpf.Controls.SubscriptionCheckDetailText.Text -like '*12*') 'The actual WPF card must render active source progress and confirmed item counts'
+            & $module {param($c) $c.CheckProgress.Completed=2;$c.CheckProgress.Succeeded=2;Finish-VdSubscriptionUiProgress $c} $wpf
+            Assert ($wpf.Controls.SubscriptionCheckProgressPanel.IsVisible -and -not $wpf.Controls.SubscriptionCheckActivityProgress.IsIndeterminate -and
+                $wpf.Controls.SubscriptionCheckOverallProgress.Value -eq 2 -and $wpf.Controls.SubscriptionCheckStageText.Text -eq 'Проверка завершена') 'Completed WPF progress must remain visible and stop animating'
+
             Assert ($wpf.Controls.SubscriptionNameBox.Text -ceq 'Проверка WPF' -and $wpf.Controls.NewSubscriptionNameBox.Text -eq '') 'Actual PowerShell WPF controls must expose the detected folder name and optional new-source override'
             $wpf.Controls.SubscriptionNameBox.Text='123'
             $wpf.Controls.SaveSubscriptionNameButton.RaiseEvent([Windows.RoutedEventArgs]::new([Windows.Controls.Button]::ClickEvent))

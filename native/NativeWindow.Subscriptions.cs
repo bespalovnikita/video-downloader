@@ -5,6 +5,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Markup;
 using System.Windows.Media;
+using System.Windows.Threading;
 using System.Xml;
 
 namespace VideoDownloader.Native;
@@ -23,6 +24,180 @@ public sealed partial class NativeWindow
     private bool _subscriptionBinding;
     private string _subscriptionNameSelectionId="";
     private string _subscriptionNameSavedValue="";
+    private readonly Stopwatch _subscriptionCheckClock=new();
+    private DispatcherTimer? _subscriptionCheckTimer;
+    private Window? _subscriptionCheckWindow;
+    private long _subscriptionCheckVersion;
+    private string _subscriptionCheckSourceId="";
+    private int _subscriptionCheckPhase;
+    private int _subscriptionCheckTotal;
+    private int _subscriptionCheckCompleted;
+    private int _subscriptionCheckSkipped;
+    private int? _subscriptionCheckItems;
+    private long? _subscriptionCheckBytes;
+    private bool _subscriptionCheckActive;
+
+    private sealed class SubscriptionProgressObserver(Action<SubscriptionScanProgress> report) : IProgress<SubscriptionScanProgress>
+    {
+        public void Report(SubscriptionScanProgress value) => report(value);
+    }
+
+    private bool CurrentSubscriptionCheck(long version,string? sourceId=null) =>
+        _subscriptionCheckActive && version==_subscriptionCheckVersion && CurrentSubscriptionsWindow(_subscriptionCheckWindow) &&
+        (sourceId==null || string.Equals(sourceId,_subscriptionCheckSourceId,StringComparison.Ordinal));
+
+    private long BeginSubscriptionCheckProgress(Window window,int total)
+    {
+        StopSubscriptionCheckProgress();
+        _subscriptionCheckWindow=window;
+        _subscriptionCheckActive=true;
+        _subscriptionCheckTotal=total;
+        _subscriptionCheckCompleted=0;
+        _subscriptionCheckSkipped=0;
+        _subscriptionCheckPhase=0;
+        _subscriptionCheckClock.Restart();
+        SubscriptionControl<Border>("SubscriptionCheckProgressPanel").Visibility=Visibility.Visible;
+        SubscriptionControl<TextBlock>("SubscriptionCheckSourceText").Text="Проверка подписок";
+        SubscriptionControl<TextBlock>("SubscriptionCheckSourceText").ToolTip=null;
+        SubscriptionControl<TextBlock>("SubscriptionCheckStageText").Text="Подготавливаем список источников…";
+        SubscriptionControl<TextBlock>("SubscriptionCheckStageText").Foreground=Brushes.LightGray;
+        SubscriptionControl<TextBlock>("SubscriptionCheckDetailText").Text="";
+        SubscriptionControl<ProgressBar>("SubscriptionCheckActivityProgress").IsIndeterminate=true;
+        UpdateSubscriptionCheckCounter();
+        UpdateSubscriptionCheckElapsed();
+        long version=_subscriptionCheckVersion;
+        var timer=new DispatcherTimer {Interval=TimeSpan.FromMilliseconds(200)};
+        timer.Tick+=(_,_)=>
+        {
+            if(!CurrentSubscriptionCheck(version)) { timer.Stop();return; }
+            UpdateSubscriptionCheckElapsed();
+        };
+        _subscriptionCheckTimer=timer;
+        timer.Start();
+        return version;
+    }
+
+    private void StopSubscriptionCheckProgress()
+    {
+        _subscriptionCheckTimer?.Stop();
+        _subscriptionCheckTimer=null;
+        _subscriptionCheckClock.Stop();
+        if(_subscriptionCheckWindow?.FindName("SubscriptionCheckActivityProgress") is ProgressBar activity)
+            activity.IsIndeterminate=false;
+        _subscriptionCheckActive=false;
+        _subscriptionCheckSourceId="";
+        _subscriptionCheckWindow=null;
+        _subscriptionCheckVersion++;
+    }
+
+    private void UpdateSubscriptionCheckElapsed()
+    {
+        var elapsed=_subscriptionCheckClock.Elapsed;
+        SubscriptionControl<TextBlock>("SubscriptionCheckElapsedText").Text=$"Прошло: {(int)elapsed.TotalHours:00}:{elapsed.Minutes:00}:{elapsed.Seconds:00}";
+    }
+
+    private void UpdateSubscriptionCheckCounter()
+    {
+        var bar=SubscriptionControl<ProgressBar>("SubscriptionCheckOverallProgress");
+        bar.Maximum=Math.Max(1,_subscriptionCheckTotal);
+        bar.Value=Math.Min(_subscriptionCheckCompleted,_subscriptionCheckTotal);
+        SubscriptionControl<TextBlock>("SubscriptionCheckCountText").Text=$"Проверено: {_subscriptionCheckCompleted} / {_subscriptionCheckTotal}"+
+            (_subscriptionCheckSkipped>0?$"; пропущено: {_subscriptionCheckSkipped}":"");
+    }
+
+    private void StartSubscriptionCheckSource(long version,SubscriptionDefinition source)
+    {
+        if(!CurrentSubscriptionCheck(version))return;
+        _subscriptionCheckSourceId=source.Id;
+        _subscriptionCheckPhase=0;
+        _subscriptionCheckItems=null;
+        _subscriptionCheckBytes=null;
+        var title=SubscriptionControl<TextBlock>("SubscriptionCheckSourceText");
+        title.Text=string.IsNullOrWhiteSpace(source.Title)?source.Url:source.Title;
+        title.ToolTip=source.Url;
+        SubscriptionControl<TextBlock>("SubscriptionCheckDetailText").Text="Число материалов станет известно после полного обхода.";
+        SetSubscriptionCheckStage(version,source.Id,1,"Получаем полный список материалов…");
+    }
+
+    private void SetSubscriptionCheckStage(long version,string sourceId,int phase,string text)
+    {
+        if(!CurrentSubscriptionCheck(version,sourceId) || phase<_subscriptionCheckPhase)return;
+        _subscriptionCheckPhase=phase;
+        SubscriptionControl<TextBlock>("SubscriptionCheckStageText").Text=text;
+    }
+
+    private IProgress<SubscriptionScanProgress> CreateSubscriptionCheckObserver(long version,string sourceId) =>
+        new SubscriptionProgressObserver(value=>
+        {
+            if(Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished)return;
+            _=Dispatcher.BeginInvoke(()=>ReportSubscriptionCheckProgress(version,sourceId,value));
+        });
+
+    private void ReportSubscriptionCheckProgress(long version,string sourceId,SubscriptionScanProgress progress)
+    {
+        if(!CurrentSubscriptionCheck(version,sourceId) || _subscriptionCancellation?.IsCancellationRequested==true)return;
+        var (phase,text)=progress.Stage switch {
+            "Enumerating" => (1,"Получаем полный список материалов…"),
+            "Parsing" => (2,"Разбираем и проверяем полный список…"),
+            "Feed" => (3,"Дополняем названия из RSS / Atom…"),
+            "Ready" => (4,"Полный список получен. Подготавливаем сохранение…"),
+            _ => (0,"")
+        };
+        if(phase==0 || phase<_subscriptionCheckPhase)return;
+        SetSubscriptionCheckStage(version,sourceId,phase,text);
+        if(progress.ItemCount is >=0)_subscriptionCheckItems=progress.ItemCount;
+        if(progress.MetadataBytes is >=0)_subscriptionCheckBytes=Math.Max(_subscriptionCheckBytes??0,progress.MetadataBytes.Value);
+        var details=new List<string>();
+        if(_subscriptionCheckItems is { } items)details.Add($"Материалов в полном списке: {items}");
+        else details.Add("Число материалов станет известно после полного обхода.");
+        if(_subscriptionCheckBytes is { } bytes)details.Add($"Получено метаданных: {DownloadFormat.Bytes(bytes)}");
+        SubscriptionControl<TextBlock>("SubscriptionCheckDetailText").Text=string.Join(" · ",details);
+    }
+
+    private void CompleteSubscriptionCheckSource(long version,string sourceId)
+    {
+        if(!CurrentSubscriptionCheck(version,sourceId))return;
+        _subscriptionCheckCompleted++;
+        _subscriptionCheckSourceId="";
+        UpdateSubscriptionCheckCounter();
+    }
+
+    private void SkipSubscriptionCheckSource(long version)
+    {
+        if(!CurrentSubscriptionCheck(version))return;
+        _subscriptionCheckSkipped++;
+        _subscriptionCheckTotal=Math.Max(_subscriptionCheckCompleted,_subscriptionCheckTotal-1);
+        UpdateSubscriptionCheckCounter();
+    }
+
+    private void CancelSubscriptionCheckProgress()
+    {
+        if(!CurrentSubscriptionCheck(_subscriptionCheckVersion))return;
+        _subscriptionCheckPhase=int.MaxValue;
+        _subscriptionCheckClock.Stop();
+        _subscriptionCheckTimer?.Stop();
+        _subscriptionCheckTimer=null;
+        UpdateSubscriptionCheckElapsed();
+        SubscriptionControl<ProgressBar>("SubscriptionCheckActivityProgress").IsIndeterminate=false;
+        SubscriptionControl<TextBlock>("SubscriptionCheckStageText").Text="Отменяем проверку…";
+    }
+
+    private void FinishSubscriptionCheckProgress(long version,bool cancelled,int succeeded,int failed,int queued)
+    {
+        if(!CurrentSubscriptionCheck(version))return;
+        _subscriptionCheckClock.Stop();
+        _subscriptionCheckTimer?.Stop();
+        _subscriptionCheckTimer=null;
+        UpdateSubscriptionCheckElapsed();
+        UpdateSubscriptionCheckCounter();
+        SubscriptionControl<ProgressBar>("SubscriptionCheckActivityProgress").IsIndeterminate=false;
+        var stage=SubscriptionControl<TextBlock>("SubscriptionCheckStageText");
+        stage.Text=cancelled?"Проверка отменена":failed>0?"Проверка завершена с ошибками":"Проверка завершена";
+        stage.Foreground=failed>0?Brushes.LightSalmon:cancelled?Brushes.Gold:Brushes.LightGreen;
+        SubscriptionControl<TextBlock>("SubscriptionCheckDetailText").Text=$"Полных проверок: {succeeded}; ошибок: {failed}; добавлено в очередь: {queued}.";
+        _subscriptionCheckActive=false;
+        _subscriptionCheckSourceId="";
+    }
 
     private SubscriptionStore SubscriptionStorage => _subscriptionStore ??=
         new SubscriptionStore(Path.GetDirectoryName(_storage.SessionPath)!);
@@ -31,7 +206,7 @@ public sealed partial class NativeWindow
         (T)(_subscriptionsWindow?.FindName(name) ?? throw new InvalidOperationException("Missing subscription control: "+name));
     private DataGrid SubscriptionSources => SubscriptionControl<DataGrid>("SubscriptionGrid");
     private DataGrid SubscriptionInbox => SubscriptionControl<DataGrid>("SubscriptionInboxGrid");
-    private bool SubscriptionBusy => _subscriptionMutation || _subscriptionCancellation!=null;
+    private bool SubscriptionBusy => _subscriptionMutation || _subscriptionCancellation!=null || _subscriptionCheckActive;
 
     private void OpenSubscriptions()
     {
@@ -71,6 +246,7 @@ public sealed partial class NativeWindow
             SubscriptionControl<Button>("CancelSubscriptionCheckButton").Click+=(_,_)=>
             {
                 _subscriptionCancellation?.Cancel();
+                CancelSubscriptionCheckProgress();
                 SubscriptionStatus("Проверка отменяется. Уже сохранённые результаты и обычная очередь останутся на месте.");
             };
             SubscriptionControl<Button>("PauseSubscriptionButton").Click+=async(_,_)=>await ToggleSubscriptionPauseAsync();
@@ -98,6 +274,7 @@ public sealed partial class NativeWindow
             {
                 if (!ReferenceEquals(_subscriptionsWindow,window)) return;
                 _subscriptionCancellation?.Cancel();
+                StopSubscriptionCheckProgress();
                 _subscriptionsWindow=null;
                 _subscriptionNameSelectionId="";
                 _subscriptionNameSavedValue="";
@@ -118,6 +295,7 @@ public sealed partial class NativeWindow
     {
         _subscriptionsDisposed=true;
         _subscriptionCancellation?.Cancel();
+        StopSubscriptionCheckProgress();
         _subscriptionsWindow?.Close();
         _subscriptionsWindow=null;
         _subscriptionRefreshVersion++;
@@ -306,6 +484,7 @@ public sealed partial class NativeWindow
         string cookies=B("CookiesBox").Text.Trim();
         using var cancel=new CancellationTokenSource();
         _subscriptionCancellation=cancel;
+        long progressVersion=BeginSubscriptionCheckProgress(window,ids.Length);
         UpdateSubscriptionButtons();
         int succeeded=0,failed=0,queued=0;
         bool cancelled=false;
@@ -317,12 +496,16 @@ public sealed partial class NativeWindow
             {
                 cancel.Token.ThrowIfCancellationRequested();
                 var source=await Task.Run(()=>SubscriptionStorage.Read().Subscriptions.FirstOrDefault(x=>x.Id==id),cancel.Token);
-                if (source==null || source.Paused) continue;
+                if (source==null || source.Paused) {SkipSubscriptionCheckSource(progressVersion);continue;}
+                StartSubscriptionCheckSource(progressVersion,source);
                 string kind=PornHubChannel.ListingUrl(source.Url)!=null?"Проверка публикаций Pornhub (до 15 минут)":"Полная проверка";
                 SubscriptionStatus($"{kind}: {(source.Title.Length>0?source.Title:source.Url)}… Отмена не меняет исходную отметку.");
                 try
                 {
-                    var scan=await Task.Run(()=>scanner.ScanAsync(source,cookies,cancel.Token),cancel.Token);
+                    var progress=CreateSubscriptionCheckObserver(progressVersion,id);
+                    var scan=await Task.Run(()=>scanner.ScanAsync(source,cookies,cancel.Token,progress),cancel.Token);
+                    ReportSubscriptionCheckProgress(progressVersion,id,new("Ready",scan.Items.Count));
+                    SetSubscriptionCheckStage(progressVersion,id,5,"Сравниваем и сохраняем результат…");
                     var snapshot=await Task.Run(()=>
                     {
                         cancel.Token.ThrowIfCancellationRequested();
@@ -337,6 +520,7 @@ public sealed partial class NativeWindow
                     var initial=snapshot.Items.Where(x=>x.SubscriptionId==id && x.State=="New" && x.InitialQueuePending).ToArray();
                     if (initial.Length>0 && !cancel.IsCancellationRequested)
                     {
+                        SetSubscriptionCheckStage(progressVersion,id,6,"Добавляем исходные материалы в очередь…");
                         try { queued+=await QueueSubscriptionCandidatesAsync(initial); }
                         catch(Exception e)
                         {
@@ -349,6 +533,7 @@ public sealed partial class NativeWindow
                         }
                     }
                     await ReloadSubscriptionsAsync();
+                    CompleteSubscriptionCheckSource(progressVersion,id);
                 }
                 catch(OperationCanceledException) when (cancel.IsCancellationRequested)
                 {
@@ -359,12 +544,14 @@ public sealed partial class NativeWindow
                 catch(Exception e)
                 {
                     failed++;
+                    SetSubscriptionCheckStage(progressVersion,id,7,"Источник не проверен: "+e.Message);
                     await RecordSubscriptionScanFailureAsync(id,e.Message);
                     if (CurrentSubscriptionsWindow(window))
                     {
                         await ReloadSubscriptionsAsync();
                         SubscriptionStatus("Не удалось проверить "+(source.Title.Length>0?source.Title:source.Url)+": "+e.Message,true);
                     }
+                    CompleteSubscriptionCheckSource(progressVersion,id);
                 }
             }
         }
@@ -376,6 +563,7 @@ public sealed partial class NativeWindow
             if (CurrentSubscriptionsWindow(window))
             {
                 await ReloadSubscriptionsAsync();
+                FinishSubscriptionCheckProgress(progressVersion,cancelled,succeeded,failed,queued);
                 SubscriptionStatus((cancelled?"Проверка отменена.":"Проверка завершена.")+
                     $" Полных проверок: {succeeded}; ошибок: {failed}; добавлено в очередь: {queued}. "+
                     "Новые материалы — во «Входящих». Скачивание только кнопкой Start."+
