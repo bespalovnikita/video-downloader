@@ -1,4 +1,5 @@
 using System.IO;
+using VideoDownloader.Native;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -8,15 +9,15 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 
-namespace VideoDownloader.Native;
+namespace VideoDownloader.UiTests;
 
-public sealed partial class NativeWindow
+internal sealed partial class UiScenario
 {
-    // Invoked by the isolated --ui-self-test path. No network or downloader is
-    // launched: new row prefetch hits an intentionally title-less local cache.
+    // Runs against the real application window in the isolated WPF test host.
+    // No network/downloader is launched: prefetch hits title-less local cache.
     public void TestSubscriptionsUi(string testRoot)
     {
-        var subscriptions=Subscriptions;
+        var subscriptions=new SubscriptionScenarioDriver(Subscriptions);
         var originalQueue=SessionState.Queue.ToArray();
         var originalSession=SessionState.Coordinator;
         string originalPreviewUrl=_preview.SelectedUrl;
@@ -357,20 +358,4 @@ public sealed partial class NativeWindow
             Reindex();
         }
     }
-}
-
-// The existing in-assembly UI harness inspects the new owner explicitly. These
-// accessors live with the scenarios, not in the production controller contract;
-// the separate test-host migration can replace them without restoring window state.
-internal sealed partial class SubscriptionController
-{
-    internal Window? TestWindow=>_window;
-    internal SubscriptionStore TestStore=>_store;
-    internal DataGrid TestSources=>Sources;
-    internal DataGrid TestInbox=>Inbox;
-    internal bool TestIsMutating=>_mutation;
-    internal CancellationTokenSource? TestCancellation {get=>_cancellation;set=>_cancellation=value;}
-    internal SubscriptionCheckProgressController TestProgress=>_checkProgress;
-    internal T TestControl<T>(string name) where T:class => Control<T>(name);
-    internal void TestUpdateButtons()=>UpdateButtons();
 }

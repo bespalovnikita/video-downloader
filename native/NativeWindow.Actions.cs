@@ -17,7 +17,7 @@ public sealed partial class NativeWindow
         string folder=Directory.Exists(path)?path:Path.GetDirectoryName(path)??"";
         if(Directory.Exists(folder))Process.Start(new ProcessStartInfo("explorer.exe"){UseShellExecute=true,ArgumentList={folder}});
     }
-    private string ConfiguredOutputDirectory()
+    internal string ConfiguredOutputDirectory()
     {
         // When downloading, use the pinned output path of the actual session
         // (important for Archive and midnight rollover). Otherwise use the UI.

@@ -14,17 +14,6 @@ public static class Program
     [STAThread]
     public static void Main(string[] args)
     {
-        if(args.Contains("--ui-self-test",StringComparer.OrdinalIgnoreCase))
-        {
-            try { NativeUiSelfTest.Run(); }
-            catch(Exception error)
-            {
-                var result=Environment.GetEnvironmentVariable("VD_NATIVE_UI_TEST_RESULT");
-                if(!string.IsNullOrWhiteSpace(result))File.WriteAllText(result,"FAIL: "+error);
-                Environment.ExitCode=1;
-            }
-            return;
-        }
         string? directory=Environment.GetEnvironmentVariable("VD_DATA_DIRECTORY");
         if(string.IsNullOrWhiteSpace(directory))RunGui(args);
         else

@@ -16,6 +16,7 @@
   </PropertyGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="VideoDownloader.NativeTests" />
+    <InternalsVisibleTo Include="VideoDownloader.UiTests" />
     <Content Include="..\ui\MainWindow.xaml" Link="ui\MainWindow.xaml" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\ui\DuplicateDownloadDialog.xaml" Link="ui\DuplicateDownloadDialog.xaml" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\ui\SubscriptionsWindow.xaml" Link="ui\SubscriptionsWindow.xaml" CopyToOutputDirectory="PreserveNewest" />

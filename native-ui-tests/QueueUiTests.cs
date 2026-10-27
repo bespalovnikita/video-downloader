@@ -2,11 +2,11 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Threading;
 
-namespace VideoDownloader.Native;
+namespace VideoDownloader.UiTests;
 
-public sealed partial class NativeWindow
+internal sealed partial class UiScenario
 {
-    // Uses real modal dispatchers and the isolated --ui-self-test profile.
+    // Uses real modal dispatchers and the isolated UI test host profile.
     // These coordinators never start a child download process.
     internal void TestLiveAddDuringDuplicateDialog(string root)
     {

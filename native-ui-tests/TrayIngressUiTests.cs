@@ -4,10 +4,11 @@ using System.Text;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Threading;
+using VideoDownloader.Native;
 
-namespace VideoDownloader.Native;
+namespace VideoDownloader.UiTests;
 
-public sealed partial class NativeWindow
+internal sealed partial class UiScenario
 {
     // Actual StateChanged/Click handlers and the production named-pipe pair.
     // All metadata is cached locally so this test never contacts a public site.
@@ -110,7 +111,7 @@ public sealed partial class NativeWindow
             string list=Path.Combine(root,"ссылки [pipe input].txt");
             File.WriteAllText(list,urls[3]+Environment.NewLine,Encoding.UTF8);
             using var cancel=new CancellationTokenSource();
-            var listener=Program.ListenForSecondaryInstancesAsync(this,cancel.Token,pipeName);
+            var listener=VideoDownloader.Native.Program.ListenForSecondaryInstancesAsync(Subject,cancel.Token,pipeName);
             try
             {
                 _window.WindowState=WindowState.Minimized;
