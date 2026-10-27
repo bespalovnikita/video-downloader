@@ -4,12 +4,12 @@ public sealed partial class NativeWindow
 {
     // Subscriptions never enter a running coordinator. The explicit Start
     // action remains the boundary for download/history confirmation.
-    private IReadOnlyList<string> QueueSubscriptionUrls(IEnumerable<string> urls) => QueueSubscriptionUrls(urls,"","");
+    internal IReadOnlyList<string> QueueSubscriptionUrls(IEnumerable<string> urls) => QueueSubscriptionUrls(urls,"","");
 
-    private IReadOnlyList<string> QueueSubscriptionUrls(IEnumerable<string> urls,string subscriptionId,string subscriptionName) =>
+    internal IReadOnlyList<string> QueueSubscriptionUrls(IEnumerable<string> urls,string subscriptionId,string subscriptionName) =>
         QueueSubscriptionUrls(urls,subscriptionId,subscriptionName,null);
 
-    private IReadOnlyList<string> QueueSubscriptionUrls(IEnumerable<string> urls,string subscriptionId,string subscriptionName,
+    internal IReadOnlyList<string> QueueSubscriptionUrls(IEnumerable<string> urls,string subscriptionId,string subscriptionName,
         IReadOnlyDictionary<string,string>? titles)
     {
         if (_closing || _disposed) return [];

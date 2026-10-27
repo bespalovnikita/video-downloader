@@ -35,6 +35,9 @@ public sealed partial class NativeWindow : IDisposable
     public Dispatcher Dispatcher=>_window.Dispatcher;
     internal PreviewController Preview=>_preview;
     internal QueueSessionController SessionState=>_queueSession;
+    internal WindowLifecycleController Lifecycle=>_lifecycle;
+    internal InputIngressController Input=>_ingress;
+    internal bool CheckpointReadOnly=>_checkpointReadOnly;
     private T F<T>(string name) where T:class => (T)(_window.FindName(name)
         ?? throw new InvalidOperationException($"Missing WPF control: {name}"));
     private TextBox B(string name)=>F<TextBox>(name);
@@ -123,7 +126,7 @@ public sealed partial class NativeWindow : IDisposable
         if ((DateTime.UtcNow.Second%2)==0) SaveCheckpoint();
     }
     private DownloadItem[] CurrentSessionRows()=>SessionState.CurrentRows();
-    private void UpdateState()
+    internal void UpdateState()
     {
         if (_disposed) return;
         // Do not count successful downloads from a previous session again.
@@ -163,7 +166,7 @@ public sealed partial class NativeWindow : IDisposable
         }
         if(metrics.ActiveChanged) { Q.Items.Refresh(); D.Items.Refresh(); }
     }
-    private void OnRowChanged(DownloadItem item)
+    internal void OnRowChanged(DownloadItem item)
     {
         _=Dispatcher.BeginInvoke(()=>
         {
@@ -196,7 +199,7 @@ public sealed partial class NativeWindow : IDisposable
         if (box.LineCount>3000) box.Text=string.Join(Environment.NewLine,box.Text.Split('\n').TakeLast(1500));
         box.ScrollToEnd();
     }
-    private DownloadOptions ReadOptions() => new()
+    internal DownloadOptions ReadOptions() => new()
     {
         Profile=ProfileCatalog.ToId(Pick(C("ProfileCombo"))),Quality=Pick(C("QualityCombo")),Codec=Pick(C("CodecCombo")),
         Container=Pick(C("ContainerCombo")),RateLimit=C("RateLimitCombo").Text,
@@ -209,7 +212,7 @@ public sealed partial class NativeWindow : IDisposable
         Sponsor=Check(K("SponsorCheck")),AudioOnly=Check(K("AudioOnlyCheck")),
         WatchClipboard=Check(K("WatchClipboardCheck")),ShowVideoTitles=Check(K("ShowVideoTitlesCheck"))
     };
-    private void ApplyOptions(DownloadOptions o)
+    internal void ApplyOptions(DownloadOptions o)
     {
         foreach(var (name,value) in new[]{
             ("ProfileCombo",ProfileCatalog.Display(o.Profile)),("QualityCombo",o.Quality),("CodecCombo",o.Codec),
@@ -272,7 +275,7 @@ public sealed partial class NativeWindow : IDisposable
     private bool _restoringSession;
     private bool _checkpointReadOnly;
     private bool _legacyEngineBlocked;
-    private void SaveCheckpoint()
+    internal void SaveCheckpoint()
     {
         if (_restoringSession || _checkpointReadOnly || _disposed) return;
         try
@@ -317,7 +320,7 @@ public sealed partial class NativeWindow : IDisposable
         dialog.ShowDialog();
         return choice;
     }
-    private List<DownloadItem>? ConfirmDuplicates(List<DownloadItem> candidate,bool removeRejected)
+    internal List<DownloadItem>? ConfirmDuplicates(List<DownloadItem> candidate,bool removeRejected)
     {
         Dictionary<string,DateTimeOffset?> history;
         try { history=_storage.ReadHistory(); }
@@ -349,14 +352,14 @@ public sealed partial class NativeWindow : IDisposable
         }
         return approved;
     }
-    private void Reindex()
+    internal void Reindex()
     {
         int n=SessionState.Reindex();
         T("QueueCount").Text=n+" URLs";
         UpdateState();SaveCheckpoint();
     }
     private static IReadOnlyList<string> ParseUrls(string text)=>InputIngressController.ParseUrls(text);
-    private void AddUrls(IEnumerable<string> urls,bool clipboard=false,bool selectNew=false)
+    internal void AddUrls(IEnumerable<string> urls,bool clipboard=false,bool selectNew=false)
     {
         if (_closing || _disposed) return;
         var rows=urls.Where(AppPersistence.ValidUrl).Distinct(StringComparer.Ordinal)

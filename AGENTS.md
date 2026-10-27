@@ -7,7 +7,8 @@
 Video Downloader — Windows-приложение на **C# / .NET 8 / WPF** с одной пользовательской UI-версией.
 
 - Точка запуска — `VideoDownloader.exe`; пользовательского CLI, CMD-launcher и резервного GUI нет.
-- Интерфейс и движок загрузки: `native/`; разметка: `ui/`; тесты C#: `native-tests/`.
+- Интерфейс и движок загрузки: `native/`; разметка: `ui/`; тесты C#: `native-tests/`, настоящие WPF-сценарии: `native-ui-tests/`.
+- UI-сценарии исполняет отдельный test host с ProjectReference на приложение. Не включай тестовые partial-классы, сценарии или `--ui-self-test` в релизный EXE.
 - Единые команды build/test/publish: `scripts/build.ps1`. PowerShell нужен разработке и CI, не приложению.
 - Релизный ZIP автономен: пользователь не устанавливает PowerShell, Python или .NET Runtime.
 - Сохраняй чтение прежних пользовательских данных в `%LOCALAPPDATA%\VideoDownloader`, включая финальные Result-события и защиту от живого старого работника `pwsh`.

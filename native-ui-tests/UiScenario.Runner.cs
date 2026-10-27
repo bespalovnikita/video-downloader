@@ -5,11 +5,11 @@ using System.Xml;
 using System.Runtime.InteropServices;
 using System.Text;
 
-namespace VideoDownloader.Native;
+namespace VideoDownloader.UiTests;
 
 // Real WPF dispatcher/control test, isolated from the user's persistent data.
-// Invoked only by the internal --ui-self-test CI switch.
-internal static class NativeUiSelfTest
+// Runs in its own WPF test host and never enters the product command line.
+internal sealed partial class UiScenario
 {
     public static void Run()
     {
@@ -23,21 +23,21 @@ internal static class NativeUiSelfTest
         Directory.CreateDirectory(root);
         Stage("creating WPF application");
         var app=new Application{ShutdownMode=ShutdownMode.OnExplicitShutdown};
-        NativeWindow? controller=null;
+        UiScenario? controller=null;
         Window? window=null;
         try
         {
             Stage("testing cold title ingress through metadata worker");
-            NativeWindow.TestColdTitleIngress(root);
+            UiScenario.TestColdTitleIngress(root);
             Stage("testing duplicate-history dialog choices");
-            NativeWindow.TestDuplicateHistoryChoices(root);
+            UiScenario.TestDuplicateHistoryChoices(root);
             Stage("testing startup recovery dialogs and empty-queue settings");
             VerifyStartupRecovery(root,Stage);
             using var input=File.OpenRead(Path.Combine(AppContext.BaseDirectory,"ui","MainWindow.xaml"));
             using var reader=XmlReader.Create(input);
             window=(Window)XamlReader.Load(reader);
             Stage("XAML loaded");
-            controller=new NativeWindow(window,new AppPersistence(Path.Combine(root,"profile")));
+            controller=new UiScenario(window,new AppPersistence(Path.Combine(root,"profile")));
             Stage("controller constructed");
             window.Show();
             Stage("window shown");
@@ -84,14 +84,10 @@ internal static class NativeUiSelfTest
                 Require(ProfileCatalog.ToId(caption)==id,
                     "Russian profile captions must round-trip back to the saved English ID: "+id);
             }
-            var applyOptions=typeof(NativeWindow).GetMethod("ApplyOptions",
-                System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance)!;
-            applyOptions.Invoke(controller, new object[]{new DownloadOptions{Profile="Music MP3",AudioOnly=true}});
+            controller.ApplyOptions(new DownloadOptions{Profile="Music MP3",AudioOnly=true});
             Require((string)profile.SelectedItem=="Музыка MP3",
                 "Old English checkpoint profile must restore with Russian label.");
-            var readOptions=typeof(NativeWindow).GetMethod("ReadOptions",
-                System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance)!;
-            var options=(DownloadOptions)readOptions.Invoke(controller,null)!;
+            var options=controller.ReadOptions();
             Require(options.Profile=="Music MP3" && options.AudioOnly,
                 "Russian music profile must preserve the canonical ID and audio-only preset.");
 
@@ -100,7 +96,7 @@ internal static class NativeUiSelfTest
             foreach(var target in ProfileCatalog.DisplayNames)
             {
                 profile.SelectedItem=previous;profile.SelectedItem=target;
-                var actual=(DownloadOptions)readOptions.Invoke(controller,null)!;
+                var actual=controller.ReadOptions();
                 var expected=new DownloadOptions();ProfileCatalog.Apply(expected,target);
                 Require(actual.Quality==expected.Quality && actual.Codec==expected.Codec && actual.Container==expected.Container &&
                     actual.AudioOnly==expected.AudioOnly && actual.Archive==expected.Archive && actual.AutoSubs==expected.AutoSubs &&
@@ -117,12 +113,10 @@ internal static class NativeUiSelfTest
             outputBox.Text=Path.Combine(root,"my-downloads");
             var archive=(CheckBox)window.FindName("ArchiveCheck")!;
             archive.IsChecked=false;
-            var outputPath=typeof(NativeWindow).GetMethod("ConfiguredOutputDirectory",
-                System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance)!;
-            Require((string)outputPath.Invoke(controller,null)==outputBox.Text,
+            Require(controller.ConfiguredOutputDirectory()==outputBox.Text,
                 "Open folder must resolve the configured output even before first download.");
             archive.IsChecked=true;
-            Require((string)outputPath.Invoke(controller,null)==
+            Require(controller.ConfiguredOutputDirectory()==
                     Path.Combine(outputBox.Text,DateTime.Now.ToString("yyyy-MM-dd")),
                 "Archive mode must point into the dated output subfolder.");
             archive.IsChecked=false;
@@ -155,19 +149,14 @@ internal static class NativeUiSelfTest
             Stage("testing pending removal until worker cleanup acknowledgement");
             var pending=new DownloadItem{Url="https://example.com/cancel-before-start"};
             ((System.Collections.ObjectModel.ObservableCollection<DownloadItem>)queue.ItemsSource).Add(pending);
-            var notify=(Action<DownloadItem>)typeof(NativeWindow).GetMethod("OnRowChanged",
-                System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance)!
-                .CreateDelegate(typeof(Action<DownloadItem>),controller);
+            Action<DownloadItem> notify=controller.Subject.OnRowChanged;
             var cancelSession=new DownloadCoordinator("must-not-launch",new AppPersistence(Path.Combine(root,"cancel-profile")),
                 new DownloadOptions{Output=Path.Combine(root,"cancel-output"),Threads="1"},notify,_=>{});
             try
             {
                 cancelSession.Add(pending);controller.SessionState.AttachCoordinator(cancelSession);
-                var queueSubscriptions=typeof(NativeWindow).GetMethod("QueueSubscriptionUrls",
-                    System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance,null,
-                    new[]{typeof(IEnumerable<string>),typeof(string),typeof(string)},null)!;
                 const string deferredUrl="https://example.com/subscription-next-start";
-                var accepted=(IReadOnlyList<string>)queueSubscriptions.Invoke(controller,new object[]{new[]{deferredUrl},"subscription-test","123"})!;
+                var accepted=controller.QueueSubscriptionUrls([deferredUrl],"subscription-test","123");
                 var deferred=((System.Collections.ObjectModel.ObservableCollection<DownloadItem>)queue.ItemsSource)
                     .Single(row=>row.Url==deferredUrl);
                 Require(accepted.SequenceEqual(new[]{deferredUrl}) && deferred.DeferredToNextStart &&
@@ -195,9 +184,7 @@ internal static class NativeUiSelfTest
             }
 
             Stage("testing tray");
-            var lifecycleField=typeof(NativeWindow).GetField("_lifecycle",
-                System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance);
-            var lifecycle=(WindowLifecycleController)lifecycleField!.GetValue(controller)!;
+            var lifecycle=controller.Subject.Lifecycle;
             var tray=lifecycle.TrayIcon;
             Require(tray!=null && tray.Visible,"Native WPF UI must expose a functioning tray icon");
             Require(tray!.Text.Length<=63,"Windows tray caption must respect the 63-character limit");
@@ -211,9 +198,7 @@ internal static class NativeUiSelfTest
             Require(restored?.Queue.Count==1,"New session checkpoint must restore the surviving queue row");
 
             Stage("testing live clipboard preview selection");
-            var addUrls=typeof(NativeWindow).GetMethod("AddUrls",
-                System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance)!;
-            addUrls.Invoke(controller,new object[]{new[]{"https://example.com/clipboard"},true,true});
+            controller.AddUrls(["https://example.com/clipboard"],true,true);
             Require(queue.Items.Count==2,"Clipboard addition must enqueue one new URL");
             Require((queue.SelectedItem as DownloadItem)?.Url=="https://example.com/clipboard",
                 "Manual clipboard Paste must immediately select its new preview");
@@ -223,9 +208,7 @@ internal static class NativeUiSelfTest
             Stage("testing Windows shortcut import");
             string shortcut=Path.Combine(root,"example.url");
             File.WriteAllText(shortcut,"[InternetShortcut]\r\nURL=https://example.com/shortcut\r\n");
-            var readInput=typeof(NativeWindow).GetMethod("ReadInputFile",
-                System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Static)!;
-            var imported=(IReadOnlyList<string>)readInput.Invoke(null,new object[]{shortcut})!;
+            var imported=InputIngressController.ReadInputFile(shortcut);
             Require(imported.SequenceEqual(new[]{"https://example.com/shortcut"}),
                 "Windows .url shortcut must import the URL= field");
 
@@ -235,9 +218,7 @@ internal static class NativeUiSelfTest
             var currentRows=controller.SessionState.CurrentRows();
             Require(currentRows.Length==1 && currentRows[0].Url=="https://example.com/clipboard",
                 "Completion notifications and live metrics must share the current-session subset, excluding old successes");
-            typeof(NativeWindow).GetMethod("UpdateState",
-                System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance)!
-                .Invoke(controller,null);
+            controller.Subject.UpdateState();
             Require(tray.Text.Contains("OK 0 Left 1 Err 0"),
                 "Tray counts must be current-session only, ordered OK Left Err");
 
@@ -286,7 +267,6 @@ internal static class NativeUiSelfTest
 
     private static void VerifyStartupRecovery(string root,Action<string> stage)
     {
-        const System.Reflection.BindingFlags methods=System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance;
         static Window LoadWindow()
         {
             using var input=File.OpenRead(Path.Combine(AppContext.BaseDirectory,"ui","MainWindow.xaml"));
@@ -298,9 +278,9 @@ internal static class NativeUiSelfTest
         data.Save([],options);
         var window=LoadWindow();
         stage("recovery: restoring empty queue settings");
-        using(var controller=new NativeWindow(window,data))
+        using(var controller=new UiScenario(window,data))
         {
-            var restored=(DownloadOptions)typeof(NativeWindow).GetMethod("ReadOptions",methods)!.Invoke(controller,null)!;
+            var restored=controller.ReadOptions();
             if(restored.Output!=options.Output || restored.Cookies!=options.Cookies || restored.Threads!="7" || !restored.AudioOnly || !restored.ShowVideoTitles)
                 throw new InvalidOperationException("Empty queues must restore saved settings without a dialog.");
         }
@@ -365,12 +345,12 @@ internal static class NativeUiSelfTest
             {
                 if(!task.IsCanceled) stage("recovery: watchdog dismissal "+title+" found="+DismissDialog(thread,title,button));
             },TaskScheduler.Default);
-            window=LoadWindow();NativeWindow? controller=null;
+            window=LoadWindow();UiScenario? controller=null;
             observer.Start();
             try
             {
                 stage("recovery: constructing controller for "+title);
-                controller=new NativeWindow(window,data);
+                controller=new UiScenario(window,data);
                 stage("recovery: controller restored after "+title);
                 if(!observed) throw new InvalidOperationException("Recovery dialog must keep the dispatcher responsive.");
                 if(failure!=null) throw failure;
@@ -387,7 +367,7 @@ internal static class NativeUiSelfTest
                     if(!rows.Select(row=>row.Title).SequenceEqual(expectedTitles) ||
                         rows.Any(row=>row.SubscriptionId!=source.Id || row.SubscriptionName!="Legacy folder"))
                         throw new InvalidOperationException("Restored title repair must use exact subscription/URL pairs and preserve real titles and routing.");
-                    if((bool)typeof(NativeWindow).GetField("_checkpointReadOnly",methods)!.GetValue(controller)!)
+                    if(controller.Subject.CheckpointReadOnly)
                         throw new InvalidOperationException("An unavailable optional subscription store must not block queue recovery.");
                     if(recoveryCase=="missing subscriptions" && File.Exists(subscriptions.Path) ||
                         recoveryCase=="corrupt subscriptions" && File.ReadAllText(subscriptions.Path)!="{invalid subscriptions")

@@ -7,9 +7,9 @@ using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Threading;
 
-namespace VideoDownloader.Native;
+namespace VideoDownloader.UiTests;
 
-public sealed partial class NativeWindow
+internal sealed partial class UiScenario
 {
     // Metadata is supplied directly or through a fresh local cache entry. This
     // exercises rendered WPF bindings without starting another preview worker.

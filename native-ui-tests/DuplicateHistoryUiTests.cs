@@ -5,9 +5,9 @@ using System.Windows.Markup;
 using System.Windows.Threading;
 using System.Xml;
 
-namespace VideoDownloader.Native;
+namespace VideoDownloader.UiTests;
 
-public sealed partial class NativeWindow
+internal sealed partial class UiScenario
 {
     // Exercise the production planner and actual modal WPF buttons. No Start,
     // row selection or preview request is needed to decide a repeat download.
@@ -21,7 +21,7 @@ public sealed partial class NativeWindow
         using var input=File.OpenRead(Path.Combine(AppContext.BaseDirectory,"ui","MainWindow.xaml"));
         using var reader=XmlReader.Create(input);
         var window=(Window)XamlReader.Load(reader);
-        using var controller=new NativeWindow(window,storage);
+        using var controller=new UiScenario(window,storage);
         window.Show();
         try
         {

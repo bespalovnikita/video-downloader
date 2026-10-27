@@ -18,6 +18,7 @@ CMD-launcher, резервный PowerShell GUI и пользовательск�
 | Подписки | `SubscriptionStore`, `SubscriptionScanner`, `PornHubChannel`, `SubscriptionNames` |
 | Данные | `AppPersistence`, `SuccessfulDownloadHistory`, `Compatibility/LegacySessionReader`; совместимые форматы версии 1 |
 | Нативные тесты | `native-tests/`, статичные прежние данные `tests/fixtures/legacy/` |
+| Проверки интерфейса | отдельный `native-ui-tests/VideoDownloader.UiTests.csproj`, ProjectReference на приложение |
 | Разработка и CI | `scripts/`, `.github/workflows/native-windows.yml` |
 | Встроенный коллектор | `collection-plugins/videodownloader/yt_dlp_plugins/extractor/vd_pornhub.py` |
 

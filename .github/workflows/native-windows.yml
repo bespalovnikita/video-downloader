@@ -5,6 +5,7 @@ on:
     paths:
       - 'native/**'
       - 'native-tests/**'
+      - 'native-ui-tests/**'
       - 'collection-plugins/**'
       - 'tests/pornhub-collector-tests.py'
       - 'tests/fixtures/**'

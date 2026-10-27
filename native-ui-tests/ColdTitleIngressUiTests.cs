@@ -7,9 +7,9 @@ using System.Windows.Media;
 using System.Windows.Threading;
 using System.Xml;
 
-namespace VideoDownloader.Native;
+namespace VideoDownloader.UiTests;
 
-public sealed partial class NativeWindow
+internal sealed partial class UiScenario
 {
     // Real controls -> production ingress -> PreviewService -> managed native
     // child -> dispatcher -> rendered row. Every URL starts with an empty cache.
@@ -45,7 +45,7 @@ public sealed partial class NativeWindow
         string callsFile=Path.Combine(root,"metadata-calls.jsonl");
         string? oldLog=Environment.GetEnvironmentVariable("VD_NATIVE_TITLE_FIXTURE_LOG");
         Environment.SetEnvironmentVariable("VD_NATIVE_TITLE_FIXTURE_LOG",callsFile);
-        NativeWindow? controller=null;
+        UiScenario? controller=null;
         Window? window=null;
         try
         {
@@ -55,7 +55,7 @@ public sealed partial class NativeWindow
             var storage=new AppPersistence(Path.Combine(root,"profile"));
             Require(!Directory.Exists(storage.PreviewDir) || !Directory.EnumerateFileSystemEntries(storage.PreviewDir).Any(),
                 "The profile must start with no preview cache records");
-            controller=new NativeWindow(window,storage,executable!);
+            controller=new UiScenario(window,storage,executable!);
             window.Show();
             var ui=controller;
             Require(ui.Q.SelectedItem==null && ui.D.SelectedItem==null && ui._preview.SelectedUrl.Length==0,

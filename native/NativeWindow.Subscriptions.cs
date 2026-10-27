@@ -3,7 +3,7 @@ namespace VideoDownloader.Native;
 public sealed partial class NativeWindow
 {
     private SubscriptionController? _subscriptions;
-    private SubscriptionController Subscriptions=>_subscriptions ??= new SubscriptionController(
+    internal SubscriptionController Subscriptions=>_subscriptions ??= new SubscriptionController(
         _window,new SubscriptionStore(Path.GetDirectoryName(_storage.SessionPath)!),_ytDlp,
         Path.Combine(AppContext.BaseDirectory,"ui","SubscriptionsWindow.xaml"),
         _storage.ReadHistory,()=>B("CookiesBox").Text.Trim(),QueueSubscriptionUrls,OpenUrl,Log);
