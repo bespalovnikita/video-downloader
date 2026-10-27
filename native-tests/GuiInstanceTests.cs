@@ -146,17 +146,28 @@ internal static class GuiInstanceTests
         finally
         {
             using var cleanup=new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            var errors=new List<Exception>();
+            // Kill every owned root first: a failed/timed-out wait for one GUI
+            // must never leave another test GUI alive with its window/profile.
             foreach(var process in processes)
             {
                 try
                 {
                     if(!process.HasExited)process.Kill(true);
-                    await process.WaitForExitAsync(cleanup.Token);
                 }
                 catch(InvalidOperationException) { }
+                catch(System.ComponentModel.Win32Exception error) {errors.Add(error);}
+            }
+            foreach(var process in processes)
+            {
+                try {await process.WaitForExitAsync(cleanup.Token);}
+                catch(InvalidOperationException) { }
+                catch(Exception error) when(error is OperationCanceledException or System.ComponentModel.Win32Exception) {errors.Add(error);}
                 finally {process.Dispose();}
             }
-            Directory.Delete(root,true);
+            try {Directory.Delete(root,true);}
+            catch(Exception error) when(error is IOException or UnauthorizedAccessException) {errors.Add(error);}
+            if(errors.Count>0)throw new AggregateException("Could not clean up all isolated GUI fixtures.",errors);
         }
     }
 
