@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Windows;
 using System.Windows.Markup;
 using System.Xml;
+using System.Security.Cryptography;
 
 namespace VideoDownloader.Native;
 
@@ -24,17 +25,26 @@ public static class Program
             }
             return;
         }
-        if(args.Contains("--cli",StringComparer.OrdinalIgnoreCase))
+        string? directory=Environment.GetEnvironmentVariable("VD_DATA_DIRECTORY");
+        if(string.IsNullOrWhiteSpace(directory))RunGui(args);
+        else
         {
-            NativeCli.RunAsync(args).GetAwaiter().GetResult();
-            return;
+            directory=Path.GetFullPath(directory);
+            string identity=Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(directory.TrimEnd(Path.DirectorySeparatorChar).ToUpperInvariant())));
+            RunGui(args,new AppPersistence(directory),"VideoDownloader.Native.Profile."+identity);
         }
-        using var singleton=new Mutex(true,@"Local\VideoDownloader.Native.Gui",out bool isFirst);
+    }
+
+    // Tests exercise the same singleton and GUI startup with isolated data/names.
+    internal static void RunGui(string[] args,AppPersistence? persistence=null,string? instanceName=null)
+    {
+        string pipeName=instanceName??PipeName;
+        using var singleton=new Mutex(true,instanceName==null?@"Local\VideoDownloader.Native.Gui":@"Local\"+instanceName,out bool isFirst);
         if(!isFirst)
         {
             try
             {
-                ForwardArguments(args);
+                ForwardArguments(args,pipeName);
             }
             catch(Exception e)
             {
@@ -58,10 +68,10 @@ public static class Program
             using var input=File.OpenRead(file);
             using var reader=XmlReader.Create(input);
             var window=(Window)XamlReader.Load(reader);
-            ui=new NativeWindow(window);
+            ui=new NativeWindow(window,persistence);
             app.MainWindow=window;
             pipeStop=new CancellationTokenSource();
-            _=ListenForSecondaryInstancesAsync(ui,pipeStop.Token);
+            _=ListenForSecondaryInstancesAsync(ui,pipeStop.Token,pipeName);
             ui.ReceiveArguments(args);
             app.Run(window);
         }
@@ -102,51 +112,5 @@ public static class Program
             catch(OperationCanceledException) {break;}
             catch(Exception e) { System.Diagnostics.Debug.WriteLine("Native IPC error: "+e.Message); }
         }
-    }
-}
-
-internal static class NativeCli
-{
-    public static async Task RunAsync(string[] args)
-    {
-        static string Option(string[] a,string name,string fallback="")
-        {
-            int i=Array.FindIndex(a,s=>s.Equals(name,StringComparison.OrdinalIgnoreCase));
-            return i>=0&&i+1<a.Length ? a[i+1] : fallback;
-        }
-        try
-        {
-            string input=Option(args,"--input");
-            if (string.IsNullOrWhiteSpace(input) || !File.Exists(input)) throw new ArgumentException("Usage: VideoDownloader.exe --cli --input list.txt [--out folder] [--threads 4]");
-            var options=new DownloadOptions
-            {
-                Output=Option(args,"--out",Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),"Downloads")),
-                Threads=Option(args,"--threads","4"),
-                Quality=Option(args,"--quality","Best"),
-                Codec=Option(args,"--codec","Auto"),
-                Container=Option(args,"--container","Auto"),
-                RateLimit=Option(args,"--rate","Unlimited"),
-                Cookies=Option(args,"--cookies","")
-            };
-            DependencyCenter.ValidateDownloadTools(DependencyCenter.Executable("yt-dlp.exe"));
-            var store=new AppPersistence();
-            store.ReadHistory(); // Refuse a damaged history before starting any child.
-            using var logger=new StreamWriter(Path.Combine(Path.GetDirectoryName(Path.GetFullPath(input))!,"native-cli.log"),append:false);
-            var rows=new List<DownloadItem>();
-            await using var coordinator=new DownloadCoordinator(DependencyCenter.Executable("yt-dlp.exe"),store,options,
-                row=>{},line=>{lock(logger){logger.WriteLine(line);logger.Flush();}});
-            foreach(var line in File.ReadAllLines(input))
-            {
-                string url=line.Trim();
-                if(!AppPersistence.ValidUrl(url)||rows.Any(x=>x.Url==url))continue;
-                var row=new DownloadItem{Url=url,Order=rows.Count+1};
-                rows.Add(row);coordinator.Add(row);
-            }
-            await coordinator.RunAsync().ConfigureAwait(false);
-            logger.WriteLine($"Finished: OK={rows.Count(x=>x.Status=="Completed")}, errors={rows.Count(x=>x.Status=="Failed")}");
-            logger.Flush();
-            Environment.ExitCode=rows.Any(x=>x.Status!="Completed")?1:0;
-        }
-        catch(Exception e){System.Diagnostics.Debug.WriteLine(e);Environment.ExitCode=1;}
     }
 }
