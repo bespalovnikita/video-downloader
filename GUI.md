@@ -1,5 +1,9 @@
 # Video Downloader — руководство по интерфейсу
 
+Пошаговые кейсы для YouTube, плейлистов, подписок и RSS находятся в
+[руководстве пользователя](docs/USER_GUIDE.md). Взаимодействие компонентов и
+жизненные циклы показаны в [архитектурных диаграммах](docs/ARCHITECTURE.md).
+
 Запусти `VideoDownloader.exe` из полностью распакованного Windows ZIP. Интерфейс работает на C# / .NET 8 / WPF; PowerShell, Python и установленный .NET Runtime пользователю не нужны. Папки `ui/`, `assets/`, `collection-plugins/` и `yt-dlp.exe` должны оставаться рядом с приложением.
 
 Запуск EXE с URL, `.txt`, `.url` или адресом `videodownloader://` добавляет материалы в интерфейс. Если окно уже открыто или спрятано в трей, аргументы получает существующий экземпляр. Загрузки запускаются из окна.
@@ -242,4 +246,4 @@ VD | OK 12 Left 5 Err 2 | 2.5 MB/s
 pwsh -NoProfile -File scripts/build.ps1 -Task Test
 ~~~
 
-Команда собирает `src/VideoDownloader/VideoDownloader.csproj` и запускает `tests/VideoDownloader.Tests/` и отдельный WPF-host `tests/VideoDownloader.UiTests/`. Проверяются движок, файловая безопасность, совместимость со старыми данными и настоящие контролы приложения в изолированном профиле. Единственный Windows workflow `native-windows.yml` выполняет эти проверки и тесты встроенного коллектора перед публикацией portable ZIP. Подробная карта сценариев — в [матрице покрытия](docs/UI_ONLY_COVERAGE.md).
+Команда собирает `src/VideoDownloader/VideoDownloader.csproj` и запускает `tests/VideoDownloader.Tests/` и отдельный WPF-host `tests/VideoDownloader.UiTests/`. Проверяются движок, файловая безопасность, совместимость со старыми данными и настоящие контролы приложения в изолированном профиле. Единственный Windows workflow `native-windows.yml` выполняет эти проверки и тесты встроенного коллектора перед публикацией portable ZIP. Компоненты и границы их ответственности описаны в [архитектуре](docs/ARCHITECTURE.md).
