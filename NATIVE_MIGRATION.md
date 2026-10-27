@@ -10,15 +10,17 @@ CMD-launcher, резервный PowerShell GUI и пользовательск�
 
 | Часть | Расположение |
 | --- | --- |
-| Проект приложения | `native/VideoDownloader.Native.csproj` |
-| UI и управление очередью | `NativeWindow`, `QueueSessionController`, разметка `ui/` |
-| Компоненты UI | `PreviewController`, `SubscriptionController`, `SubscriptionCheckProgressController`, `WindowLifecycleController`, `InputIngressController` |
-| Загрузки и дочерние процессы | `DownloadCoordinator`, `YtDlpArguments`, `YtDlpOutputParser`, `WindowsDownloadPause`, `ManagedChildProcess`, `OwnedFiles`, `DownloadCleanup` |
-| Превью | `PreviewService`, `PreviewImage` |
-| Подписки | `SubscriptionStore`, `SubscriptionScanner`, `PornHubChannel`, `SubscriptionNames` |
-| Данные | `AppPersistence`, `SuccessfulDownloadHistory`, `Compatibility/LegacySessionReader`; совместимые форматы версии 1 |
-| Нативные тесты | `native-tests/`, статичные прежние данные `tests/fixtures/legacy/` |
-| Проверки интерфейса | отдельный `native-ui-tests/VideoDownloader.UiTests.csproj`, ProjectReference на приложение |
+| Проект приложения | `src/VideoDownloader/VideoDownloader.csproj`; entry point и общие модели в корне проекта |
+| Окна и разметка | `src/VideoDownloader/UI/Views/`: `NativeWindow` и XAML |
+| Владельцы состояния UI | `src/VideoDownloader/UI/Controllers/`: очередь и сессия, превью, подписки, прогресс, трей, импорт |
+| Загрузки | `src/VideoDownloader/Downloads/`: `DownloadCoordinator`, `YtDlpArguments`, `YtDlpOutputParser`, `OwnedFiles`, `DownloadCleanup`, профили |
+| Превью | `src/VideoDownloader/Preview/`: `PreviewService`, `PreviewImage` |
+| Подписки | `src/VideoDownloader/Subscriptions/`: store, scanner, имена папок и адаптер коллектора |
+| Данные | `src/VideoDownloader/Persistence/`: `AppPersistence`, `SuccessfulDownloadHistory`; совместимые форматы версии 1 |
+| Прежние сессии | `src/VideoDownloader/Compatibility/LegacySessionReader.cs` |
+| Windows и зависимости | `src/VideoDownloader/Infrastructure/Windows/`: `ManagedChildProcess`, `WindowsDownloadPause`; `Infrastructure/Dependencies.cs` |
+| Unit/integration-тесты | `tests/VideoDownloader.Tests/VideoDownloader.Tests.csproj`; статичные прежние данные `tests/fixtures/legacy/` |
+| Проверки интерфейса | отдельный `tests/VideoDownloader.UiTests/VideoDownloader.UiTests.csproj`, ProjectReference на приложение |
 | Разработка и CI | `scripts/`, `.github/workflows/native-windows.yml` |
 | Встроенный коллектор | `collection-plugins/videodownloader/yt_dlp_plugins/extractor/vd_pornhub.py` |
 
@@ -32,7 +34,7 @@ pwsh -NoProfile -File scripts/build.ps1 -Task Publish
 
 `Test` собирает приложение и запускает проверки движка, совместимости и настоящих WPF-контролов с изолированными данными. `Publish` создаёт папку `dist/native`, архив `dist/VideoDownloader-native.zip` и SHA-256; поддерживает явные `-Version`, `-OutputDirectory`, `-ArchivePath`, `-ChecksumPath`. Скрипты разработки в пользовательский пакет не входят.
 
-ZIP содержит настоящий WPF EXE, `yt-dlp.exe`, XAML, ресурсы и исходники встроенного коллектора. CMD, пользовательские `.ps1/.psm1` и `pwsh.exe` в пакете запрещены. Для проверки коллектора разработчику дополнительно нужны Python и версия `yt-dlp`, закреплённая в CI. Приложение загружает плагин внутри `yt-dlp.exe` и не требует внешнего Python.
+ZIP содержит настоящий WPF EXE, `yt-dlp.exe`, XAML, ресурсы и исходники встроенного коллектора. Исходная разметка из `UI/Views/` в пакете сохраняет прежние пути `ui/MainWindow.xaml`, `ui/SubscriptionsWindow.xaml` и `ui/DuplicateDownloadDialog.xaml`. CMD, пользовательские `.ps1/.psm1` и `pwsh.exe` в пакете запрещены. Для проверки коллектора разработчику дополнительно нужны Python и версия `yt-dlp`, закреплённая в CI. Приложение загружает плагин внутри `yt-dlp.exe` и не требует внешнего Python.
 
 ## Обновление с прежней версии
 
