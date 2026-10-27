@@ -13,10 +13,10 @@ CMD-launcher, резервный PowerShell GUI и пользовательск�
 | Проект приложения | `native/VideoDownloader.Native.csproj` |
 | UI и управление очередью | `NativeWindow`, `QueueSessionController`, разметка `ui/` |
 | Компоненты UI | `PreviewController`, `SubscriptionController`, `SubscriptionCheckProgressController`, `WindowLifecycleController`, `InputIngressController` |
-| Загрузки и дочерние процессы | `DownloadCoordinator`, `ManagedChildProcess`, `OwnedFiles`, `DownloadCleanup` |
+| Загрузки и дочерние процессы | `DownloadCoordinator`, `YtDlpArguments`, `YtDlpOutputParser`, `WindowsDownloadPause`, `ManagedChildProcess`, `OwnedFiles`, `DownloadCleanup` |
 | Превью | `PreviewService`, `PreviewImage` |
 | Подписки | `SubscriptionStore`, `SubscriptionScanner`, `PornHubChannel`, `SubscriptionNames` |
-| Данные | `AppPersistence`, совместимые форматы версии 1 |
+| Данные | `AppPersistence`, `SuccessfulDownloadHistory`, `Compatibility/LegacySessionReader`; совместимые форматы версии 1 |
 | Нативные тесты | `native-tests/`, статичные прежние данные `tests/fixtures/legacy/` |
 | Разработка и CI | `scripts/`, `.github/workflows/native-windows.yml` |
 | Встроенный коллектор | `collection-plugins/videodownloader/yt_dlp_plugins/extractor/vd_pornhub.py` |

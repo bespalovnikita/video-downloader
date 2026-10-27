@@ -93,7 +93,7 @@ Engine использует:
 - <code>--print before_dl:__VD_TITLE__:</code>;
 - <code>--print after_move:__VD_FILE__:</code>.
 
-Структурированный вывод разбирается в `native/DownloadCoordinator.cs`.
+Структурированный вывод разбирается в `native/YtDlpOutputParser.cs`, аргументы строит `YtDlpArguments`. Согласованное завершение, отмена, публикация и очистка остаются в `DownloadCoordinator`.
 
 Human-readable stdout допустимо анализировать только для вспомогательных событий вроде merge/error diagnostics.
 
