@@ -19,36 +19,22 @@ namespace VideoDownloader.Native;
 public sealed partial class NativeWindow : IDisposable
 {
     private readonly Window _window;
-    private readonly ObservableCollection<DownloadItem> _queue=new();
-    private readonly ObservableCollection<DownloadItem> _downloads=new();
+    private readonly QueueSessionController _queueSession=new();
     private readonly AppPersistence _storage;
-    private readonly PreviewService _previews;
+    private readonly PreviewController _preview;
     private readonly DispatcherTimer _tick=new(){Interval=TimeSpan.FromMilliseconds(400)};
-    private readonly DispatcherTimer _clipboardTick=new(){Interval=TimeSpan.FromMilliseconds(950)};
-    private readonly Forms.NotifyIcon _tray=new();
+    private readonly WindowLifecycleController _lifecycle;
+    private readonly InputIngressController _ingress;
     private readonly string _ytDlp;
-    private readonly Dictionary<string,string> _finalStates=new(StringComparer.Ordinal);
-    private readonly HashSet<string> _sessionUrls=new(StringComparer.Ordinal);
-    private readonly Dictionary<string,long> _transferred=new(StringComparer.Ordinal);
-    private DownloadCoordinator? _session;
-    private Task? _sessionTask;
-    private DownloadOptions _sessionOptions=new();
-    private DateTime? _sessionStart;
-    private bool _stopping;
-    private bool _exitFromTray;
     private bool _disposed;
     private bool _closing;
     private bool _closeReady;
-    private string _previewCookies="";
-    private string _previewUrl="";
-    private string _lastClipboard="";
     private string _lastSavedSnapshot="";
-    private int _ok;
-    private int _failed;
-    private int _lastActive;
     private DownloadItem? _dragged;
     private System.Windows.Point _dragPoint;
     public Dispatcher Dispatcher=>_window.Dispatcher;
+    internal PreviewController Preview=>_preview;
+    internal QueueSessionController SessionState=>_queueSession;
     private T F<T>(string name) where T:class => (T)(_window.FindName(name)
         ?? throw new InvalidOperationException($"Missing WPF control: {name}"));
     private TextBox B(string name)=>F<TextBox>(name);
@@ -70,8 +56,8 @@ public sealed partial class NativeWindow : IDisposable
         _window=window;
         _storage=persistence??new AppPersistence();
         _ytDlp=ytDlpExecutable;
-        Q.ItemsSource=_queue;
-        D.ItemsSource=_downloads;
+        Q.ItemsSource=SessionState.Queue;
+        D.ItemsSource=SessionState.Downloads;
         foreach(var (control,values) in new (string,string[])[]{
             ("QualityCombo",["Best","2160","1440","1080","720"]),
             ("CodecCombo",["Auto","H264","VP9","AV1"]),
@@ -84,21 +70,15 @@ public sealed partial class NativeWindow : IDisposable
             C(control).SelectedIndex=0;
         }
         B("OutputBox").Text=new DownloadOptions().Output;
-        _previewCookies=B("CookiesBox").Text;
-        B("CookiesBox").TextChanged+=(_,_)=>Volatile.Write(ref _previewCookies,B("CookiesBox").Text);
-        _previews=new PreviewService(_ytDlp,_storage,()=>Volatile.Read(ref _previewCookies),
-            data=>_window.Dispatcher.BeginInvoke(()=>OnPreviewReady(data)),
-            message=>_window.Dispatcher.BeginInvoke(()=>Log(message)),
-            failed:(url,error)=>_window.Dispatcher.BeginInvoke(()=>OnPreviewFailed(url,error)));
-        SetupTray();
+        _preview=new PreviewController(_window,_storage,_ytDlp,
+            ()=>SessionState.Queue.Concat(SessionState.Downloads),SaveCheckpoint,Log);
+        _lifecycle=new WindowLifecycleController(_window,()=>OpenFolder(B("OutputBox").Text));
+        _ingress=new InputIngressController(_window,AddUrls,()=>Check(K("WatchClipboardCheck")),_lifecycle.Activate,Log);
         BindActions();
         K("ShowVideoTitlesCheck").Checked+=(_,_)=>SaveCheckpoint();
         K("ShowVideoTitlesCheck").Unchecked+=(_,_)=>SaveCheckpoint();
         _tick.Tick+=(_,_)=>Tick();
-        _clipboardTick.Tick+=(_,_)=>PollClipboard();
         _window.Closing+=OnClosing;
-        _window.Drop+=WindowDrop;
-        _window.DragOver+=(_,e)=>e.Effects=DragDropEffects.Copy;
         Q.SelectionChanged+=(_,_)=>{ if(Q.SelectedItem is DownloadItem item)ShowPreview(item.Url); };
         D.SelectionChanged+=(_,_)=>SetDownloadActions();
         Q.PreviewMouseLeftButtonDown+=(_,e)=>
@@ -108,7 +88,7 @@ public sealed partial class NativeWindow : IDisposable
         };
         Q.MouseMove+=(_,e)=>
         {
-            if (_session?.IsRunning==true || _dragged==null || e.LeftButton!=MouseButtonState.Pressed) return;
+            if (SessionState.Coordinator?.IsRunning==true || _dragged==null || e.LeftButton!=MouseButtonState.Pressed) return;
             if ((e.GetPosition(Q)-_dragPoint).Length>8)
             {
                 try { DragDrop.DoDragDrop(Q,_dragged,DragDropEffects.Move); }
@@ -117,7 +97,7 @@ public sealed partial class NativeWindow : IDisposable
         };
         Q.Drop+=(_,e)=>
         {
-            if (_session?.IsRunning==true) return;
+            if (SessionState.Coordinator?.IsRunning==true) return;
             if (e.Data.GetDataPresent(typeof(DownloadItem)) && e.Data.GetData(typeof(DownloadItem)) is DownloadItem item)
             {
                 // Selection normally remains on the dragged item. Resolve the
@@ -126,54 +106,43 @@ public sealed partial class NativeWindow : IDisposable
                 while(visual!=null && visual is not DataGridRow)
                     visual=System.Windows.Media.VisualTreeHelper.GetParent(visual);
                 var target=(visual as DataGridRow)?.Item as DownloadItem;
-                if(target!=null && item!=target)MoveItem(item,_queue.IndexOf(target));
+                if(target!=null && item!=target)MoveItem(item,SessionState.Queue.IndexOf(target));
                 e.Handled=true;
             }
         };
         TryRestore();
-        _sessionOptions=ReadOptions();
+        SessionState.SetOptions(ReadOptions());
         Reindex();
         RefreshDependencyLabel();
         UpdateState();
-        _tick.Start();_clipboardTick.Start();
+        _tick.Start();_ingress.Start();
     }
     private void Tick()
     {
         UpdateState();
         if ((DateTime.UtcNow.Second%2)==0) SaveCheckpoint();
     }
-    private DownloadItem[] CurrentSessionRows() => _sessionStart.HasValue
-        ? _queue.Where(x=>_sessionUrls.Contains(x.Url)).ToArray()
-        : _queue.ToArray();
+    private DownloadItem[] CurrentSessionRows()=>SessionState.CurrentRows();
     private void UpdateState()
     {
         if (_disposed) return;
         // Do not count successful downloads from a previous session again.
         // Live additions join this set; removed URLs leave it.
-        var sessionRows=CurrentSessionRows();
-        int active=sessionRows.Count(x=>x.Status=="Running");
-        int left=sessionRows.Count(x=>x.Status is not ("Completed" or "Failed"));
-        _ok=sessionRows.Count(x=>x.Status=="Completed");
-        _failed=sessionRows.Count(x=>x.Status=="Failed");
-        double speed=sessionRows.Where(x=>x.Status=="Running").Sum(x=>DownloadCoordinator.ParseSize(x.Speed));
-        long downloaded=sessionRows.Sum(x=>x.TransferredBytes);
-        int total=sessionRows.Length;
-        double progress=total==0 ? 0 : sessionRows.Sum(x=>x.Status=="Completed"||x.Status=="Failed"?100:x.Progress)/(double)total;
-        bool running=_session?.IsRunning==true;
-        bool paused=running && _session!.IsPaused;
-        T("HeaderStats").Text=$"{active} active · {DownloadFormat.Speed(speed)} · {_ok}/{total}";
-        F<ProgressBar>("OverallProgress").Value=progress;
-        T("SessionStats").Text=_sessionStart.HasValue
-            ? $"Session: {_ok} OK · {left} left · {_failed} errors · {DownloadFormat.Bytes(downloaded)} · {DateTime.Now-_sessionStart.Value:hh\\:mm\\:ss}"
-            : $"Session: idle · {total} URLs";
-        string title=_sessionStart.HasValue
-            ? DownloadFormat.Tray(_ok,left,_failed,speed,running,paused) : "Video Downloader | Ready";
-        if (_tray.Text!=title)_tray.Text=title;
-        F<Button>("StartButton").IsEnabled=!running && _queue.Any(x=>x.Status!="Completed" && x.CanResume);
+        var metrics=SessionState.ReadMetrics();
+        bool running=metrics.Running,paused=metrics.Paused;
+        T("HeaderStats").Text=$"{metrics.Active} active · {DownloadFormat.Speed(metrics.Speed)} · {metrics.Successful}/{metrics.Total}";
+        F<ProgressBar>("OverallProgress").Value=metrics.Progress;
+        T("SessionStats").Text=SessionState.StartedAt.HasValue
+            ? $"Session: {metrics.Successful} OK · {metrics.Left} left · {metrics.Failed} errors · {DownloadFormat.Bytes(metrics.Transferred)} · {DateTime.Now-SessionState.StartedAt.Value:hh\\:mm\\:ss}"
+            : $"Session: idle · {metrics.Total} URLs";
+        string title=SessionState.StartedAt.HasValue
+            ? DownloadFormat.Tray(metrics.Successful,metrics.Left,metrics.Failed,metrics.Speed,running,paused) : "Video Downloader | Ready";
+        _lifecycle.UpdateStatus(title);
+        F<Button>("StartButton").IsEnabled=!running && SessionState.Queue.Any(x=>x.Status!="Completed" && x.CanResume);
         F<Button>("StopButton").IsEnabled=running;
         F<Button>("PauseButton").IsEnabled=running;
         F<Button>("PauseButton").Content=paused?"Resume":"Pause";
-        F<Button>("RetryFailedButton").IsEnabled=!running && _queue.Any(x=>x.Status=="Failed");
+        F<Button>("RetryFailedButton").IsEnabled=!running && SessionState.Queue.Any(x=>x.Status=="Failed");
         foreach(string name in new[]{"MoveUpButton","MoveDownButton","ClearQueueButton"})
             F<Button>(name).IsEnabled=!running;
         Q.AllowDrop=!running;
@@ -182,17 +151,17 @@ public sealed partial class NativeWindow : IDisposable
             T("HeaderStatus").Text=paused?"● Paused":"● Downloading";
             T("HeaderStatus").Foreground=Brushes.LightSkyBlue;
         }
-        else if (_sessionStart.HasValue)
+        else if (SessionState.StartedAt.HasValue)
         {
-            T("HeaderStatus").Text=_stopping?"● Stopped":_failed==0?"● Completed":"● Completed with errors";
-            T("HeaderStatus").Foreground=_stopping?Brushes.Orange:_failed==0?Brushes.LightGreen:Brushes.Tomato;
+            T("HeaderStatus").Text=SessionState.Stopping?"● Stopped":metrics.Failed==0?"● Completed":"● Completed with errors";
+            T("HeaderStatus").Foreground=SessionState.Stopping?Brushes.Orange:metrics.Failed==0?Brushes.LightGreen:Brushes.Tomato;
         }
         else
         {
             T("HeaderStatus").Text="● Ready";
             T("HeaderStatus").Foreground=Brushes.LightGray;
         }
-        if(active!=_lastActive) { _lastActive=active; Q.Items.Refresh(); D.Items.Refresh(); }
+        if(metrics.ActiveChanged) { Q.Items.Refresh(); D.Items.Refresh(); }
     }
     private void OnRowChanged(DownloadItem item)
     {
@@ -201,25 +170,19 @@ public sealed partial class NativeWindow : IDisposable
             if (_disposed) return;
             if (item.Status=="Completed" && item.AttemptFinished && item.CleanupError.Length==0)
                 RecordSubscriptionSuccess(item.Url);
-            if (!_queue.Contains(item)) return;
+            if (!SessionState.Queue.Contains(item)) return;
             if (item.PendingRemoval && item.AttemptFinished && item.CleanupError.Length==0)
             {
                 try { DownloadCleanup.Retry(item);ForgetRow(item);Reindex();return; }
                 catch(Exception e) { Log("Removal failed for "+item.Url+": "+e.Message); }
             }
-            if (!_downloads.Contains(item))_downloads.Add(item);
-            if (item.Status is "Completed" or "Failed" or "Interrupted")
+            if (SessionState.RecordRowChanged(item))
             {
-                var final=item.Status+":"+item.CleanupError;
-                if (!_finalStates.TryGetValue(item.Url,out var before) || before!=final)
-                {
-                    _finalStates[item.Url]=final;
-                    Log($"{item.Status}: {item.Url}"+(item.RawError.Length>0?" | "+item.RawError:""));
-                    SaveCheckpoint();
-                    if (item.CleanupError.Length>0)
-                        MessageBox.Show(_window,"Cleanup failed. The row and paths were kept; use Remove to retry.\n"+
-                            item.CleanupError,"Removal blocked",MessageBoxButton.OK,MessageBoxImage.Warning);
-                }
+                Log($"{item.Status}: {item.Url}"+(item.RawError.Length>0?" | "+item.RawError:""));
+                SaveCheckpoint();
+                if (item.CleanupError.Length>0)
+                    MessageBox.Show(_window,"Cleanup failed. The row and paths were kept; use Remove to retry.\n"+
+                        item.CleanupError,"Removal blocked",MessageBoxButton.OK,MessageBoxImage.Warning);
             }
             UpdateState();
         });
@@ -292,10 +255,10 @@ public sealed partial class NativeWindow : IDisposable
             RestoreSubscriptionQueueTitles(previous.Queue);
             foreach(var item in previous.Queue)
             {
-                item.Order=_queue.Count+1;_queue.Add(item);
+                SessionState.TryAdd(item);
                 RequestRowPreview(item);
             }
-            Log($"Restored {_queue.Count} URLs. Downloads will not restart automatically.");
+            Log($"Restored {SessionState.Queue.Count} URLs. Downloads will not restart automatically.");
         }
         catch(Exception e)
         {
@@ -315,14 +278,14 @@ public sealed partial class NativeWindow : IDisposable
         try
         {
             // Save on meaningful changes, not every progress tick.
-            var fingerprint=System.Text.Json.JsonSerializer.Serialize(_queue.Select(i=>new{
+            var fingerprint=System.Text.Json.JsonSerializer.Serialize(SessionState.Queue.Select(i=>new{
                 i.Url,i.Title,i.Status,i.Path,i.Order,i.OwnedPaths,i.OutputRoot,i.RunDir,i.StageDir,
                 i.CleanupPaths,i.CleanupError,i.PendingRemoval,i.AttemptFinished,i.DeferredToNextStart,
                 i.SubscriptionId,i.SubscriptionName
             }),AppPersistence.Json)+
-                ":"+System.Text.Json.JsonSerializer.Serialize(ReadOptions(),AppPersistence.Json)+":"+_queue.Count;
+                ":"+System.Text.Json.JsonSerializer.Serialize(ReadOptions(),AppPersistence.Json)+":"+SessionState.Queue.Count;
             if (fingerprint==_lastSavedSnapshot) return;
-            _storage.Save(_queue,ReadOptions());_lastSavedSnapshot=fingerprint;
+            _storage.Save(SessionState.Queue,ReadOptions());_lastSavedSnapshot=fingerprint;
         }
         catch(Exception e)
         {
@@ -381,35 +344,26 @@ public sealed partial class NativeWindow : IDisposable
         }
         if(removeRejected)
         {
-            foreach(var item in rejected) _queue.Remove(item);
+            foreach(var item in rejected)SessionState.RejectQueueEntry(item);
             Reindex();
         }
         return approved;
     }
     private void Reindex()
     {
-        int n=0;foreach(var item in _queue)item.Order=++n;
+        int n=SessionState.Reindex();
         T("QueueCount").Text=n+" URLs";
         UpdateState();SaveCheckpoint();
     }
-    private static IReadOnlyList<string> ParseUrls(string text)
-    {
-        var found=new HashSet<string>(StringComparer.Ordinal);
-        foreach(var token in text.Split([' ','\t','\r','\n'],StringSplitOptions.RemoveEmptyEntries))
-        {
-            var value=token.Trim();
-            if(AppPersistence.ValidUrl(value))found.Add(value);
-        }
-        return found.ToList();
-    }
+    private static IReadOnlyList<string> ParseUrls(string text)=>InputIngressController.ParseUrls(text);
     private void AddUrls(IEnumerable<string> urls,bool clipboard=false,bool selectNew=false)
     {
         if (_closing || _disposed) return;
         var rows=urls.Where(AppPersistence.ValidUrl).Distinct(StringComparer.Ordinal)
-            .Where(url=>!_queue.Any(i=>string.Equals(i.Url,url,StringComparison.Ordinal)))
+            .Where(url=>!SessionState.Queue.Any(i=>string.Equals(i.Url,url,StringComparison.Ordinal)))
             .Select(url=>new DownloadItem{Url=url}).ToList();
         if(rows.Count==0)return;
-        var session=_session;
+        var session=SessionState.Coordinator;
         bool active=session?.IsRunning==true;
         if(active)
         {
@@ -423,18 +377,12 @@ public sealed partial class NativeWindow : IDisposable
         var added=new List<DownloadItem>();
         foreach(var row in rows)
         {
-            if (_queue.Any(existing=>string.Equals(existing.Url,row.Url,StringComparison.Ordinal))) continue;
-            _queue.Add(row);
+            if (!SessionState.TryAdd(row))continue;
             added.Add(row);
             RequestRowPreview(row,clipboard&&active);
-            if(active)
+            if(active && !SessionState.TryJoinActive(session,row))
             {
-                if(ReferenceEquals(_session,session) && session!.IsRunning && session.Add(row)) _sessionUrls.Add(row.Url);
-                else
-                {
-                    row.DeferredToNextStart=true;
-                    Log("URL stays queued for next Start: "+row.Url);
-                }
+                Log("URL stays queued for next Start: "+row.Url);
             }
         }
         if(selectNew && added.Count>0)
@@ -445,80 +393,9 @@ public sealed partial class NativeWindow : IDisposable
         Reindex();
         T("ClipboardHint").Text=added.Count+" URL(s) added.";
     }
-    private void RequestRowPreview(DownloadItem row,bool priority=false)
-    {
-        var cached=_previews.Get(row.Url);
-        if(cached!=null) ApplyPreviewTitle(cached);
-        else _previews.Request(row.Url,priority);
-    }
-    private void ApplyPreviewTitle(PreviewData data)
-    {
-        if(string.IsNullOrWhiteSpace(data.Title) || string.Equals(data.Title.Trim(),data.Url,StringComparison.Ordinal)) return;
-        foreach(var row in _queue.Concat(_downloads).Distinct()
-            .Where(row=>string.Equals(row.Url,data.Url,StringComparison.Ordinal)))
-            row.Title=data.Title.Trim();
-    }
-    private string PreviewDisplayTitle(string url,string title,string fallback)
-    {
-        if(!string.IsNullOrWhiteSpace(title) && !string.Equals(title.Trim(),url,StringComparison.Ordinal)) return title.Trim();
-        return _queue.Concat(_downloads).Where(row=>string.Equals(row.Url,url,StringComparison.Ordinal))
-            .Select(row=>row.Title).FirstOrDefault(value=>!string.IsNullOrWhiteSpace(value) && !string.Equals(value,url,StringComparison.Ordinal)) ?? fallback;
-    }
-    private void ShowPreview(string url)
-    {
-        if(!AppPersistence.ValidUrl(url))return;
-        _previewUrl=url;
-        var data=_previews.Get(url);
-        if(data!=null){OnPreviewReady(data);return;}
-        T("PreviewTitle").Text=PreviewDisplayTitle(url,"","Получаем метаданные…");
-        T("PreviewMeta").Text=url;
-        T("PreviewFormats").Text="";
-        F<Image>("PreviewImage").Source=null;
-        _previews.Request(url,true);
-    }
-    private void OnPreviewFailed(string url,string error)
-    {
-        if(_disposed || !string.Equals(_previewUrl,url,StringComparison.Ordinal))return;
-        T("PreviewTitle").Text=PreviewDisplayTitle(url,"","Не удалось получить метаданные");
-        T("PreviewMeta").Text=error;
-        T("PreviewFormats").Text="";
-        F<Image>("PreviewImage").Source=null;
-    }
-    private void OnPreviewReady(PreviewData data)
-    {
-        if(_disposed)return;
-        ApplyPreviewTitle(data);
-        SaveCheckpoint();
-        if(!string.Equals(_previewUrl,data.Url,StringComparison.Ordinal))return;
-        T("PreviewTitle").Text=PreviewDisplayTitle(data.Url,data.Title,"Название пока недоступно");
-        var summary=new List<string>();
-        if(data.PlaylistTitle.Length>0)summary.Add("Playlist: "+data.PlaylistTitle);
-        if(data.Uploader.Length>0)summary.Add(data.Uploader);
-        if(data.Duration>0)summary.Add(TimeSpan.FromSeconds(data.Duration).ToString(@"hh\:mm\:ss"));
-        if(data.Extractor.Length>0)summary.Add(data.Extractor);
-        T("PreviewMeta").Text=string.Join(" · ",summary);
-        T("PreviewFormats").Text=$"{(data.MaxHeight>0?data.MaxHeight+"p ":"")}{data.MaxFps:0} FPS · {data.Codecs} · {data.DynamicRange}";
-        if(data.ThumbnailBase64.Length==0){F<Image>("PreviewImage").Source=null;return;}
-        try
-        {
-            var bytes=Convert.FromBase64String(data.ThumbnailBase64);
-            F<Image>("PreviewImage").Source=PreviewImage.Decode(bytes);
-        }
-        catch(Exception e){Log("Thumbnail decode failed: "+e.Message);F<Image>("PreviewImage").Source=null;}
-    }
-    private void PollClipboard()
-    {
-        if(!Check(K("WatchClipboardCheck")))return;
-        try
-        {
-            if(!System.Windows.Clipboard.ContainsText())return;
-            var raw=System.Windows.Clipboard.GetText();
-            if(raw==_lastClipboard)return;
-            _lastClipboard=raw;
-            AddUrls(ParseUrls(raw),clipboard:true);
-        }
-        catch(System.Runtime.InteropServices.COMException){}
-    }
+    private void RequestRowPreview(DownloadItem row,bool priority=false)=>_preview.RequestRow(row,priority);
+    private void ShowPreview(string url)=>_preview.Show(url);
+    private void PollClipboard()=>_ingress.PollClipboard();
     private async Task StartAsync(IEnumerable<DownloadItem>? custom=null)
     {
         if (_closing || _disposed) return;
@@ -529,8 +406,8 @@ public sealed partial class NativeWindow : IDisposable
                 "Native migration blocked",MessageBoxButton.OK,MessageBoxImage.Warning);
             return;
         }
-        if(_session?.IsRunning==true) return;
-        var pending=(custom??_queue.Where(i=>i.Status!="Completed")).Where(i=>i.CanResume).Distinct().ToList();
+        if(SessionState.Coordinator?.IsRunning==true) return;
+        var pending=(custom??SessionState.Queue.Where(i=>i.Status!="Completed")).Where(i=>i.CanResume).Distinct().ToList();
         if(pending.Count==0)return;
         var options=ReadOptions();
         try
@@ -551,16 +428,13 @@ public sealed partial class NativeWindow : IDisposable
                 return output;
             });
             Directory.CreateDirectory(options.OutputDirectory);
-            _sessionOptions=options;
+            SessionState.SetOptions(options);
             // Validate retained staging before resetting any attempt or ownership.
             foreach(var row in approved.Where(row=>row.StageDir.Length>0))
             {
                 try { OwnedFiles.DeleteStage(row.StageDir,row.RunDir);row.StageDir=""; }
                 catch(Exception e) {DownloadCleanup.Failed(row,e.Message);SaveCheckpoint();throw;}
             }
-            _stopping=false;_sessionStart=DateTime.Now;_finalStates.Clear();_downloads.Clear();
-            _sessionUrls.Clear();
-            foreach(var row in approved) _sessionUrls.Add(row.Url);
             foreach(var row in approved)
             {
                 row.Status="Queued";row.State="Queued";row.RawError="";row.Progress=0;
@@ -573,16 +447,16 @@ public sealed partial class NativeWindow : IDisposable
             }
             var session=new DownloadCoordinator(_ytDlp,_storage,options,OnRowChanged,
                 line=>Dispatcher.BeginInvoke(()=>Log(line)));
-            _session=session;
-            foreach(var row in approved)session.Add(row);
+            SessionState.Begin(session,options,approved);
             UpdateState();SaveCheckpoint();
             Log($"Started {approved.Count} URL(s), parallel={options.Parallel}, quality={options.Quality}.");
-            _sessionTask=session.RunAsync();
-            try { await _sessionTask; }
+            var running=session.RunAsync();
+            SessionState.TrackTask(running);
+            try { await running; }
             finally
             {
                 await session.DisposeAsync();
-                if(ReferenceEquals(_session,session)) _session=null;
+                SessionState.End(session);
                 // Results are already on row objects; do not touch other session rows.
                 UpdateState();SaveCheckpoint();
                 var finishedRows=CurrentSessionRows();
@@ -590,16 +464,9 @@ public sealed partial class NativeWindow : IDisposable
                 var bad=finishedRows.Count(x=>x.Status=="Failed");
                 var remaining=finishedRows.Count(x=>x.Status is not ("Completed" or "Failed"));
                 Log($"Session complete: {done} OK, {bad} failed.");
-                if(!_stopping && !_disposed)
+                if(!SessionState.Stopping && !_disposed)
                 {
-                    try
-                    {
-                        (bad>0?System.Media.SystemSounds.Hand:System.Media.SystemSounds.Asterisk).Play();
-                        _tray.ShowBalloonTip(4000,"Video Downloader",
-                            $"OK {done} · Left {remaining} · Err {bad}",
-                            bad>0?Forms.ToolTipIcon.Warning:Forms.ToolTipIcon.Info);
-                    }
-                    catch(InvalidOperationException){}
+                    _lifecycle.NotifyCompletion(done,remaining,bad);
                 }
             }
         }
@@ -611,11 +478,11 @@ public sealed partial class NativeWindow : IDisposable
     }
     private void CancelRow(DownloadItem row)
     {
-        if (_session?.IsRunning==true && (row.Status=="Queued" || row.Status=="Running"))_session.Cancel(row);
+        if (SessionState.Coordinator?.IsRunning==true && (row.Status=="Queued" || row.Status=="Running"))SessionState.Coordinator.Cancel(row);
     }
     private void RemoveRows(IEnumerable<DownloadItem> rows)
     {
-        var selected=rows.Where(_queue.Contains).Distinct().ToArray();
+        var selected=rows.Where(SessionState.Queue.Contains).Distinct().ToArray();
         if(selected.Length==0)return;
         if(selected.Any(x=>x.Status!="Queued") &&
             MessageBox.Show(_window,$"Remove {selected.Length} selected URL(s)?\nActive jobs will be stopped; finished files belonging to them will be permanently deleted.\nOther downloads continue.",
@@ -624,10 +491,10 @@ public sealed partial class NativeWindow : IDisposable
         {
             try
             {
-                if (_session?.IsRunning==true && _session.IsPending(row))
+                if (SessionState.Coordinator?.IsRunning==true && SessionState.Coordinator.IsPending(row))
                 {
                     row.PendingRemoval=true;row.State="Cancelling — waiting for cleanup";
-                    _session.Cancel(row);
+                    SessionState.Coordinator.Cancel(row);
                     continue;
                 }
                 DownloadCleanup.Retry(row);
@@ -643,67 +510,21 @@ public sealed partial class NativeWindow : IDisposable
     }
     private void ForgetRow(DownloadItem row)
     {
-        _queue.Remove(row);_downloads.Remove(row);_sessionUrls.Remove(row.Url);
+        SessionState.Forget(row);
     }
     private void ClearRows()
     {
-        foreach(var row in _queue.ToArray())
+        foreach(var row in SessionState.Queue.ToArray())
             if (row.CanResume && row.StageDir.Length==0 && row.CleanupPaths.Count==0) ForgetRow(row);
-        if (_queue.Count>0)
+        if (SessionState.Queue.Count>0)
             MessageBox.Show(_window,"Downloads awaiting cleanup were kept. Use Remove to retry.",
                 "Cleanup pending",MessageBoxButton.OK,MessageBoxImage.Warning);
         Reindex();
     }
     private void MoveItem(DownloadItem item,int index)
     {
-        if(_session?.IsRunning==true)return;
-        int old=_queue.IndexOf(item);
-        if(old<0||index<0||index>=_queue.Count||old==index)return;
-        _queue.Move(old,index);Reindex();
+        if(SessionState.Move(item,index))Reindex();
     }
-    public void ReceiveArguments(IEnumerable<string> args)
-    {
-        var urls=new List<string>();
-        foreach(var arg in args)
-        {
-            if(arg.StartsWith("videodownloader://",StringComparison.OrdinalIgnoreCase))
-            {
-                string payload=Uri.UnescapeDataString(arg["videodownloader://".Length..].TrimStart('/'));
-                urls.AddRange(ParseUrls(payload));
-            }
-            else if (File.Exists(arg))urls.AddRange(ReadInputFile(arg));
-            else urls.AddRange(ParseUrls(arg));
-        }
-        if(urls.Count>0)AddUrls(urls);
-        if(!_window.IsVisible)_window.Show();
-        if(_window.WindowState==WindowState.Minimized)_window.WindowState=WindowState.Normal;
-        _window.Activate();
-    }
-    private static IReadOnlyList<string> ReadInputFile(string file)
-    {
-        if(new FileInfo(file).Length>16*1024*1024)
-            throw new InvalidDataException("URL list is larger than 16 MiB.");
-        if(Path.GetExtension(file).Equals(".url",StringComparison.OrdinalIgnoreCase))
-        {
-            // Windows InternetShortcut files use URL=https://... rather than
-            // a bare URL and must not be mistaken for ordinary text lists.
-            return File.ReadLines(file).Where(line=>line.TrimStart().StartsWith("URL=",StringComparison.OrdinalIgnoreCase))
-                .SelectMany(line=>ParseUrls(line[(line.IndexOf('=')+1)..])).ToArray();
-        }
-        if(Path.GetExtension(file).Equals(".txt",StringComparison.OrdinalIgnoreCase))
-            return ParseUrls(File.ReadAllText(file));
-        return [];
-    }
-    private void WindowDrop(object sender,DragEventArgs e)
-    {
-        if(e.Data.GetDataPresent(DataFormats.FileDrop))
-        {
-            var files=(string[])(e.Data.GetData(DataFormats.FileDrop)??Array.Empty<string>());
-            AddUrls(files.SelectMany(ReadInputFile));e.Handled=true;
-        }
-        else if(e.Data.GetDataPresent(DataFormats.Text))
-        {
-            AddUrls(ParseUrls(e.Data.GetData(DataFormats.Text)?.ToString()??""));e.Handled=true;
-        }
-    }
+    public void ReceiveArguments(IEnumerable<string> args)=>_ingress.ReceiveArguments(args);
+    private static IReadOnlyList<string> ReadInputFile(string file)=>InputIngressController.ReadInputFile(file);
 }

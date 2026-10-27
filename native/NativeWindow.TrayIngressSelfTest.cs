@@ -32,12 +32,12 @@ public sealed partial class NativeWindow
         string profile=Path.GetDirectoryName(_storage.SessionPath)!;
         Require(Path.GetFullPath(profile).StartsWith(Path.GetFullPath(testRoot).TrimEnd(Path.DirectorySeparatorChar)+Path.DirectorySeparatorChar,
             StringComparison.OrdinalIgnoreCase),"Tests require an isolated user profile");
-        var originalQueue=_queue.ToArray();
-        var originalDownloads=_downloads.ToArray();
+        var originalQueue=SessionState.Queue.ToArray();
+        var originalDownloads=SessionState.Downloads.ToArray();
         var originalSelection=Q.SelectedItem;
-        var originalSession=_session;
-        var originalTask=_sessionTask;
-        string originalPreview=_previewUrl;
+        var originalSession=SessionState.Coordinator;
+        var originalTask=SessionState.RunningTask;
+        string originalPreview=_preview.SelectedUrl;
         string originalPreviewTitle=T("PreviewTitle").Text;
         var originalState=_window.WindowState;
         bool originalVisibility=_window.IsVisible;
@@ -79,9 +79,9 @@ public sealed partial class NativeWindow
                 stdout.Result.Trim()=="FORWARDED:"+child.Process.Id && stderr.Result.Length==0,
                 "A separate native process must send the complete argument array through the production IPC client");
         }
-        void RequireIdle()=>Require(ReferenceEquals(_session,originalSession) && ReferenceEquals(_sessionTask,originalTask) &&
-            _downloads.SequenceEqual(originalDownloads) && ReferenceEquals(Q.SelectedItem,originalSelection) &&
-            _previewUrl==originalPreview && T("PreviewTitle").Text==originalPreviewTitle,
+        void RequireIdle()=>Require(ReferenceEquals(SessionState.Coordinator,originalSession) && ReferenceEquals(SessionState.RunningTask,originalTask) &&
+            SessionState.Downloads.SequenceEqual(originalDownloads) && ReferenceEquals(Q.SelectedItem,originalSelection) &&
+            _preview.SelectedUrl==originalPreview && T("PreviewTitle").Text==originalPreviewTitle,
             "Visibility and ingress must preserve selection, preview and the current download session");
         try
         {
@@ -89,22 +89,22 @@ public sealed partial class NativeWindow
             _window.Show();
             _window.WindowState=WindowState.Minimized;
             PumpUntil(()=>!_window.IsVisible,"Minimizing the real window must hide it through StateChanged");
-            Require(_tray.Visible,"Minimizing must retain the tray icon");
+            Require(_lifecycle.TrayIcon.Visible,"Minimizing must retain the tray icon");
             RequireIdle();
-            _tray.ContextMenuStrip!.Items[0].PerformClick();
+            _lifecycle.TrayIcon.ContextMenuStrip!.Items[0].PerformClick();
             PumpUntil(()=>_window.IsVisible && _window.WindowState==WindowState.Normal,
                 "The actual tray Open action must show and restore the window");
             RequireIdle();
 
             F<Button>("TrayButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-            Require(!_window.IsVisible && _tray.Visible,"The Tray button must hide the window while keeping the icon");
+            Require(!_window.IsVisible && _lifecycle.TrayIcon.Visible,"The Tray button must hide the window while keeping the icon");
             ReceiveArguments([Protocol(urls[0]),Protocol(urls[1])]);
             Require(_window.IsVisible && _window.WindowState==WindowState.Normal,
                 "Protocol arguments must reveal the existing window");
-            Require(_queue.Skip(originalQueue.Length).Select(row=>row.Url).SequenceEqual(urls.Take(2)),
+            Require(SessionState.Queue.Skip(originalQueue.Length).Select(row=>row.Url).SequenceEqual(urls.Take(2)),
                 "Protocol decoding must preserve escaped query, fragment and case-distinct URLs");
             ReceiveArguments([Protocol(urls[0])]);
-            Require(_queue.Count==originalQueue.Length+2,"Repeated protocol delivery must not duplicate its exact URL");
+            Require(SessionState.Queue.Count==originalQueue.Length+2,"Repeated protocol delivery must not duplicate its exact URL");
             RequireIdle();
 
             string list=Path.Combine(root,"ссылки [pipe input].txt");
@@ -116,15 +116,15 @@ public sealed partial class NativeWindow
                 _window.WindowState=WindowState.Minimized;
                 PumpUntil(()=>!_window.IsVisible,"IPC test must begin with the existing window hidden");
                 var delivery=Deliver(Protocol(urls[2]),list);
-                PumpUntil(()=>delivery.IsCompleted && (delivery.IsFaulted || delivery.IsCanceled || _queue.Any(row=>row.Url==urls[3])),
+                PumpUntil(()=>delivery.IsCompleted && (delivery.IsFaulted || delivery.IsCanceled || SessionState.Queue.Any(row=>row.Url==urls[3])),
                     "The production pipe client/server must forward protocol and spaced Unicode file arguments to the dispatcher");
                 delivery.GetAwaiter().GetResult();
                 Require(_window.IsVisible && _window.WindowState==WindowState.Normal,
                     "A secondary-instance message must restore the minimized existing window");
-                Require(_queue.Skip(originalQueue.Length).Select(row=>row.Url).SequenceEqual(urls.Take(4)),
+                Require(SessionState.Queue.Skip(originalQueue.Length).Select(row=>row.Url).SequenceEqual(urls.Take(4)),
                     "IPC must deliver the complete argument array once in order, preserving exact URL identities");
                 var repeated=Deliver(Protocol(urls[2]),list,Protocol(urls[4]));
-                PumpUntil(()=>repeated.IsCompleted && (repeated.IsFaulted || repeated.IsCanceled || _queue.Any(row=>row.Url==urls[4])),
+                PumpUntil(()=>repeated.IsCompleted && (repeated.IsFaulted || repeated.IsCanceled || SessionState.Queue.Any(row=>row.Url==urls[4])),
                     "The listener must accept a subsequent connection without dropping its new final argument");
                 repeated.GetAwaiter().GetResult();
                 // The new final URL above proves the repeated message has been
@@ -134,7 +134,7 @@ public sealed partial class NativeWindow
                 PumpUntil(()=>barrier.IsCompleted && (barrier.IsFaulted || barrier.IsCanceled || _window.IsVisible),
                     "The listener must complete repeated and empty deliveries");
                 barrier.GetAwaiter().GetResult();
-                Require(_queue.Count==originalQueue.Length+urls.Length,"Repeated and empty IPC deliveries must not add duplicates");
+                Require(SessionState.Queue.Count==originalQueue.Length+urls.Length,"Repeated and empty IPC deliveries must not add duplicates");
                 RequireIdle();
                 SaveCheckpoint();
                 Require(_storage.Restore()!.Queue.Skip(originalQueue.Length).Select(row=>row.Url).SequenceEqual(urls),
@@ -145,12 +145,12 @@ public sealed partial class NativeWindow
                 cancel.Cancel();
                 listener.WaitAsync(TimeSpan.FromSeconds(5)).GetAwaiter().GetResult();
             }
-            TestWatchClipboard(_queue.Single(row=>row.Url==urls[0]));
+            TestWatchClipboard(SessionState.Queue.Single(row=>row.Url==urls[0]));
             Console.WriteLine("PASS: native minimize/hide/tray Open/restore, protocol decoding and production named-pipe ingress");
         }
         finally
         {
-            _queue.Clear();foreach(var row in originalQueue)_queue.Add(row);
+            SessionState.Queue.Clear();foreach(var row in originalQueue)SessionState.Queue.Add(row);
             Q.SelectedItem=originalSelection;
             _window.WindowState=originalState;
             if(originalVisibility)_window.Show();else _window.Hide();
@@ -166,13 +166,13 @@ public sealed partial class NativeWindow
         }
         var originalData=System.Windows.Clipboard.GetDataObject();
         bool? originalEnabled=K("WatchClipboardCheck").IsChecked;
-        string originalLast=_lastClipboard;
-        var originalQueue=_queue.ToArray();
-        var originalDownloads=_downloads.ToArray();
+        string originalLast=_ingress.LastClipboard;
+        var originalQueue=SessionState.Queue.ToArray();
+        var originalDownloads=SessionState.Downloads.ToArray();
         var originalSelection=Q.SelectedItem;
-        var originalSession=_session;
-        var originalTask=_sessionTask;
-        string originalPreview=_previewUrl;
+        var originalSession=SessionState.Coordinator;
+        var originalTask=SessionState.RunningTask;
+        string originalPreview=_preview.SelectedUrl;
         string originalTitle=T("PreviewTitle").Text;
         string originalMeta=T("PreviewMeta").Text;
         string originalFormats=T("PreviewFormats").Text;
@@ -197,20 +197,20 @@ public sealed partial class NativeWindow
             var frame=new DispatcherFrame();
             var deadline=DateTime.UtcNow.AddSeconds(5);
             var timer=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(20)};
-            timer.Tick+=(_,_)=>{if(_queue.Any(row=>row.Url==url) || DateTime.UtcNow>=deadline)frame.Continue=false;};
+            timer.Tick+=(_,_)=>{if(SessionState.Queue.Any(row=>row.Url==url) || DateTime.UtcNow>=deadline)frame.Continue=false;};
             timer.Start();
             try{System.Windows.Threading.Dispatcher.PushFrame(frame);}
             finally{timer.Stop();}
-            var imported=_queue.SingleOrDefault(row=>row.Url==url);
+            var imported=SessionState.Queue.SingleOrDefault(row=>row.Url==url);
             Require(imported is {Title:"Название из буфера",Status:"Queued"} && imported.Path.Length==0 &&
-                _queue.Count==originalQueue.Length+1 && _lastClipboard==url,
+                SessionState.Queue.Count==originalQueue.Length+1 && _ingress.LastClipboard==url,
                 "The actual Watch clipboard timer must read the Windows clipboard and queue its exact URL with cached metadata");
-            PollClipboard();PollClipboard();
-            Require(_queue.Count==originalQueue.Length+1 && selectionChanges==0 && ReferenceEquals(Q.SelectedItem,selected) &&
-                _previewUrl==selected.Url && T("PreviewTitle").Text==selectedTitle && T("PreviewMeta").Text==selectedMeta,
+            _ingress.PollClipboard();_ingress.PollClipboard();
+            Require(SessionState.Queue.Count==originalQueue.Length+1 && selectionChanges==0 && ReferenceEquals(Q.SelectedItem,selected) &&
+                _preview.SelectedUrl==selected.Url && T("PreviewTitle").Text==selectedTitle && T("PreviewMeta").Text==selectedMeta,
                 "Repeated polling must deduplicate URLs and preserve the user's selected preview");
-            Require(ReferenceEquals(_session,originalSession) && ReferenceEquals(_sessionTask,originalTask) &&
-                _downloads.SequenceEqual(originalDownloads),"Watch clipboard must not start downloads");
+            Require(ReferenceEquals(SessionState.Coordinator,originalSession) && ReferenceEquals(SessionState.RunningTask,originalTask) &&
+                SessionState.Downloads.SequenceEqual(originalDownloads),"Watch clipboard must not start downloads");
             SaveCheckpoint();
             var saved=_storage.Restore()!;
             Require(saved.Settings.WatchClipboard && saved.Queue.Single(row=>row.Url==url).Title=="Название из буфера",
@@ -228,11 +228,11 @@ public sealed partial class NativeWindow
             }
             finally
             {
-                _lastClipboard=originalLast;
+                _ingress.LastClipboard=originalLast;
                 K("WatchClipboardCheck").IsChecked=originalEnabled;
-                _queue.Clear();foreach(var row in originalQueue)_queue.Add(row);
+                SessionState.Queue.Clear();foreach(var row in originalQueue)SessionState.Queue.Add(row);
                 Q.SelectedItem=originalSelection;
-                _previewUrl=originalPreview;
+                _preview.SelectedUrl=originalPreview;
                 T("PreviewTitle").Text=originalTitle;
                 T("PreviewMeta").Text=originalMeta;
                 T("PreviewFormats").Text=originalFormats;

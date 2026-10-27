@@ -23,6 +23,28 @@ public sealed partial class NativeWindow
         {
             if(!condition) throw new InvalidOperationException("Title display WPF test failed: "+error);
         }
+        // A closed controller may still have dispatcher callbacks queued by
+        // its worker. They must not mutate rows/panels or checkpoint afterward.
+        var closedRow=new DownloadItem{Url="https://example.invalid/disposed-preview",Title="Before close"};
+        int closedCallbacks=0;
+        string panelBeforeClose=T("PreviewTitle").Text;
+        using(var closed=new PreviewController(_window,
+            new AppPersistence(Path.Combine(testRoot,"disposed-preview-"+Guid.NewGuid().ToString("N"))),
+            "must-not-start",()=>new[]{closedRow},()=>closedCallbacks++,_=>closedCallbacks++))
+        {
+            closed.SelectedUrl=closedRow.Url;
+            var frame=new DispatcherFrame();
+            _=Dispatcher.BeginInvoke(()=>closed.ReceiveReady(new PreviewData(closedRow.Url,
+                "Late metadata","","",0,"",0,0,"","","",DateTime.UtcNow)));
+            _=Dispatcher.BeginInvoke(()=>closed.ReceiveFailure(closedRow.Url,"Late error"));
+            closed.Dispose();
+            closed.RequestRow(closedRow);
+            closed.Show(closedRow.Url);
+            _=Dispatcher.BeginInvoke(DispatcherPriority.Background,new Action(()=>frame.Continue=false));
+            System.Windows.Threading.Dispatcher.PushFrame(frame);
+            Require(closedCallbacks==0 && closedRow.Title=="Before close" && T("PreviewTitle").Text==panelBeforeClose,
+                "Callbacks and requests after preview disposal must leave the closed UI and checkpoint untouched");
+        }
         static IEnumerable<TextBlock> Labels(DependencyObject parent)
         {
             if(parent is TextBlock text) yield return text;
@@ -50,13 +72,13 @@ public sealed partial class NativeWindow
             try{System.Windows.Threading.Dispatcher.PushFrame(frame);}finally{timer.Stop();}
             Require(Matches(),"Rendered label must show "+expected+" with its original URL tooltip");
         }
-        var originalQueue=_queue.ToArray();
-        var originalDownloads=_downloads.ToArray();
-        var originalSession=_session;
-        var originalSessionTask=_sessionTask;
+        var originalQueue=SessionState.Queue.ToArray();
+        var originalDownloads=SessionState.Downloads.ToArray();
+        var originalSession=SessionState.Coordinator;
+        var originalSessionTask=SessionState.RunningTask;
         var originalSelection=Q.SelectedItem;
         string originalInput=B("UrlInput").Text;
-        string originalPreview=_previewUrl;
+        string originalPreview=_preview.SelectedUrl;
         bool? originalMode=K("ShowVideoTitlesCheck").IsChecked;
         string prefix="https://example.invalid/title-display/"+Guid.NewGuid().ToString("N")+"/";
         var known=new DownloadItem{Url=prefix+"Video"};
@@ -97,12 +119,12 @@ public sealed partial class NativeWindow
             var subscriptionAccepted=QueueSubscriptionUrls([subscriptionEntry],Guid.NewGuid().ToString("N"),"Тестовая подписка",
                 new Dictionary<string,string>(StringComparer.Ordinal){[subscriptionEntry]=routeTitles[subscriptionEntry]});
             Require(subscriptionAccepted.SequenceEqual(new[]{subscriptionEntry}),"The subscription callback must accept its exact URL");
-            Require(_queue.Count==originalQueue.Length+routeTitles.Count && ReferenceEquals(Q.SelectedItem,originalSelection) &&
-                    _previewUrl==originalPreview && T("PreviewTitle").Text==beforeRoutesPanel,
+            Require(SessionState.Queue.Count==originalQueue.Length+routeTitles.Count && ReferenceEquals(Q.SelectedItem,originalSelection) &&
+                    _preview.SelectedUrl==originalPreview && T("PreviewTitle").Text==beforeRoutesPanel,
                 "URL/file/subscription ingestion must preserve selection and the current preview without a row click");
             foreach(var pair in routeTitles)
             {
-                var row=_queue.Single(item=>item.Url==pair.Key);
+                var row=SessionState.Queue.Single(item=>item.Url==pair.Key);
                 Require(row.Title==pair.Value && row.Status=="Queued" && row.Path.Length==0,
                     "Every added route must expose its known video title before download: "+pair.Key);
                 K("ShowVideoTitlesCheck").IsChecked=false;
@@ -114,10 +136,10 @@ public sealed partial class NativeWindow
             var routeCheckpoint=_storage.Restore()!;
             Require(routeTitles.All(pair=>routeCheckpoint.Queue.Single(row=>row.Url==pair.Key).Title==pair.Value),
                 "Titles from URL, TXT, InternetShortcut and subscription entry routes must survive checkpoint persistence");
-            Require(ReferenceEquals(_session,originalSession) && ReferenceEquals(_sessionTask,originalSessionTask) &&
-                    _downloads.SequenceEqual(originalDownloads),"Checking imported names must not start any download");
+            Require(ReferenceEquals(SessionState.Coordinator,originalSession) && ReferenceEquals(SessionState.RunningTask,originalSessionTask) &&
+                    SessionState.Downloads.SequenceEqual(originalDownloads),"Checking imported names must not start any download");
             Console.WriteLine("PASS: native title entry routes URL, TXT, InternetShortcut and subscription (warm cache; no row click or Start)");
-            foreach(var row in _queue.Where(row=>routeTitles.ContainsKey(row.Url)).ToArray())_queue.Remove(row);
+            foreach(var row in SessionState.Queue.Where(row=>routeTitles.ContainsKey(row.Url)).ToArray())SessionState.Queue.Remove(row);
             B("UrlInput").Text=originalInput;
             K("ShowVideoTitlesCheck").IsChecked=originalMode;
             Reindex();
@@ -126,31 +148,31 @@ public sealed partial class NativeWindow
             Require(tinyImage.PixelWidth==2 && tinyImage.PixelHeight==2,"Thumbnail decoding must not enlarge small source images");
             var portrait=PreviewImage.Decode(Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAPoCAYAAAAftpReAAAAIUlEQVR4nO3EMQEAAAzDoPg33anYBwetliRJkiRJkqTPDnx1yJqP8XqtAAAAAElFTkSuQmCC"));
             Require(portrait.PixelWidth<=720 && portrait.PixelHeight<=720,"Portrait thumbnails must fit both display dimensions");
-            foreach(var row in new[]{known,caseDistinct,unknown,cached})_queue.Add(row);
-            _downloads.Add(known);_downloads.Add(unknown);
-            _previewUrl=prefix+"selected-preview";
+            foreach(var row in new[]{known,caseDistinct,unknown,cached})SessionState.Queue.Add(row);
+            SessionState.Downloads.Add(known);SessionState.Downloads.Add(unknown);
+            _preview.SelectedUrl=prefix+"selected-preview";
             string panelBefore=T("PreviewTitle").Text;
-            OnPreviewReady(Metadata(known.Url,"Название из фоновых метаданных"));
+            _preview.ReceiveReady(Metadata(known.Url,"Название из фоновых метаданных"));
             Require(known.Title=="Название из фоновых метаданных" && caseDistinct.Title.Length==0 && unknown.Title.Length==0,
                 "Metadata must update its exact URL while unselected, without updating a case-distinct URL");
             Require(T("PreviewTitle").Text==panelBefore,"A background title must leave the selected preview panel alone");
-            OnPreviewReady(Metadata(known.Url,"   "));
+            _preview.ReceiveReady(Metadata(known.Url,"   "));
             Require(known.Title=="Название из фоновых метаданных","An empty metadata title must preserve an already known title");
-            _previewUrl=known.Url;
-            OnPreviewReady(Metadata(known.Url,known.Url));
+            _preview.SelectedUrl=known.Url;
+            _preview.ReceiveReady(Metadata(known.Url,known.Url));
             Require(known.Title=="Название из фоновых метаданных" && T("PreviewTitle").Text==known.Title,
                 "An empty or URL-only full preview must keep the discovered video name in the panel");
-            OnPreviewReady(Metadata(known.Url,""));
+            _preview.ReceiveReady(Metadata(known.Url,""));
             Require(T("PreviewTitle").Text==known.Title,"A missing image and empty title must not erase a known subscription title");
-            OnPreviewFailed(known.Url,"Metadata fixture failed");
+            _preview.ReceiveFailure(known.Url,"Metadata fixture failed");
             Require(T("PreviewTitle").Text==known.Title && T("PreviewMeta").Text=="Metadata fixture failed",
                 "A metadata failure must end loading while keeping the subscription title");
-            OnPreviewFailed(caseDistinct.Url,"Unselected failure");
+            _preview.ReceiveFailure(caseDistinct.Url,"Unselected failure");
             Require(T("PreviewMeta").Text=="Metadata fixture failed",
                 "A stale failure for another exact URL must not alter the selected preview");
-            _previewUrl=unknown.Url;
+            _preview.SelectedUrl=unknown.Url;
             T("PreviewTitle").Text="Получаем метаданные…";
-            OnPreviewFailed(unknown.Url,"Timeout fixture");
+            _preview.ReceiveFailure(unknown.Url,"Timeout fixture");
             Require(T("PreviewTitle").Text=="Не удалось получить метаданные" && T("PreviewMeta").Text=="Timeout fixture",
                 "A failed preview without a known title must replace its loading indicator with an error");
 
@@ -170,16 +192,16 @@ public sealed partial class NativeWindow
                 "The mode and discovered title must survive checkpoint persistence");
             K("ShowVideoTitlesCheck").IsChecked=false;
             RenderedLabel(Q,known,known.Url);RenderedLabel(D,known,known.Url);
-            Require(_queue.Count==originalQueue.Length+4 && _downloads.Count==originalDownloads.Length+2 &&
-                    ReferenceEquals(_session,originalSession) && known.Url==prefix+"Video" && caseDistinct.Url==prefix+"video",
+            Require(SessionState.Queue.Count==originalQueue.Length+4 && SessionState.Downloads.Count==originalDownloads.Length+2 &&
+                    ReferenceEquals(SessionState.Coordinator,originalSession) && known.Url==prefix+"Video" && caseDistinct.Url==prefix+"video",
                 "Switching presentation must preserve queue membership, URL identity and download session");
         }
         finally
         {
-            _queue.Clear();foreach(var row in originalQueue)_queue.Add(row);
-            _downloads.Clear();foreach(var row in originalDownloads)_downloads.Add(row);
+            SessionState.Queue.Clear();foreach(var row in originalQueue)SessionState.Queue.Add(row);
+            SessionState.Downloads.Clear();foreach(var row in originalDownloads)SessionState.Downloads.Add(row);
             B("UrlInput").Text=originalInput;
-            _previewUrl=originalPreview;
+            _preview.SelectedUrl=originalPreview;
             K("ShowVideoTitlesCheck").IsChecked=originalMode;
             Reindex();
         }
