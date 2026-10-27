@@ -165,15 +165,15 @@ internal sealed partial class UiScenario
             _preview.ReceiveReady(Metadata(known.Url,""));
             Require(T("PreviewTitle").Text==known.Title,"A missing image and empty title must not erase a known subscription title");
             _preview.ReceiveFailure(known.Url,"Metadata fixture failed");
-            Require(T("PreviewTitle").Text==known.Title && T("PreviewMeta").Text=="Metadata fixture failed",
+            Require(T("PreviewTitle").Text==known.Title && T("PreviewMeta").Text==ErrorMessages.ForDisplay("Metadata fixture failed"),
                 "A metadata failure must end loading while keeping the subscription title");
             _preview.ReceiveFailure(caseDistinct.Url,"Unselected failure");
-            Require(T("PreviewMeta").Text=="Metadata fixture failed",
+            Require(T("PreviewMeta").Text==ErrorMessages.ForDisplay("Metadata fixture failed"),
                 "A stale failure for another exact URL must not alter the selected preview");
             _preview.SelectedUrl=unknown.Url;
             T("PreviewTitle").Text="Получаем метаданные…";
             _preview.ReceiveFailure(unknown.Url,"Timeout fixture");
-            Require(T("PreviewTitle").Text=="Не удалось получить метаданные" && T("PreviewMeta").Text=="Timeout fixture",
+            Require(T("PreviewTitle").Text=="Не удалось получить метаданные" && T("PreviewMeta").Text==ErrorMessages.ForDisplay("Timeout fixture"),
                 "A failed preview without a known title must replace its loading indicator with an error");
 
             var cache=Metadata(cached.Url,"Название из кеша");

@@ -296,6 +296,7 @@
 
         <!-- Status colors follow stable Status rather than transient text/percent. -->
         <Style x:Key="QueueStatusTextStyle" TargetType="TextBlock" BasedOn="{StaticResource GridTextStyle}">
+            <Setter Property="ToolTip" Value="{Binding ErrorMessage}"/>
             <Setter Property="Foreground" Value="#67D7FD"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
             <Style.Triggers>
@@ -437,7 +438,7 @@
                                     </DataTemplate>
                                 </DataGridTemplateColumn.CellTemplate>
                             </DataGridTemplateColumn>
-                            <DataGridTextColumn Header="State" Binding="{Binding State}" Width="90" ElementStyle="{StaticResource QueueStatusTextStyle}"/>
+                            <DataGridTextColumn Header="State" Binding="{Binding StateLabel}" Width="90" ElementStyle="{StaticResource QueueStatusTextStyle}"/>
                             <DataGridTextColumn Header="Подписка / папка" Binding="{Binding SubscriptionName}" Width="120" ElementStyle="{StaticResource GridTextStyle}"/>
                         </DataGrid.Columns>
                     </DataGrid>
@@ -465,7 +466,7 @@
                     <DataGrid x:Name="DownloadGrid" Grid.Row="1" SelectionMode="Single" Tag="{Binding IsChecked, ElementName=ShowVideoTitlesCheck}">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="Slot" Binding="{Binding Slot}" Width="52" ElementStyle="{StaticResource GridTextStyle}"/>
-                            <DataGridTextColumn Header="State" Binding="{Binding State}" Width="110" ElementStyle="{StaticResource DownloadStatusTextStyle}"/>
+                            <DataGridTextColumn Header="State" Binding="{Binding StateLabel}" Width="110" ElementStyle="{StaticResource DownloadStatusTextStyle}"/>
                             <DataGridTextColumn Header="Подписка / папка" Binding="{Binding SubscriptionName}" Width="120" ElementStyle="{StaticResource GridTextStyle}"/>
                             <DataGridTemplateColumn Header="Видео / прогресс" Width="*" MinWidth="220">
                                 <DataGridTemplateColumn.CellTemplate>

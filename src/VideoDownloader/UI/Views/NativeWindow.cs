@@ -156,7 +156,7 @@ public sealed partial class NativeWindow : IDisposable
         }
         else if (SessionState.StartedAt.HasValue)
         {
-            T("HeaderStatus").Text=SessionState.Stopping?"● Stopped":metrics.Failed==0?"● Completed":"● Completed with errors";
+            T("HeaderStatus").Text=SessionState.Stopping?"● Stopped":metrics.Failed==0?"● Completed":ErrorMessages.Text("● Завершено с ошибками","● Completed with errors");
             T("HeaderStatus").Foreground=SessionState.Stopping?Brushes.Orange:metrics.Failed==0?Brushes.LightGreen:Brushes.Tomato;
         }
         else
@@ -184,8 +184,11 @@ public sealed partial class NativeWindow : IDisposable
                 Log($"{item.Status}: {item.Url}"+(item.RawError.Length>0?" | "+item.RawError:""));
                 SaveCheckpoint();
                 if (item.CleanupError.Length>0)
-                    MessageBox.Show(_window,"Cleanup failed. The row and paths were kept; use Remove to retry.\n"+
-                        item.CleanupError,"Removal blocked",MessageBoxButton.OK,MessageBoxImage.Warning);
+                    MessageBox.Show(_window,ErrorMessages.Text(
+                        "Не удалось удалить файлы. Строка и пути сохранены; нажмите Remove для повторной попытки.\n",
+                        "Cleanup failed. The row and paths were kept; use Remove to retry.\n")+
+                        ErrorMessages.ForDisplay(item.CleanupError),ErrorMessages.Text("Удаление заблокировано","Removal blocked"),
+                        MessageBoxButton.OK,MessageBoxImage.Warning);
             }
             UpdateState();
         });
@@ -193,11 +196,19 @@ public sealed partial class NativeWindow : IDisposable
     private void Log(string message)
     {
         if (_disposed) return;
+        // Keep the original diagnostic copyable while explaining failures in
+        // the user's language. Worker/cache/persistence values stay untouched.
+        message=ErrorMessages.ForLog(message);
         var box=B("LogBox");
         box.AppendText($"[{DateTime.Now:HH:mm:ss}] {message}{Environment.NewLine}");
         // Limit the log to avoid excessive WPF memory usage.
         if (box.LineCount>3000) box.Text=string.Join(Environment.NewLine,box.Text.Split('\n').TakeLast(1500));
         box.ScrollToEnd();
+    }
+    private string DisplayError(Exception error)
+    {
+        Log(error.ToString());
+        return ErrorMessages.ForException(error);
     }
     internal DownloadOptions ReadOptions() => new()
     {
@@ -243,10 +254,11 @@ public sealed partial class NativeWindow : IDisposable
                 _checkpointReadOnly=true;
                 _legacyEngineBlocked=true;
                 MessageBox.Show(_window,
+                    ErrorMessages.Text("Работник прежней версии ещё запущен.\nОстановите прежний загрузчик и перезапустите приложение. Сохранённая очередь оставлена без изменений.",
                     "The previous PowerShell download engine is still running.\n"+
                     "Stop the old downloader first, then restart the C# version to restore its latest results.\n"+
-                    "The existing checkpoint has been left unchanged.",
-                    "Old download process still active",MessageBoxButton.OK,MessageBoxImage.Warning);
+                    "The existing checkpoint has been left unchanged."),
+                    ErrorMessages.Text("Прежний загрузчик ещё работает","Old download process still active"),MessageBoxButton.OK,MessageBoxImage.Warning);
                 return;
             }
             // Settings belong to the application even when the queue is empty
@@ -267,8 +279,9 @@ public sealed partial class NativeWindow : IDisposable
         {
             // A modal error dialog pumps dispatcher messages too.
             _checkpointReadOnly=true;
-            MessageBox.Show(_window,"Cannot read previous session: "+e.Message+
-               "\nThe existing checkpoint has not been overwritten.","Session recovery error",MessageBoxButton.OK,MessageBoxImage.Warning);
+            MessageBox.Show(_window,ErrorMessages.Text("Не удалось восстановить предыдущую очередь: ","Cannot read previous session: ")+DisplayError(e)+
+               ErrorMessages.Text("\nСохранённая очередь оставлена без изменений.","\nThe existing checkpoint has not been overwritten."),
+               ErrorMessages.Text("Ошибка восстановления","Session recovery error"),MessageBoxButton.OK,MessageBoxImage.Warning);
         }
         finally { _restoringSession=false; }
     }
@@ -326,8 +339,9 @@ public sealed partial class NativeWindow : IDisposable
         try { history=_storage.ReadHistory(); }
         catch(Exception e)
         {
-            MessageBox.Show(_window,"History cannot be read; start was blocked to protect the records:\n"+e.Message,
-                "History error",MessageBoxButton.OK,MessageBoxImage.Warning);
+            MessageBox.Show(_window,ErrorMessages.Text("Не удалось прочитать историю. Запуск заблокирован для сохранности записей:\n",
+                "History cannot be read; start was blocked to protect the records:\n")+DisplayError(e),
+                ErrorMessages.Text("Ошибка истории","History error"),MessageBoxButton.OK,MessageBoxImage.Warning);
             return null;
         }
         int total=candidate.Count(x=>history.ContainsKey(x.Url)),index=0;
@@ -405,8 +419,9 @@ public sealed partial class NativeWindow : IDisposable
         if (_legacyEngineBlocked)
         {
             MessageBox.Show(_window,
-                "The previous PowerShell downloader is still active. Stop it and restart this app before starting a new session.",
-                "Native migration blocked",MessageBoxButton.OK,MessageBoxImage.Warning);
+                ErrorMessages.Text("Прежний загрузчик ещё работает. Остановите его и перезапустите приложение перед новым скачиванием.",
+                "The previous PowerShell downloader is still active. Stop it and restart this app before starting a new session."),
+                ErrorMessages.Text("Запуск заблокирован","Native migration blocked"),MessageBoxButton.OK,MessageBoxImage.Warning);
             return;
         }
         if(SessionState.Coordinator?.IsRunning==true) return;
@@ -476,7 +491,7 @@ public sealed partial class NativeWindow : IDisposable
         catch(Exception e)
         {
             Log("Cannot start download: "+e.Message);
-            MessageBox.Show(_window,e.Message,"Start failed",MessageBoxButton.OK,MessageBoxImage.Error);
+            MessageBox.Show(_window,DisplayError(e),ErrorMessages.Text("Не удалось начать скачивание","Start failed"),MessageBoxButton.OK,MessageBoxImage.Error);
         }
     }
     private void CancelRow(DownloadItem row)
@@ -506,7 +521,7 @@ public sealed partial class NativeWindow : IDisposable
             catch(Exception e)
             {
                 Log("Removal failed for "+row.Url+": "+e.Message);
-                MessageBox.Show(_window,e.Message,"Removal blocked",MessageBoxButton.OK,MessageBoxImage.Warning);
+                MessageBox.Show(_window,DisplayError(e),ErrorMessages.Text("Удаление заблокировано","Removal blocked"),MessageBoxButton.OK,MessageBoxImage.Warning);
             }
         }
         Reindex();
@@ -520,8 +535,9 @@ public sealed partial class NativeWindow : IDisposable
         foreach(var row in SessionState.Queue.ToArray())
             if (row.CanResume && row.StageDir.Length==0 && row.CleanupPaths.Count==0) ForgetRow(row);
         if (SessionState.Queue.Count>0)
-            MessageBox.Show(_window,"Downloads awaiting cleanup were kept. Use Remove to retry.",
-                "Cleanup pending",MessageBoxButton.OK,MessageBoxImage.Warning);
+            MessageBox.Show(_window,ErrorMessages.Text("Задачи, ожидающие очистки, сохранены. Нажмите Remove для повторной попытки.",
+                "Downloads awaiting cleanup were kept. Use Remove to retry."),
+                ErrorMessages.Text("Ожидается очистка","Cleanup pending"),MessageBoxButton.OK,MessageBoxImage.Warning);
         Reindex();
     }
     private void MoveItem(DownloadItem item,int index)

@@ -29,6 +29,8 @@ internal sealed partial class UiScenario
         {
             Stage("testing cold title ingress through metadata worker");
             UiScenario.TestColdTitleIngress(root);
+            Stage("testing Russian errors and original diagnostics");
+            UiScenario.TestErrorLocalization(root);
             Stage("testing duplicate-history dialog choices");
             UiScenario.TestDuplicateHistoryChoices(root);
             Stage("testing startup recovery dialogs and empty-queue settings");
@@ -322,7 +324,7 @@ internal sealed partial class UiScenario
             if(corrupt) File.WriteAllText(data.SessionPath,"{invalid checkpoint");
             else data.Save(savedRows,options);
             string before=File.ReadAllText(data.SessionPath);
-            string title=corrupt?"Session recovery error":"Restore previous session";
+            string title=corrupt?ErrorMessages.Text("Ошибка восстановления","Session recovery error"):"Restore previous session";
             int button=corrupt?1:6;
             uint thread=GetCurrentThreadId();
             Exception? failure=null;

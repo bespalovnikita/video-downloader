@@ -37,7 +37,8 @@ public static class Program
             }
             catch(Exception e)
             {
-                System.Windows.Forms.MessageBox.Show("An instance is already running but cannot be contacted: "+e.Message,
+                System.Windows.Forms.MessageBox.Show(ErrorMessages.Text("Приложение уже запущено, но не отвечает. ",
+                    "An instance is already running but cannot be contacted: ")+ExceptionDetails(e),
                     "Video Downloader",System.Windows.Forms.MessageBoxButtons.OK,
                     System.Windows.Forms.MessageBoxIcon.Warning);
             }
@@ -46,7 +47,7 @@ public static class Program
         var app=new Application { ShutdownMode=ShutdownMode.OnMainWindowClose };
         app.DispatcherUnhandledException+=(sender,eventArgs)=>
         {
-            System.Windows.MessageBox.Show(eventArgs.Exception.ToString(),"Video Downloader error",MessageBoxButton.OK,MessageBoxImage.Error);
+            System.Windows.MessageBox.Show(ExceptionDetails(eventArgs.Exception),ErrorMessages.Text("Ошибка Video Downloader","Video Downloader error"),MessageBoxButton.OK,MessageBoxImage.Error);
             eventArgs.Handled=true;
         };
         NativeWindow? ui=null;
@@ -66,7 +67,7 @@ public static class Program
         }
         catch(Exception e)
         {
-            System.Windows.Forms.MessageBox.Show(e.ToString(),"Video Downloader startup error",
+            System.Windows.Forms.MessageBox.Show(ExceptionDetails(e),ErrorMessages.Text("Ошибка запуска Video Downloader","Video Downloader startup error"),
                 System.Windows.Forms.MessageBoxButtons.OK,System.Windows.Forms.MessageBoxIcon.Error);
         }
         finally
@@ -76,6 +77,9 @@ public static class Program
             try { singleton.ReleaseMutex(); }catch(ApplicationException){}
         }
     }
+    private static string ExceptionDetails(Exception error) => ErrorMessages.IsRussian
+        ? ErrorMessages.ForException(error)+"\n\nИсходная диагностика:\n"+error
+        : error.ToString();
     internal static void ForwardArguments(string[] args,string? pipeName=null)
     {
         using var client=new NamedPipeClientStream(".",pipeName??PipeName,PipeDirection.Out);

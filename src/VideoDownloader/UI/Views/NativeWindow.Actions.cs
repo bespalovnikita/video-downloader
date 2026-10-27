@@ -45,7 +45,7 @@ public sealed partial class NativeWindow
         catch(Exception e) when (e is IOException or ArgumentException or
                                 System.ComponentModel.Win32Exception or UnauthorizedAccessException)
         {
-            MessageBox.Show(_window, "Не удалось открыть папку загрузок:\n" + e.Message,
+            MessageBox.Show(_window, "Не удалось открыть папку загрузок:\n" + DisplayError(e),
                 "Открыть папку загрузок",MessageBoxButton.OK,MessageBoxImage.Warning);
         }
     }
@@ -66,7 +66,7 @@ public sealed partial class NativeWindow
         catch(Exception e) when (e is IOException or ArgumentException or
                                 System.ComponentModel.Win32Exception or UnauthorizedAccessException)
         {
-            MessageBox.Show(_window, "Не удалось открыть папку настроек:\n" + e.Message,
+            MessageBox.Show(_window, "Не удалось открыть папку настроек:\n" + DisplayError(e),
                 "Открыть папку настроек",MessageBoxButton.OK,MessageBoxImage.Warning);
         }
     }
@@ -132,7 +132,7 @@ public sealed partial class NativeWindow
         F<Button>("RegisterProtocolButton").Click+=(_,_)=>
         {
             try { DependencyCenter.RegisterProtocol();MessageBox.Show(_window,"videodownloader:// registered for this Windows user.","Protocol registered");}
-            catch(Exception e){MessageBox.Show(_window,e.Message,"Protocol registration failed");}
+            catch(Exception e){MessageBox.Show(_window,DisplayError(e),ErrorMessages.Text("Не удалось зарегистрировать протокол","Protocol registration failed"));}
         };
         F<Button>("OpenFileButton").Click+=(_,_)=>{if(D.SelectedItem is DownloadItem row)OpenFile(row.Path);};
         F<Button>("OpenFolderButton").Click+=(_,_)=>ShowFileInFolder(D.SelectedItem as DownloadItem);
@@ -174,7 +174,10 @@ public sealed partial class NativeWindow
         DownloadAction("Copy path",row=>{if(row.Path.Length>0)Clipboard.SetText(row.Path);});
         DownloadAction("Open URL",row=>OpenUrl(row.Url));
         DownloadAction("Retry URL",row=>{_ = StartAsync([row]);});
-        DownloadAction("Show raw error",row=>MessageBox.Show(_window,row.RawError,"yt-dlp error"));
+        DownloadAction(ErrorMessages.Text("Показать ошибку","Show error"),row=>MessageBox.Show(_window,row.ErrorMessage,
+            ErrorMessages.Text("Ошибка скачивания","Download error")));
+        DownloadAction(ErrorMessages.Text("Исходная диагностика","Show raw error"),row=>MessageBox.Show(_window,row.RawError,
+            ErrorMessages.Text("Исходная диагностика yt-dlp","yt-dlp error")));
         D.ContextMenu=downloadMenu;
     }
     private static void OpenUrl(string url)
@@ -204,7 +207,7 @@ public sealed partial class NativeWindow
         catch(Exception e)
         {
             Log("Dependency operation failed: "+e.Message);
-            MessageBox.Show(_window,e.Message,"Dependency error",MessageBoxButton.OK,MessageBoxImage.Warning);
+            MessageBox.Show(_window,DisplayError(e),ErrorMessages.Text("Ошибка обновления компонентов","Dependency error"),MessageBoxButton.OK,MessageBoxImage.Warning);
         }
         finally
         {
