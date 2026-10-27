@@ -93,6 +93,7 @@ internal sealed class PreviewController : IDisposable
         if(cached!=null){ReceiveReady(cached);return;}
         _title.Text=DisplayTitle(url,"","Получаем метаданные…");
         _metadata.Text=url;
+        _metadata.ToolTip=null;
         _formats.Text="";
         _image.Source=null;
         _service.Request(url,true);
@@ -102,7 +103,8 @@ internal sealed class PreviewController : IDisposable
     {
         if(_disposed || !string.Equals(SelectedUrl,url,StringComparison.Ordinal))return;
         _title.Text=DisplayTitle(url,"","Не удалось получить метаданные");
-        _metadata.Text=error;
+        _metadata.Text=ErrorMessages.ForDisplay(error);
+        _metadata.ToolTip=error;
         _formats.Text="";
         _image.Source=null;
     }
@@ -120,6 +122,7 @@ internal sealed class PreviewController : IDisposable
         if(data.Duration>0)summary.Add(TimeSpan.FromSeconds(data.Duration).ToString(@"hh\:mm\:ss"));
         if(data.Extractor.Length>0)summary.Add(data.Extractor);
         _metadata.Text=string.Join(" · ",summary);
+        _metadata.ToolTip=null;
         _formats.Text=$"{(data.MaxHeight>0?data.MaxHeight+"p ":"")}{data.MaxFps:0} FPS · {data.Codecs} · {data.DynamicRange}";
         if(data.ThumbnailBase64.Length==0){_image.Source=null;return;}
         try { _image.Source=PreviewImage.Decode(Convert.FromBase64String(data.ThumbnailBase64)); }

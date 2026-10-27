@@ -3,6 +3,7 @@ using System.Text.Json;
 using VideoDownloader.Native;
 
 if (GuiInstanceTests.TryRunFixture(args) || NativeIpcFixture.TryRunFixture(args) || TitleIngressFixture.TryRunFixture(args) || PreviewSchedulingTests.TryRunFixture(args) || NativeContractTests.TryRunFixture(args) || PornHubChannelTests.TryRunFixture(args) || StartupDownloadRegressionTests.TryRunFixture(args) || SubscriptionScannerTests.TryRunFixture(args) || LifecycleRegressionTests.TryRunFixture(args) || ReviewRegressionTests.TryRunFixture(args)) return;
+ErrorMessagesTests.Run();
 await GuiInstanceTests.RunAsync();
 await QueueSessionControllerTests.RunAsync();
 var applicationAssembly=typeof(NativeWindow).Assembly;

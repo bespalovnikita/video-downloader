@@ -134,7 +134,7 @@ internal sealed partial class SubscriptionController : IDisposable
         catch(Exception e)
         {
             _window=null;
-            MessageBox.Show(_owner,"Не удалось открыть подписки:\n"+e.Message,"Подписки",MessageBoxButton.OK,MessageBoxImage.Warning);
+            MessageBox.Show(_owner,"Не удалось открыть подписки:\n"+DisplayError(e),"Подписки",MessageBoxButton.OK,MessageBoxImage.Warning);
         }
     }
 
@@ -199,7 +199,7 @@ internal sealed partial class SubscriptionController : IDisposable
         catch(Exception e)
         {
             if (CurrentWindow(window))
-                Status("Не удалось прочитать подписки или историю успехов: "+e.Message+
+                Status("Не удалось прочитать подписки или историю успехов: "+DisplayError(e)+
                     " Сохранённый файл не заменён пустым списком. После исправления повторите «Проверить все».",true);
             return null;
         }
@@ -276,6 +276,14 @@ internal sealed partial class SubscriptionController : IDisposable
         UpdateButtons();
     }
 
+    private string DisplayError(Exception error)
+    {
+        // Keep the original diagnostic available in the main log even when
+        // this operation has no persisted LastError (for example a UI edit).
+        _log(error.Message);
+        return ErrorMessages.ForException(error);
+    }
+
     private async Task AddAsync()
     {
         if (Busy || _window==null) return;
@@ -299,7 +307,7 @@ internal sealed partial class SubscriptionController : IDisposable
             await ReloadAsync();
             Sources.SelectedItem=Sources.Items.Cast<SubscriptionSourceView>().FirstOrDefault(x=>x.Id==added.Id);
         }
-        catch(Exception e) { if (CurrentWindow(window)) Status("Не удалось добавить подписку: "+e.Message,true); }
+        catch(Exception e) { if (CurrentWindow(window)) Status("Не удалось добавить подписку: "+DisplayError(e),true); }
         finally { _mutation=false;UpdateButtons(); }
         if (added!=null && CurrentWindow(window)) await CheckAsync([added.Id]);
     }
@@ -317,7 +325,7 @@ internal sealed partial class SubscriptionController : IDisposable
             await ReloadAsync();
             Status("Имя сохранено. Новые задания будут скачиваться в подпапку с этим именем; уже добавленные задания сохранят прежнюю папку.");
         }
-        catch(Exception e) { Status("Не удалось сохранить имя подписки: "+e.Message,true); }
+        catch(Exception e) { Status("Не удалось сохранить имя подписки: "+DisplayError(e),true); }
         finally { _mutation=false;UpdateButtons(); }
     }
 
@@ -375,7 +383,7 @@ internal sealed partial class SubscriptionController : IDisposable
                             // An acceptance/write failure must not pretend that
                             // the scan itself failed or undo its initial choice.
                             failed++;
-                            queueError="Не удалось подтвердить очередь: "+e.Message+
+                            queueError="Не удалось подтвердить очередь: "+DisplayError(e)+
                                 " Уже принятые ссылки могут быть в обычной очереди; повторите ручную проверку после исправления.";
                         }
                     }
@@ -391,19 +399,20 @@ internal sealed partial class SubscriptionController : IDisposable
                 catch(Exception e)
                 {
                     failed++;
-                    _checkProgress.SetStage(progressVersion,id,7,"Источник не проверен: "+e.Message);
+                    string displayError=DisplayError(e);
+                    _checkProgress.SetStage(progressVersion,id,7,"Источник не проверен: "+displayError);
                     await RecordScanFailureAsync(id,e.Message);
                     if (CurrentWindow(window))
                     {
                         await ReloadAsync();
-                        Status("Не удалось проверить "+(source.Title.Length>0?source.Title:source.Url)+": "+e.Message,true);
+                        Status("Не удалось проверить "+(source.Title.Length>0?source.Title:source.Url)+": "+displayError,true);
                     }
                     _checkProgress.CompleteSource(progressVersion,id);
                 }
             }
         }
         catch(OperationCanceledException) when (cancel.IsCancellationRequested) { cancelled=true; }
-        catch(Exception e) { failed++;Status("Не удалось начать проверку: "+e.Message,true); }
+        catch(Exception e) { failed++;Status("Не удалось начать проверку: "+DisplayError(e),true); }
         finally
         {
             if (ReferenceEquals(_cancellation,cancel)) _cancellation=null;
@@ -423,7 +432,7 @@ internal sealed partial class SubscriptionController : IDisposable
     private async Task RecordScanFailureAsync(string id,string message)
     {
         try { await Task.Run(()=>_store.RecordFailure(id,message)); }
-        catch(Exception e) { Status("Не удалось сохранить ошибку проверки: "+e.Message,true); }
+        catch(Exception e) { Status("Не удалось сохранить ошибку проверки: "+DisplayError(e),true); }
     }
 
     private async Task<int> QueueCandidatesAsync(IReadOnlyList<SubscriptionItem> candidates)
@@ -484,7 +493,7 @@ internal sealed partial class SubscriptionController : IDisposable
             await ReloadAsync();
             Status(count>0?$"В обычной очереди: {count}. Запуск только кнопкой Start.":"В очередь ничего не добавлено. Материалы остаются во «Входящих».");
         }
-        catch(Exception e) { Status("Не удалось подтвердить добавление в очередь: "+e.Message+" Уже принятые ссылки могут быть в обычной очереди; повторите действие после исправления.",true); }
+        catch(Exception e) { Status("Не удалось подтвердить добавление в очередь: "+DisplayError(e)+" Уже принятые ссылки могут быть в обычной очереди; повторите действие после исправления.",true); }
         finally { _mutation=false;UpdateButtons(); }
     }
 
@@ -505,7 +514,7 @@ internal sealed partial class SubscriptionController : IDisposable
             await ReloadAsync();
             Status("Материалы пропущены. Они не считаются обработанными и доступны для ручного добавления в очередь.");
         }
-        catch(Exception e) { Status("Не удалось пропустить материалы: "+e.Message,true); }
+        catch(Exception e) { Status("Не удалось пропустить материалы: "+DisplayError(e),true); }
         finally { _mutation=false;UpdateButtons(); }
     }
 
@@ -520,7 +529,7 @@ internal sealed partial class SubscriptionController : IDisposable
             await ReloadAsync();
             Status(selected.Definition.Paused?"Подписка возобновлена. Следующая проверка запускается вручную.":"Подписка приостановлена: «Проверить все» её пропустит.");
         }
-        catch(Exception e) { Status("Не удалось изменить подписку: "+e.Message,true); }
+        catch(Exception e) { Status("Не удалось изменить подписку: "+DisplayError(e),true); }
         finally { _mutation=false;UpdateButtons(); }
     }
 
@@ -538,7 +547,7 @@ internal sealed partial class SubscriptionController : IDisposable
             await ReloadAsync();
             Status("Подписка удалена. Файлы, история и обычная очередь сохранены.");
         }
-        catch(Exception e) { Status("Не удалось удалить подписку: "+e.Message,true); }
+        catch(Exception e) { Status("Не удалось удалить подписку: "+DisplayError(e),true); }
         finally { _mutation=false;UpdateButtons(); }
     }
 
@@ -546,7 +555,7 @@ internal sealed partial class SubscriptionController : IDisposable
     {
         if (_window==null || Inbox.SelectedItem is not SubscriptionItemView row) return;
         try { _openUrl(row.Url); }
-        catch(Exception e) { Status("Не удалось открыть ссылку: "+e.Message,true); }
+        catch(Exception e) { Status("Не удалось открыть ссылку: "+DisplayError(e),true); }
     }
 
     private async Task NotifyDuplicatesAsync(SubscriptionSnapshot snapshot,Window window)
@@ -572,7 +581,7 @@ internal sealed partial class SubscriptionController : IDisposable
             await Task.Run(()=>_store.AcknowledgeDuplicates(notices));
             acknowledged=true;
         }
-        catch(Exception e) { Status("Не удалось сохранить подтверждение уведомления: "+e.Message,true); }
+        catch(Exception e) { Status("Не удалось сохранить подтверждение уведомления: "+DisplayError(e),true); }
         finally
         {
             _noticeShowing=false;
@@ -591,7 +600,10 @@ internal sealed partial class SubscriptionController : IDisposable
         public string ShortName=>Definition.ShortName.Length>0?Definition.ShortName:"После проверки";
         public string StatusLabel=>Definition.Paused?"Приостановлена":!Definition.Initialized?"Нужна первая проверка":Definition.LastError.Length>0?"Ошибка проверки":"Активна";
         public string LastSuccessLabel=>Definition.LastSuccessUtc?.ToLocalTime().ToString("dd.MM.yyyy HH:mm")??"Ещё не проверена";
-        public string Message=>Definition.LastError.Length>0?Definition.LastError:Definition.LastWarning;
+        public string RawMessage=>Definition.LastError.Length>0?Definition.LastError:Definition.LastWarning;
+        public string Message=>ErrorMessages.ForDisplay(RawMessage);
+        public string DiagnosticDetails=>Message==RawMessage?RawMessage:Message+"\n\n"+
+            ErrorMessages.Text("Исходная диагностика:","Original diagnostic:")+"\n"+RawMessage;
     }
 
     internal sealed class SubscriptionItemView(SubscriptionItem item)

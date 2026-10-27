@@ -28,7 +28,7 @@ public sealed class DownloadItem : INotifyPropertyChanged
     }
     public int Order { get => _order; set { _order = value; Changed(); } }
     public string Url { get => _url; set { _url = value; Changed(); } }
-    public string State { get => _state; set { _state = value; Changed(); } }
+    public string State { get => _state; set { _state = value; Changed(); Changed(nameof(StateLabel)); } }
     public string Status { get => _status; set { _status = value; Changed(); } }
     public double Progress { get => _progress; set { _progress = value; Changed(); } }
     public string Title { get => _title; set { _title = value?.Trim() ?? ""; Changed(); } }
@@ -36,7 +36,24 @@ public sealed class DownloadItem : INotifyPropertyChanged
     public string Downloaded { get => _downloaded; set { _downloaded = value; Changed(); } }
     public string ETA { get => _eta; set { _eta = value; Changed(); } }
     public string Path { get => _path; set { _path = value; Changed(); } }
-    public string RawError { get => _rawError; set { _rawError = value; Changed(); } }
+    public string RawError { get => _rawError; set { _rawError = value; Changed(); Changed(nameof(ErrorMessage)); } }
+    [JsonIgnore] public string ErrorMessage => ErrorMessages.ForDisplay(RawError);
+    // Presentation follows the Windows UI language; checkpoint IDs and colors
+    // continue to use the original State/Status values.
+    [JsonIgnore] public string StateLabel => State switch
+    {
+        "Queued" => ErrorMessages.Text("В очереди",State),
+        "Starting" => ErrorMessages.Text("Запуск",State),
+        "Merging" => ErrorMessages.Text("Объединение",State),
+        "Done" => ErrorMessages.Text("Готово",State),
+        "Failed" => ErrorMessages.Text("Ошибка",State),
+        "Interrupted" => ErrorMessages.Text("Прервано",State),
+        "Cancelled" => ErrorMessages.Text("Отменено",State),
+        "Cancelling — waiting for cleanup" => ErrorMessages.Text("Отмена — ожидается очистка",State),
+        "Cleanup failed — Remove to retry" => ErrorMessages.Text("Ошибка очистки — повторите Remove",State),
+        "Removal pending — use Remove" => ErrorMessages.Text("Ожидается удаление — нажмите Remove",State),
+        _ => State
+    };
     public string Slot { get => _slot; set { _slot = value; Changed(); } }
     // Captured when a subscription creates this queue row. Renaming the source
     // later must not redirect an already accepted download or its cleanup.

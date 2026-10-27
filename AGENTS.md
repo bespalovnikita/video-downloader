@@ -75,6 +75,7 @@ WPF-интерфейс и движок расположены в `src/VideoDownl
 
 ## Русификация интерфейса и документации
 
+- Пользовательские ошибки локализует `Infrastructure/ErrorMessages.cs` по `CultureInfo.CurrentUICulture` (все локали `ru`); `CurrentCulture` отвечает за числа/даты, не язык сообщений. Перевод применяется только при отображении. Не меняй `RawError`, `CleanupError`, `LastError`, `LastWarning`, текст диагностических файлов/кеша или машинные `State`/`Status`; display-only поля помечай `JsonIgnore`. Сохраняй доступ к исходной диагностике. Для новых правил проверяй русскую и нерусскую UI-локаль, приоритет HTTP/auth над временными ошибками и отсутствие ложных совпадений по ID/URL. Не используй переведённый текст для retry, успеха или восстановления кеша.
 - Все **пользовательские Markdown-руководства** веди на русском языке: `README.md`, `GUI.md`, `docs/USER_GUIDE.md`, `docs/ARCHITECTURE.md`, `RELEASING.md`.
 - Названия встроенных профилей **локализуются только для отображения**. Идентификаторы `Universal`, `4K archive`, `MP4 compatibility`, `Music MP3`, `Subtitles archive` в `session.json` неизменны.
 - Маппинг находится в `src/VideoDownloader/Downloads/ProfileCatalog.cs`.
