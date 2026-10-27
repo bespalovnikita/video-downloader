@@ -22,7 +22,8 @@ foreach ($required in @('VideoDownloader.exe','yt-dlp.exe','ui/MainWindow.xaml',
 $exe = Join-Path $Directory 'VideoDownloader.exe'
 $metadata = [Diagnostics.FileVersionInfo]::GetVersionInfo($exe)
 $productVersion = ($metadata.ProductVersion -split '\+', 2)[0]
-if ($productVersion -cne $Version -or $metadata.OriginalFilename -cne 'VideoDownloader.dll') {
+if ($productVersion -cne $Version -or $metadata.OriginalFilename -cne 'VideoDownloader.dll' -or
+    $metadata.FileDescription -cne 'Video Downloader WPF') {
     throw "The package must contain the native WPF application at version $Version; found '$($metadata.ProductVersion)' / '$($metadata.OriginalFilename)'."
 }
 Write-Host "Native UI package and EXE version $Version`: PASS"
