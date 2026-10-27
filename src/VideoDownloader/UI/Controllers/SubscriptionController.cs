@@ -24,6 +24,8 @@ internal sealed partial class SubscriptionController : IDisposable
     private readonly QueueSubscriptionItems _queueUrls;
     private readonly Action<string> _openUrl;
     private readonly Action<string> _log;
+    private readonly Action<IEnumerable<string>>? _prefetchPreviews;
+    private readonly Action<string,string>? _showPreview;
     private readonly HashSet<string> _successes=new(StringComparer.Ordinal);
     private readonly SubscriptionCheckProgressController _checkProgress;
     private Window? _window;
@@ -41,10 +43,12 @@ internal sealed partial class SubscriptionController : IDisposable
 
     internal SubscriptionController(Window owner,SubscriptionStore store,string ytDlp,string viewPath,
         Func<Dictionary<string,DateTimeOffset?>> readHistory,Func<string> readCookies,
-        QueueSubscriptionItems queueUrls,Action<string> openUrl,Action<string> log)
+        QueueSubscriptionItems queueUrls,Action<string> openUrl,Action<string> log,
+        Action<IEnumerable<string>>? prefetchPreviews=null,Action<string,string>? showPreview=null)
     {
         _owner=owner;_store=store;_ytDlp=ytDlp;_viewPath=viewPath;
         _readHistory=readHistory;_readCookies=readCookies;_queueUrls=queueUrls;_openUrl=openUrl;_log=log;
+        _prefetchPreviews=prefetchPreviews;_showPreview=showPreview;
         _checkProgress=new SubscriptionCheckProgressController(owner.Dispatcher,CurrentWindow,
             ()=>_cancellation?.IsCancellationRequested==true);
     }
@@ -115,7 +119,7 @@ internal sealed partial class SubscriptionController : IDisposable
                 if (_binding) return;
                 ShowInbox();UpdateNameEditor();UpdateButtons();
             };
-            Inbox.SelectionChanged+=(_,_)=>UpdateButtons();
+            Inbox.SelectionChanged+=(_,_)=>{UpdateButtons();ShowSelectedPreview();};
             Inbox.MouseDoubleClick+=(_,_)=>OpenItem();
             window.Closed+=(_,_)=>
             {
@@ -217,12 +221,50 @@ internal sealed partial class SubscriptionController : IDisposable
             .OrderBy(x=>x.State=="New"?0:x.State=="Queued"?1:2)
             .ThenByDescending(x=>x.DiscoveredAtUtc).ThenBy(x=>x.Url,StringComparer.Ordinal)
             .Select(x=>new SubscriptionItemView(x)).ToArray();
-        Inbox.ItemsSource=items;
-        foreach (var item in items)
-            if (previouslySelected.Contains((item.Item.SubscriptionId,item.Url))) Inbox.SelectedItems.Add(item);
+        // Rebinding after a background scan must not replace the user's main
+        // preview selection. Only an explicit inbox selection requests display.
+        bool wasBinding=_binding;
+        _binding=true;
+        try
+        {
+            Inbox.ItemsSource=items;
+            foreach (var item in items)
+                if (previouslySelected.Contains((item.Item.SubscriptionId,item.Url))) Inbox.SelectedItems.Add(item);
+        }
+        finally { _binding=wasBinding; }
         Control<TextBlock>("SubscriptionInboxTitle").Text=selected==null
             ? $"Входящие и результаты · {items.Length}"
             : $"Входящие и результаты: {selected.Title} · {items.Length}";
+    }
+
+    private void ShowSelectedPreview()
+    {
+        if (_binding || _disposed || _window==null || Inbox.SelectedItems.Count!=1 ||
+            Inbox.SelectedItem is not SubscriptionItemView item) return;
+        try { _showPreview?.Invoke(item.Url,item.Title); }
+        catch(Exception error)
+        {
+            _log(ErrorMessages.Text("Не удалось показать превью подписки: ","Subscription preview display failed: ")+
+                ErrorMessages.ForException(error)+Environment.NewLine+
+                ErrorMessages.Text("Исходная диагностика: ","Original diagnostic: ")+error.Message);
+        }
+    }
+
+    private void PrefetchScanPreviews(SubscriptionSnapshot snapshot,string subscriptionId)
+    {
+        // Only durable, actionable results are warmed. A baseline of thousands
+        // of old items and successful/duplicate records do not trigger metadata.
+        var urls=snapshot.Items.Where(item=>item.SubscriptionId==subscriptionId && item.State is "New" or "Queued")
+            .Select(item=>item.Url).Distinct(StringComparer.Ordinal).ToArray();
+        if (urls.Length==0) return;
+        try { _prefetchPreviews?.Invoke(urls); }
+        catch(Exception error)
+        {
+            _log(ErrorMessages.Text("Проверка подписки сохранена, но не удалось запланировать превью: ",
+                "Subscription check was saved, but preview prefetch failed: ")+
+                ErrorMessages.ForException(error)+Environment.NewLine+
+                ErrorMessages.Text("Исходная диагностика: ","Original diagnostic: ")+error.Message);
+        }
     }
 
     private void UpdateButtons()
@@ -370,6 +412,7 @@ internal sealed partial class SubscriptionController : IDisposable
                     },cancel.Token);
                     succeeded++;
                     if (!CurrentWindow(window)) break;
+                    if (!cancel.IsCancellationRequested) PrefetchScanPreviews(snapshot,id);
                     // Only the explicit first-scan checkbox adds existing items.
                     // Queue acceptance is recorded after the main UI confirms it.
                     var initial=snapshot.Items.Where(x=>x.SubscriptionId==id && x.State=="New" && x.InitialQueuePending).ToArray();

@@ -6,7 +6,8 @@ public sealed partial class NativeWindow
     internal SubscriptionController Subscriptions=>_subscriptions ??= new SubscriptionController(
         _window,new SubscriptionStore(Path.GetDirectoryName(_storage.SessionPath)!),_ytDlp,
         Path.Combine(AppContext.BaseDirectory,"ui","SubscriptionsWindow.xaml"),
-        _storage.ReadHistory,()=>B("CookiesBox").Text.Trim(),QueueSubscriptionUrls,OpenUrl,Log);
+        _storage.ReadHistory,()=>B("CookiesBox").Text.Trim(),QueueSubscriptionUrls,OpenUrl,Log,
+        urls=>_preview.PrefetchUrls(urls),(url,title)=>_preview.Show(url,title));
 
     private void OpenSubscriptions()
     {

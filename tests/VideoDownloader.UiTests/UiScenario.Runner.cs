@@ -29,8 +29,14 @@ internal sealed partial class UiScenario
         {
             Stage("testing cold title ingress through metadata worker");
             UiScenario.TestColdTitleIngress(root);
+            Stage("testing subscription preview prefetch after complete scans");
+            UiScenario.TestSubscriptionPreviewPrefetch(root);
             Stage("testing Russian errors and original diagnostics");
             UiScenario.TestErrorLocalization(root);
+            Stage("testing hover preview gallery and manual image navigation");
+            UiScenario.TestPreviewGallery(root);
+            Stage("testing resizable panel layout and restored widths");
+            UiScenario.TestPanelLayout(root);
             Stage("testing duplicate-history dialog choices");
             UiScenario.TestDuplicateHistoryChoices(root);
             Stage("testing startup recovery dialogs and empty-queue settings");
@@ -304,7 +310,7 @@ internal sealed partial class UiScenario
             string cacheFile=Path.Combine(data.PreviewDir,
                 Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(url))).ToLowerInvariant()+".json");
             AppPersistence.AtomicWrite(cacheFile,System.Text.Json.JsonSerializer.Serialize(new {
-                CacheVersion=1,PreviewFetchVersion=2,SavedAtUtc=DateTime.UtcNow,Url=url,Success=true,
+                CacheVersion=1,PreviewFetchVersion=3,SavedAtUtc=DateTime.UtcNow,Url=url,Success=true,
                 Title="",Uploader="",PlaylistTitle="",Duration=0,Extractor="",MaxHeight=0,MaxFps=0,
                 Codecs="",DynamicRange="",ThumbnailBase64=""
             },AppPersistence.Json));

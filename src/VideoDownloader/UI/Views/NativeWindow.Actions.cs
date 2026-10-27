@@ -248,6 +248,7 @@ public sealed partial class NativeWindow
         }
         catch(Exception error) { Log("Shutdown cleanup failed: "+error.Message); }
         SaveCheckpoint();
+        _panelLayout.Dispose();
         _lifecycle.Dispose();
         _closeReady=true;
         // Even an idle/completed task may finish synchronously inside Closing.
@@ -262,6 +263,7 @@ public sealed partial class NativeWindow
         _tick.Stop();_ingress.Dispose();
         SessionState.Coordinator?.Stop();
         _preview.Dispose();
+        _panelLayout.Dispose();
         _lifecycle.Dispose();
     }
 }

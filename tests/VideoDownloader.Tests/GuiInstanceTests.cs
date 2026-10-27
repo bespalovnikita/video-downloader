@@ -52,7 +52,7 @@ internal static class GuiInstanceTests
             {
                 string file=Path.Combine(data.PreviewDir,Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(url))).ToLowerInvariant()+".json");
                 AppPersistence.AtomicWrite(file,JsonSerializer.Serialize(new {
-                    CacheVersion=1,PreviewFetchVersion=2,Url=url,Title="Cached "+url,SavedAtUtc=DateTime.UtcNow,
+                    CacheVersion=1,PreviewFetchVersion=3,Url=url,Title="Cached "+url,SavedAtUtc=DateTime.UtcNow,
                     Uploader="",PlaylistTitle="",Duration=0,Extractor="",MaxHeight=0,MaxFps=0,
                     Codecs="",DynamicRange="",ThumbnailBase64=""
                 },AppPersistence.Json));
