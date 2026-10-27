@@ -10,8 +10,8 @@ public sealed partial class NativeWindow
     // These coordinators never start a child download process.
     internal void TestLiveAddDuringDuplicateDialog(string root)
     {
-        var previousSession=_session;
-        var previousUrls=_sessionUrls.ToArray();
+        var previousSession=SessionState.Coordinator;
+        var previousUrls=SessionState.Urls.ToArray();
         try
         {
             foreach(string scenario in new[]{"same-url","finished","replaced"})
@@ -22,7 +22,7 @@ public sealed partial class NativeWindow
                     new DownloadOptions{Output=Path.Combine(root,"modal-output")},_=>{},_=>{});
                 var replacement=new DownloadCoordinator("must-not-launch",_storage,
                     new DownloadOptions{Output=Path.Combine(root,"replacement-output")},_=>{},_=>{});
-                _session=session;
+                SessionState.AttachCoordinator(session);
                 Exception? failure=null;
                 bool observed=false;
                 Window? Dialog()=>Application.Current.Windows.Cast<Window>().LastOrDefault(window=>
@@ -53,7 +53,7 @@ public sealed partial class NativeWindow
                         else
                         {
                             session.Stop();
-                            _session=scenario=="finished"?null:replacement;
+                            SessionState.AttachCoordinator(scenario=="finished"?null:replacement);
                         }
                         Answer(outer,"YesButton");
                     }
@@ -64,7 +64,7 @@ public sealed partial class NativeWindow
                 {
                     AddUrls([url]);
                     if(failure!=null)throw failure;
-                    var rows=_queue.Where(row=>row.Url==url).ToArray();
+                    var rows=SessionState.Queue.Where(row=>row.Url==url).ToArray();
                     if(!observed || rows.Length!=1)
                         throw new InvalidOperationException("Modal live Add must retain exactly one row: "+scenario);
                     if(scenario=="same-url" && (session.Outstanding!=1 || rows[0].DeferredToNextStart))
@@ -79,8 +79,8 @@ public sealed partial class NativeWindow
                 finally
                 {
                     observer.Stop();watchdog.Stop();
-                    foreach(var row in _queue.Where(row=>row.Url==url).ToArray()) ForgetRow(row);
-                    _session=null;
+                    foreach(var row in SessionState.Queue.Where(row=>row.Url==url).ToArray()) ForgetRow(row);
+                    SessionState.AttachCoordinator(null);
                     session.Stop();replacement.Stop();
                     session.RunAsync().GetAwaiter().GetResult();
                     replacement.RunAsync().GetAwaiter().GetResult();
@@ -91,9 +91,8 @@ public sealed partial class NativeWindow
         }
         finally
         {
-            _session=previousSession;
-            _sessionUrls.Clear();
-            foreach(var url in previousUrls)_sessionUrls.Add(url);
+            SessionState.AttachCoordinator(previousSession);
+            SessionState.ReplaceUrls(previousUrls);
             Reindex();
         }
     }

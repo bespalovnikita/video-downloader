@@ -3,38 +3,11 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using Forms=System.Windows.Forms;
-using Drawing=System.Drawing;
 
 namespace VideoDownloader.Native;
 
 public sealed partial class NativeWindow
 {
-    private void SetupTray()
-    {
-        string iconPath=Path.Combine(AppContext.BaseDirectory,"assets","app.ico");
-        _tray.Icon=File.Exists(iconPath)?new Drawing.Icon(iconPath):Drawing.SystemIcons.Application;
-        _tray.Text="Video Downloader | Ready";
-        _tray.Visible=true;
-        var menu=new Forms.ContextMenuStrip();
-        menu.Items.Add("Open",null,(_,_)=>RestoreFromTray());
-        menu.Items.Add("Open downloads",null,(_,_)=>OpenFolder(B("OutputBox").Text));
-        menu.Items.Add(new Forms.ToolStripSeparator());
-        menu.Items.Add("Exit",null,(_,_)=>
-        {
-            _exitFromTray=true;
-            try {_window.Close();}
-            finally {_exitFromTray=false;}
-        });
-        _tray.ContextMenuStrip=menu;
-        _tray.DoubleClick+=(_,_)=>RestoreFromTray();
-        _window.StateChanged+=(_,_)=>{if(_window.WindowState==WindowState.Minimized)_window.Hide();};
-    }
-    private void RestoreFromTray()
-    {
-        _window.Show();
-        _window.WindowState=WindowState.Normal;
-        _window.Activate();
-    }
     private static void OpenFile(string path)
     {
         if(File.Exists(path)) Process.Start(new ProcessStartInfo(path){UseShellExecute=true});
@@ -48,8 +21,8 @@ public sealed partial class NativeWindow
     {
         // When downloading, use the pinned output path of the actual session
         // (important for Archive and midnight rollover). Otherwise use the UI.
-        return _session?.IsRunning==true
-            ? _sessionOptions.OutputDirectory
+        return SessionState.Coordinator?.IsRunning==true
+            ? SessionState.Options.OutputDirectory
             : ReadOptions().OutputDirectory;
     }
     private void OpenConfiguredOutputFolder()
@@ -127,19 +100,19 @@ public sealed partial class NativeWindow
         F<Button>("SubscriptionsButton").Click+=(_,_)=>OpenSubscriptions();
         F<Button>("ClearQueueButton").Click+=(_,_)=>
         {
-            if (_session?.IsRunning==true)return;
-            if (_queue.Count>0 && MessageBox.Show(_window,"Clear queue? This removes entries, not downloaded files.",
+            if (SessionState.Coordinator?.IsRunning==true)return;
+            if (SessionState.Queue.Count>0 && MessageBox.Show(_window,"Clear queue? This removes entries, not downloaded files.",
                     "Clear queue",MessageBoxButton.YesNo,MessageBoxImage.Question)==MessageBoxResult.Yes)
             { ClearRows(); }
         };
-        F<Button>("MoveUpButton").Click+=(_,_)=>{if(Q.SelectedItem is DownloadItem item)MoveItem(item,_queue.IndexOf(item)-1);};
-        F<Button>("MoveDownButton").Click+=(_,_)=>{if(Q.SelectedItem is DownloadItem item)MoveItem(item,_queue.IndexOf(item)+1);};
-        F<Button>("RetryFailedButton").Click+=async(_,_)=>await StartAsync(_queue.Where(x=>x.Status=="Failed").ToArray());
+        F<Button>("MoveUpButton").Click+=(_,_)=>{if(Q.SelectedItem is DownloadItem item)MoveItem(item,SessionState.Queue.IndexOf(item)-1);};
+        F<Button>("MoveDownButton").Click+=(_,_)=>{if(Q.SelectedItem is DownloadItem item)MoveItem(item,SessionState.Queue.IndexOf(item)+1);};
+        F<Button>("RetryFailedButton").Click+=async(_,_)=>await StartAsync(SessionState.Queue.Where(x=>x.Status=="Failed").ToArray());
         F<Button>("OpenOutputDirectoryButton").Click+=(_,_)=>OpenConfiguredOutputFolder();
         F<Button>("StartButton").Click+=async(_,_)=>await StartAsync();
-        F<Button>("StopButton").Click+=(_,_)=>{_stopping=true;_session?.Stop();UpdateState();};
-        F<Button>("PauseButton").Click+=(_,_)=>{_session?.Pause(!_session.IsPaused);UpdateState();};
-        F<Button>("TrayButton").Click+=(_,_)=>_window.Hide();
+        F<Button>("StopButton").Click+=(_,_)=>{SessionState.Stop();UpdateState();};
+        F<Button>("PauseButton").Click+=(_,_)=>{SessionState.Pause();UpdateState();};
+        F<Button>("TrayButton").Click+=(_,_)=>_lifecycle.Hide();
         F<Button>("PickOutputButton").Click+=(_,_)=>
         {
             using var picker=new Forms.FolderBrowserDialog{Description="Download folder"};
@@ -173,16 +146,7 @@ public sealed partial class NativeWindow
         };
         SetupContextMenus();
     }
-    private void Paste(bool select)
-    {
-        try
-        {
-            if(!Clipboard.ContainsText())return;
-            var urls=ParseUrls(Clipboard.GetText());
-            AddUrls(urls,clipboard:true,selectNew:select);
-        }
-        catch(System.Runtime.InteropServices.COMException e){Log("Clipboard busy: "+e.Message);}
-    }
+    private void Paste(bool select)=>_ingress.Paste(select);
     private void SetupContextMenus()
     {
         var queueMenu=new ContextMenu();
@@ -254,15 +218,15 @@ public sealed partial class NativeWindow
         if (_disposed) return; // internal test shutdown, not a user window close
         if (_closeReady) return;
         if (_closing) { e.Cancel=true; return; }
-        if (!_exitFromTray)
+        if (!_lifecycle.ExitRequested)
         {
-            var active=_session?.IsRunning==true;
+            var active=SessionState.Coordinator?.IsRunning==true;
             var answer=MessageBox.Show(_window,
                 active
                     ? "A download is still running.\nYes: minimize to tray (downloads continue)\nNo: stop downloads and exit\nCancel: stay in the app"
                     : "Close Video Downloader?\nYes: minimize to tray\nNo: exit\nCancel: stay in the app",
                 "Video Downloader",MessageBoxButton.YesNoCancel,MessageBoxImage.Question);
-            if(answer==MessageBoxResult.Yes){e.Cancel=true;_window.Hide();return;}
+            if(answer==MessageBoxResult.Yes){e.Cancel=true;_lifecycle.Hide();return;}
             if(answer==MessageBoxResult.Cancel){e.Cancel=true;return;}
         }
         // Keep the dispatcher and process alive until cancellation has rolled
@@ -271,18 +235,17 @@ public sealed partial class NativeWindow
         e.Cancel=true;
         _closing=true;
         DisposeSubscriptions();
-        _stopping=true;
-        _tick.Stop();_clipboardTick.Stop();
+        SessionState.MarkStopping();
+        _tick.Stop();_ingress.Stop();
         _window.IsEnabled=false;
         try
         {
-            _session?.Stop();
-            if (_sessionTask!=null) await _sessionTask;
+            SessionState.Coordinator?.Stop();
+            if (SessionState.RunningTask!=null) await SessionState.RunningTask;
         }
         catch(Exception error) { Log("Shutdown cleanup failed: "+error.Message); }
         SaveCheckpoint();
-        _tray.Visible=false;
-        _tray.Dispose();
+        _lifecycle.Dispose();
         _closeReady=true;
         // Even an idle/completed task may finish synchronously inside Closing.
         // WPF forbids a recursive Close until the current event has returned.
@@ -293,9 +256,9 @@ public sealed partial class NativeWindow
         if(_disposed)return;
         DisposeSubscriptions();
         _disposed=true;
-        _tick.Stop();_clipboardTick.Stop();
-        _session?.Stop();
-        _previews.Dispose();
-        _tray.Dispose();
+        _tick.Stop();_ingress.Dispose();
+        SessionState.Coordinator?.Stop();
+        _preview.Dispose();
+        _lifecycle.Dispose();
     }
 }

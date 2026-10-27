@@ -140,14 +140,10 @@ internal static class NativeUiSelfTest
             Stage("testing background preview cookies");
             var cookies=(TextBox)window.FindName("CookiesBox")!;
             cookies.Text=Path.Combine(root,"cookies.txt");
-            var previews=(PreviewService)typeof(NativeWindow).GetField("_previews",
-                System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance)!.GetValue(controller)!;
-            var readCookies=(Func<string>)typeof(PreviewService).GetField("_cookiePath",
-                System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance)!.GetValue(previews)!;
-            Require(Task.Run(readCookies).GetAwaiter().GetResult()==cookies.Text,
+            Require(Task.Run(()=>controller.Preview.CookieSnapshot).GetAwaiter().GetResult()==cookies.Text,
                 "Preview worker must read the current cookies without accessing WPF controls");
             cookies.Text="";
-            Require(Task.Run(readCookies).GetAwaiter().GetResult()=="",
+            Require(Task.Run(()=>controller.Preview.CookieSnapshot).GetAwaiter().GetResult()=="",
                 "Preview worker must observe cookies being cleared");
 
             queue.SelectedItem=queue.Items[0];
@@ -162,13 +158,11 @@ internal static class NativeUiSelfTest
             var notify=(Action<DownloadItem>)typeof(NativeWindow).GetMethod("OnRowChanged",
                 System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance)!
                 .CreateDelegate(typeof(Action<DownloadItem>),controller);
-            var sessionField=typeof(NativeWindow).GetField("_session",
-                System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance)!;
             var cancelSession=new DownloadCoordinator("must-not-launch",new AppPersistence(Path.Combine(root,"cancel-profile")),
                 new DownloadOptions{Output=Path.Combine(root,"cancel-output"),Threads="1"},notify,_=>{});
             try
             {
-                cancelSession.Add(pending);sessionField.SetValue(controller,cancelSession);
+                cancelSession.Add(pending);controller.SessionState.AttachCoordinator(cancelSession);
                 var queueSubscriptions=typeof(NativeWindow).GetMethod("QueueSubscriptionUrls",
                     System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance,null,
                     new[]{typeof(IEnumerable<string>),typeof(string),typeof(string)},null)!;
@@ -197,13 +191,14 @@ internal static class NativeUiSelfTest
             finally
             {
                 cancelSession.DisposeAsync().AsTask().GetAwaiter().GetResult();
-                sessionField.SetValue(controller,null);
+                controller.SessionState.AttachCoordinator(null);
             }
 
             Stage("testing tray");
-            var trayField=typeof(NativeWindow).GetField("_tray",
+            var lifecycleField=typeof(NativeWindow).GetField("_lifecycle",
                 System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance);
-            var tray=(System.Windows.Forms.NotifyIcon?)trayField?.GetValue(controller);
+            var lifecycle=(WindowLifecycleController)lifecycleField!.GetValue(controller)!;
+            var tray=lifecycle.TrayIcon;
             Require(tray!=null && tray.Visible,"Native WPF UI must expose a functioning tray icon");
             Require(tray!.Text.Length<=63,"Windows tray caption must respect the 63-character limit");
 
@@ -235,17 +230,9 @@ internal static class NativeUiSelfTest
                 "Windows .url shortcut must import the URL= field");
 
             Stage("testing native tray field order");
-            var startField=typeof(NativeWindow).GetField("_sessionStart",
-                System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance)!;
-            startField.SetValue(controller,DateTime.Now);
-            var currentField=typeof(NativeWindow).GetField("_sessionUrls",
-                System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance)!;
-            var sessionUrls=(HashSet<string>)currentField.GetValue(controller)!;
-            sessionUrls.Add("https://example.com/clipboard");
+            controller.SessionState.SetPresentation(DateTime.Now,["https://example.com/clipboard"]);
             ((DownloadItem)queue.Items[0]).Status="Completed";
-            var currentRows=(DownloadItem[])typeof(NativeWindow).GetMethod("CurrentSessionRows",
-                System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance)!
-                .Invoke(controller,null)!;
+            var currentRows=controller.SessionState.CurrentRows();
             Require(currentRows.Length==1 && currentRows[0].Url=="https://example.com/clipboard",
                 "Completion notifications and live metrics must share the current-session subset, excluding old successes");
             typeof(NativeWindow).GetMethod("UpdateState",
@@ -259,16 +246,11 @@ internal static class NativeUiSelfTest
             // Close events and dispatcher continuations. The first Close must
             // leave the app alive until the final result has been checkpointed.
             var cleanup=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            typeof(NativeWindow).GetField("_sessionTask",
-                System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance)!
-                .SetValue(controller,cleanup.Task);
-            typeof(NativeWindow).GetField("_exitFromTray",
-                System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance)!
-                .SetValue(controller,true);
+            controller.SessionState.TrackTask(cleanup.Task);
             bool closed=false;
             var frame=new System.Windows.Threading.DispatcherFrame();
             window.Closed+=(_,_)=>{closed=true;frame.Continue=false;};
-            window.Close();
+            lifecycle.RequestExit();
             Require(!closed && window.IsVisible && !window.IsEnabled,
                 "Exit must keep the window alive while worker cleanup is pending");
             var finalRow=(DownloadItem)queue.Items[0];

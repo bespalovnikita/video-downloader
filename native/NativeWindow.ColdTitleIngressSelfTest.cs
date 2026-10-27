@@ -58,7 +58,7 @@ public sealed partial class NativeWindow
             controller=new NativeWindow(window,storage,executable!);
             window.Show();
             var ui=controller;
-            Require(ui.Q.SelectedItem==null && ui.D.SelectedItem==null && ui._previewUrl.Length==0,
+            Require(ui.Q.SelectedItem==null && ui.D.SelectedItem==null && ui._preview.SelectedUrl.Length==0,
                 "A new window must not have a selected video");
             int selections=0;
             ui.Q.SelectionChanged+=(_,_)=>selections++;
@@ -72,10 +72,10 @@ public sealed partial class NativeWindow
 
             void RequireIdle()
             {
-                Require(ui._session==null && ui._sessionTask==null && ui._sessionStart==null && ui._downloads.Count==0 &&
-                    ui._queue.All(row=>row.Status=="Queued" && row.Path.Length==0 && row.OwnedPaths.Count==0),
+                Require(ui.SessionState.Coordinator==null && ui.SessionState.RunningTask==null && ui.SessionState.StartedAt==null && ui.SessionState.Downloads.Count==0 &&
+                    ui.SessionState.Queue.All(row=>row.Status=="Queued" && row.Path.Length==0 && row.OwnedPaths.Count==0),
                     "Background metadata must leave every row queued and never start a download");
-                Require(selections==0 && ui.Q.SelectedItem==null && ui.D.SelectedItem==null && ui._previewUrl.Length==0 &&
+                Require(selections==0 && ui.Q.SelectedItem==null && ui.D.SelectedItem==null && ui._preview.SelectedUrl.Length==0 &&
                     ui.T("PreviewTitle").Text==originalPanel,"Background metadata must never select a row or replace the preview panel");
             }
             void VerifyRenderedTitle(DownloadItem row,string title)
@@ -98,46 +98,46 @@ public sealed partial class NativeWindow
             }
             void VerifyTitle(int index)
             {
-                var row=ui._queue.Single(row=>string.Equals(row.Url,urls[index],StringComparison.Ordinal));
+                var row=ui.SessionState.Queue.Single(row=>string.Equals(row.Url,urls[index],StringComparison.Ordinal));
                 PumpUntil(()=>row.Title==titles[index],"The actual metadata worker must fill the title for "+urls[index]);
-                var cached=ui._previews.Get(row.Url);
+                var cached=ui._preview.GetCached(row.Url);
                 Require(cached?.Title==titles[index],"The real worker must persist its metadata result in the preview cache");
                 VerifyRenderedTitle(row,titles[index]);
             }
 
-            Require(ui._previews.Get(urls[0])==null,"URL ingress must be a cold cache miss");
+            Require(ui._preview.GetCached(urls[0])==null,"URL ingress must be a cold cache miss");
             ui.B("UrlInput").Text=urls[0];
             ui.F<Button>("AddUrlButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-            Require(ui.B("UrlInput").Text.Length==0 && ui._queue.Single().Title.Length==0,
+            Require(ui.B("UrlInput").Text.Length==0 && ui.SessionState.Queue.Single().Title.Length==0,
                 "The real Add handler must enqueue the URL before supplying a title");
             VerifyTitle(0);
 
             string list=Path.Combine(root,"Видео [список].txt");
             File.WriteAllText(list,urls[1]+Environment.NewLine,Encoding.UTF8);
-            Require(ui._previews.Get(urls[1])==null,"TXT ingress must be a distinct, case-sensitive cold cache miss");
+            Require(ui._preview.GetCached(urls[1])==null,"TXT ingress must be a distinct, case-sensitive cold cache miss");
             ui.ReceiveArguments([list]);
-            Require(ui._queue.Single(row=>row.Url==urls[1]).Title.Length==0,
+            Require(ui.SessionState.Queue.Single(row=>row.Url==urls[1]).Title.Length==0,
                 "TXT ingress must not use the list filename as a video title");
             VerifyTitle(1);
 
             string shortcut=Path.Combine(root,"Видео [ярлык].url");
             File.WriteAllText(shortcut,"[InternetShortcut]\r\nURL="+urls[2]+"\r\n",Encoding.UTF8);
-            Require(ui._previews.Get(urls[2])==null,"InternetShortcut ingress must be a cold cache miss");
+            Require(ui._preview.GetCached(urls[2])==null,"InternetShortcut ingress must be a cold cache miss");
             ui.ReceiveArguments([shortcut]);
-            Require(ui._queue.Single(row=>row.Url==urls[2]).Title.Length==0,
+            Require(ui.SessionState.Queue.Single(row=>row.Url==urls[2]).Title.Length==0,
                 "InternetShortcut ingress must enqueue its original URL before metadata arrives");
             VerifyTitle(2);
 
-            Require(ui._previews.Get(urls[3])==null,"Subscription ingress must be a cold cache miss");
+            Require(ui._preview.GetCached(urls[3])==null,"Subscription ingress must be a cold cache miss");
             var accepted=ui.QueueSubscriptionUrls([urls[3]],"cold-ingress-subscription","123",
                 new Dictionary<string,string>(StringComparer.Ordinal){[urls[3]]=titles[3]});
-            Require(accepted.SequenceEqual(new[]{urls[3]}) && ui._queue.Single(row=>row.Url==urls[3]).Title==titles[3],
+            Require(accepted.SequenceEqual(new[]{urls[3]}) && ui.SessionState.Queue.Single(row=>row.Url==urls[3]).Title==titles[3],
                 "Subscription discovery must supply its title immediately, before metadata completes");
             PumpUntil(()=>ui.B("LogBox").Text.Contains("Cold subscription fixture metadata unavailable",StringComparison.Ordinal),
                 "The subscription preview must execute its metadata child and observe its real failure");
-            Require(ui._queue.Single(row=>row.Url==urls[3]).Title==titles[3] && ui._previews.Get(urls[3])==null,
+            Require(ui.SessionState.Queue.Single(row=>row.Url==urls[3]).Title==titles[3] && ui._preview.GetCached(urls[3])==null,
                 "A failed cold metadata request must preserve the immediate subscription title");
-            VerifyRenderedTitle(ui._queue.Single(row=>row.Url==urls[3]),titles[3]);
+            VerifyRenderedTitle(ui.SessionState.Queue.Single(row=>row.Url==urls[3]),titles[3]);
 
             ui.SaveCheckpoint();
             var saved=storage.Restore()!;

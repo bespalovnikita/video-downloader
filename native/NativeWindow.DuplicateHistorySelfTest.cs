@@ -104,8 +104,8 @@ public sealed partial class NativeWindow
             foreach(var scenario in new[]{"yes-no","yes-all","no-all","cancel-after-no","close"})
             {
                 var candidates=Rows();
-                controller._queue.Clear();
-                foreach(var row in candidates)controller._queue.Add(row);
+                controller.SessionState.Queue.Clear();
+                foreach(var row in candidates)controller.SessionState.Queue.Add(row);
                 controller.Reindex();
                 byte[] checkpointBefore=File.ReadAllBytes(storage.SessionPath);
                 string[] buttons=scenario switch{
@@ -128,7 +128,7 @@ public sealed partial class NativeWindow
                     result.Approved!=null && result.Approved.Select(row=>row.Url).SequenceEqual(accepted),
                     "Repeat choices must preserve the expected exact URLs: "+scenario);
                 string[] expectedQueue=removeRejected && !cancelled?accepted:urls;
-                Require(controller._queue.Select(row=>row.Url).SequenceEqual(expectedQueue),
+                Require(controller.SessionState.Queue.Select(row=>row.Url).SequenceEqual(expectedQueue),
                     "Only completed rejection decisions may remove queue rows: "+scenario);
                 Require(storage.Restore()!.Queue.Select(row=>row.Url).SequenceEqual(expectedQueue),
                     "The checkpoint must preserve the committed queue decision: "+scenario);
@@ -139,7 +139,7 @@ public sealed partial class NativeWindow
                 if(cancelled)
                     Require(File.ReadAllBytes(storage.SessionPath).SequenceEqual(checkpointBefore),
                         "Cancel must roll back earlier No decisions without changing the checkpoint.");
-                Require(controller._session==null && controller._sessionTask==null && controller._downloads.Count==0 &&
+                Require(controller.SessionState.Coordinator==null && controller.SessionState.RunningTask==null && controller.SessionState.Downloads.Count==0 &&
                     controller.Q.SelectedItem==null && !Directory.EnumerateFileSystemEntries(storage.PreviewDir).Any(),
                     "Confirmation must not select rows, fetch previews or start a download.");
             }
