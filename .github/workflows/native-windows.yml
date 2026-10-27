@@ -8,11 +8,10 @@ on:
       - 'collection-plugins/**'
       - 'tests/pornhub-collector-tests.py'
       - 'tests/fixtures/**'
-      - 'tests/russian-ui-tests.ps1'
+      - 'scripts/**'
       - 'ui/**'
       - '.github/workflows/native-windows.yml'
       - '.github/scripts/ReleaseVersion.psm1'
-      - 'tests/release-version-tests.ps1'
       - 'yt-dlp.exe'
       - 'assets/**'
   # Any change pushed to main is a release candidate, including docs-only commits.
@@ -32,14 +31,6 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
-      - name: Automatic release version tests
-        shell: pwsh
-        run: pwsh -NoProfile -File ./tests/release-version-tests.ps1
-      - name: Shared UI Russian profiles and folder buttons
-        shell: pwsh
-        run: pwsh -NoProfile -File ./tests/russian-ui-tests.ps1
-      - name: Build native C# WPF app
-        run: dotnet build native/VideoDownloader.Native.csproj -c Release
       - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
@@ -49,42 +40,9 @@ jobs:
         run: |
           python -m pip install yt-dlp==2026.08.19
           python tests/pornhub-collector-tests.py
-      - name: Native unit and filesystem security tests
-        run: dotnet run --project native-tests/VideoDownloader.NativeTests.csproj -c Release
-      - name: Native WPF window startup smoke
+      - name: Native build, contract, security and real WPF tests
         shell: pwsh
-        timeout-minutes: 2
-        run: pwsh -NoProfile -STA -File ./native-tests/gui-startup.ps1
-      - name: Native WPF controls and checkpoint regression
-        shell: pwsh
-        timeout-minutes: 2
-        run: |
-          $env:VD_NATIVE_UI_TEST_RESULT = Join-Path $env:RUNNER_TEMP 'native-ui-result.txt'
-          $env:VD_NATIVE_TITLE_FIXTURE = (Resolve-Path 'native-tests/bin/Release/net8.0-windows/VideoDownloader.NativeTests.exe').Path
-          $exe = (Resolve-Path 'native/bin/Release/net8.0-windows/win-x64/VideoDownloader.exe').Path
-          $app = Start-Process -FilePath $exe -ArgumentList '--ui-self-test' -PassThru
-          $deadline = [DateTime]::UtcNow.AddSeconds(90)
-          $lastStage = ''
-          while (-not $app.WaitForExit(250)) {
-            if (Test-Path -LiteralPath $env:VD_NATIVE_UI_TEST_RESULT) {
-              $stage = Get-Content -LiteralPath $env:VD_NATIVE_UI_TEST_RESULT -Raw
-              if ($stage -ne $lastStage) { Write-Host "Native UI stage: $stage"; $lastStage = $stage }
-            }
-            if ([DateTime]::UtcNow -gt $deadline) {
-              Stop-Process -Id $app.Id -Force
-              throw "Native WPF interaction regression timed out; last stage=$lastStage"
-            }
-          }
-          $app.WaitForExit()
-          if ($app.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $env:VD_NATIVE_UI_TEST_RESULT)) {
-            $lastStage = if (Test-Path -LiteralPath $env:VD_NATIVE_UI_TEST_RESULT) {
-              Get-Content -LiteralPath $env:VD_NATIVE_UI_TEST_RESULT -Raw
-            } else { '(no stage marker written)' }
-            throw "Native WPF interaction regression failed: exit code $($app.ExitCode); last stage=$lastStage"
-          }
-          if ((Get-Content -LiteralPath $env:VD_NATIVE_UI_TEST_RESULT -Raw).Trim() -ne 'PASS') {
-            throw 'Native WPF interaction regression did not pass'
-          }
+        run: pwsh -NoProfile -File ./scripts/build.ps1 -Task Test
       - name: Upload subscription progress preview
         uses: actions/upload-artifact@v4
         with:
@@ -93,16 +51,13 @@ jobs:
           if-no-files-found: error
       - name: Publish native portable EXE
         shell: pwsh
-        run: |
-          dotnet publish native/VideoDownloader.Native.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -o dist/native
-          if ($LASTEXITCODE -ne 0) { throw "Native publish failed" }
-          if (-not (Test-Path -LiteralPath 'dist/native/collection-plugins/videodownloader/yt_dlp_plugins/extractor/vd_pornhub.py' -PathType Leaf)) { throw 'Native package is missing the Pornhub collector' }
-          if (Get-ChildItem dist/native -Recurse -File -Include pwsh.exe,*.ps1,*.psm1) { throw "Native package unexpectedly includes PowerShell runtime/scripts" }
-          Compress-Archive -Path dist/native/* -DestinationPath dist/VideoDownloader-native.zip -Force
+        run: pwsh -NoProfile -File ./scripts/build.ps1 -Task Publish
       - uses: actions/upload-artifact@v4
         with:
           name: VideoDownloader-native-windows
-          path: dist/VideoDownloader-native.zip
+          path: |
+            dist/VideoDownloader-native.zip
+            dist/SHA256SUMS.txt
           if-no-files-found: error
 
 
@@ -145,21 +100,7 @@ jobs:
       - name: Compile release package with matching EXE version
         shell: pwsh
         run: |
-          $ErrorActionPreference = 'Stop'
-          $version = '${{ steps.version.outputs.version }}'
-          dotnet publish native/VideoDownloader.Native.csproj -c Release -r win-x64 --self-contained true -p:Version=$version -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -o dist/release
-          if ($LASTEXITCODE -ne 0) { throw "Release build failed" }
-          if (Get-ChildItem dist/release -Recurse -File -Include pwsh.exe,*.ps1,*.psm1) {
-            throw "Refusing release with PowerShell runtime/scripts"
-          }
-          foreach ($required in @('VideoDownloader.exe','yt-dlp.exe','ui/MainWindow.xaml','ui/DuplicateDownloadDialog.xaml','ui/SubscriptionsWindow.xaml','collection-plugins/videodownloader/yt_dlp_plugins/extractor/vd_pornhub.py')) {
-            if (-not (Test-Path -LiteralPath (Join-Path dist/release $required) -PathType Leaf)) {
-              throw "Missing required release file: $required"
-            }
-          }
-          Compress-Archive -Path dist/release/* -DestinationPath dist/VideoDownloader-Windows-x64.zip -Force
-          $hash = (Get-FileHash dist/VideoDownloader-Windows-x64.zip -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$hash  VideoDownloader-Windows-x64.zip" | Set-Content dist/SHA256SUMS.txt -Encoding utf8
+          pwsh -NoProfile -File ./scripts/build.ps1 -Task Publish -Version '${{ steps.version.outputs.version }}' -OutputDirectory dist/release -ArchivePath dist/VideoDownloader-Windows-x64.zip -ChecksumPath dist/SHA256SUMS.txt
       - name: Create public GitHub Release
         shell: pwsh
         env:

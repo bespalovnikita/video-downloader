@@ -8,6 +8,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>VideoDownloader</AssemblyName>
+    <AssemblyTitle>Video Downloader WPF</AssemblyTitle>
     <RootNamespace>VideoDownloader.Native</RootNamespace>
     <ApplicationIcon>..\assets\app.ico</ApplicationIcon>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
