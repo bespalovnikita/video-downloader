@@ -11,7 +11,8 @@ CMD-launcher, резервный PowerShell GUI и пользовательск�
 | Часть | Расположение |
 | --- | --- |
 | Проект приложения | `native/VideoDownloader.Native.csproj` |
-| UI и управление очередью | `native/NativeWindow*`, разметка `ui/` |
+| UI и управление очередью | `NativeWindow`, `QueueSessionController`, разметка `ui/` |
+| Компоненты UI | `PreviewController`, `SubscriptionController`, `SubscriptionCheckProgressController`, `WindowLifecycleController`, `InputIngressController` |
 | Загрузки и дочерние процессы | `DownloadCoordinator`, `ManagedChildProcess`, `OwnedFiles`, `DownloadCleanup` |
 | Превью | `PreviewService`, `PreviewImage` |
 | Подписки | `SubscriptionStore`, `SubscriptionScanner`, `PornHubChannel`, `SubscriptionNames` |
