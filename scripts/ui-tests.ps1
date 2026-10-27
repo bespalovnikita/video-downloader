@@ -6,7 +6,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
-$exe = Join-Path $root "native/bin/$Configuration/net8.0-windows/win-x64/VideoDownloader.exe"
+$exe = Join-Path $root "native-ui-tests/bin/$Configuration/net8.0-windows/VideoDownloader.UiTests.exe"
 $fixture = Join-Path $root "native-tests/bin/$Configuration/net8.0-windows/VideoDownloader.NativeTests.exe"
 foreach ($path in @($exe,$fixture)) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Build the native application and tests first: $path" }
@@ -26,7 +26,6 @@ $start = [Diagnostics.ProcessStartInfo]::new($exe)
 $start.UseShellExecute = $false
 $start.CreateNoWindow = $true
 $start.WorkingDirectory = Split-Path -Parent $exe
-$start.ArgumentList.Add('--ui-self-test')
 $start.Environment['VD_NATIVE_UI_TEST_RESULT'] = $ResultPath
 $start.Environment['VD_NATIVE_TITLE_FIXTURE'] = $fixture
 $process = [Diagnostics.Process]::Start($start)

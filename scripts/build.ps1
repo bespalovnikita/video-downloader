@@ -12,6 +12,7 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $project = Join-Path $root 'native/VideoDownloader.Native.csproj'
 $testProject = Join-Path $root 'native-tests/VideoDownloader.NativeTests.csproj'
+$uiTestProject = Join-Path $root 'native-ui-tests/VideoDownloader.UiTests.csproj'
 
 function Invoke-DotNet([string[]]$Arguments) {
     & dotnet @Arguments
@@ -36,6 +37,7 @@ try {
             Invoke-DotNet -Arguments @('build', $project, '-c', $Configuration)
             & (Join-Path $PSScriptRoot 'russian-ui-tests.ps1') -Configuration $Configuration
             Invoke-DotNet -Arguments @('run', '--project', $testProject, '-c', $Configuration)
+            Invoke-DotNet -Arguments @('build', $uiTestProject, '-c', $Configuration)
             & (Join-Path $PSScriptRoot 'gui-startup.ps1') -Configuration $Configuration
             & (Join-Path $PSScriptRoot 'ui-tests.ps1') -Configuration $Configuration
         }

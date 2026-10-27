@@ -5,6 +5,11 @@ using VideoDownloader.Native;
 if (GuiInstanceTests.TryRunFixture(args) || NativeIpcFixture.TryRunFixture(args) || TitleIngressFixture.TryRunFixture(args) || PreviewSchedulingTests.TryRunFixture(args) || NativeContractTests.TryRunFixture(args) || PornHubChannelTests.TryRunFixture(args) || StartupDownloadRegressionTests.TryRunFixture(args) || SubscriptionScannerTests.TryRunFixture(args) || LifecycleRegressionTests.TryRunFixture(args) || ReviewRegressionTests.TryRunFixture(args)) return;
 await GuiInstanceTests.RunAsync();
 await QueueSessionControllerTests.RunAsync();
+var applicationAssembly=typeof(NativeWindow).Assembly;
+if(applicationAssembly.GetTypes().Any(type=>type.Name.Contains("SelfTest",StringComparison.Ordinal) || type.Name=="UiScenario") ||
+    typeof(NativeWindow).GetMethods(System.Reflection.BindingFlags.Public|System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance)
+        .Any(method=>method.Name.StartsWith("Test",StringComparison.Ordinal)))
+    throw new InvalidOperationException("Production assembly must not contain UI scenarios or self-test entry points.");
 LegacyCompatibilityTests.Run();
 await NativeContractTests.RunAsync();
 await PreviewSchedulingTests.RunAsync();
