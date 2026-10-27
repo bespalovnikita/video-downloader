@@ -6,8 +6,8 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
-$exe = Join-Path $root "native-ui-tests/bin/$Configuration/net8.0-windows/VideoDownloader.UiTests.exe"
-$fixture = Join-Path $root "native-tests/bin/$Configuration/net8.0-windows/VideoDownloader.NativeTests.exe"
+$exe = Join-Path $root "tests/VideoDownloader.UiTests/bin/$Configuration/net8.0-windows/VideoDownloader.UiTests.exe"
+$fixture = Join-Path $root "tests/VideoDownloader.Tests/bin/$Configuration/net8.0-windows/VideoDownloader.Tests.exe"
 foreach ($path in @($exe,$fixture)) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Build the native application and tests first: $path" }
 }

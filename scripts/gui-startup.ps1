@@ -3,7 +3,7 @@
 param([ValidateSet('Debug','Release')][string]$Configuration = 'Release')
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
-$exe = Join-Path $root "native/bin/$Configuration/net8.0-windows/win-x64/VideoDownloader.exe"
+$exe = Join-Path $root "src/VideoDownloader/bin/$Configuration/net8.0-windows/win-x64/VideoDownloader.exe"
 if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { throw "Native apphost was not built: $exe" }
 $testProfileDirectory = Join-Path ([IO.Path]::GetTempPath()) ('vd-startup-' + [guid]::NewGuid().ToString('N'))
 [void][IO.Directory]::CreateDirectory($testProfileDirectory)
