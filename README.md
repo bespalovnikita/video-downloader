@@ -116,7 +116,7 @@ pwsh -NoProfile -File scripts/build.ps1 -Task Test
 pwsh -NoProfile -File scripts/build.ps1 -Task Publish
 ~~~
 
-`Test` собирает приложение, запускает нативные unit/integration-тесты и настоящие WPF-проверки с изолированными данными. `Publish` создаёт автономную папку `dist/native`, архив `dist/VideoDownloader-native.zip` и SHA-256. Скрипты из `scripts/` нужны разработке и CI и не входят в пользовательский ZIP. Для изменения встроенного коллектора дополнительно нужен Python и закреплённая в CI версия `yt-dlp`: `python tests/pornhub-collector-tests.py`.
+Приложение находится в `src/VideoDownloader/`. `Test` собирает его и запускает `tests/VideoDownloader.Tests/` и `tests/VideoDownloader.UiTests/`: unit/integration-тесты и настоящие WPF-проверки с изолированными данными. `Publish` создаёт автономную папку `dist/native`, архив `dist/VideoDownloader-native.zip` и SHA-256. Скрипты из `scripts/` нужны разработке и CI и не входят в пользовательский ZIP. Для изменения встроенного коллектора дополнительно нужен Python и закреплённая в CI версия `yt-dlp`: `python tests/pornhub-collector-tests.py`.
 
 Полный Windows CI автоматически запускается при PR и после merge. Каждый успешный коммит в `main` публикуется как GitHub Release с ZIP, контрольной суммой SHA-256 и описанием изменений.
 

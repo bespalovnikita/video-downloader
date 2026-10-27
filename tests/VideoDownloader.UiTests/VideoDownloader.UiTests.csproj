@@ -10,6 +10,6 @@
     <AssemblyName>VideoDownloader.UiTests</AssemblyName>
   </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="..\native\VideoDownloader.Native.csproj" />
+    <ProjectReference Include="..\..\src\VideoDownloader\VideoDownloader.csproj" />
   </ItemGroup>
 </Project>

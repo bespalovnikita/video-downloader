@@ -7,8 +7,9 @@
 Video Downloader — Windows-приложение на **C# / .NET 8 / WPF** с одной пользовательской UI-версией.
 
 - Точка запуска — `VideoDownloader.exe`; пользовательского CLI, CMD-launcher и резервного GUI нет.
-- Интерфейс и движок загрузки: `native/`; разметка: `ui/`; тесты C#: `native-tests/`, настоящие WPF-сценарии: `native-ui-tests/`.
-- UI-сценарии исполняет отдельный test host с ProjectReference на приложение. Не включай тестовые partial-классы, сценарии или `--ui-self-test` в релизный EXE.
+- Единственный проект приложения: `src/VideoDownloader/VideoDownloader.csproj`. Окна и XAML находятся в `src/VideoDownloader/UI/Views/`, владельцы состояния — в `src/VideoDownloader/UI/Controllers/`.
+- Модели и entry point находятся в корне проекта; загрузки, превью, подписки, хранение и совместимость разделены по `Downloads/`, `Preview/`, `Subscriptions/`, `Persistence/`, `Compatibility/`; Windows-процессы — в `Infrastructure/Windows/`.
+- C# unit/integration-тесты: `tests/VideoDownloader.Tests/`; настоящие WPF-сценарии: `tests/VideoDownloader.UiTests/`. Оба проекта ссылаются на приложение через ProjectReference. Не включай тестовые partial-классы, сценарии или переключатели запуска тестов в релизный EXE.
 - Единые команды build/test/publish: `scripts/build.ps1`. PowerShell нужен разработке и CI, не приложению.
 - Релизный ZIP автономен: пользователь не устанавливает PowerShell, Python или .NET Runtime.
 - Сохраняй чтение прежних пользовательских данных в `%LOCALAPPDATA%\VideoDownloader`, включая финальные Result-события и защиту от живого старого работника `pwsh`.
@@ -26,11 +27,10 @@ Video Downloader — Windows-приложение на **C# / .NET 8 / WPF** с 
 
 ## Основная C#-архитектура
 
-Основной WPF-интерфейс и движок расположены в `native/`, тесты — в
-`native-tests/`, релизный ZIP создаётся workflow `native-windows.yml`.
+WPF-интерфейс и движок расположены в `src/VideoDownloader/`, два тестовых проекта — в `tests/`. Релизный ZIP создаётся workflow `native-windows.yml`.
 Пользовательская сборка не должна включать CMD/PowerShell-скрипты или запускать `pwsh.exe`. URL, TXT, InternetShortcut и `videodownloader://` передаются в интерфейс; второй экземпляр использует singleton и named pipe и возвращает существующее окно из трея.
 
-При изменениях в `native/`:
+При изменениях в `src/VideoDownloader/`:
 - Запускай native Windows CI: сборка, открытие окна WPF, реальные Add/Remove,
   clipboard-preview, .url import и checkpoint через изолированный UI-тест.
 - Запускай офлайн тесты реального `yt-dlp.exe`: параллельная загрузка,
@@ -76,7 +76,7 @@ Video Downloader — Windows-приложение на **C# / .NET 8 / WPF** с 
 
 - Все **пользовательские Markdown-руководства** веди на русском языке: `README.md`, `GUI.md`, `NATIVE_MIGRATION.md`, `RELEASING.md`.
 - Названия встроенных профилей **локализуются только для отображения**. Идентификаторы `Universal`, `4K archive`, `MP4 compatibility`, `Music MP3`, `Subtitles archive` в `session.json` неизменны.
-- Маппинг находится в `native/ProfileCatalog.cs`.
+- Маппинг находится в `src/VideoDownloader/Downloads/ProfileCatalog.cs`.
 - WPF-разметка должна содержать две кнопки: `OpenOutputDirectoryButton` возле `RetryFailedButton` и `OpenAppSettingsButton` возле `RegisterProtocolButton`. Обработчики обязательны в UI.
 - Для настроек используется **`%LOCALAPPDATA%\VideoDownloader`**, не `%APPDATA%` (Roaming). В C# путь нужно получать из фактического экземпляра `AppPersistence`, чтобы поддерживался тестовый профиль.
 - Папка загрузок берётся из UI, а во время активной C#-сессии — из зафиксированного `DownloadOptions.OutputDirectory`; архивирование добавляет подкаталог даты.
@@ -94,7 +94,7 @@ Engine использует:
 - <code>--print before_dl:__VD_TITLE__:</code>;
 - <code>--print after_move:__VD_FILE__:</code>.
 
-Структурированный вывод разбирается в `native/YtDlpOutputParser.cs`, аргументы строит `YtDlpArguments`. Согласованное завершение, отмена, публикация и очистка остаются в `DownloadCoordinator`.
+Структурированный вывод разбирается в `src/VideoDownloader/Downloads/YtDlpOutputParser.cs`, аргументы строит `YtDlpArguments` в том же каталоге. Согласованное завершение, отмена, публикация и очистка остаются в `DownloadCoordinator`.
 
 Human-readable stdout допустимо анализировать только для вспомогательных событий вроде merge/error diagnostics.
 
@@ -116,7 +116,7 @@ URL должен попадать в preview-prefetch queue сразу посл�
 - TTL: **72 часа**;
 - cache key: SHA-256 URL.
 
-Получение и кеширование реализованы в `native/PreviewService.cs`.
+Получение и кеширование реализованы в `src/VideoDownloader/Preview/PreviewService.cs`.
 
 Общий deadline запроса — 30 секунд, включая дочерний процесс,
 заголовки и тело изображения. Для миниатюры дополнительно действуют 12 секунд
@@ -173,7 +173,7 @@ Reorder / drag/drop / download selected остаются заблокирова�
 
 ### 5. Retry только transient ошибок
 
-Классификация находится в `native/DownloadCoordinator.cs`.
+Классификация находится в `src/VideoDownloader/Downloads/YtDlpOutputParser.cs`; решение о повторе выполняет `DownloadCoordinator`.
 
 Не retry permanent/auth/unavailable ошибки бессмысленно. По умолчанию внешний backoff:
 
@@ -186,7 +186,7 @@ Reorder / drag/drop / download selected остаются заблокирова�
 ## Подписки: текущий контракт
 
 - Только ручные проверки и управление входящими. Не добавляй таймер, автоматическую проверку при старте, автоскачивание или Планировщик Windows без отдельной задачи; дальнейшие этапы перечислены в `BACKLOG.md`.
-- Окно использует `ui/SubscriptionsWindow.xaml`, данные — `subscriptions.json` версии 1 в фактическом каталоге пользовательских данных. Логика — `SubscriptionStore` и `SubscriptionScanner`. Не смешивай файл подписок с `session.json` или постоянной историей.
+- Исходная разметка окна — `src/VideoDownloader/UI/Views/SubscriptionsWindow.xaml`; в ZIP сохраняется путь `ui/SubscriptionsWindow.xaml`. Данные — `subscriptions.json` версии 1 в фактическом каталоге пользовательских данных. Логика — `SubscriptionStore` и `SubscriptionScanner`. Не смешивай файл подписок с `session.json` или постоянной историей.
 - Поддерживается любая HTTP(S)-коллекция, полностью перечисляемая текущим yt-dlp. Не вводи whitelist только YouTube. RSS/Atom — необязательное дополнение, с автоматическим определением YouTube-ленты по метаданным и ручным адресом ленты. Полное перечисление через yt-dlp обязательно даже при неизменившейся RSS; ошибка ленты означает предупреждение, а не отказ от успешного полного результата. Состав подписки определяет полный список; RSS обогащает только точные URL из него. Не добавляй feed-only элементы во входящие.
 - Обычный полный scan ограничен 10 000 элементами, 180 секундами и 32 МиБ stdout метаданных. Сборщик публикаций Pornhub имеет отдельный бюджет: 10 000 роликов, 500 страниц, 15 минут и те же 32 МиБ. RSS/Atom ограничена 2 МиБ и 12 секундами. Обрезанный список, превышенный предел, null/неидентифицируемый элемент, некорректный URL или ошибка перечисления запрещают считать scan полным. Не меняй baseline, items и LastSuccessUtc при таком сбое.
 - Для полного перечисления используй отдельный отменяемый процесс yt-dlp с игнорированием внешней конфигурации и `--no-flat-playlist`: вложенные коллекции должны раскрываться до материалов. Нераскрытые `url`/`url_transparent` не являются материалами и запрещают успешный scan. Не используй PreviewService с выбором первого элемента плейлиста. Читай stdout/stderr параллельно, проверяй пределы и завершай только дерево процесса текущей проверки при отмене.
@@ -248,7 +248,7 @@ Reorder / drag/drop / download selected остаются заблокирова�
 
 - Для скриптов build/tests нужен PowerShell 7; используй `$ErrorActionPreference = 'Stop'`, явное разрешение путей и проверки обязательных файлов. Если сразу после интерполированной переменной идёт двоеточие, используй braces.
 - Не блокируй UI thread сетевыми операциями; тяжёлые yt-dlp/dependency операции выполняй вне UI thread. Освобождай process/stream/http objects.
-- `native/DownloadCoordinator.cs` владеет активными заданиями, каналом очереди, отменой и конечной публикацией результата. Не разделяй согласованное завершение так, чтобы отмена гонялась с публикацией файлов и историей.
+- `src/VideoDownloader/Downloads/DownloadCoordinator.cs` владеет активными заданиями, каналом очереди, отменой и конечной публикацией результата. Не разделяй согласованное завершение так, чтобы отмена гонялась с публикацией файлов и историей.
 - `Threads` задаёт параллельность URL; `Fragments` передаётся как `yt-dlp -N`.
 - Новый параметр добавляй в `DownloadOptions`, UI и построение аргументов; проверяй фактические аргументы дочернего процесса и обновляй README/GUI.md.
 - Сохраняй нативные тесты полного контракта аргументов, codec/quality fallback, отсутствия загрузки при preview и независимости полного scan.
@@ -263,7 +263,7 @@ Reorder / drag/drop / download selected остаются заблокирова�
 
 ## Сборка и packaging
 
-Единственный проект приложения — `native/VideoDownloader.Native.csproj`: Windows x64, .NET 8, WPF, автономный EXE. Пользователь запускает EXE напрямую. Обязательны соседние yt-dlp, XAML, ресурсы и `collection-plugins/`; единственный EXE не заменяет весь portable ZIP.
+Единственный проект приложения — `src/VideoDownloader/VideoDownloader.csproj`: Windows x64, .NET 8, WPF, автономный EXE. Пользователь запускает EXE напрямую. Обязательны соседние yt-dlp, XAML, ресурсы и `collection-plugins/`; единственный EXE не заменяет весь portable ZIP.
 
 `scripts/build.ps1 -Task Publish` создаёт `dist/native`, `dist/VideoDownloader-native.zip` и SHA-256. Параметры `-Version`, `-OutputDirectory`, `-ArchivePath`, `-ChecksumPath` позволяют main-only release job выбрать версию и имена файлов без второго упаковщика.
 

@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>VideoDownloader.Tests</AssemblyName>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+  </PropertyGroup>
+  <ItemGroup>
+    <Content Include="..\fixtures\pornhub-discovery.json" Link="fixtures\pornhub-discovery.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\fixtures\legacy\**\*" Link="fixtures\legacy\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <ProjectReference Include="..\..\src\VideoDownloader\VideoDownloader.csproj"/>
+  </ItemGroup>
+</Project>

@@ -242,4 +242,4 @@ VD | OK 12 Left 5 Err 2 | 2.5 MB/s
 pwsh -NoProfile -File scripts/build.ps1 -Task Test
 ~~~
 
-Команда собирает приложение и запускает проверки движка, файловой безопасности, совместимости со старыми данными и настоящих WPF-контролов в изолированном профиле. Единственный Windows workflow `native-windows.yml` выполняет эти проверки и тесты встроенного коллектора перед публикацией portable ZIP. Подробная карта сценариев — в [матрице покрытия](docs/UI_ONLY_COVERAGE.md).
+Команда собирает `src/VideoDownloader/VideoDownloader.csproj` и запускает `tests/VideoDownloader.Tests/` и отдельный WPF-host `tests/VideoDownloader.UiTests/`. Проверяются движок, файловая безопасность, совместимость со старыми данными и настоящие контролы приложения в изолированном профиле. Единственный Windows workflow `native-windows.yml` выполняет эти проверки и тесты встроенного коллектора перед публикацией portable ZIP. Подробная карта сценариев — в [матрице покрытия](docs/UI_ONLY_COVERAGE.md).

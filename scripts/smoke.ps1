@@ -9,7 +9,7 @@ $xamlFiles = @{
         'SubscriptionCheckOverallProgress','SubscriptionCheckActivityProgress','CancelSubscriptionCheckButton','QueueSubscriptionItemsButton')
 }
 foreach ($entry in $xamlFiles.GetEnumerator()) {
-    [xml]$markup = Get-Content -LiteralPath (Join-Path $root "ui/$($entry.Key)") -Raw -Encoding utf8
+    [xml]$markup = Get-Content -LiteralPath (Join-Path $root "src/VideoDownloader/UI/Views/$($entry.Key)") -Raw -Encoding utf8
     if ($markup.DocumentElement.LocalName -ne 'Window') { throw "$($entry.Key) must have a Window root" }
     $nsm = [Xml.XmlNamespaceManager]::new($markup.NameTable)
     $nsm.AddNamespace('x','http://schemas.microsoft.com/winfx/2006/xaml')
@@ -22,7 +22,7 @@ foreach ($script in Get-ChildItem -LiteralPath $PSScriptRoot -Filter '*.ps1' -Fi
     [void][Management.Automation.Language.Parser]::ParseFile($script.FullName, [ref]$tokens, [ref]$errors)
     if ($errors.Count -gt 0) { throw "Developer script has parse errors: $($script.Name): $($errors.Message -join '; ')" }
 }
-[xml]$project = Get-Content -LiteralPath (Join-Path $root 'native/VideoDownloader.Native.csproj') -Raw
+[xml]$project = Get-Content -LiteralPath (Join-Path $root 'src/VideoDownloader/VideoDownloader.csproj') -Raw
 if ($project.Project.PropertyGroup.OutputType -cne 'WinExe' -or $project.Project.PropertyGroup.UseWPF -cne 'true') {
     throw 'The application project must produce the native WPF WinExe.'
 }

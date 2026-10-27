@@ -4,7 +4,7 @@ param([ValidateSet('Debug','Release')][string]$Configuration = 'Release')
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 function Assert([bool]$Condition,[string]$Message) { if (-not $Condition) { throw $Message } }
-$assembly = Join-Path $root "native/bin/$Configuration/net8.0-windows/win-x64/VideoDownloader.dll"
+$assembly = Join-Path $root "src/VideoDownloader/bin/$Configuration/net8.0-windows/win-x64/VideoDownloader.dll"
 if (-not (Test-Path -LiteralPath $assembly -PathType Leaf)) { throw "Build the native WPF application first: $assembly" }
 [void][Reflection.Assembly]::LoadFrom($assembly)
 $ids = @('Universal','4K archive','MP4 compatibility','Music MP3','Subtitles archive')
@@ -15,7 +15,7 @@ for ($i=0; $i -lt $ids.Count; $i++) {
     Assert ([VideoDownloader.Native.ProfileCatalog]::ToId($titles[$i]) -ceq $ids[$i]) "Russian selection must persist canonical ID: $($ids[$i])"
     Assert ([VideoDownloader.Native.ProfileCatalog]::ToId($ids[$i]) -ceq $ids[$i]) 'Existing profile identifiers must remain stable.'
 }
-[xml]$xaml = Get-Content -LiteralPath (Join-Path $root 'ui/MainWindow.xaml') -Raw -Encoding utf8
+[xml]$xaml = Get-Content -LiteralPath (Join-Path $root 'src/VideoDownloader/UI/Views/MainWindow.xaml') -Raw -Encoding utf8
 $nsm = [Xml.XmlNamespaceManager]::new($xaml.NameTable)
 $nsm.AddNamespace('w','http://schemas.microsoft.com/winfx/2006/xaml/presentation')
 $nsm.AddNamespace('x','http://schemas.microsoft.com/winfx/2006/xaml')

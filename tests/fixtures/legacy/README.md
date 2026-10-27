@@ -5,7 +5,7 @@
 и не запускают PowerShell для их получения. Эти файлы служат контрактом
 совместимого чтения при удалении прежней реализации.
 
-`native-tests/LegacyCompatibilityTests.cs` передаёт временные копии реальным
+`tests/VideoDownloader.Tests/LegacyCompatibilityTests.cs` передаёт временные копии реальным
 `AppPersistence`, `SubscriptionStore`, `PreviewService` и `DownloadCleanup`.
 Исходные фикстуры остаются неизменными.
 
@@ -28,5 +28,6 @@
 Повреждённый кеш является восстановимым служебным файлом: его удаление и
 повторное получение допустимы. Повреждённые session, subscriptions и history
 сохраняются. Запрет автоматической записи checkpoint при ошибке восстановления
-проверяется отдельно настоящим окном в `NativeUiSelfTest`; у `AppPersistence`
+проверяется отдельно настоящим окном в `UiScenario.VerifyStartupRecovery`
+из `tests/VideoDownloader.UiTests/UiScenario.Runner.cs`; у `AppPersistence`
 нет собственного режима read-only.

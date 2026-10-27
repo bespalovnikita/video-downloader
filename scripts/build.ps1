@@ -10,9 +10,9 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
-$project = Join-Path $root 'native/VideoDownloader.Native.csproj'
-$testProject = Join-Path $root 'native-tests/VideoDownloader.NativeTests.csproj'
-$uiTestProject = Join-Path $root 'native-ui-tests/VideoDownloader.UiTests.csproj'
+$project = Join-Path $root 'src/VideoDownloader/VideoDownloader.csproj'
+$testProject = Join-Path $root 'tests/VideoDownloader.Tests/VideoDownloader.Tests.csproj'
+$uiTestProject = Join-Path $root 'tests/VideoDownloader.UiTests/VideoDownloader.UiTests.csproj'
 
 function Invoke-DotNet([string[]]$Arguments) {
     & dotnet @Arguments

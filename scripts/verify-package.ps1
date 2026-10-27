@@ -8,7 +8,7 @@ $ErrorActionPreference = 'Stop'
 if (-not (Test-Path -LiteralPath $Directory -PathType Container)) { throw "Missing package folder: $Directory" }
 foreach ($file in Get-ChildItem -LiteralPath $Directory -Recurse -File) {
     if ($file.Extension -in @('.cmd','.bat','.ps1','.psm1') -or $file.Name -ieq 'pwsh.exe' -or
-        $file.Name -match '(?i)(launcher|NativeTests|UiTests)\.(exe|dll)$') {
+        $file.Name -match '(?i)(launcher|NativeTests|Tests|UiTests)\.(exe|dll)$') {
         throw "Package contains an obsolete entry point, test host or PowerShell file: $($file.FullName)"
     }
 }
