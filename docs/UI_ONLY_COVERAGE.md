@@ -85,8 +85,10 @@ WPF, Windows Job Objects и NTFS junction проверяются на Windows. �
 дочерних процессов, Watch clipboard — настоящим таймером и буфером Windows.
 
 Границы проверки: IPC выполняется между двумя процессами через production
-client/server, но полный запуск второго GUI с singleton проверяется на этапе 2
-при изменении entry point. File symlink отдельно не проверяется: обязательные
+client/server; этап 2 добавляет `GuiInstanceTests`: два процесса через полный
+путь `Program.RunGui`, singleton, доставку ссылок и восстановление того же окна.
+Startup smoke запускает релизный EXE с изолированным `VD_DATA_DIRECTORY`.
+File symlink отдельно не проверяется: обязательные
 NTFS junction покрывают root, вложенный output и staging. Сам этот документ не
 снимает условие зелёного Windows CI; успешная компиляция под Linux не является
 подтверждением прогона новых WPF/NTFS сценариев.
