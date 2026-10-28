@@ -1,6 +1,24 @@
 # Сборка и GitHub Releases — Video Downloader
 
-## Локальная сборка без скачивания релиза
+В репозитории две отдельные сборки: Windows на C# / WPF и Android на Kotlin / Compose. Windows ZIP и Android APK не взаимозаменяемы.
+
+## Локальная сборка Android APK
+
+Полный [гайд по сборке APK](android/README.md) содержит установку **JDK 17**, **Android SDK Platform 35 / Build-Tools 35.0.0**, инструкции для Android Studio, Windows PowerShell, Linux/macOS, установку на телефон и подпись release-сборки.
+
+После настройки инструментов перейди в `android/` и выполни:
+
+```powershell
+.\gradlew.bat :app:assembleDebug
+```
+
+В Linux/macOS: `./gradlew :app:assembleDebug`. Результат от корня репозитория — **`android/app/build/outputs/apk/debug/app-debug.apk`**, автоматически подписанный локальным отладочным ключом. Это устанавливаемая сборка для Android 8.0+ на arm64-v8a / x86_64. Само скачивание Windows Release для неё не требуется.
+
+`assembleRelease` создаёт неподписанный `app-release-unsigned.apk`; для установки release-сборку нужно подписать своим ключом. Подпись и версии Android настраиваются отдельно от Windows. Ключи и пароли не хранятся в репозитории. Перед публичным распространением учитывай [лицензии Android-рантайма](android/THIRD_PARTY_NOTICES.md).
+
+[`.github/workflows/android.yml`](.github/workflows/android.yml) собирает APK, запускает unit/lint и инструментальные тесты на эмуляторе, включая скачивание после нажатия Home. При успешном прогоне APK доступен в артефакте **VideoDownloader-Android-debug**. Workflow не публикует APK в Google Play и не создаёт подписанный Android GitHub Release. Описанное ниже автоматическое версионирование и публикация относятся к **Windows ZIP**.
+
+## Локальная сборка Windows без скачивания релиза
 
 Приложение можно собирать из исходников на своём компьютере. Для этого не нужны push, PR, GitHub Actions или публикация Release. Все команды ниже выполняются из корня репозитория в терминале Windows.
 

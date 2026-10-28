@@ -1,14 +1,24 @@
 # Video Downloader
 
 [![Сборка Windows (C#)](https://github.com/bespalovnikita/video-downloader/actions/workflows/native-windows.yml/badge.svg)](https://github.com/bespalovnikita/video-downloader/actions/workflows/native-windows.yml)
+[![Сборка Android (Kotlin)](https://github.com/bespalovnikita/video-downloader/actions/workflows/android.yml/badge.svg)](https://github.com/bespalovnikita/video-downloader/actions/workflows/android.yml)
 ![Платформа](https://img.shields.io/badge/Windows-10%2F11-0078D4)
+![Android](https://img.shields.io/badge/Android-8.0%2B-3DDC84)
 ![Технологии](https://img.shields.io/badge/C%23-.NET%208%20%7C%20WPF-512BD4)
 
-**Video Downloader** — загрузчик видео и аудио с графическим интерфейсом для Windows на **C# / .NET 8 и WPF**. Использует `yt-dlp` для скачивания и FFmpeg для обработки медиа. Приложение умеет работать с несколькими ссылками одновременно, запоминать историю, восстанавливать очередь после перезапуска и показывать превью.
+**Video Downloader** — загрузчик видео и аудио с графическим интерфейсом. Windows-приложение использует **C# / .NET 8 / WPF**, Android-приложение — **Kotlin / Jetpack Compose**. Обе версии используют `yt-dlp` для скачивания и FFmpeg для обработки медиа, поддерживают очередь, историю, превью и ручные подписки.
 
-**[Скачать последнюю версию](https://github.com/bespalovnikita/video-downloader/releases/latest)** · [Пошаговое руководство](docs/USER_GUIDE.md) · [Справочник интерфейса](GUI.md) · [Архитектура и диаграммы](docs/ARCHITECTURE.md)
+**[Скачать Windows-версию](https://github.com/bespalovnikita/video-downloader/releases/latest)** · **[Собрать Android APK](android/README.md)** · [Руководство Android](docs/ANDROID.md) · [Руководство Windows](docs/USER_GUIDE.md)
 
-## Установка
+## Android
+
+Android-проект находится в [`android/`](android/README.md). Поддерживаются Android 8.0+ и arm64-v8a / x86_64. [Гайд по сборке APK](android/README.md) содержит команды для Windows, Linux и macOS, установку через файл/ADB, проверки и подпись release-сборки. Android CI сохраняет отладочный APK как артефакт; автоматическая публикация подписанного Android-релиза пока не настроена.
+
+На телефоне интерфейс разделён на **«Очередь»**, **«Загрузки»**, **«Подписки»** и **«Настройки»**. Загрузкой после **Start** управляет foreground service с уведомлением, поэтому переход на главный экран не останавливает её. [Ограничения Android и проверка сворачивания](docs/ANDROID.md#скачивание-при-сворачивании) описаны отдельно. У Android собственное хранилище данных; копирование Windows checkpoint не является способом переноса настроек.
+
+Остальная часть этой страницы описывает Windows-версию. Android-сценарии, хранение файлов, cookies и схемы компонентов — в [руководстве Android](docs/ANDROID.md).
+
+## Установка Windows-версии
 
 1. Открой раздел [GitHub Releases](https://github.com/bespalovnikita/video-downloader/releases/latest).
 2. Скачай `VideoDownloader-Windows-x64.zip` и распакуй его целиком в отдельную папку.
@@ -139,6 +149,8 @@ pwsh -NoProfile -File scripts/build.ps1 -Task Publish
 
 ## Документация
 
+- [Сборка Android APK](android/README.md) — инструменты, Android Studio и команды Gradle, установка на телефон, тесты и подпись.
+- [Android: пользовательские сценарии и архитектура](docs/ANDROID.md) — очередь, подписки/RSS, фоновые загрузки, файлы и Mermaid-диаграммы.
 - [Пользовательские сценарии](docs/USER_GUIDE.md) — четыре пошаговых кейса, ожидаемый результат и разбор проблем.
 - [GUI.md](GUI.md) — интерфейс, кнопки, профили, превью, очередь и файлы.
 - [Cookies из браузера](docs/COOKIES.md) — экспорт Chrome / Edge / Firefox и подключение файла в приложении.
