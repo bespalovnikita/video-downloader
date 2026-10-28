@@ -31,6 +31,7 @@ import ru.bespalov.video.core.DownloadStatus
 import ru.bespalov.video.core.DownloadTask
 import ru.bespalov.video.core.EntryState
 import ru.bespalov.video.core.Settings
+import ru.bespalov.video.core.RssParser
 import ru.bespalov.video.core.Subscription
 import ru.bespalov.video.core.SubscriptionEntry
 import ru.bespalov.videodownloader.download.DownloadService
@@ -106,6 +107,14 @@ class AndroidPortInstrumentedTest {
         val ffprobe = NativeMedia.run(context, "ffprobe", listOf("-version")).toString(Charsets.UTF_8)
         assertTrue("The FFmpeg native executable must run", ffmpeg.contains("ffmpeg version", ignoreCase = true))
         assertTrue("The FFprobe native executable must run", ffprobe.contains("ffprobe version", ignoreCase = true))
+    }
+
+    @Test fun androidXmlProviderAcceptsRssAndRejectsExternalEntities() {
+        val parsed = RssParser.parse("""<rss version="2.0"><channel><item><title>Название</title><link>https://example.org/watch?v=AbC</link></item></channel></rss>""")
+        assertEquals("Название", parsed.single().title)
+        assertEquals("https://example.org/watch?v=AbC", parsed.single().url)
+        val unsafe = """<!DOCTYPE rss [<!ENTITY xxe SYSTEM "file:///data/local/tmp/never-read">]><rss><channel><item><title>&xxe;</title><link>https://example.org/video</link></item></channel></rss>"""
+        assertTrue("The Android XML provider must never resolve external entities", runCatching { RssParser.parse(unsafe) }.isFailure)
     }
 
     @Test fun realForegroundDownloadPublishesMediaBeforeHistoryAndPreservesPreviousCopy() {
