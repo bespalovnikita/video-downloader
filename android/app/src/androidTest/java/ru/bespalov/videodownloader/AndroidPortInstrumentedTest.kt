@@ -37,9 +37,11 @@ import ru.bespalov.video.core.SubscriptionEntry
 import ru.bespalov.videodownloader.download.DownloadService
 import ru.bespalov.videodownloader.download.MediaPublisher
 import ru.bespalov.videodownloader.engine.NativeMedia
+import ru.bespalov.videodownloader.engine.PrivatePaths
 import java.io.File
 import java.security.MessageDigest
 import java.nio.ByteBuffer
+import java.nio.file.Files
 import java.util.UUID
 
 /** These tests execute the packaged Android native binaries, not JVM substitutes. */
@@ -124,6 +126,30 @@ class AndroidPortInstrumentedTest {
         assertEquals("https://example.org/watch?v=AbC", parsed.single().url)
         val unsafe = """<!DOCTYPE rss [<!ENTITY xxe SYSTEM "file:///data/local/tmp/never-read">]><rss><channel><item><title>&xxe;</title><link>https://example.org/video</link></item></channel></rss>"""
         assertTrue("The Android XML provider must never resolve external entities", runCatching { RssParser.parse(unsafe) }.isFailure)
+    }
+
+    @Test fun privatePathsAcceptAndroidDataAliasAndRejectInternalLinksAndTraversal() {
+        val root = File(context.filesDir, "staging/path-test-${UUID.randomUUID()}")
+        val directory = File(root, "target").apply { mkdirs() }
+        val media = File(directory, "media.mp4").apply { writeText("test-owned path sentinel") }
+        val link = File(root, "link")
+        try {
+            assertEquals("The actual Android context.filesDir spelling must be accepted", media,
+                PrivatePaths.child(root, media))
+            assertEquals("A native process may report the canonical Android data-directory spelling", media.canonicalFile,
+                PrivatePaths.child(root, media.canonicalFile))
+            Files.createSymbolicLink(link.toPath(), directory.toPath())
+            assertTrue("A symlink below the owned root is forbidden even if its target stays inside it",
+                runCatching { PrivatePaths.child(root, File(link, "media.mp4")) }.isFailure)
+            assertTrue("A traversal below the owned root is forbidden even if it resolves inside it",
+                runCatching { PrivatePaths.child(root, File(root, "target/../target/media.mp4")) }.isFailure)
+            assertTrue("The trusted root cannot be used to access a sibling directory",
+                runCatching { PrivatePaths.child(root, File(context.filesDir, "unowned-media.mp4")) }.isFailure)
+            assertEquals("Rejection must preserve the known test target", "test-owned path sentinel", media.readText())
+        } finally {
+            Files.deleteIfExists(link.toPath())
+            root.deleteRecursively()
+        }
     }
 
     @Test fun realForegroundDownloadPublishesMediaBeforeHistoryAndPreservesPreviousCopy() {
@@ -235,11 +261,7 @@ class AndroidPortInstrumentedTest {
                 }
                 ActivityScenario.launch(MainActivity::class.java).use { activity ->
                     activity.onActivity { DownloadService.start(it, listOf(task.id)) }
-                    runBlocking(Dispatchers.IO) {
-                        withTimeout(90_000) {
-                            while ((DownloadService.progress.value[task.id]?.downloadedBytes ?: 0) == 0L) delay(50)
-                        }
-                    }
+                    awaitTransferProgress(task.id)
                     assertEquals(DownloadStatus.RUNNING, graph.repository.state.value.queue.single { it.id == task.id }.status)
                     val device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
                     val configurator = Configurator.getInstance()
@@ -291,11 +313,7 @@ class AndroidPortInstrumentedTest {
                 }
                 ActivityScenario.launch(MainActivity::class.java).use { activity ->
                     activity.onActivity { DownloadService.start(it, listOf(task.id)) }
-                    runBlocking(Dispatchers.IO) {
-                        withTimeout(90_000) {
-                            while ((DownloadService.progress.value[task.id]?.downloadedBytes ?: 0) == 0L) delay(50)
-                        }
-                    }
+                    awaitTransferProgress(task.id)
                     activity.onActivity { DownloadService.cancelTask(it, task.id) }
                     val cancelled = awaitTerminal(task.id)
                     awaitServiceIdle()
@@ -342,6 +360,21 @@ class AndroidPortInstrumentedTest {
                 delay(100)
             }
             @Suppress("UNREACHABLE_CODE") error("Unreachable")
+        }
+    }
+
+    private fun awaitTransferProgress(id: String) = runBlocking(Dispatchers.IO) {
+        withTimeout(90_000) {
+            while (true) {
+                val task = graph.repository.state.value.queue.single { it.id == id }
+                check(task.status !in setOf(DownloadStatus.FAILED, DownloadStatus.INTERRUPTED,
+                    DownloadStatus.COMPLETED, DownloadStatus.CLEANUP_REQUIRED)) {
+                    "Native transfer ended before the lifecycle test: ${task.status}: ${task.rawError}"
+                }
+                if (task.status == DownloadStatus.RUNNING &&
+                    (DownloadService.progress.value[id]?.downloadedBytes ?: 0) > 0) break
+                delay(50)
+            }
         }
     }
 

@@ -31,7 +31,6 @@ import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.SocketTimeoutException
-import java.nio.file.Files
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
@@ -163,13 +162,15 @@ class AndroidYtDlp(context: Context) {
                         if (!settings.audioOnly && settings.container != "Auto" && !media.extension.equals(settings.container, ignoreCase = true))
                             throw EngineException("yt-dlp did not produce the requested container: ${settings.container}")
                     }
-                    val primary = mediaFiles.first()
                     val files = stage.walkTopDown().onEnter { folder -> validateOwned(stage, folder, allowRoot = true); true }
                         .filter(File::isFile).onEach { validateOwned(stage, it) }
                         .filterNot { it.name.endsWith(".part") || it.name.contains(".part-Frag") || it.name.endsWith(".ytdl") || it.name.endsWith(".temp") }
                         .toList()
                     val manifest = files.map(File::getCanonicalFile).toSet()
                     require(mediaFiles.all { it.canonicalFile in manifest }) { "Downloaded media was outside the staging manifest" }
+                    // Keep the same lexical path spelling as the walked
+                    // manifest. yt-dlp may report Android's canonical OS alias.
+                    val primary = files.first { it.canonicalFile == mediaFiles.first().canonicalFile }
                     currentCoroutineContext().ensureActive()
                     return@withContext EngineDownloadResult(primary, files, transferred)
                 } catch (cancel: CancellationException) { throw cancel }
@@ -267,22 +268,12 @@ class AndroidYtDlp(context: Context) {
     private fun cookie(path: String): File? = path.takeIf(String::isNotBlank)?.let(::File)
 
     private fun validateStage(stage: File) {
-        val candidate = stage.canonicalFile
-        val roots = listOf(File(app.filesDir, "staging").canonicalFile, File(app.cacheDir, "staging").canonicalFile)
-        require(roots.any { candidate.path.startsWith(it.path + File.separator) }) { "Unknown private staging directory" }
-        require(candidate == stage.absoluteFile) { "Staging path contains a symbolic link or traversal" }
-        var current: File? = stage
-        while (current != null && current != app.filesDir.parentFile) {
-            require(!Files.isSymbolicLink(current.toPath())) { "Staging path contains a symbolic link" }
-            current = current.parentFile
-        }
+        PrivatePaths.childOfAny(listOf(File(app.filesDir, "staging"), File(app.cacheDir, "staging")), stage)
     }
 
     private fun validateOwned(stage: File, file: File, allowRoot: Boolean = false) {
-        val root = stage.canonicalFile
-        val actual = file.canonicalFile
-        require((allowRoot && actual == root) || actual.path.startsWith(root.path + File.separator)) { "Media path escaped its staging directory" }
-        require(!Files.isSymbolicLink(file.toPath())) { "Staging contains a symbolic link" }
+        validateStage(stage)
+        PrivatePaths.child(stage, file, allowRoot)
     }
 
     private fun <T> report(observer: (T) -> Unit, value: T) { runCatching { observer(value) } }

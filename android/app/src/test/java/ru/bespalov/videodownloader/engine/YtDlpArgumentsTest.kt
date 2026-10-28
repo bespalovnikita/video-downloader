@@ -6,14 +6,14 @@ import ru.bespalov.video.core.Settings
 import java.io.File
 
 class YtDlpArgumentsTest {
-    private val stage = File("/private/staging/owned")
+    private val stage = File(System.getProperty("java.io.tmpdir"), "vd-staging/owned").absoluteFile
 
     @Test fun downloadUsesStructuredProgressAndPrivateOutputWithoutDesktopImpersonation() {
         val arguments = YtDlpArguments.download(Settings(), stage, "best")
         assertTrue(arguments.containsAll(listOf("--ignore-config", "--progress", "--continue", "--abort-on-error")))
         assertEquals("download:__VD_PROGRESS__|%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s|%(progress.downloaded_bytes)s|%(progress.total_bytes,progress.total_bytes_estimate)s|%(info.id)s:%(info.format_id)s",
             arguments[arguments.indexOf("--progress-template") + 1])
-        assertEquals("/private/staging/owned/%(title)s [%(id)s].%(ext)s", arguments[arguments.indexOf("-o") + 1])
+        assertEquals(File(stage, "%(title)s [%(id)s].%(ext)s").absolutePath, arguments[arguments.indexOf("-o") + 1])
         assertTrue(arguments.contains("after_move:__VD_FILE__:%(filepath)s"))
         assertFalse(arguments.contains("--impersonate"))
         assertFalse(arguments.contains("--simulate"))
