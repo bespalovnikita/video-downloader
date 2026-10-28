@@ -28,6 +28,7 @@ internal sealed partial class UiScenario
             var splitter=Control<GridSplitter>(window,name);
             splitter.RaiseEvent(new DragStartedEventArgs(0,0){RoutedEvent=Thumb.DragStartedEvent});
             splitter.RaiseEvent(new DragDeltaEventArgs(change,0){RoutedEvent=Thumb.DragDeltaEvent});
+            window.UpdateLayout();
             splitter.RaiseEvent(new DragCompletedEventArgs(change,0,false){RoutedEvent=Thumb.DragCompletedEvent});
             window.UpdateLayout();
         }
@@ -44,19 +45,28 @@ internal sealed partial class UiScenario
             var queue=Control<ColumnDefinition>(window,"QueuePanelColumn");
             var downloads=Control<ColumnDefinition>(window,"DownloadsPanelColumn");
             var preview=Control<ColumnDefinition>(window,"PreviewPanelColumn");
+            string Widths()=>$"Queue={queue.ActualWidth:0.###}, Downloads={downloads.ActualWidth:0.###}, Preview={preview.ActualWidth:0.###}, grid={Control<Grid>(window,"MainPanelsGrid").ActualWidth:0.###}";
             Require(Math.Abs(queue.ActualWidth-380d*4/3)<1,
                 "The default Queue panel must be one third wider than its original 380 pixels.");
             double originalQueue=queue.ActualWidth,originalDownloads=downloads.ActualWidth,originalPreview=preview.ActualWidth;
-            Drag(window,"QueueDownloadsSplitter",48);
-            Require(Math.Abs(queue.ActualWidth-originalQueue-48)<2 &&
-                    Math.Abs(downloads.ActualWidth-originalDownloads+48)<2 &&
+            // A Windows runner may constrain the window to its work area.
+            // Release space first so subsequent positive drags have room even
+            // when Downloads initially has only its minimum width.
+            Drag(window,"QueueDownloadsSplitter",-72);
+            Require(Math.Abs(queue.ActualWidth-originalQueue+72)<2 &&
+                    Math.Abs(downloads.ActualWidth-originalDownloads-72)<2 &&
                     Math.Abs(preview.ActualWidth-originalPreview)<1,
-                "Dragging the first real GridSplitter must resize Queue and Downloads without moving Preview.");
+                $"Dragging the first real GridSplitter must resize Queue and Downloads without moving Preview. Before: Queue={originalQueue}, Downloads={originalDownloads}, Preview={originalPreview}. After: {Widths()}");
+            Drag(window,"QueueDownloadsSplitter",24);
+            Require(Math.Abs(queue.ActualWidth-originalQueue+48)<2 &&
+                    Math.Abs(downloads.ActualWidth-originalDownloads-48)<2 &&
+                    Math.Abs(preview.ActualWidth-originalPreview)<1,
+                $"The first splitter must also grow Queue when Downloads has room. {Widths()}");
             double beforeRightDownloads=downloads.ActualWidth;
             Drag(window,"DownloadsPreviewSplitter",-36);
             Require(Math.Abs(preview.ActualWidth-originalPreview-36)<2 &&
                     Math.Abs(downloads.ActualWidth-beforeRightDownloads+36)<2,
-                "Dragging the second real GridSplitter must resize Downloads and Preview.");
+                $"Dragging the second real GridSplitter must resize Downloads and Preview. {Widths()}");
             var options=subject.ReadOptions();
             savedQueue=options.QueuePanelWidth;savedPreview=options.PreviewPanelWidth;
             Require(Math.Abs(savedQueue-queue.ActualWidth)<1 && Math.Abs(savedPreview-preview.ActualWidth)<1,
@@ -101,9 +111,20 @@ internal sealed partial class UiScenario
             Require(queue.ActualWidth>=queue.MinWidth-1 && downloads.ActualWidth>=downloads.MinWidth-1 &&
                     preview.ActualWidth>=preview.MinWidth-1 && total<=grid.ActualWidth+1 && downloads.Width.IsStar,
                 "Restoring wide-screen dimensions on a smaller window must keep all panels visible and Downloads flexible.");
+            double previewBeforeLarge=preview.ActualWidth;
             Drag(window,"QueueDownloadsSplitter",10000);
-            Require(downloads.ActualWidth>=downloads.MinWidth-1 && preview.ActualWidth>=preview.MinWidth-1,
-                "A large drag must respect minimum widths instead of hiding another panel.");
+            total=grid.ColumnDefinitions.Sum(column=>column.ActualWidth);
+            Require(downloads.ActualWidth>=downloads.MinWidth-1 &&
+                    Math.Abs(preview.ActualWidth-previewBeforeLarge)<1 && total<=grid.ActualWidth+1,
+                $"A constrained Queue drag must keep Downloads visible without shrinking Preview. Queue={queue.ActualWidth}, Downloads={downloads.ActualWidth}, Preview before={previewBeforeLarge}, after={preview.ActualWidth}, grid={grid.ActualWidth}, total={total}.");
+            double queueBeforeLarge=queue.ActualWidth;
+            Drag(window,"DownloadsPreviewSplitter",-10000);
+            total=grid.ColumnDefinitions.Sum(column=>column.ActualWidth);
+            Require(downloads.ActualWidth>=downloads.MinWidth-1 &&
+                    Math.Abs(queue.ActualWidth-queueBeforeLarge)<1 && total<=grid.ActualWidth+1,
+                $"A constrained Preview drag must keep Downloads visible without shrinking Queue. Queue before={queueBeforeLarge}, after={queue.ActualWidth}, Downloads={downloads.ActualWidth}, Preview={preview.ActualWidth}, grid={grid.ActualWidth}, total={total}.");
+            Require(double.IsPositiveInfinity(queue.MaxWidth) && double.IsPositiveInfinity(preview.MaxWidth),
+                "Temporary drag bounds must be restored after each completed drag.");
 
             var oldSettings=JsonSerializer.Deserialize<DownloadOptions>("{\"Profile\":\"Universal\"}",AppPersistence.Json)!;
             Require(Math.Abs(oldSettings.QueuePanelWidth-380d*4/3)<1 && oldSettings.PreviewPanelWidth==390,

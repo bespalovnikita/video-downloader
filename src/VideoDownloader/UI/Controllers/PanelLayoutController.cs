@@ -19,6 +19,8 @@ internal sealed class PanelLayoutController : IDisposable
     private readonly GridSplitter _rightSplitter;
     private readonly Action _save;
     private bool _adjusting;
+    private ColumnDefinition? _dragColumn;
+    private double _dragMaximum;
 
     internal PanelLayoutController(Window window,Action save)
     {
@@ -31,6 +33,8 @@ internal sealed class PanelLayoutController : IDisposable
         _leftSplitter=Control<GridSplitter>("QueueDownloadsSplitter");
         _rightSplitter=Control<GridSplitter>("DownloadsPreviewSplitter");
         _save=save;
+        _leftSplitter.DragStarted+=DragStarted;
+        _rightSplitter.DragStarted+=DragStarted;
         _leftSplitter.DragCompleted+=DragCompleted;
         _rightSplitter.DragCompleted+=DragCompleted;
         _grid.SizeChanged+=GridSizeChanged;
@@ -49,10 +53,32 @@ internal sealed class PanelLayoutController : IDisposable
 
     private static bool Valid(double value,double minimum)=>double.IsFinite(value) && value>=minimum && value<=10_000;
     private void GridSizeChanged(object sender,SizeChangedEventArgs e)=>FitToWindow();
+    private void DragStarted(object sender,DragStartedEventArgs e)
+    {
+        RestoreDragMaximum();
+        var active=ReferenceEquals(sender,_leftSplitter)?_queue:_preview;
+        var other=ReferenceEquals(active,_queue)?_preview:_queue;
+        double gaps=_grid.ColumnDefinitions[1].ActualWidth+_grid.ColumnDefinitions[3].ActualWidth;
+        double available=_grid.ActualWidth-gaps-other.ActualWidth-_downloads.MinWidth;
+        _dragColumn=active;
+        _dragMaximum=active.MaxWidth;
+        // For a pixel/star pair GridSplitter checks only the pixel column's
+        // bounds. Limit that column before DragDelta so Downloads keeps its
+        // minimum without shrinking the unrelated outer panel afterward.
+        active.MaxWidth=Math.Min(_dragMaximum,Math.Max(active.MinWidth,available));
+    }
     private void DragCompleted(object sender,DragCompletedEventArgs e)
     {
+        RestoreDragMaximum();
         FitToWindow();
         _save();
+    }
+
+    private void RestoreDragMaximum()
+    {
+        if(_dragColumn==null)return;
+        _dragColumn.MaxWidth=_dragMaximum;
+        _dragColumn=null;
     }
 
     private void FitToWindow()
@@ -77,6 +103,9 @@ internal sealed class PanelLayoutController : IDisposable
 
     public void Dispose()
     {
+        RestoreDragMaximum();
+        _leftSplitter.DragStarted-=DragStarted;
+        _rightSplitter.DragStarted-=DragStarted;
         _leftSplitter.DragCompleted-=DragCompleted;
         _rightSplitter.DragCompleted-=DragCompleted;
         _grid.SizeChanged-=GridSizeChanged;
