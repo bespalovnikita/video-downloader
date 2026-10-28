@@ -1,9 +1,8 @@
 package ru.bespalov.videodownloader.ui
 
 import android.Manifest
-import android.content.Intent
+import android.content.ActivityNotFoundException
 import android.content.pm.PackageManager
-import android.net.Uri
 import android.os.Build
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -41,6 +40,7 @@ fun DownloaderScreen(ui: MobileUiState, actions: MobileActions) {
     var cookiesHelp by rememberSaveable { mutableStateOf(false) }
     var pendingStart by remember { mutableStateOf<List<String>?>(null) }
     val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
     val notifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
         actions.start(pendingStart)
         pendingStart = null
@@ -141,7 +141,9 @@ fun DownloaderScreen(ui: MobileUiState, actions: MobileActions) {
                 text = { LazyColumn(Modifier.heightIn(max = 450.dp)) {
                     if (ui.logs.isEmpty()) item { Text("Сообщений пока нет") }
                     items(ui.logs.takeLast(300)) { Text(it, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(bottom = 8.dp)) }
-                } }, confirmButton = { TextButton(onClick = { showLogs = false }) { Text("Закрыть") } })
+                } }, confirmButton = { TextButton(onClick = { showLogs = false }) { Text("Закрыть") } },
+                dismissButton = { TextButton(onClick = { clipboard.setText(AnnotatedString(ui.logs.joinToString("\n"))) },
+                    enabled = ui.logs.isNotEmpty(), modifier = Modifier.testTag("copyLogs")) { Text("Копировать") } })
         }
         if (cookiesHelp) CookiesHelpDialog { cookiesHelp = false }
     }
@@ -307,11 +309,13 @@ internal fun SelectionContainerCompat(text: String, modifier: Modifier = Modifie
 
 internal fun OpenUri(context: android.content.Context, value: String, file: Boolean = false) {
     runCatching {
-        val uri = Uri.parse(value)
-        val intent = Intent(Intent.ACTION_VIEW).apply {
-            if (file) setDataAndType(uri, context.contentResolver.getType(uri) ?: "video/*") else data = uri
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        context.startActivity(OutputViewing.intent(context, value, file))
+    }.onFailure { error ->
+        val message = when (error) {
+            is ActivityNotFoundException -> "Нет приложения для открытия ссылки или файла"
+            is SecurityException, is IllegalArgumentException -> "Нет доступа к файлу или его адресу"
+            else -> "Не удалось открыть ссылку или файл"
         }
-        context.startActivity(intent)
-    }.onFailure { Toast.makeText(context, "Нет приложения для открытия ссылки или файла", Toast.LENGTH_LONG).show() }
+        Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+    }
 }

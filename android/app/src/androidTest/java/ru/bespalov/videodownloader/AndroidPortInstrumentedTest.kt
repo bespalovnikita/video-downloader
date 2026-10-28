@@ -113,6 +113,7 @@ class AndroidPortInstrumentedTest {
         val request = YoutubeDLRequest(emptyList<String>()).apply { addOption("--version") }
         val response = YoutubeDL.execute(request, "instrumentation-version-${UUID.randomUUID()}")
         assertEquals("The packaged yt-dlp process must exit successfully", 0, response.exitCode)
+        assertEquals("A fresh install must execute the pinned extractor, not the wrapper's old default", BuildConfig.YTDLP_VERSION, response.out.trim())
         assertTrue("yt-dlp must report a real upstream version: ${response.out}", Regex("\\d{4}\\.\\d{2}\\.\\d{2}").containsMatchIn(response.out))
         val ffmpeg = NativeMedia.run(context, "ffmpeg", listOf("-version")).toString(Charsets.UTF_8)
         val ffprobe = NativeMedia.run(context, "ffprobe", listOf("-version")).toString(Charsets.UTF_8)

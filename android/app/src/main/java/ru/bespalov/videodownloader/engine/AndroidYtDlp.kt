@@ -25,6 +25,8 @@ import ru.bespalov.video.core.RssParser
 import ru.bespalov.video.core.ScanParser
 import ru.bespalov.video.core.Settings
 import ru.bespalov.video.core.Urls
+import ru.bespalov.videodownloader.BuildConfig
+import ru.bespalov.videodownloader.R
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.IOException
@@ -37,6 +39,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import java.util.UUID
 
 /** Android-specific process bridge. Publication and successful history belong to the service. */
 class AndroidYtDlp(context: Context) {
@@ -55,6 +58,9 @@ class AndroidYtDlp(context: Context) {
     suspend fun initialize() = withContext(Dispatchers.IO) {
         initialization.withLock {
             if (!initialized) {
+                RuntimeArchive.installIfOlder(runtimeArchive(), BuildConfig.YTDLP_VERSION, BuildConfig.YTDLP_SHA256) {
+                    app.resources.openRawResource(R.raw.ytdlp)
+                }
                 YoutubeDL.init(app)
                 FFmpeg.init(app)
                 val relative = "videodownloader/yt_dlp_plugins/extractor/vd_pornhub.py"
@@ -64,6 +70,13 @@ class AndroidYtDlp(context: Context) {
                 initialized = true
             }
         }
+    }
+
+    private fun runtimeArchive() = File(app.noBackupFilesDir, "youtubedl-android/yt-dlp/yt-dlp")
+
+    suspend fun version(): String = withContext(Dispatchers.IO) {
+        initialize()
+        execute("version-${UUID.randomUUID()}", YoutubeDLRequest(emptyList<String>()).apply { addOption("--version") }, 15_000).out.trim()
     }
 
     suspend fun metadata(requestId: String, url: String, cookies: File?, onUpdate: (EngineMetadata) -> Unit = {}): EngineMetadata =
@@ -201,10 +214,10 @@ class AndroidYtDlp(context: Context) {
         }
         try {
             YoutubeDL.updateYoutubeDL(app, YoutubeDL.UpdateChannel.STABLE)
-            YoutubeDL.version(app).orEmpty()
         } finally {
             withContext(NonCancellable) { admission.withLock { updating = false } }
         }
+        version()
     }
 
     private suspend fun execute(requestId: String, request: YoutubeDLRequest, timeout: Long,

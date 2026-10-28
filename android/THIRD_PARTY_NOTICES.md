@@ -15,6 +15,8 @@
 
 Рантайм включает Python, yt-dlp, JavaScript-рантайм и FFmpeg/ffprobe для Android. Их upstream-проекты:
 
+Ресурс yt-dlp в APK заменяется официальным Unix zipimport релиза [2026.10.26](https://github.com/yt-dlp/yt-dlp/releases/tag/2026.10.26), закреплённым в [`yt-dlp.properties`](yt-dlp.properties) с SHA-256. Исходники именно этой версии доступны по [тегу 2026.10.26](https://github.com/yt-dlp/yt-dlp/tree/2026.10.26); архив включает EJS. Изменение extractor не меняет версии Python/QuickJS/FFmpeg из Android wrapper.
+
 | Компонент | Исходники и лицензионные сведения |
 | --- | --- |
 | yt-dlp | [yt-dlp/yt-dlp](https://github.com/yt-dlp/yt-dlp), [LICENSE](https://github.com/yt-dlp/yt-dlp/blob/master/LICENSE) |

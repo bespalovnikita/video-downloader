@@ -42,6 +42,7 @@ class AppGraph(context: Context) {
     private val mutableLogs = MutableStateFlow<List<String>>(emptyList())
     val logs: StateFlow<List<String>> = mutableLogs.asStateFlow()
     val runtimeReady = MutableStateFlow(false)
+    val runtimeVersion = MutableStateFlow("")
     val startupError = MutableStateFlow("")
     val previews = PreviewDispatcher(engine, repository, scope, ::log)
     val ready = CompletableDeferred<Unit>()
@@ -51,6 +52,8 @@ class AppGraph(context: Context) {
             try {
                 repository.initialize()
                 engine.initialize()
+                runtimeVersion.value = engine.version()
+                log("yt-dlp ${runtimeVersion.value}; APK ${BuildConfig.VERSION_NAME}; bundled ${BuildConfig.YTDLP_VERSION}")
                 runtimeReady.value = true
             } catch (error: Exception) {
                 startupError.value = error.message ?: error.javaClass.simpleName

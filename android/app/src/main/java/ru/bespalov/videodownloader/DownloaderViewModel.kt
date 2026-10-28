@@ -43,6 +43,7 @@ class DownloaderViewModel(application: Application) : AndroidViewModel(applicati
         viewModelScope.launch { repository.state.collect { refresh() } }
         viewModelScope.launch { graph.previews.metadata.collect { refreshPreview() } }
         viewModelScope.launch { graph.previews.errors.collect { refreshPreview() } }
+        viewModelScope.launch { graph.runtimeVersion.collect { version -> mutable.update { it.copy(runtimeVersion = version) } } }
         viewModelScope.launch { graph.previews.activeUrls.collect { refreshPreview() } }
         viewModelScope.launch { graph.importing.collect { importing ->
             mutable.update { it.copy(importing = importing) }
@@ -363,6 +364,8 @@ class DownloaderViewModel(application: Application) : AndroidViewModel(applicati
                 writable()
                 mutable.update { it.copy(operation = UiOperation("Обновление yt-dlp")) }
                 val version = graph.engine.update()
+                graph.runtimeVersion.value = version
+                graph.log("yt-dlp updated: $version")
                 mutable.update { it.copy(message = UiMessage("yt-dlp обновлён: $version")) }
             } catch (cancel: CancellationException) { throw cancel }
             catch (error: Exception) { message(error.message ?: error.javaClass.simpleName) }

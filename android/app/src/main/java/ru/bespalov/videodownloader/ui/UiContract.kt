@@ -42,6 +42,7 @@ data class UiMessage(val text: String, val details: String = "")
 data class MobileUiState(
     val snapshot: AppState = AppState(),
     val runtimeReady: Boolean = false,
+    val runtimeVersion: String = "",
     val running: Boolean = false,
     val paused: Boolean = false,
     val operation: UiOperation? = null,

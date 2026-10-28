@@ -76,6 +76,8 @@ internal fun SettingsScreen(
         Button(onClick = { actions.saveSettings(draft) }, enabled = !ui.locked, modifier = Modifier.fillMaxWidth().testTag("saveSettings")) { Text("Сохранить настройки") }
         HorizontalDivider(Modifier.padding(vertical = 8.dp))
         Text("Загрузчик и данные", style = MaterialTheme.typography.titleMedium)
+        Text("yt-dlp: ${ui.runtimeVersion.ifBlank { if (ui.runtimeReady) "версия неизвестна" else "получение версии…" }}",
+            style = MaterialTheme.typography.bodySmall, modifier = Modifier.testTag("runtimeVersion"))
         OutlinedButton(onClick = actions::updateRuntime, enabled = ui.runtimeReady && ui.operation == null && !ui.running && !ui.locked) { Text("Обновить yt-dlp") }
         OutlinedButton(onClick = exportBackup) { Text("Экспорт резервной копии") }
         OutlinedButton(onClick = { restore = true }, enabled = !ui.running && ui.operation == null) { Text("Восстановить из резервной копии") }
