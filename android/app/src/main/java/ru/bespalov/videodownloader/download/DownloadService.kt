@@ -22,6 +22,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -86,6 +87,15 @@ class DownloadService : Service() {
         manager.createNotificationChannel(NotificationChannel(CHANNEL, getString(R.string.download_channel_name), NotificationManager.IMPORTANCE_LOW).apply {
             description = getString(R.string.download_channel_description)
         })
+        scope.launch {
+            while (true) {
+                delay(WAKE_RENEW_MILLIS)
+                gate.withLock {
+                    if (!destroyed && !paused && active.isNotEmpty()) acquireWakeLock()
+                    else releaseWakeLock()
+                }
+            }
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -232,7 +242,7 @@ class DownloadService : Service() {
         else {
             mutableRunning.value = true
             mutablePaused.value = paused
-            if (!paused) acquireWakeLock() else releaseWakeLock()
+            if (!paused && active.isNotEmpty()) acquireWakeLock() else releaseWakeLock()
             notifyProgress(force = true)
         }
     }
@@ -394,10 +404,18 @@ class DownloadService : Service() {
     }
 
     private fun acquireWakeLock() {
-        // Avoid the device suspending the native process merely because its screen turns off.
-        if (!wakeLock.isHeld) wakeLock.acquire(6 * 60 * 60 * 1000L)
+        // Reacquiring a non-reference-counted WakeLock replaces its timeout. Renew a short
+        // bounded lease while transfers run, including queues longer than a single download.
+        // The service scope stops the heartbeat on destruction; the lease also expires if it stalls.
+        synchronized(wakeLock) {
+            if (!destroyed && !paused && active.isNotEmpty()) wakeLock.acquire(WAKE_LEASE_MILLIS)
+        }
     }
-    private fun releaseWakeLock() { if (::wakeLock.isInitialized && wakeLock.isHeld) wakeLock.release() }
+    private fun releaseWakeLock() {
+        if (::wakeLock.isInitialized) synchronized(wakeLock) {
+            if (wakeLock.isHeld) wakeLock.release()
+        }
+    }
 
     private fun notifyProgress(force: Boolean = false) {
         val now = android.os.SystemClock.elapsedRealtime()
@@ -448,6 +466,8 @@ class DownloadService : Service() {
     }
 
     companion object {
+        private const val WAKE_LEASE_MILLIS = 2 * 60 * 1000L
+        private const val WAKE_RENEW_MILLIS = 60 * 1000L
         private const val CHANNEL = "downloads"
         private const val NOTIFICATION = 1401
         private const val IDS = "task_ids"
