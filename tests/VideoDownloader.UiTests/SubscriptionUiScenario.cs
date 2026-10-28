@@ -81,11 +81,13 @@ internal sealed partial class UiScenario
             string selectedCache=Path.Combine(_storage.PreviewDir,
                 Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(queueUrl))).ToLowerInvariant()+".json");
             AppPersistence.AtomicWrite(selectedCache,JsonSerializer.Serialize(new {
-                CacheVersion=1,PreviewFetchVersion=2,SavedAtUtc=DateTime.UtcNow,Url=queueUrl,Success=true,
+                CacheVersion=1,PreviewFetchVersion=3,SavedAtUtc=DateTime.UtcNow,Url=queueUrl,Success=true,
                 Title="",Uploader="",PlaylistTitle="",Duration=0,Extractor="",MaxHeight=0,MaxFps=0,
                 Codecs="",DynamicRange="",ThumbnailBase64=""
             },AppPersistence.Json));
             Q.SelectedItem=queuedRow;
+            WaitFor(()=>_preview.GetCached(queueUrl)!=null && T("PreviewTitle").Text=="Название пока недоступно",
+                "The cold disk cache must finish on the worker before testing title-only enrichment");
             T("PreviewTitle").Text="Не удалось получить метаданные";
             T("PreviewMeta").Text="Сохранённая ошибка запроса";
             subscriptions.Open();
@@ -227,6 +229,11 @@ internal sealed partial class UiScenario
                 "Rendered inbox cells must resolve their title and Russian status bindings");
 
             subscriptions.TestInbox.SelectedItem=queueView;
+            // Explicit inbox selection now displays that URL in the main
+            // Preview. Recreate the retained diagnostic afterwards so the
+            // following assertion still isolates queue title enrichment.
+            T("PreviewTitle").Text="Не удалось получить метаданные";
+            T("PreviewMeta").Text="Сохранённая ошибка запроса";
             var queueButton=subscriptions.TestControl<Button>("QueueSubscriptionItemsButton");
             Require(queueButton.IsEnabled,"New materials must support explicit Queue");
             queueButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
@@ -262,12 +269,12 @@ internal sealed partial class UiScenario
             Require(queuedRow.Title=="Добавить вручную" && T("PreviewTitle").Text=="Другое выбранное видео",
                 "Enriching a different URL must leave the selected preview title alone");
 
-            foreach(string url in new[]{freshUrl,caseUrl})
+            foreach(string url in new[]{freshUrl,caseUrl,skipUrl})
             {
                 string cacheFile=Path.Combine(_storage.PreviewDir,
                     Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(url))).ToLowerInvariant()+".json");
                 AppPersistence.AtomicWrite(cacheFile,JsonSerializer.Serialize(new {
-                    CacheVersion=1,PreviewFetchVersion=2,SavedAtUtc=DateTime.UtcNow,Url=url,Success=true,
+                    CacheVersion=1,PreviewFetchVersion=3,SavedAtUtc=DateTime.UtcNow,Url=url,Success=true,
                     Title="",Uploader="",PlaylistTitle="",Duration=0,Extractor="",MaxHeight=0,MaxFps=0,
                     Codecs="",DynamicRange="",ThumbnailBase64=""
                 },AppPersistence.Json));

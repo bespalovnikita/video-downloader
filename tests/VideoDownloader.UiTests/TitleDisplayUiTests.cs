@@ -23,6 +23,17 @@ internal sealed partial class UiScenario
         {
             if(!condition) throw new InvalidOperationException("Title display WPF test failed: "+error);
         }
+        static void AwaitCachedTitle(Func<bool> condition,string error)
+        {
+            if(condition())return;
+            var frame=new DispatcherFrame();
+            var deadline=DateTime.UtcNow.AddSeconds(10);
+            var timer=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(20)};
+            timer.Tick+=(_,_)=>{if(condition() || DateTime.UtcNow>=deadline)frame.Continue=false;};
+            timer.Start();
+            try{System.Windows.Threading.Dispatcher.PushFrame(frame);}finally{timer.Stop();}
+            Require(condition(),error);
+        }
         // A closed controller may still have dispatcher callbacks queued by
         // its worker. They must not mutate rows/panels or checkpoint afterward.
         var closedRow=new DownloadItem{Url="https://example.invalid/disposed-preview",Title="Before close"};
@@ -91,7 +102,7 @@ internal sealed partial class UiScenario
             string file=Path.Combine(_storage.PreviewDir,
                 Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(data.Url))).ToLowerInvariant()+".json");
             AppPersistence.AtomicWrite(file,JsonSerializer.Serialize(new {
-                CacheVersion=1,data.Url,data.Title,data.SavedAtUtc,data.Uploader,data.PlaylistTitle,data.Duration,
+                CacheVersion=1,PreviewFetchVersion=3,data.Url,data.Title,data.SavedAtUtc,data.Uploader,data.PlaylistTitle,data.Duration,
                 data.Extractor,data.MaxHeight,data.MaxFps,data.Codecs,data.DynamicRange,data.ThumbnailBase64
             },AppPersistence.Json));
         }
@@ -122,6 +133,8 @@ internal sealed partial class UiScenario
             Require(SessionState.Queue.Count==originalQueue.Length+routeTitles.Count && ReferenceEquals(Q.SelectedItem,originalSelection) &&
                     _preview.SelectedUrl==originalPreview && T("PreviewTitle").Text==beforeRoutesPanel,
                 "URL/file/subscription ingestion must preserve selection and the current preview without a row click");
+            AwaitCachedTitle(()=>routeTitles.All(pair=>SessionState.Queue.Single(row=>row.Url==pair.Key).Title==pair.Value),
+                "Background disk-cache loading must fill all titles without a row click or Start");
             foreach(var pair in routeTitles)
             {
                 var row=SessionState.Queue.Single(item=>item.Url==pair.Key);
@@ -179,7 +192,7 @@ internal sealed partial class UiScenario
             var cache=Metadata(cached.Url,"Название из кеша");
             SeedCache(cache);
             RequestRowPreview(cached);
-            Require(cached.Title==cache.Title,"A cache hit must fill a queued title without requiring another metadata callback");
+            AwaitCachedTitle(()=>cached.Title==cache.Title,"A disk-cache hit must fill a queued title through the background worker");
 
             K("ShowVideoTitlesCheck").IsChecked=false;
             RenderedLabel(Q,known,known.Url);RenderedLabel(D,known,known.Url);

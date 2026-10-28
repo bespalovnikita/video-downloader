@@ -53,7 +53,7 @@ internal sealed partial class UiScenario
             var metadata=new PreviewData(url,"Локальное название","","",0,"",0,0,"","","",DateTime.UtcNow);
             string cache=Path.Combine(_storage.PreviewDir,Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(url))).ToLowerInvariant()+".json");
             AppPersistence.AtomicWrite(cache,JsonSerializer.Serialize(new {
-                CacheVersion=1,metadata.Url,metadata.Title,metadata.SavedAtUtc,metadata.Uploader,metadata.PlaylistTitle,metadata.Duration,
+                CacheVersion=1,PreviewFetchVersion=3,metadata.Url,metadata.Title,metadata.SavedAtUtc,metadata.Uploader,metadata.PlaylistTitle,metadata.Duration,
                 metadata.Extractor,metadata.MaxHeight,metadata.MaxFps,metadata.Codecs,metadata.DynamicRange,metadata.ThumbnailBase64
             },AppPersistence.Json));
         }
@@ -181,7 +181,7 @@ internal sealed partial class UiScenario
         string url="https://example.invalid/watch-clipboard/"+Guid.NewGuid().ToString("N")+"/Video?Token=A%2FB";
         string cache=Path.Combine(_storage.PreviewDir,Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(url))).ToLowerInvariant()+".json");
         AppPersistence.AtomicWrite(cache,JsonSerializer.Serialize(new {
-            CacheVersion=1,Url=url,Title="Название из буфера",SavedAtUtc=DateTime.UtcNow,Uploader="",PlaylistTitle="",Duration=0,
+            CacheVersion=1,PreviewFetchVersion=3,Url=url,Title="Название из буфера",SavedAtUtc=DateTime.UtcNow,Uploader="",PlaylistTitle="",Duration=0,
             Extractor="",MaxHeight=0,MaxFps=0,Codecs="",DynamicRange="",ThumbnailBase64=""
         },AppPersistence.Json));
         int selectionChanges=0;
@@ -198,7 +198,7 @@ internal sealed partial class UiScenario
             var frame=new DispatcherFrame();
             var deadline=DateTime.UtcNow.AddSeconds(5);
             var timer=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(20)};
-            timer.Tick+=(_,_)=>{if(SessionState.Queue.Any(row=>row.Url==url) || DateTime.UtcNow>=deadline)frame.Continue=false;};
+            timer.Tick+=(_,_)=>{if(SessionState.Queue.Any(row=>row.Url==url && row.Title=="Название из буфера") || DateTime.UtcNow>=deadline)frame.Continue=false;};
             timer.Start();
             try{System.Windows.Threading.Dispatcher.PushFrame(frame);}
             finally{timer.Stop();}

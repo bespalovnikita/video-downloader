@@ -22,6 +22,7 @@ public sealed partial class NativeWindow : IDisposable
     private readonly QueueSessionController _queueSession=new();
     private readonly AppPersistence _storage;
     private readonly PreviewController _preview;
+    private readonly PanelLayoutController _panelLayout;
     private readonly DispatcherTimer _tick=new(){Interval=TimeSpan.FromMilliseconds(400)};
     private readonly WindowLifecycleController _lifecycle;
     private readonly InputIngressController _ingress;
@@ -73,6 +74,7 @@ public sealed partial class NativeWindow : IDisposable
             C(control).SelectedIndex=0;
         }
         B("OutputBox").Text=new DownloadOptions().Output;
+        _panelLayout=new PanelLayoutController(_window,SaveCheckpoint);
         _preview=new PreviewController(_window,_storage,_ytDlp,
             ()=>SessionState.Queue.Concat(SessionState.Downloads),SaveCheckpoint,Log);
         _lifecycle=new WindowLifecycleController(_window,()=>OpenFolder(B("OutputBox").Text));
@@ -221,10 +223,12 @@ public sealed partial class NativeWindow : IDisposable
         EmbedThumbnail=Check(K("EmbedThumbnailCheck")),EmbedMetadata=Check(K("EmbedMetadataCheck")),
         EmbedChapters=Check(K("EmbedChaptersCheck")),Archive=Check(K("ArchiveCheck")),
         Sponsor=Check(K("SponsorCheck")),AudioOnly=Check(K("AudioOnlyCheck")),
-        WatchClipboard=Check(K("WatchClipboardCheck")),ShowVideoTitles=Check(K("ShowVideoTitlesCheck"))
+        WatchClipboard=Check(K("WatchClipboardCheck")),ShowVideoTitles=Check(K("ShowVideoTitlesCheck")),
+        QueuePanelWidth=_panelLayout.QueueWidth,PreviewPanelWidth=_panelLayout.PreviewWidth
     };
     internal void ApplyOptions(DownloadOptions o)
     {
+        _panelLayout.Apply(o.QueuePanelWidth,o.PreviewPanelWidth);
         foreach(var (name,value) in new[]{
             ("ProfileCombo",ProfileCatalog.Display(o.Profile)),("QualityCombo",o.Quality),("CodecCombo",o.Codec),
             ("ContainerCombo",o.Container),("FragmentsCombo",o.Fragments)})

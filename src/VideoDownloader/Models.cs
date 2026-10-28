@@ -98,6 +98,8 @@ public sealed class DownloadOptions
     public bool AudioOnly { get; set; }
     public bool WatchClipboard { get; set; }
     public bool ShowVideoTitles { get; set; }
+    public double QueuePanelWidth { get; set; } = 380d*4/3;
+    public double PreviewPanelWidth { get; set; } = 390;
     public int Parallel => int.TryParse(Threads, out int n) ? Math.Clamp(n,1,32) : 4;
     public int FragmentCount => int.TryParse(Fragments, out int n) ? Math.Clamp(n,1,8) : Math.Min(8,Math.Max(1,Parallel));
     // Resolve exactly once per run. A session spanning midnight must not change
@@ -122,7 +124,12 @@ public sealed class SessionSnapshot
 
 public sealed record DownloadProgress(double Percent, double SpeedBytes, long DownloadedBytes, long TotalBytes, long TransferredBytes, string Eta, string? Title = null);
 public sealed record DownloadResult(bool Success, bool Cancelled, string Path, IReadOnlyList<string> OwnedPaths, string Error, long TransferredBytes);
-public sealed record PreviewData(string Url, string Title, string Uploader, string PlaylistTitle, double Duration, string Extractor, int MaxHeight, double MaxFps, string Codecs, string DynamicRange, string ThumbnailBase64, DateTime SavedAtUtc);
+public sealed record PreviewData(string Url, string Title, string Uploader, string PlaylistTitle, double Duration, string Extractor, int MaxHeight, double MaxFps, string Codecs, string DynamicRange, string ThumbnailBase64, DateTime SavedAtUtc)
+{
+    // Keep the original single cover and constructor compatible with old
+    // cache records and callers; the gallery is additive.
+    public string[] ThumbnailsBase64 { get; init; } = [];
+}
 public static class DownloadFormat
 {
     public static string Bytes(long bytes)

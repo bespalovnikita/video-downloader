@@ -379,13 +379,13 @@
             </StackPanel>
         </Grid>
 
-        <Grid Grid.Row="1">
+        <Grid x:Name="MainPanelsGrid" Grid.Row="1">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="380"/>
+                <ColumnDefinition x:Name="QueuePanelColumn" Width="506.6666666666667" MinWidth="300"/>
                 <ColumnDefinition Width="12"/>
-                <ColumnDefinition Width="*"/>
+                <ColumnDefinition x:Name="DownloadsPanelColumn" Width="*" MinWidth="300"/>
                 <ColumnDefinition Width="12"/>
-                <ColumnDefinition Width="390"/>
+                <ColumnDefinition x:Name="PreviewPanelColumn" Width="390" MinWidth="300"/>
             </Grid.ColumnDefinitions>
 
             <Border Grid.Column="0" Style="{StaticResource Panel}">
@@ -452,6 +452,12 @@
                 </Grid>
             </Border>
 
+            <GridSplitter x:Name="QueueDownloadsSplitter" Grid.Column="1" Width="8"
+                          HorizontalAlignment="Center" VerticalAlignment="Stretch"
+                          ResizeDirection="Columns" ResizeBehavior="PreviousAndNext" ShowsPreview="False"
+                          Background="#343946" Cursor="SizeWE" Focusable="True"
+                          ToolTip="Перетащите, чтобы изменить ширину Queue и Downloads"/>
+
             <Border Grid.Column="2" Style="{StaticResource Panel}">
                 <Grid>
                     <Grid.RowDefinitions>
@@ -501,14 +507,35 @@
                 </Grid>
             </Border>
 
+            <GridSplitter x:Name="DownloadsPreviewSplitter" Grid.Column="3" Width="8"
+                          HorizontalAlignment="Center" VerticalAlignment="Stretch"
+                          ResizeDirection="Columns" ResizeBehavior="PreviousAndNext" ShowsPreview="False"
+                          Background="#343946" Cursor="SizeWE" Focusable="True"
+                          ToolTip="Перетащите, чтобы изменить ширину Downloads и Preview"/>
+
             <Border Grid.Column="4" Style="{StaticResource Panel}">
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
                     <StackPanel>
                         <TextBlock Text="Preview" Style="{StaticResource SectionTitle}"/>
 
-                        <Border Height="190" Background="#0D0F13" CornerRadius="12">
+                        <Border x:Name="PreviewImageHost" Height="190" Background="#0D0F13" CornerRadius="12">
                             <Image x:Name="PreviewImage" Stretch="Uniform"/>
                         </Border>
+                        <Grid Margin="0,6,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <Button x:Name="PreviewPreviousButton" Content="◀" Padding="10,4" IsEnabled="False"
+                                    ToolTip="Предыдущее превью"/>
+                            <TextBlock x:Name="PreviewImageCounter" Grid.Column="1" Text="0 / 0"
+                                       HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="#B7C0D8"/>
+                            <Button x:Name="PreviewNextButton" Grid.Column="2" Content="▶" Padding="10,4" IsEnabled="False"
+                                    ToolTip="Следующее превью"/>
+                        </Grid>
+                        <TextBlock Text="Наведите мышь для листания · колесо — вручную" Style="{StaticResource MutedText}"
+                                   FontSize="11" TextWrapping="Wrap" Margin="0,4,0,0"/>
                         <TextBlock x:Name="PreviewTitle" Text="Select a queue item" FontSize="15" FontWeight="SemiBold" Margin="0,10,0,3" TextTrimming="CharacterEllipsis"/>
                         <TextBlock x:Name="PreviewMeta" Text="" Style="{StaticResource MutedText}" TextWrapping="Wrap"/>
                         <TextBlock x:Name="PreviewFormats" Text="" Foreground="#B7C0D8" Margin="0,5,0,12" TextWrapping="Wrap"/>
