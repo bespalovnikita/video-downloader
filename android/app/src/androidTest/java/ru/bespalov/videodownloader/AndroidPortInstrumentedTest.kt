@@ -59,6 +59,15 @@ class AndroidPortInstrumentedTest {
     private fun sample(): ByteArray = InstrumentationRegistry.getInstrumentation().context.assets
         .open("offline-sample.mp4").use { it.readBytes() }
 
+    private fun slowSample(): ByteArray {
+        // A standards-compliant free box adds transfer time without changing the media.
+        val padding = ByteBuffer.allocate(512 * 1024).apply {
+            putInt(capacity())
+            put("free".toByteArray(Charsets.US_ASCII))
+        }.array()
+        return sample() + padding
+    }
+
     @Test fun sharedTextAndActualAddStayQueuedWithoutStart() {
         initialize()
         LoopbackMediaServer(sample()).use { origin ->
@@ -212,11 +221,7 @@ class AndroidPortInstrumentedTest {
         initialize()
         // An ISO BMFF free box keeps the fixture valid while making the real HTTP transfer
         // long enough to observe background progress. No external network is involved.
-        val padding = ByteBuffer.allocate(512 * 1024).apply {
-            putInt(capacity())
-            put("free".toByteArray(Charsets.US_ASCII))
-        }.array()
-        LoopbackMediaServer(sample() + padding, chunkBytes = 8192, chunkDelayMillis = 100).use { origin ->
+        LoopbackMediaServer(slowSample(), chunkBytes = 8192, chunkDelayMillis = 100).use { origin ->
             val token = "android-background-${UUID.randomUUID()}"
             val task = DownloadTask(url = "${origin.baseUrl}/$token.mp4")
             val originalSettings = graph.repository.state.value.settings
@@ -259,6 +264,65 @@ class AndroidPortInstrumentedTest {
                 }
             } finally {
                 cleanup(setOf(task.id), emptySet(), setOf(task.url), published, originalSettings)
+            }
+        }
+    }
+
+    @Test fun cancelledNativeTransferCannotPublishAndRemovalKeepsUnrelatedFiles() {
+        initialize()
+        LoopbackMediaServer(slowSample(), chunkBytes = 8192, chunkDelayMillis = 100).use { origin ->
+            val token = "android-cancel-${UUID.randomUUID()}"
+            val url = "${origin.baseUrl}/$token.mp4"
+            val source = Subscription(url = "${origin.baseUrl}/channel-$token", title = token, shortName = token, initialized = true)
+            val task = DownloadTask(url = url, subscriptionId = source.id, subscriptionName = token)
+            val originalSettings = graph.repository.state.value.settings
+            val sentinel = File(context.filesDir, "staging/$token-unrelated.txt").apply {
+                parentFile!!.mkdirs()
+                writeText("preserve unrelated staging data")
+            }
+            try {
+                runBlocking(Dispatchers.IO) {
+                    graph.repository.update { state -> state.copy(
+                        settings = testSettings(originalSettings, token),
+                        queue = state.queue + task,
+                        subscriptions = state.subscriptions + source,
+                        items = state.items + SubscriptionEntry(source.id, url, state = EntryState.QUEUED),
+                    ) }
+                }
+                ActivityScenario.launch(MainActivity::class.java).use { activity ->
+                    activity.onActivity { DownloadService.start(it, listOf(task.id)) }
+                    runBlocking(Dispatchers.IO) {
+                        withTimeout(90_000) {
+                            while ((DownloadService.progress.value[task.id]?.downloadedBytes ?: 0) == 0L) delay(50)
+                        }
+                    }
+                    activity.onActivity { DownloadService.cancelTask(it, task.id) }
+                    val cancelled = awaitTerminal(task.id)
+                    awaitServiceIdle()
+                    assertEquals("Explicit cancellation must interrupt the native transfer", DownloadStatus.INTERRUPTED, cancelled.status)
+                    assertTrue("Cancellation cannot publish media", cancelled.outputUris.isEmpty())
+                    val afterCancel = graph.repository.state.value
+                    assertFalse("Cancellation cannot enter successful history", afterCancel.history.any { it.url == url })
+                    assertEquals("Cancellation cannot process a subscription item", EntryState.QUEUED,
+                        afterCancel.items.single { it.subscriptionId == source.id && it.url == url }.state)
+                    assertTrue("The partial download must retain its private resume directory", cancelled.stageDirectory.isNotBlank())
+                    val stage = File(cancelled.stageDirectory)
+                    assertTrue("The cancelled transfer's staging directory must remain resumable", stage.isDirectory)
+
+                    activity.onActivity { DownloadService.removeTask(it, task.id, deleteFiles = true) }
+                    runBlocking(Dispatchers.IO) {
+                        withTimeout(20_000) {
+                            while (graph.repository.state.value.queue.any { it.id == task.id }) delay(50)
+                        }
+                    }
+                    awaitServiceIdle()
+                    assertFalse("Removal must clean the task's owned partial directory", stage.exists())
+                    assertEquals("Removal must preserve unrelated staging files", "preserve unrelated staging data", sentinel.readText())
+                    assertFalse("Removal cannot manufacture a successful history entry", graph.repository.state.value.history.any { it.url == url })
+                }
+            } finally {
+                cleanup(setOf(task.id), setOf(source.id), setOf(url), emptyList(), originalSettings)
+                sentinel.delete()
             }
         }
     }
