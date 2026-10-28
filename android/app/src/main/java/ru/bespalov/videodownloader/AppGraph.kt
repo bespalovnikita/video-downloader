@@ -75,6 +75,8 @@ class AppRepository(private val file: File) : StateRepository {
     @Volatile private var openingError = ""
     override val error: String get() = delegate?.error ?: openingError
 
+    suspend fun awaitInitialized() { initialized.await() }
+
     suspend fun initialize() = withContext(Dispatchers.IO) {
         gate.withLock {
             try {

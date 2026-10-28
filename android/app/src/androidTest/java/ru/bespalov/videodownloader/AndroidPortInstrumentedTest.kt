@@ -159,8 +159,7 @@ class AndroidPortInstrumentedTest {
             val url = "${origin.baseUrl}/$token.mp4"
             val source = Subscription(url = "${origin.baseUrl}/channel-$token", title = "Offline test source", shortName = token, initialized = true)
             val first = DownloadTask(url = url, subscriptionId = source.id, subscriptionName = token)
-            val second = DownloadTask(url = url, subscriptionId = source.id, subscriptionName = token)
-            val ids = setOf(first.id, second.id)
+            val ids = setOf(first.id)
             val settingsBefore = graph.repository.state.value.settings
             val historyBefore = graph.repository.state.value.history
             var createdUris = emptyList<String>()
@@ -187,12 +186,15 @@ class AndroidPortInstrumentedTest {
                     assertTrue("Existing history must remain intact", afterFirst.history.containsAll(historyBefore))
                     awaitServiceIdle()
 
-                    // This explicit service command represents an approved repeat.
+                    // The UI approves a repeat of the existing queue row. Wait for the
+                    // asynchronous Start command so the old COMPLETED state cannot pass.
+                    activity.onActivity { DownloadService.start(it, listOf(first.id)) }
                     runBlocking(Dispatchers.IO) {
-                        graph.repository.update { it.copy(queue = it.queue.filterNot { row -> row.id == first.id } + second) }
+                        withTimeout(20_000) {
+                            while (graph.repository.state.value.queue.single { it.id == first.id }.outputUris == completed.outputUris) delay(50)
+                        }
                     }
-                    activity.onActivity { DownloadService.start(it, listOf(second.id)) }
-                    val repeated = awaitTerminal(second.id)
+                    val repeated = awaitTerminal(first.id)
                     createdUris = createdUris + repeated.outputUris
                     assertEquals("The approved second copy must also complete: ${repeated.rawError}", DownloadStatus.COMPLETED, repeated.status)
                     assertTrue("A repeat must create new files rather than overwrite the first copy", repeated.outputUris.none { it in completed.outputUris })

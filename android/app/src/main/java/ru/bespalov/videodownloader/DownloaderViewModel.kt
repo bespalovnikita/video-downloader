@@ -95,7 +95,9 @@ class DownloaderViewModel(application: Application) : AndroidViewModel(applicati
     }
     private fun work(block: suspend () -> Unit) {
         viewModelScope.launch {
-            try { graph.ready.await(); block() }
+            // Persist shared/added URLs as soon as storage opens; first-run native
+            // extraction must not hold incoming links only in Activity memory.
+            try { repository.awaitInitialized(); block() }
             catch (cancel: CancellationException) { throw cancel }
             catch (error: Exception) { message(error.message ?: error.javaClass.simpleName) }
         }

@@ -44,6 +44,7 @@ import java.time.LocalDate
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
@@ -66,6 +67,7 @@ class DownloadService : Service() {
     @Volatile private var destroyed = false
     private var concurrency = 1
     private val lastNotification = AtomicLong()
+    private val commandsInFlight = AtomicInteger()
     private val stageRoot by lazy { File(filesDir, "staging") }
 
     private enum class Reason { PAUSE, STOP, REMOVE }
@@ -80,6 +82,7 @@ class DownloadService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        currentService.set(this)
         publisher = MediaPublisher(this)
         wakeLock = (getSystemService(POWER_SERVICE) as PowerManager)
             .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "$packageName:downloads").apply { setReferenceCounted(false) }
@@ -101,6 +104,13 @@ class DownloadService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (destroyed || currentService.get() !== this) {
+            stopSelfResult(startId)
+            return START_NOT_STICKY
+        }
+        // Main-thread admission precedes foreground activation. An idle worker must not
+        // stop this service while this command waits for initialization/import/the gate.
+        commandsInFlight.incrementAndGet()
         lastStart = startId
         // Required within five seconds, before initialization, storage or native binaries run.
         ServiceCompat.startForeground(this, NOTIFICATION, notification(),
@@ -126,7 +136,14 @@ class DownloadService : Service() {
                 }
             } catch (error: Exception) {
                 graph.log("Download command: ${error.stackTraceToString()}")
-                gate.withLock { if (active.isEmpty()) { pending.clear(); finishIdleLocked() } }
+                gate.withLock { if (active.isEmpty()) pending.clear() }
+            } finally {
+                withContext(NonCancellable) {
+                    gate.withLock {
+                        commandsInFlight.decrementAndGet()
+                        if (active.isEmpty() && pending.isEmpty()) finishIdleLocked()
+                    }
+                }
             }
         }
         // A killed process may have unfinished files; recovery requires a visible user decision.
@@ -394,13 +411,23 @@ class DownloadService : Service() {
         }
     } catch (_: Exception) { false }
 
-    private fun finishIdleLocked() {
-        mutableRunning.value = false
-        mutablePaused.value = false
-        paused = false
-        releaseWakeLock()
-        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
-        stopSelfResult(lastStart)
+    private suspend fun finishIdleLocked() {
+        if (destroyed || active.isNotEmpty() || pending.isNotEmpty() || commandsInFlight.get() != 0) return
+        val generation = lastStart
+        // The gate keeps the verified idle state stable. Main-thread callbacks never wait
+        // for it: a new onStartCommand can instead advance generation/count before this
+        // callback runs. Foreground activation and teardown therefore cannot interleave.
+        withContext(Dispatchers.Main.immediate) {
+            if (!destroyed && currentService.get() === this@DownloadService &&
+                generation == lastStart && commandsInFlight.get() == 0) {
+                mutableRunning.value = false
+                mutablePaused.value = false
+                paused = false
+                releaseWakeLock()
+                ServiceCompat.stopForeground(this@DownloadService, ServiceCompat.STOP_FOREGROUND_REMOVE)
+                stopSelfResult(generation)
+            }
+        }
     }
 
     private fun acquireWakeLock() {
@@ -422,7 +449,7 @@ class DownloadService : Service() {
         val previous = lastNotification.get()
         if (!force && (now - previous < 1000 || !lastNotification.compareAndSet(previous, now))) return
         if (force) lastNotification.set(now)
-        if (!destroyed) getSystemService(NotificationManager::class.java).notify(NOTIFICATION, notification())
+        if (!destroyed && currentService.get() === this) getSystemService(NotificationManager::class.java).notify(NOTIFICATION, notification())
     }
 
     private fun notification(): Notification {
@@ -448,10 +475,12 @@ class DownloadService : Service() {
         destroyed = true
         active.values.forEach { it.reason.compareAndSet(null, Reason.STOP); graph.engine.cancel(it.requestId) }
         scope.cancel(CancellationException("Android dataSync foreground timeout"))
-        mutableRunning.value = false
-        mutablePaused.value = false
+        if (currentService.get() === this) {
+            mutableRunning.value = false
+            mutablePaused.value = false
+            ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+        }
         releaseWakeLock()
-        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
 
@@ -459,8 +488,10 @@ class DownloadService : Service() {
         destroyed = true
         active.values.forEach { it.reason.compareAndSet(null, Reason.STOP); graph.engine.cancel(it.requestId) }
         scope.cancel(CancellationException("Download service destroyed"))
-        mutableRunning.value = false
-        mutablePaused.value = false
+        if (currentService.compareAndSet(this, null)) {
+            mutableRunning.value = false
+            mutablePaused.value = false
+        }
         releaseWakeLock()
         super.onDestroy()
     }
@@ -479,6 +510,7 @@ class DownloadService : Service() {
         private const val ACTION_STOP = "ru.bespalov.videodownloader.STOP"
         private const val ACTION_CANCEL = "ru.bespalov.videodownloader.CANCEL"
         private const val ACTION_REMOVE = "ru.bespalov.videodownloader.REMOVE"
+        private val currentService = AtomicReference<DownloadService?>(null)
         private val claimedTasks = ConcurrentHashMap.newKeySet<String>()
         private val mutableRunning = MutableStateFlow(false)
         private val mutablePaused = MutableStateFlow(false)
