@@ -1,0 +1,18 @@
+{
+  "format": "video-downloader.queue",
+  "version": 1,
+  "items": [
+    {
+      "url": "https://www.youtube.com/watch?v=AbCdEf12345",
+      "title": "Видео для переноса 🎬"
+    },
+    {
+      "url": "https://EXAMPLE.org/watch?Token=AbC%2fD&x=1#part",
+      "title": "Название с \"кавычками\" и переносом\nстроки"
+    },
+    {
+      "url": "https://example.org/Видео/%D0%90?token=abc%2Fd",
+      "title": ""
+    }
+  ]
+}

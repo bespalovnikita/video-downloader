@@ -10,6 +10,7 @@
   <ItemGroup>
     <Content Include="..\fixtures\pornhub-discovery.json" Link="fixtures\pornhub-discovery.json" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\fixtures\legacy\**\*" Link="fixtures\legacy\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\fixtures\portable-queue\**\*" Link="fixtures\portable-queue\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <ProjectReference Include="..\..\src\VideoDownloader\VideoDownloader.csproj"/>
   </ItemGroup>
 </Project>

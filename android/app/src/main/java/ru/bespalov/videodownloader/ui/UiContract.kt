@@ -61,6 +61,9 @@ internal val MobileUiState.locked: Boolean get() = readOnly || importing
 interface MobileActions {
     fun addUrls(text: String)
     fun importList(uri: Uri)
+    fun copyQueue()
+    fun exportQueue(uri: Uri)
+    fun importQueueText(text: String)
     fun importCookies(uri: Uri)
     fun selectOutput(uri: Uri)
     fun saveSettings(settings: Settings)

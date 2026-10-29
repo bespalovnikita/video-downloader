@@ -1,5 +1,6 @@
 package ru.bespalov.video.core
 
+import java.net.IDN
 import java.net.URI
 import java.text.Normalizer
 
@@ -7,9 +8,33 @@ object Urls {
     fun isHttp(value: String): Boolean = try {
         val uri = URI(value)
         value.isNotBlank() && value.none { it.isWhitespace() || it.isISOControl() } &&
-            uri.scheme?.lowercase() in setOf("http", "https") && !uri.host.isNullOrBlank() &&
-            uri.rawUserInfo == null
+            uri.scheme?.lowercase() in setOf("http", "https") && validAuthority(uri)
     } catch (_: Exception) { false }
+
+    private fun validAuthority(uri: URI): Boolean {
+        val authority = uri.rawAuthority ?: return false
+        if (uri.rawUserInfo != null || '@' in authority) return false
+        if (authority.startsWith('[')) {
+            // URI validates bracketed IPv6 and its optional zone identifier.
+            return !uri.host.isNullOrBlank() && uri.port in -1..65535
+        }
+        val separator = authority.lastIndexOf(':')
+        val host = if (separator >= 0) authority.substring(0, separator) else authority
+        if (separator >= 0) {
+            val port = authority.substring(separator + 1)
+            if (port.isNotEmpty()) {
+                if (port.any { it !in '0'..'9' }) return false
+                val number = port.toIntOrNull() ?: return false
+                if (number !in 0..65535) return false
+            }
+        }
+        // java.net.URI.host is null for IDN and underscore hosts accepted by
+        // the Windows client. Validate their ASCII form, retaining the exact URL.
+        val ascii = IDN.toASCII(host).removeSuffix(".")
+        return ascii.isNotEmpty() && ascii.length <= 253 && ascii.split('.').all { label ->
+            label.length in 1..63 && label.all { it in 'a'..'z' || it in 'A'..'Z' || it in '0'..'9' || it == '-' || it == '_' }
+        }
+    }
 
     /** Values remain exact: case, query, escaping and fragment are identity. */
     fun extract(text: String): List<String> = text.split(Regex("\\s+"))

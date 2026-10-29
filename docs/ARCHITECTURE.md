@@ -64,7 +64,7 @@ flowchart TB
 ## Жизненный цикл URL
 
 На схеме показана очередь, ожидающая Start. Присоединение обычного URL к уже
-работающей сессии описано ниже; импорт из подписок всегда ждёт следующего Start.
+работающей сессии описано ниже; импорт из подписок и переносимой очереди всегда ждёт следующего Start.
 
 ```mermaid
 flowchart TD
@@ -148,6 +148,38 @@ flowchart TD
 обход через подписку с выбранным добавлением существующих материалов. Это
 различие следует из [построения аргументов загрузки](../src/VideoDownloader/Downloads/YtDlpArguments.cs)
 и [сканера подписок](../src/VideoDownloader/Subscriptions/SubscriptionScanner.cs).
+
+## Перенос очереди Windows ↔ Android
+
+Обе платформы обмениваются отдельным пакетом с URL и названиями. Windows-сессия
+и Android `state.json` остаются разными форматами хранения. Действия пользователя
+описаны в [инструкции переноса](QUEUE_TRANSFER.md), точный контракт и общие
+фикстуры — в [описании формата](../tests/fixtures/portable-queue/README.md).
+
+```mermaid
+flowchart TD
+    Source["Очередь Windows или Android: все строки в текущем порядке"] --> Export["PortableQueueCodec / PortableQueue: только URL и title"]
+    Export --> Packet["Текст VDQUEUE1: или UTF-8 файл .vdqueue"]
+    Packet -->|"Явная вставка или открытие файла"| Decode["Проверка версии, структуры, URL и пределов всего пакета"]
+    Decode -->|"Ошибка"| Reject["Показать ошибку; очередь не менять"]
+    Decode -->|"Успех"| Merge["QueueSessionController / DownloaderViewModel: объединить точные URL"]
+    Merge --> Existing["Существующие строки: сохранить состояние и порядок; дополнить пустое название"]
+    Merge --> New["Новые строки: новые IDs, Queued, ожидание следующего Start"]
+    New --> Save["Сохранить в локальное хранилище принимающего клиента"]
+    Save -.-> Preview["Независимо запросить превью"]
+    Save -->|"Пользователь нажал Start"| Download["Обычная проверка истории и скачивание с настройками принимающего клиента"]
+```
+
+Экспорт не изменяет источник. Кодеки проверяют весь пакет до объединения,
+сохраняют точную строку URL и первую запись при дублях. Сжатие и разбор выполняются
+в фоне; чтение ограничено до завершения распаковки. Неизвестная версия не
+передаётся обычному парсеру ссылок. Статусы, подписки, история, пути и cookies не
+становятся частью пакета; обычный импорт TXT и URL-ярлыков сохраняется.
+
+Реализации: [C# PortableQueueCodec](../src/VideoDownloader/Persistence/PortableQueue.cs)
+и [Kotlin PortableQueue](../android/core/src/main/kotlin/ru/bespalov/video/core/PortableQueue.kt).
+Windows-команды находятся в [NativeWindow.PortableQueue.cs](../src/VideoDownloader/UI/Views/NativeWindow.PortableQueue.cs),
+Android-команды — в [DownloaderViewModel.kt](../android/app/src/main/java/ru/bespalov/videodownloader/DownloaderViewModel.kt).
 
 ## Жизненный цикл подписки
 

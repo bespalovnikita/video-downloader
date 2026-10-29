@@ -39,6 +39,8 @@ internal sealed partial class UiScenario
             UiScenario.TestPanelLayout(root);
             Stage("testing duplicate-history dialog choices");
             UiScenario.TestDuplicateHistoryChoices(root);
+            Stage("testing portable queue clipboard and file transfer");
+            UiScenario.TestPortableQueueTransfer(root);
             Stage("testing startup recovery dialogs and empty-queue settings");
             VerifyStartupRecovery(root,Stage);
             using var input=File.OpenRead(Path.Combine(AppContext.BaseDirectory,"ui","MainWindow.xaml"));

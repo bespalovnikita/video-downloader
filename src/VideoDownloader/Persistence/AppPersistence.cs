@@ -7,6 +7,8 @@ namespace VideoDownloader.Native;
 public sealed class AppPersistence
 {
     public static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive = true, WriteIndented = false };
+    internal const int MaxCheckpointBytes=16*1024*1024;
+    internal const int MaxQueueItems=100_000;
     private readonly string _dir;
     private readonly SuccessfulDownloadHistory _history;
     public string SessionPath => Path.Combine(_dir, "session.json");
@@ -22,10 +24,10 @@ public sealed class AppPersistence
     public SessionSnapshot? Restore()
     {
         if (!File.Exists(SessionPath)) return null;
-        if (new FileInfo(SessionPath).Length > 16*1024*1024) throw new InvalidDataException("Session checkpoint exceeds 16 MiB.");
+        if (new FileInfo(SessionPath).Length > MaxCheckpointBytes) throw new InvalidDataException("Session checkpoint exceeds 16 MiB.");
         var session = JsonSerializer.Deserialize<SessionSnapshot>(File.ReadAllText(SessionPath,Encoding.UTF8),Json)
                       ?? throw new InvalidDataException("Empty session checkpoint.");
-        if (session.Version != 1 || session.Queue is null || session.Queue.Count > 100000 || session.Settings is null)
+        if (session.Version != 1 || session.Queue is null || session.Queue.Count > MaxQueueItems || session.Settings is null)
             throw new InvalidDataException("Invalid session checkpoint format.");
         var seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (var row in session.Queue)
@@ -62,9 +64,32 @@ public sealed class AppPersistence
 
     public void Save(IReadOnlyCollection<DownloadItem> queue, DownloadOptions settings)
     {
-        var snapshot = new SessionSnapshot { Queue=queue.ToList(),Settings=settings,Engine=null };
-        var json = JsonSerializer.Serialize(snapshot,Json);
-        AtomicWrite(SessionPath,json);
+        using var json=new CheckpointBuffer();
+        SerializeCheckpoint(json,queue,settings,DateTime.UtcNow);
+        AtomicWrite(SessionPath,Encoding.UTF8.GetString(json.GetBuffer(),0,checked((int)json.Length)));
+    }
+    internal static void ValidateCanSave(IReadOnlyCollection<DownloadItem> queue,DownloadOptions settings)
+    {
+        // Use the longest UTC timestamp representation so the subsequent Save
+        // cannot cross the byte boundary merely because its timestamp changed.
+        using var json=new CheckpointBuffer();
+        SerializeCheckpoint(json,queue,settings,new DateTime(2000,1,1,0,0,0,DateTimeKind.Utc).AddTicks(1));
+    }
+    private static void SerializeCheckpoint(Stream stream,IReadOnlyCollection<DownloadItem> queue,DownloadOptions settings,DateTime savedAtUtc)
+    {
+        if(queue.Count>MaxQueueItems)throw new InvalidDataException("Очередь не помещается в сохранение: допустимо не более 100 000 ссылок. Перенеси её частями.");
+        JsonSerializer.Serialize(stream,new SessionSnapshot{Queue=queue.ToList(),Settings=settings,Engine=null,SavedAtUtc=savedAtUtc},Json);
+    }
+    private sealed class CheckpointBuffer:MemoryStream
+    {
+        private void Check(int count)
+        {
+            if(count<0 || Length+count>MaxCheckpointBytes)
+                throw new InvalidDataException("Очередь не помещается в сохранение размером 16 МиБ. Перенеси её частями или сократи названия.");
+        }
+        public override void Write(byte[] buffer,int offset,int count){Check(count);base.Write(buffer,offset,count);}
+        public override void Write(ReadOnlySpan<byte> buffer){Check(buffer.Length);base.Write(buffer);}
+        public override void WriteByte(byte value){Check(1);base.WriteByte(value);}
     }
     public static void AtomicWrite(string path,string contents)
     {

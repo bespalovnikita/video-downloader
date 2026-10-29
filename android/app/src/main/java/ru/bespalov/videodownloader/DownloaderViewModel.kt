@@ -2,6 +2,9 @@ package ru.bespalov.videodownloader
 
 import android.app.Application
 import android.content.Intent
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.net.Uri
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
@@ -109,7 +112,56 @@ class DownloaderViewModel(application: Application) : AndroidViewModel(applicati
     }
     private fun idle() { check(!DownloadService.isRunning.value && checkJob?.isActive != true && maintenanceJob?.isActive != true) { "Дождитесь окончания загрузки или проверки." } }
 
-    override fun addUrls(text: String) = work { add(Urls.extract(text)) }
+    override fun addUrls(text: String) = work {
+        if (isQueueTransfer(text)) importPortable(text) else add(Urls.extract(text))
+    }
+
+    private fun isQueueTransfer(text: String): Boolean = PortableQueue.isPortable(text)
+
+    private suspend fun queueText(): String = withContext(Dispatchers.IO) {
+        PortableQueue.encode(repository.state.value.queue.map { PortableQueue.Entry(it.url, it.title) })
+    }
+
+    override fun copyQueue() = work {
+        val text = queueText()
+        require(text.length <= PortableQueue.MAX_CLIPBOARD_TEXT) {
+            "Очередь слишком велика для буфера обмена Android. Выберите «Сохранить .vdqueue» и перенесите файл."
+        }
+        withContext(Dispatchers.Main) {
+            try {
+                val clipboard = app.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                clipboard.setPrimaryClip(ClipData.newPlainText("Video Downloader queue", text))
+            } catch (error: Exception) {
+                throw IllegalStateException("Не удалось скопировать очередь в буфер обмена. Выберите «Сохранить .vdqueue» и перенесите файл.", error)
+            }
+        }
+        mutable.update { it.copy(message = UiMessage("Очередь скопирована. На другом клиенте выберите «Вставить очередь» или «Вставить».")) }
+    }
+
+    override fun exportQueue(uri: Uri) = work {
+        val text = queueText()
+        withContext(Dispatchers.IO) {
+            app.contentResolver.openOutputStream(uri, "wt")?.use { it.write(text.toByteArray(Charsets.UTF_8)) }
+                ?: error("Не удалось открыть файл очереди для записи.")
+        }
+        mutable.update { it.copy(message = UiMessage("Очередь сохранена. Этот файл можно открыть в Android- или Windows-клиенте.")) }
+    }
+
+    override fun importQueueText(text: String) = work { importPortable(text) }
+
+    private suspend fun importPortable(text: String) {
+        val entries = withContext(Dispatchers.IO) { PortableQueue.decode(text) }
+        var added = 0
+        val changed = graph.dataOperation.withLock {
+            writable()
+            repository.update { state -> PortableQueue.merge(state, entries).also { added = it.queue.size - state.queue.size } }
+        }
+        withContext(Dispatchers.IO) {
+            val titles = changed.queue.associate { it.url to it.title }
+            entries.forEach { entry -> graph.previews.request(entry.url, titles[entry.url].orEmpty()) }
+        }
+        mutable.update { it.copy(message = UiMessage("Очередь добавлена: $added новых ссылок. Загрузка запускается кнопкой Start.")) }
+    }
     private suspend fun add(urls: List<String>) {
         writable()
         require(urls.isNotEmpty()) { "Не найдено ссылок HTTP(S)." }
@@ -125,7 +177,13 @@ class DownloaderViewModel(application: Application) : AndroidViewModel(applicati
 
     override fun importList(uri: Uri) = work {
         val name = withContext(Dispatchers.IO) { documentName(uri) }
-        add(Urls.fromFile(name, readBounded(uri, 16 * 1024 * 1024).toString(Charsets.UTF_8).removePrefix("\uFEFF")))
+        val bytes = readBounded(uri, PortableQueue.MAX_TEXT_BYTES)
+        val text = bytes.toString(Charsets.UTF_8).removePrefix("\uFEFF")
+        if (name.endsWith(".vdqueue", true) || isQueueTransfer(text)) importPortable(text)
+        else {
+            require(bytes.size <= 16 * 1024 * 1024) { "Файл ссылок превышает 16 МиБ." }
+            add(Urls.fromFile(name, text))
+        }
     }
 
     override fun importCookies(uri: Uri) = work {

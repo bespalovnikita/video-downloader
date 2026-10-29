@@ -6,12 +6,14 @@ on:
     paths:
       - 'android/**'
       - 'collection-plugins/**'
+      - 'tests/fixtures/portable-queue/**'
       - '.github/workflows/android.yml'
   push:
     branches: [main]
     paths:
       - 'android/**'
       - 'collection-plugins/**'
+      - 'tests/fixtures/portable-queue/**'
       - '.github/workflows/android.yml'
 
 permissions:

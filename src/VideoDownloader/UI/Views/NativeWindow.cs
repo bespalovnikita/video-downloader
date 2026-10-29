@@ -78,7 +78,8 @@ public sealed partial class NativeWindow : IDisposable
         _preview=new PreviewController(_window,_storage,_ytDlp,
             ()=>SessionState.Queue.Concat(SessionState.Downloads),SaveCheckpoint,Log);
         _lifecycle=new WindowLifecycleController(_window,()=>OpenFolder(B("OutputBox").Text));
-        _ingress=new InputIngressController(_window,AddUrls,()=>Check(K("WatchClipboardCheck")),_lifecycle.Activate,Log);
+        _ingress=new InputIngressController(_window,AddUrls,()=>Check(K("WatchClipboardCheck")),_lifecycle.Activate,Log,
+            text=>_ = ImportPortableTextAsync(text),file=>_ = ImportPortableFileAsync(file));
         BindActions();
         K("ShowVideoTitlesCheck").Checked+=(_,_)=>SaveCheckpoint();
         K("ShowVideoTitlesCheck").Unchecked+=(_,_)=>SaveCheckpoint();

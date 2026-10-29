@@ -109,6 +109,19 @@ class RepositoryAndInputsTest {
         }
     }
 
+    @Test fun crossPlatformHostsKeepTheirExactIdentityAndRejectInvalidPorts() {
+        val urls = listOf("https://пример.рф/Видео?Token=AbC%2fD", "https://some_host.example/a",
+            "https://127.1/a", "https://-bad.example/a", "https://example.org.:65535/a",
+            "https://[::1]:65535/a", "https://[fe80::1%25eth0]/a")
+        assertEquals(urls, Urls.extract(urls.joinToString("\n")))
+        JsonStateRepository.validate(AppState(queue = urls.map { DownloadTask(url = it) }))
+        listOf("https://example.org:65536/a", "https://example.org:9999999999/a", "https://example.org:-1/a",
+            "https://example..org/a", "https://user:secret@пример.рф/a", "https://[::1]:65536/a",
+            "https://exa%2Fmple.org/a", "https://" + "a".repeat(64) + ".org/a").forEach { url ->
+            assertFalse("Invalid authority must be rejected: $url", Urls.isHttp(url))
+        }
+    }
+
     @Test fun profileChangesResetOnlyProfileOptionsAndKeepUserPaths() {
         val settings = Settings(cookiesFile = "/private/cookies.txt", outputTreeUri = "content://tree/selected", threads = 3,
             sponsor = true, showTitles = false)

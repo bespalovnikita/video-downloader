@@ -46,6 +46,7 @@ fun DownloaderScreen(ui: MobileUiState, actions: MobileActions) {
         pendingStart = null
     }
     val listPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { it?.let(actions::importList) }
+    val queueExporter = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { it?.let(actions::exportQueue) }
     val cookiesPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { it?.let(actions::importCookies) }
     val outputPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { it?.let(actions::selectOutput) }
     val exportPicker = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { it?.let(actions::exportBackup) }
@@ -93,7 +94,9 @@ fun DownloaderScreen(ui: MobileUiState, actions: MobileActions) {
                 }
                 ui.operation?.let { OperationCard(it, actions::cancelCheck) }
                 when (tab) {
-                    0 -> QueueScreen(ui, actions, start, { listPicker.launch(arrayOf("text/*", "application/octet-stream")) })
+                    0 -> QueueScreen(ui, actions, start,
+                        importList = { listPicker.launch(arrayOf("text/*", "application/octet-stream")) },
+                        exportQueue = { queueExporter.launch("video-downloader.vdqueue") })
                     1 -> DownloadsScreen(ui, actions, start)
                     2 -> SubscriptionsScreen(ui, actions)
                     else -> SettingsScreen(
@@ -171,10 +174,11 @@ private fun OperationCard(operation: UiOperation, cancel: () -> Unit) {
 }
 
 @Composable
-private fun QueueScreen(ui: MobileUiState, actions: MobileActions, start: (List<String>?) -> Unit, importList: () -> Unit) {
+private fun QueueScreen(ui: MobileUiState, actions: MobileActions, start: (List<String>?) -> Unit, importList: () -> Unit, exportQueue: () -> Unit) {
     var input by rememberSaveable { mutableStateOf("") }
     val clipboard = LocalClipboardManager.current
     var clear by remember { mutableStateOf(false) }
+    var transfer by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize().padding(horizontal = 12.dp)) {
         OutlinedTextField(value = input, onValueChange = { input = it }, label = { Text("URL видео или плейлиста") },
             modifier = Modifier.fillMaxWidth().testTag("urlInput"), minLines = 1, maxLines = 3, enabled = !ui.locked)
@@ -190,7 +194,22 @@ private fun QueueScreen(ui: MobileUiState, actions: MobileActions, start: (List<
             TextButton(onClick = { clear = true }, enabled = !ui.locked && !ui.running && ui.snapshot.queue.isNotEmpty()) { Text("Очистить") }
         }
         DownloadControls(ui, start, actions)
-        Text("В очереди: ${ui.snapshot.queue.size}", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(vertical = 8.dp))
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text("В очереди: ${ui.snapshot.queue.size}", style = MaterialTheme.typography.labelMedium, modifier = Modifier.weight(1f))
+            Box {
+                TextButton(onClick = { transfer = true }, modifier = Modifier.testTag("queueTransfer")) { Text("Перенос очереди") }
+                DropdownMenu(expanded = transfer, onDismissRequest = { transfer = false }) {
+                    DropdownMenuItem(text = { Text("Копировать очередь") }, onClick = { transfer = false; actions.copyQueue() },
+                        enabled = ui.snapshot.queue.isNotEmpty(), modifier = Modifier.testTag("copyQueue"))
+                    DropdownMenuItem(text = { Text("Вставить очередь") }, onClick = {
+                        transfer = false
+                        clipboard.getText()?.text?.let(actions::importQueueText)
+                    }, enabled = !ui.locked, modifier = Modifier.testTag("pasteQueue"))
+                    DropdownMenuItem(text = { Text("Сохранить .vdqueue") }, onClick = { transfer = false; exportQueue() }, enabled = ui.snapshot.queue.isNotEmpty())
+                    DropdownMenuItem(text = { Text("Загрузить .vdqueue") }, onClick = { transfer = false; importList() }, enabled = !ui.locked)
+                }
+            }
+        }
         LazyColumn(Modifier.weight(1f).testTag("queueList"), verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(bottom = 12.dp)) {
             if (ui.snapshot.queue.isEmpty()) item { EmptyState("Добавь ссылку или поделись ею из браузера в Video Downloader.") }
             items(ui.snapshot.queue, key = { it.id }) { task -> TaskCard(task, ui, actions, start, reorder = true) }
