@@ -24,6 +24,7 @@ internal sealed class SubscriptionCheckProgressController
     private int? _items;
     private long? _bytes;
     private bool _active;
+    private bool _recentWindow;
 
     internal SubscriptionCheckProgressController(Dispatcher dispatcher,Func<Window?,bool> isCurrentWindow,Func<bool> isCancelled)
     {
@@ -110,6 +111,7 @@ internal sealed class SubscriptionCheckProgressController
         _phase=0;
         _items=null;
         _bytes=null;
+        _recentWindow=false;
         var title=Control<TextBlock>("SubscriptionCheckSourceText");
         title.Text=string.IsNullOrWhiteSpace(source.Title)?source.Url:source.Title;
         title.ToolTip=source.Url;
@@ -134,11 +136,23 @@ internal sealed class SubscriptionCheckProgressController
     internal void Report(long version,string sourceId,SubscriptionScanProgress progress)
     {
         if(!Current(version,sourceId) || _isCancelled())return;
+        // A deliberate full fallback starts a second enumeration after the
+        // probe. Other late callbacks still cannot roll back persistence.
+        if (progress.Stage=="FullFallback" && _phase<5)
+        {
+            _recentWindow=false;
+            _items=null;
+            _bytes=null;
+            _phase=0;
+        }
+        if (progress.Stage=="RecentWindow" && _phase<2) _recentWindow=true;
         var (phase,text)=progress.Stage switch {
-            "Enumerating" => (1,"Получаем полный список материалов…"),
-            "Parsing" => (2,"Разбираем и проверяем полный список…"),
+            "RecentWindow" => (1,"Проверяем 20 новых материалов…"),
+            "FullFallback" => (1,"Окна недостаточно: получаем полный список…"),
+            "Enumerating" => (1,_recentWindow?"Проверяем 20 новых материалов…":"Получаем полный список материалов…"),
+            "Parsing" => (2,_recentWindow?"Сравниваем окно новых материалов…":"Разбираем и проверяем полный список…"),
             "Feed" => (3,"Дополняем названия из RSS / Atom…"),
-            "Ready" => (4,"Полный список получен. Подготавливаем сохранение…"),
+            "Ready" => (4,_recentWindow?"Окно проверено. Подготавливаем сохранение…":"Полный список получен. Подготавливаем сохранение…"),
             _ => (0,"")
         };
         if(phase==0 || phase<_phase)return;
@@ -146,8 +160,8 @@ internal sealed class SubscriptionCheckProgressController
         if(progress.ItemCount is >=0)_items=progress.ItemCount;
         if(progress.MetadataBytes is >=0)_bytes=Math.Max(_bytes??0,progress.MetadataBytes.Value);
         var details=new List<string>();
-        if(_items is { } items)details.Add($"Материалов в полном списке: {items}");
-        else details.Add("Число материалов станет известно после полного обхода.");
+        if(_items is { } items)details.Add(_recentWindow?$"Материалов в проверенном окне: {items}":$"Материалов в полном списке: {items}");
+        else details.Add(_recentWindow?"Окно: до 20 новых материалов. Сравниваем точные URL.":"Число материалов станет известно после полного обхода.");
         if(_bytes is { } bytes)details.Add($"Получено метаданных: {DownloadFormat.Bytes(bytes)}");
         Control<TextBlock>("SubscriptionCheckDetailText").Text=string.Join(" · ",details);
     }
@@ -192,7 +206,7 @@ internal sealed class SubscriptionCheckProgressController
         var stage=Control<TextBlock>("SubscriptionCheckStageText");
         stage.Text=cancelled?"Проверка отменена":failed>0?"Проверка завершена с ошибками":"Проверка завершена";
         stage.Foreground=failed>0?Brushes.LightSalmon:cancelled?Brushes.Gold:Brushes.LightGreen;
-        Control<TextBlock>("SubscriptionCheckDetailText").Text=$"Полных проверок: {succeeded}; ошибок: {failed}; добавлено в очередь: {queued}.";
+        Control<TextBlock>("SubscriptionCheckDetailText").Text=$"Успешных проверок: {succeeded}; ошибок: {failed}; добавлено в очередь: {queued}.";
         _active=false;
         _sourceId="";
     }

@@ -12,6 +12,8 @@ public sealed record SubscriptionScannerOptions
 {
     public TimeSpan ScanTimeout { get; init; } = TimeSpan.FromSeconds(180);
     public TimeSpan ChannelScanTimeout { get; init; } = TimeSpan.FromMinutes(15);
+    public TimeSpan RecentTimeout { get; init; } = TimeSpan.FromSeconds(30);
+    public TimeSpan ChannelRecentTimeout { get; init; } = TimeSpan.FromSeconds(45);
     public int MaxChannelPages { get; init; } = 500;
     public TimeSpan FeedTimeout { get; init; } = TimeSpan.FromSeconds(12);
     public int MaxItems { get; init; } = 10_000;
@@ -19,9 +21,10 @@ public sealed record SubscriptionScannerOptions
     public int MaxFeedBytes { get; init; } = 2 * 1024 * 1024;
 }
 
-/// <summary>A manual, complete collection scan. A feed never replaces enumeration.</summary>
+/// <summary>Manual collection discovery: full baseline, or a verified newest window with a full fallback.</summary>
 public sealed class SubscriptionScanner : IDisposable
 {
+    public const int RecentWindowSize = 20;
     private readonly string _ytDlpPath;
     private readonly HttpClient _http;
     private readonly bool _ownsHttp;
@@ -38,6 +41,8 @@ public sealed class SubscriptionScanner : IDisposable
         _limits = options ?? new();
         if (_limits.ScanTimeout <= TimeSpan.Zero || _limits.ScanTimeout > TimeSpan.FromSeconds(180) ||
             _limits.ChannelScanTimeout<=TimeSpan.Zero || _limits.ChannelScanTimeout>TimeSpan.FromMinutes(15) ||
+            _limits.RecentTimeout <= TimeSpan.Zero || _limits.RecentTimeout > TimeSpan.FromSeconds(30) ||
+            _limits.ChannelRecentTimeout <= TimeSpan.Zero || _limits.ChannelRecentTimeout > TimeSpan.FromSeconds(45) ||
             _limits.MaxChannelPages is <1 or >500 ||
             _limits.FeedTimeout <= TimeSpan.Zero || _limits.FeedTimeout > TimeSpan.FromSeconds(12) ||
             _limits.MaxItems is < 1 or > 10_000 || _limits.MaxMetadataBytes is < 1 or > 32 * 1024 * 1024 ||
@@ -49,7 +54,7 @@ public sealed class SubscriptionScanner : IDisposable
     }
 
     public async Task<SubscriptionScan> ScanAsync(SubscriptionDefinition source, string cookiePath, CancellationToken token,
-        IProgress<SubscriptionScanProgress>? progress = null)
+        IProgress<SubscriptionScanProgress>? progress = null, IReadOnlySet<string>? knownUrls = null, bool forceFull = false)
     {
         ArgumentNullException.ThrowIfNull(source);
         if (!ValidUrl(source.Url)) throw new ArgumentException("Источник должен быть HTTP(S) URL.", nameof(source));
@@ -59,13 +64,44 @@ public sealed class SubscriptionScanner : IDisposable
         try
         {
             deadline.Token.ThrowIfCancellationRequested();
-            ReportProgress(progress, new("Enumerating", MetadataBytes: 0));
-            // Always enumerate first, including when the feed has not changed.
-            string metadata = await EnumerateAsync(source.Url, cookiePath, deadline.Token, progress).ConfigureAwait(false);
+            SubscriptionScan? scan = null;
+            string metadata = "";
+            if (!forceFull && _limits.MaxItems >= RecentWindowSize && source.Initialized && knownUrls is { Count: > 0 } &&
+                (channel || IsNewestYouTubeTab(source.Url)))
+            {
+                ReportProgress(progress, new("RecentWindow", MetadataBytes: 0));
+                using var probeDeadline = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token);
+                probeDeadline.CancelAfter(channel ? _limits.ChannelRecentTimeout : _limits.RecentTimeout);
+                try
+                {
+                    metadata = await EnumerateAsync(source.Url, cookiePath, probeDeadline.Token, progress, recent: true).ConfigureAwait(false);
+                    var window = channel ? PornHubChannel.ParseRecentScan(metadata, source.Url, RecentWindowSize, _limits.MaxChannelPages)
+                        : ParseRecentYouTubeMetadata(metadata, source.Url);
+                    // No overlap means the update may exceed the window. A full
+                    // scan must bridge the gap rather than losing older news.
+                    if (window.Items.Any(item => knownUrls.Contains(item.Url))) scan = window;
+                }
+                catch (OperationCanceledException) when (!deadline.IsCancellationRequested)
+                {
+                    // A slow newest-page probe must leave time for the normal
+                    // complete fallback and release its own child process first.
+                }
+                catch (Exception error) when (error is IOException or InvalidDataException or JsonException)
+                {
+                    deadline.Token.ThrowIfCancellationRequested();
+                    Debug.WriteLine("Recent subscription window unavailable; falling back to a complete scan: " + error.Message);
+                }
+                if (scan is null) ReportProgress(progress, new("FullFallback"));
+            }
+            if (scan is null)
+            {
+                ReportProgress(progress, new("Enumerating", MetadataBytes: 0));
+                metadata = await EnumerateAsync(source.Url, cookiePath, deadline.Token, progress).ConfigureAwait(false);
+            }
             deadline.Token.ThrowIfCancellationRequested();
             long metadataBytes = Encoding.UTF8.GetByteCount(metadata);
             ReportProgress(progress, new("Parsing", MetadataBytes: metadataBytes));
-            SubscriptionScan scan = channel?PornHubChannel.ParseScan(metadata,source.Url,_limits.MaxItems,_limits.MaxChannelPages)
+            scan ??= channel?PornHubChannel.ParseScan(metadata,source.Url,_limits.MaxItems,_limits.MaxChannelPages)
                 :ParseMetadata(metadata, source.Url, _limits.MaxItems);
             deadline.Token.ThrowIfCancellationRequested();
             ReportProgress(progress, new("Parsing", scan.Items.Count, metadataBytes));
@@ -78,7 +114,9 @@ public sealed class SubscriptionScanner : IDisposable
             }
             string feedUrl = string.IsNullOrWhiteSpace(source.FeedUrl) ? scan.FeedUrl : source.FeedUrl;
             if (feedUrl.Length == 0) return Complete(scan);
-            if (!ValidUrl(feedUrl)) return Complete(scan with { FeedUrl = feedUrl, Warning = "URL ленты некорректен; использован полный обход yt-dlp." });
+            string confirmedBy = scan.Scope == SubscriptionScanScope.Full ? "полным обходом" : "окном новых публикаций";
+            string usedDiscovery = scan.Scope == SubscriptionScanScope.Full ? "полный обход" : "проверенное окно новых публикаций";
+            if (!ValidUrl(feedUrl)) return Complete(scan with { FeedUrl = feedUrl, Warning = $"URL ленты некорректен; использован {usedDiscovery} yt-dlp." });
             using var feedDeadline = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token);
             feedDeadline.CancelAfter(_limits.FeedTimeout);
             deadline.Token.ThrowIfCancellationRequested();
@@ -102,17 +140,17 @@ public sealed class SubscriptionScanner : IDisposable
                 deadline.Token.ThrowIfCancellationRequested();
                 return Complete(scan with {
                     Items = confirmed, FeedUrl = feedUrl,
-                    Warning = unconfirmed == 0 ? "" : $"Элементов ленты, не подтверждённых полным обходом: {unconfirmed}."
+                    Warning = unconfirmed == 0 ? "" : $"Элементов ленты, не подтверждённых {confirmedBy}: {unconfirmed}."
                 });
             }
             catch (OperationCanceledException) when (!deadline.IsCancellationRequested)
             {
-                return Complete(scan with { FeedUrl = feedUrl, Warning = "Лента не ответила вовремя; использован полный обход yt-dlp." });
+                return Complete(scan with { FeedUrl = feedUrl, Warning = $"Лента не ответила вовремя; использован {usedDiscovery} yt-dlp." });
             }
             catch (Exception error) when (error is HttpRequestException or IOException or InvalidDataException or XmlException or DecoderFallbackException)
             {
                 deadline.Token.ThrowIfCancellationRequested();
-                return Complete(scan with { FeedUrl = feedUrl, Warning = "Лента недоступна; использован полный обход yt-dlp. " + error.Message });
+                return Complete(scan with { FeedUrl = feedUrl, Warning = $"Лента недоступна; использован {usedDiscovery} yt-dlp. " + error.Message });
             }
         }
         catch (OperationCanceledException) when (!token.IsCancellationRequested)
@@ -130,7 +168,7 @@ public sealed class SubscriptionScanner : IDisposable
     }
 
     private async Task<string> EnumerateAsync(string url, string cookiePath, CancellationToken token,
-        IProgress<SubscriptionScanProgress>? progress)
+        IProgress<SubscriptionScanProgress>? progress, bool recent = false)
     {
         token.ThrowIfCancellationRequested();
         var start = new ProcessStartInfo(_ytDlpPath) {
@@ -147,13 +185,14 @@ public sealed class SubscriptionScanner : IDisposable
             PornHubChannel.RequireCollector();
             foreach(string argument in new[]{"--no-plugin-dirs","--plugin-dirs",PornHubChannel.PluginDirectory,
                 "--use-extractors","videodownloader:pornhub:channel","--flat-playlist","--socket-timeout","20",
-                "--extractor-args",$"VideoDownloaderPornHubChannel:max_items={_limits.MaxItems};max_pages={_limits.MaxChannelPages}"})
+                "--extractor-args",$"VideoDownloaderPornHubChannel:max_items={_limits.MaxItems};max_pages={_limits.MaxChannelPages}"+
+                    (recent ? $";recent_window={RecentWindowSize}" : "")})
                 start.ArgumentList.Add(argument);
         }
         else
         {
-            start.ArgumentList.Add("--no-flat-playlist");start.ArgumentList.Add("--playlist-end");
-            start.ArgumentList.Add((_limits.MaxItems+1).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            start.ArgumentList.Add(recent ? "--flat-playlist" : "--no-flat-playlist");start.ArgumentList.Add("--playlist-end");
+            start.ArgumentList.Add((recent ? RecentWindowSize : _limits.MaxItems+1).ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
         if (!string.IsNullOrWhiteSpace(cookiePath))
         {
@@ -176,7 +215,7 @@ public sealed class SubscriptionScanner : IDisposable
             {
                 if (reporting.Elapsed < TimeSpan.FromMilliseconds(250)) return;
                 reporting.Restart();
-                ReportProgress(progress, new("Enumerating", MetadataBytes: bytes));
+                ReportProgress(progress, new(recent ? "RecentWindow" : "Enumerating", MetadataBytes: bytes));
             }
             try { return await ReadBoundedAsync(stream, maximum, stop.Token, progress is null ? null : Received).ConfigureAwait(false); }
             catch { stop.Cancel(); throw; }
@@ -242,6 +281,82 @@ public sealed class SubscriptionScanner : IDisposable
             received?.Invoke(output.Length);
         }
         return output.ToArray();
+    }
+
+    internal static bool IsNewestYouTubeTab(string url)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var source) || source.Scheme is not ("http" or "https") ||
+            source.UserInfo.Length != 0 || !source.IsDefaultPort || source.Query.Length != 0 || source.Fragment.Length != 0 ||
+            !(source.Host.Equals("youtube.com", StringComparison.OrdinalIgnoreCase) ||
+              source.Host.Equals("www.youtube.com", StringComparison.OrdinalIgnoreCase) ||
+              source.Host.Equals("m.youtube.com", StringComparison.OrdinalIgnoreCase))) return false;
+        // Channel roots can combine videos, shorts and live tabs. Playlists can
+        // be arbitrarily reordered, so neither has a safe newest-first prefix.
+        return Regex.IsMatch(source.AbsolutePath,
+            @"^/(?:@[^/]+|(?:channel|c|user)/[^/]+)/(?:videos|shorts|streams)/?$", RegexOptions.CultureInvariant);
+    }
+
+    internal static SubscriptionScan ParseRecentYouTubeMetadata(string json, string sourceUrl)
+    {
+        if (!IsNewestYouTubeTab(sourceUrl)) throw new InvalidDataException("Источник не гарантирует порядок новых публикаций.");
+        using var document = JsonDocument.Parse(json);
+        var root = document.RootElement;
+        if (root.ValueKind != JsonValueKind.Object || String(root, "extractor_key") != "YoutubeTab" ||
+            String(root, "webpage_url") != sourceUrl ||
+            !root.TryGetProperty("entries", out var entries) || entries.ValueKind != JsonValueKind.Array ||
+            entries.GetArrayLength() > RecentWindowSize)
+            throw new InvalidDataException("Не подтверждено окно публикаций YouTube.");
+        foreach (string flag in new[] { "_error", "incomplete", "_incomplete", "truncated" })
+            if (root.TryGetProperty(flag, out var value) && value.ValueKind is not (JsonValueKind.Null or JsonValueKind.False))
+                throw new InvalidDataException("Проверка окна YouTube содержит ошибку.");
+        foreach (string name in new[] { "playlist_count", "n_entries" })
+            if (root.TryGetProperty(name, out var value) && value.ValueKind != JsonValueKind.Null &&
+                (value.ValueKind != JsonValueKind.Number || !value.TryGetInt64(out long count) || count < entries.GetArrayLength()))
+                throw new InvalidDataException("Некорректное количество публикаций YouTube.");
+        if (root.TryGetProperty("requested_entries", out var requested) && requested.ValueKind != JsonValueKind.Null)
+        {
+            if (requested.ValueKind != JsonValueKind.Array || requested.GetArrayLength() != entries.GetArrayLength())
+                throw new InvalidDataException("Проверка окна YouTube пропустила публикации.");
+            int expected = 1;
+            foreach (var index in requested.EnumerateArray())
+                if (index.ValueKind != JsonValueKind.Number || !index.TryGetInt32(out int number) || number != expected++)
+                    throw new InvalidDataException("Проверка окна YouTube нарушила порядок публикаций.");
+        }
+        var found = new List<DiscoveredMedia>();
+        var known = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var entry in entries.EnumerateArray())
+        {
+            if (entry.ValueKind != JsonValueKind.Object || entry.TryGetProperty("entries", out _) ||
+                String(entry, "_type") is not ("url" or "video") ||
+                !(String(entry, "ie_key") == "Youtube" || String(entry, "extractor_key") == "Youtube"))
+                throw new InvalidDataException("Окно YouTube содержит нераскрытую коллекцию или неизвестный материал.");
+            foreach (string flag in new[] { "_error", "incomplete", "_incomplete", "truncated" })
+                if (entry.TryGetProperty(flag, out var value) && value.ValueKind is not (JsonValueKind.Null or JsonValueKind.False))
+                    throw new InvalidDataException("Окно YouTube содержит ошибку материала.");
+            string id = String(entry, "id"), availability = String(entry, "availability");
+            if (!Regex.IsMatch(id, @"^[A-Za-z0-9_-]{11}$", RegexOptions.CultureInvariant) ||
+                (availability.Length != 0 && availability is not ("public" or "unlisted")))
+                throw new InvalidDataException("Окно YouTube содержит недоступный или неизвестный материал.");
+            string canonical = "https://www.youtube.com/watch?v=" + id;
+            string url = String(entry, "webpage_url");
+            if (url.Length == 0) url = String(entry, "url");
+            if (url == id || url.Length == 0) url = canonical;
+            // The flat extractor must still identify one video and preserve its
+            // exact URL. An unexpected redirect/collection forces a full scan.
+            if (!(url == canonical || url == "https://www.youtube.com/shorts/" + id || url == "https://www.youtube.com/live/" + id) ||
+                !known.Add(url))
+                throw new InvalidDataException("Окно YouTube содержит повторный или посторонний URL.");
+            string title = String(entry, "title");
+            found.Add(new(url, title.Length == 0 ? url : title));
+        }
+        string caption = String(root, "title");
+        string suggested = new[] { String(root, "channel"), String(root, "uploader"), caption }
+            .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)) ?? "";
+        string feed = "";
+        string channel = String(root, "channel_id");
+        if (Regex.IsMatch(channel, @"^UC[A-Za-z0-9_-]{22}$", RegexOptions.CultureInvariant))
+            feed = "https://www.youtube.com/feeds/videos.xml?channel_id=" + channel;
+        return new(caption.Length > 0 ? caption : sourceUrl, found, feed, "", suggested) { Scope = SubscriptionScanScope.RecentWindow };
     }
 
     public static SubscriptionScan ParseMetadata(string json, string sourceUrl, int maxItems = 10_000)

@@ -67,6 +67,16 @@ public sealed class SubscriptionStore
         return Update(snapshot =>
         {
             var source = Find(snapshot, id);
+            if (scan.Scope == SubscriptionScanScope.RecentWindow)
+            {
+                var knownUrls = snapshot.Items.Where(item => item.SubscriptionId == id)
+                    .Select(item => item.Url).ToHashSet(StringComparer.Ordinal);
+                if (!source.Initialized || scan.Items.Count > SubscriptionScanner.RecentWindowSize ||
+                    !scan.Items.Any(item => knownUrls.Contains(item.Url)))
+                    throw new InvalidDataException("Быстрая проверка не пересекается с сохранённым снимком; требуется полный обход.");
+            }
+            else if (scan.Scope != SubscriptionScanScope.Full)
+                throw new InvalidDataException("Неизвестный режим проверки подписки.");
             ReconcileSuccess(snapshot, successes);
             var processedUrls = snapshot.Items.Where(i => i.State == "Processed")
                 .Select(i => i.Url).ToHashSet(StringComparer.Ordinal);
@@ -79,7 +89,11 @@ public sealed class SubscriptionStore
             {
                 if (existing.TryGetValue(discovery.Url, out var known))
                 {
-                    known.Title = discovery.Title;
+                    // Lightweight windows can omit titles. Do not replace a
+                    // previously resolved name with an empty/URL placeholder.
+                    if ((!string.IsNullOrWhiteSpace(discovery.Title) && discovery.Title != discovery.Url) ||
+                        string.IsNullOrWhiteSpace(known.Title) || known.Title == known.Url)
+                        known.Title = discovery.Title;
                     continue;
                 }
                 var item = new SubscriptionItem
@@ -95,8 +109,10 @@ public sealed class SubscriptionStore
                 if (processedUrls.Contains(item.Url)) reconcile.Add(item.Url);
             }
             ReconcileSuccess(snapshot, reconcile);
-            source.Title = string.IsNullOrWhiteSpace(scan.Title) ? source.Url : scan.Title;
-            if (source.ShortName.Length == 0)
+            if (!string.IsNullOrWhiteSpace(scan.Title) && scan.Title != source.Url)
+                source.Title = scan.Title;
+            else if (string.IsNullOrWhiteSpace(source.Title)) source.Title = source.Url;
+            if (source.ShortName.Length == 0 && scan.Scope == SubscriptionScanScope.Full)
             {
                 string suggestion = string.IsNullOrWhiteSpace(scan.SuggestedName) ? scan.Title : scan.SuggestedName;
                 if (Uri.TryCreate(suggestion, UriKind.Absolute, out var suggestedUrl) && suggestedUrl.Scheme is "http" or "https") suggestion = "";
@@ -162,7 +178,7 @@ public sealed class SubscriptionStore
                 throw new InvalidOperationException("Материал не найден в подписке.")).ToList();
             foreach (var item in items)
             {
-                bool allowed = state == "Queued" ? item.State is "New" or "Skipped" or "Queued" :
+                bool allowed = state == "Queued" ? item.State is "Baseline" or "New" or "Skipped" or "Queued" :
                     item.State is "New" or "Skipped";
                 if (!allowed) throw new InvalidOperationException("Нельзя изменить состояние этого материала.");
             }

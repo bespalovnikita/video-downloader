@@ -199,6 +199,46 @@ internal sealed partial class UiScenario
                 "Initial imports must schedule preview acquisition before ordinary queue acceptance, without starting downloads.");
             Idle();
 
+            // Exercise the real check buttons against the scanner child. All
+            // known URLs are Baseline, so this also proves the UI passes every
+            // stored state rather than only downloaded/new materials.
+            var orderedSource=store.Add("https://www.youtube.com/@vd-offline/videos",false);
+            var orderedItems=Enumerable.Range(0,20).Select(index=>new DiscoveredMedia(
+                "https://www.youtube.com/watch?v="+index.ToString("D11"),"Исходное видео "+index)).ToArray();
+            store.ApplyScan(orderedSource.Id,new SubscriptionScan("Упорядоченный канал",orderedItems,"",""),[]);
+            string fullResponse=JsonSerializer.Serialize(new {
+                _type="playlist",title="Упорядоченный канал",
+                entries=orderedItems.Select(item=>new {_type="video",webpage_url=item.Url,title=item.Title}).ToArray()
+            });
+            string recentResponse=JsonSerializer.Serialize(new {
+                _type="playlist",extractor_key="YoutubeTab",title="Упорядоченный канал",webpage_url=orderedSource.Url,playlist_count=20,
+                entries=orderedItems.Select(item=>new {_type="url",ie_key="Youtube",id=item.Url.Split('=').Last(),url=item.Url,title=item.Title}).ToArray()
+            });
+            File.WriteAllText(scanConfig,JsonSerializer.Serialize(new {Mode="complete",Response=fullResponse,RecentResponse=recentResponse}),Encoding.UTF8);
+            SelectSource(orderedSource.Id);
+            int beforeWindow=Calls(scanCalls);
+            Check();
+            var windowArguments=JsonSerializer.Deserialize<string[]>(File.ReadAllLines(scanCalls).Last())!;
+            int recentEnd=Array.IndexOf(windowArguments,"--playlist-end");
+            Require(Calls(scanCalls)==beforeWindow+1 && windowArguments.Contains("--flat-playlist") &&
+                    recentEnd>=0 && windowArguments[recentEnd+1]=="20" &&
+                    driver.TestControl<TextBlock>("SubscriptionStatusText").Text.Contains("по окну новых: 1") &&
+                    driver.TestInbox.Items.Count==20 && store.Read().Items.Count(item=>item.SubscriptionId==orderedSource.Id && item.State=="Baseline")==20,
+                "The ordinary Check button must pass baseline URLs to a single 20-item scan and retain the complete visible snapshot.");
+            var fullCheck=driver.TestControl<CheckBox>("FullSubscriptionCheck");
+            fullCheck.IsChecked=true;
+            int beforeFull=Calls(scanCalls);
+            Check();
+            var fullArguments=JsonSerializer.Deserialize<string[]>(File.ReadAllLines(scanCalls).Last())!;
+            int fullEnd=Array.IndexOf(fullArguments,"--playlist-end");
+            Require(Calls(scanCalls)==beforeFull+1 && fullArguments.Contains("--no-flat-playlist") &&
+                    !fullArguments.Contains("--flat-playlist") && fullEnd>=0 && fullArguments[fullEnd+1]=="10001" &&
+                    driver.TestControl<TextBlock>("SubscriptionStatusText").Text.Contains("полных: 1; по окну новых: 0") &&
+                    Calls(metadataCalls)==3 && ui.SessionState.Queue.Count==2,
+                "The real Full-check checkbox must bypass the recent probe without queueing or fetching old baseline metadata.");
+            fullCheck.IsChecked=false;
+            Idle();
+
             var calls=File.ReadAllLines(metadataCalls).Select(line=>JsonDocument.Parse(line)).ToArray();
             try
             {
@@ -208,7 +248,7 @@ internal sealed partial class UiScenario
                     "Only the three eligible URLs must execute one metadata-only managed child each.");
             }
             finally {foreach(var call in calls)call.Dispose();}
-            Console.WriteLine("PASS: subscription full-scan prefetch before queue/Start, baseline and failed-scan exclusion, inbox selection, shared-worker dedup");
+            Console.WriteLine("PASS: subscription full-scan prefetch before queue/Start, baseline and failed-scan exclusion, inbox selection, shared-worker dedup, real recent/full scan controls");
         }
         finally
         {

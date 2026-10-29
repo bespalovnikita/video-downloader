@@ -30,7 +30,7 @@ def page(keys=('phfixture1',), number=1, next_page=None, total=None, extra='', o
 
 class Collector(module.VideoDownloaderPornHubChannelIE):
     def __init__(self, pages, **limits):
-        self.pages, self.calls, self.failures, self.delays = pages, [], {}, []
+        self.pages, self.calls, self.failures, self.delays, self.queries = pages, [], {}, [], []
         self.authorized_host = None
         params = {'quiet': True, 'no_warnings': True, 'extractor_args': {
             self.ie_key().lower(): {name: [str(value)] for name, value in limits.items()}}}
@@ -48,6 +48,7 @@ class Collector(module.VideoDownloaderPornHubChannelIE):
     def _download_webpage_handle(self, base, channel, *args, query=None, **kwargs):
         number = query['page']
         self.calls.append((base, number))
+        self.queries.append(dict(query))
         response = self.pages[number]
         if callable(response):
             response = response()
@@ -57,6 +58,57 @@ class Collector(module.VideoDownloaderPornHubChannelIE):
 
 
 class CollectorTests(unittest.TestCase):
+    def test_recent_window_stops_before_later_pages_and_has_a_separate_proof(self):
+        collector = Collector({1: page(tuple(f'phrecent{n}' for n in range(30)), next_page=2, total=100)}, recent_window=20)
+        result = collector.extract(SOURCE)
+        self.assertEqual([entry['id'] for entry in result['entries']], [f'phrecent{n}' for n in range(20)])
+        self.assertEqual([number for _, number in collector.calls], [1, 1])
+        self.assertTrue(all(query == {'page': 1, 'o': 'mr'} for query in collector.queries))
+        self.assertNotIn('vd_ph_scan', result)
+        proof = result['vd_ph_recent']
+        self.assertEqual((proof['scope'], proof['order'], proof['complete']), ('recent', 'most_recent', False))
+        self.assertEqual((proof['source_url'], proof['listing_url'], proof['window_size'], proof['item_count']), (SOURCE, LISTING, 20, 20))
+        self.assertEqual(proof['pages'], [dict(number=1, count=20, has_next=True)])
+        self.assertTrue(proof['verified_first_page'])
+
+    def test_recent_window_walks_small_pages_and_preserves_card_order(self):
+        collector = Collector({1: page(tuple(f'phrecent{n}' for n in range(12)), next_page=2, total=30),
+                               2: page(tuple(f'phrecent{n}' for n in range(12, 24)), number=2, next_page=3, total=30)}, recent_window=20)
+        result = collector.extract(SOURCE)
+        self.assertEqual([entry['id'] for entry in result['entries']], [f'phrecent{n}' for n in range(20)])
+        self.assertEqual([number for _, number in collector.calls], [1, 2, 1])
+        self.assertEqual([item['count'] for item in result['vd_ph_recent']['pages']], [12, 8])
+
+    def test_recent_short_or_empty_source_is_still_marked_as_partial_scope(self):
+        for keys in ((), ('phone', 'phtwo')):
+            result = Collector({1: page(keys, total=len(keys))}, recent_window=20).extract(SOURCE)
+            self.assertEqual(len(result['entries']), len(keys))
+            self.assertFalse(result['vd_ph_recent']['complete'])
+            self.assertFalse(result['vd_ph_recent']['pages'][-1]['has_next'])
+
+    def test_recent_window_requires_confirmed_newest_section_and_rechecks_order(self):
+        for identifier in ('uploadedVideos', 'videoSearchResult', 'claimedUploadedVideoSection'):
+            with self.subTest(identifier=identifier), self.assertRaisesRegex(ExtractorError, 'Newest-first'):
+                Collector({1: page().replace('mostRecentVideosSection', identifier)}, recent_window=20).extract(SOURCE)
+        responses = iter((page(('phfirst', 'phsecond')), page(('phsecond', 'phfirst'))))
+        with self.assertRaisesRegex(ExtractorError, 'changed during enumeration'):
+            Collector({1: lambda: next(responses)}, recent_window=20).extract(SOURCE)
+
+    def test_recent_window_failures_do_not_emit_a_partial_success(self):
+        scenarios = ({1: page(next_page=2), 2: ExtractorError('HTTP 403', expected=True)},
+                     {1: page(next_page=2), 2: page(number=2)},
+                     {1: page(total=2)},
+                     {1: page(next_page=3)})
+        for pages in scenarios:
+            with self.subTest(pages=pages), self.assertRaises(ExtractorError):
+                Collector(pages, recent_window=20).extract(SOURCE)
+        with self.assertRaises(ExtractorError):
+            Collector({1: page(next_page=2)}, recent_window=20, max_pages=1).extract(SOURCE)
+        with self.assertRaises(ExtractorError):
+            Collector({1: page(('phone', 'phtwo'))}, recent_window=20, max_items=1).extract(SOURCE)
+        with self.assertRaises(ExtractorError):
+            Collector({1: page()}, recent_window=21).extract(SOURCE)
+
     def test_complete_pages_and_individual_urls(self):
         collector = Collector({1: page(('phfixture1', 'phfixture2'), next_page=2, total=3),
                                2: page(('phfixture3',), number=2, total=3)})

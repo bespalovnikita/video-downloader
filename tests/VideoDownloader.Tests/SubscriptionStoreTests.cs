@@ -13,6 +13,8 @@ internal static class SubscriptionStoreTests
         try
         {
             InitialSnapshotsAndFailures(Path.Combine(root, "initial"));
+            ExplicitBaselineQueue(Path.Combine(root, "baseline-queue"));
+            SupplementalWindows(Path.Combine(root, "windows"));
             NamesAndLegacyMigration(Path.Combine(root, "names"));
             SuccessfulProcessingAndNotices(Path.Combine(root, "notices"));
             CrashRecovery(Path.Combine(root, "recovery"));
@@ -42,6 +44,74 @@ internal static class SubscriptionStoreTests
 
     private static SubscriptionItem Item(SubscriptionSnapshot snapshot, string id, string url) =>
         snapshot.Items.Single(item => item.SubscriptionId == id && item.Url == url);
+
+    private static void ExplicitBaselineQueue(string directory)
+    {
+        var store = new SubscriptionStore(directory);
+        var source = store.Add("https://baseline.example/videos", false);
+        const string first = "https://media.example/baseline-first", second = "https://media.example/baseline-second";
+        store.ApplyScan(source.Id, Scan(first, second), []);
+        Assert(store.Read().Items.All(item => item.State == "Baseline" && !item.InitialQueuePending),
+            "The visible initial snapshot must remain unqueued until explicit selection");
+        store.MarkQueued(source.Id, [first]);
+        var selected = new SubscriptionStore(directory).Read();
+        Assert(Item(selected, source.Id, first).State == "Queued" && !Item(selected, source.Id, first).SuccessAttributed &&
+            Item(selected, source.Id, second).State == "Baseline" && !Item(selected, source.Id, second).InitialQueuePending,
+            "Explicit baseline queueing must affect only the selected row without claiming a successful download");
+        store.ApplyScan(source.Id, Scan(first, second), []);
+        Assert(Item(store.Read(), source.Id, first).State == "Queued" && Item(store.Read(), source.Id, second).State == "Baseline",
+            "A repeated scan must preserve the explicit baseline decision");
+        var legacy = JsonNode.Parse(File.ReadAllText(store.Path))!;
+        legacy["Subscriptions"]![0]!.AsObject().Remove("ShortName");
+        File.WriteAllText(store.Path, legacy.ToJsonString());
+        var window = store.ApplyScan(source.Id, Scan(first) with { Scope = SubscriptionScanScope.RecentWindow, SuggestedName = "Partial suggestion" }, []);
+        Assert(window.Subscriptions.Single().ShortName == "", "A legacy folder name may be inferred only by a complete scan");
+        var full = store.ApplyScan(source.Id, Scan(first, second) with { SuggestedName = "Complete suggestion" }, []);
+        Assert(full.Subscriptions.Single().ShortName == "Complete suggestion", "A full scan must still migrate the missing legacy folder name");
+    }
+
+    private static void SupplementalWindows(string directory)
+    {
+        var store = new SubscriptionStore(directory);
+        var source = store.Add("https://windows.example/videos", false);
+        string[] old = Enumerable.Range(0, 100).Select(index => "https://media.example/window/" + index).ToArray();
+        SubscriptionScan Window(params string[] urls) => Scan(urls) with { Scope = SubscriptionScanScope.RecentWindow };
+        byte[] uninitialized = File.ReadAllBytes(store.Path);
+        Refuses(() => store.ApplyScan(source.Id, Window(old[0]), []), "A window cannot establish the initial baseline");
+        Assert(uninitialized.SequenceEqual(File.ReadAllBytes(store.Path)), "Refusing a window must leave an uninitialized source untouched");
+        store.ApplyScan(source.Id, Scan(old), []);
+        store.MarkQueued(source.Id, [old[0], old[1]]);
+        store.MarkSuccessful(old[0]);
+        const string skipped = "https://media.example/window/skipped";
+        store.ApplyScan(source.Id, Scan(old.Concat([skipped]).ToArray()), []);
+        store.Skip(source.Id, [skipped]);
+        var before = store.Read();
+        var oldStates = before.Items.ToDictionary(item => item.Url, item => item.State, StringComparer.Ordinal);
+        var missingTitles = Window(old[0], old[1]) with { Items = [new(old[0], ""), new(old[1], old[1])] };
+        var retainedTitles = store.ApplyScan(source.Id, missingTitles, []);
+        Assert(retainedTitles.Items.Where(item => item.Url == old[0] || item.Url == old[1]).All(item => item.Title == "Title " + item.Url),
+            "A lightweight window without useful titles must preserve previously resolved video names");
+        var noUpdates = store.ApplyScan(source.Id, Window(old.Take(19).Append(skipped).ToArray()), []);
+        Assert(noUpdates.Items.Count == 101 && noUpdates.Items.All(item => oldStates[item.Url] == item.State) &&
+            noUpdates.Subscriptions.Single().LastSuccessUtc >= before.Subscriptions.Single().LastSuccessUtc,
+            "Twenty known URLs must keep all 101 saved rows, their queued/skipped/processed states and refresh the successful check time");
+        const string firstNew = "https://media.example/window/new1", secondNew = "https://media.example/window/new2";
+        var withNews = store.ApplyScan(source.Id, Window(new[] { firstNew, secondNew }.Concat(old.Take(18)).ToArray()), []);
+        Assert(withNews.Items.Count == 103 && Item(withNews, source.Id, firstNew).State == "New" &&
+            Item(withNews, source.Id, secondNew).State == "New" && !Item(withNews, source.Id, firstNew).InitialQueuePending &&
+            oldStates.All(pair => Item(withNews, source.Id, pair.Key).State == pair.Value),
+            "A recent window must add only unseen URLs while preserving all previous decisions without autoqueueing");
+        byte[] durable = File.ReadAllBytes(store.Path);
+        Refuses(() => store.ApplyScan(source.Id, Window("https://media.example/window/no-anchor"), []),
+            "A detached window without a currently persisted anchor must be refused atomically");
+        Refuses(() => store.ApplyScan(source.Id, Window(old.Take(21).ToArray()), []), "A supplemental window must obey its separate 20-item limit");
+        Refuses(() => store.ApplyScan(source.Id, Scan(old) with { Scope = (SubscriptionScanScope)99 }, []), "Unknown discovery scopes must be refused");
+        Assert(durable.SequenceEqual(File.ReadAllBytes(store.Path)), "Rejected supplemental results may not mutate state or timestamps");
+        store.RecordFailure(source.Id, "Fallback failed");
+        var failed = store.Read();
+        Assert(failed.Items.Count == withNews.Items.Count && failed.Subscriptions.Single().LastSuccessUtc == withNews.Subscriptions.Single().LastSuccessUtc,
+            "Failed full fallback must preserve every saved item and the last successful update time");
+    }
 
     private static void NamesAndLegacyMigration(string directory)
     {
