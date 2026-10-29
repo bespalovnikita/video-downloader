@@ -1,5 +1,6 @@
 package ru.bespalov.videodownloader
 
+import android.app.KeyguardManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -18,6 +19,7 @@ import androidx.test.uiautomator.UiDevice
 import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLRequest
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
@@ -249,6 +251,23 @@ class AndroidPortInstrumentedTest {
 
     @Test fun foregroundDownloadCompletesAfterPressingHome() {
         initialize()
+        val device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
+        val keyguard = checkNotNull(context.getSystemService(KeyguardManager::class.java))
+        // Unlike UI-click tests, this case starts the service directly. A resumed
+        // Activity behind a sleeping/locked emulator cannot receive a user's Home.
+        device.wakeUp()
+        val unlockOutput = device.executeShellCommand("wm dismiss-keyguard")
+        try {
+            runBlocking(Dispatchers.IO) {
+                withTimeout(5_000) {
+                    while (!device.isScreenOn || keyguard.isKeyguardLocked) delay(50)
+                }
+            }
+        } catch (timeout: TimeoutCancellationException) {
+            throw AssertionError("The lifecycle test requires an awake, unlocked test device: " +
+                "screenOn=${device.isScreenOn}, keyguardLocked=${keyguard.isKeyguardLocked}, " +
+                "visiblePackage=${device.currentPackageName}, unlockOutput=$unlockOutput", timeout)
+        }
         // An ISO BMFF free box keeps the fixture valid while making the real HTTP transfer
         // long enough to observe background progress. No external network is involved.
         LoopbackMediaServer(slowSample(2 * 1024 * 1024), chunkBytes = 8192, chunkDelayMillis = 100).use { origin ->
@@ -267,26 +286,30 @@ class AndroidPortInstrumentedTest {
                     activity.onActivity { DownloadService.start(it, listOf(task.id)) }
                     awaitTransferProgress(task.id)
                     assertEquals(DownloadStatus.RUNNING, graph.repository.state.value.queue.single { it.id == task.id }.status)
-                    val device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
                     val configurator = Configurator.getInstance()
                     val idleTimeout = configurator.waitForIdleTimeout
                     try {
-                        // UiAutomator's pressHome result reports key injection, not Activity
-                        // state, and can fail while the progress UI changes continuously.
-                        // Send a real system Home event without waiting for accessibility idle,
-                        // then prove that Home actually stopped the Activity and exposed Home.
+                        // Open Android's actual Home task. Key-injection return values and
+                        // accessibility package names do not prove that our Activity stopped.
+                        // The lifecycle transition and subsequent byte growth do.
                         configurator.waitForIdleTimeout = 500
-                        val launcher = device.launcherPackageName
-                        assertTrue("The test device must have a Home launcher", !launcher.isNullOrBlank())
-                        val homeOutput = device.executeShellCommand("input keyevent KEYCODE_HOME")
-                        assertTrue("System Home command failed: $homeOutput", homeOutput.isBlank())
-                        runBlocking(Dispatchers.IO) {
-                            withTimeout(10_000) {
-                                while (activity.state != Lifecycle.State.CREATED || device.currentPackageName != launcher) delay(50)
+                        val home = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        val launcher = home.resolveActivity(context.packageManager)
+                        assertEquals("The download Activity must start in the foreground", Lifecycle.State.RESUMED, activity.state)
+                        activity.onActivity { it.startActivity(home) }
+                        try {
+                            runBlocking(Dispatchers.IO) {
+                                withTimeout(10_000) {
+                                    while (activity.state != Lifecycle.State.CREATED) delay(50)
+                                }
                             }
+                        } catch (timeout: TimeoutCancellationException) {
+                            throw AssertionError("Home did not stop the download Activity: state=${activity.state}, " +
+                                "visiblePackage=${device.currentPackageName}, home=$launcher, screenOn=${device.isScreenOn}, " +
+                                "keyguardLocked=${keyguard.isKeyguardLocked}", timeout)
                         }
                         assertEquals("Home must stop the application's Activity", Lifecycle.State.CREATED, activity.state)
-                        assertEquals("Home must expose the real launcher", launcher, device.currentPackageName)
                         assertTrue("The foreground download service must survive Home", DownloadService.isRunning.value)
                         val backgroundBytes = DownloadService.progress.value[task.id]?.downloadedBytes ?: 0
                         runBlocking(Dispatchers.IO) {
