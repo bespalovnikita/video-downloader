@@ -4,30 +4,31 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.IOException
 import java.io.InputStream
+import java.io.PushbackInputStream
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
 import java.time.LocalDate
-import java.util.zip.ZipFile
+import java.util.zip.ZipInputStream
 
 /** Inspects the actual zipimport executable, independently of the wrapper's preferences. */
 internal object RuntimeArchive {
     private const val VERSION_ENTRY = "yt_dlp/version.py"
     private const val MAX_VERSION_BYTES = 64 * 1024
     private const val MAX_ASSET_BYTES = 32 * 1024 * 1024
+    private const val MAX_STUB_BYTES = 4 * 1024
+    private const val MAX_SCANNED_BYTES = 64L * 1024 * 1024
+    private const val MAX_ENTRIES = 20_000
     private val versionLine = Regex("(?m)^__version__[ \\t]*=[ \\t]*(['\"])([0-9.]+)\\1[ \\t]*\\r?$")
     private val versionShape = Regex("^[0-9]{4}\\.[0-9]{2}\\.[0-9]{2}(?:\\.[0-9]{1,12}){0,4}$")
 
     fun readVersion(file: File): String? = try {
         if (!file.isFile || Files.isSymbolicLink(file.toPath())) null
-        else ZipFile(file).use { archive ->
-            val entry = archive.getEntry(VERSION_ENTRY) ?: return@use null
-            if (entry.isDirectory || entry.size > MAX_VERSION_BYTES) return@use null
-            val bytes = archive.getInputStream(entry).use { readBounded(it, MAX_VERSION_BYTES) }
-            val matches = versionLine.findAll(bytes.toString(Charsets.UTF_8)).toList()
-            if (matches.size != 1) return@use null
-            matches.single().groupValues[2].takeIf { components(it) != null }
+        else file.inputStream().buffered().use { source ->
+            val input = PushbackInputStream(source, 4)
+            if (!positionAtZip(input)) null
+            else ZipInputStream(input).use(::readVersionEntry)
         }
     } catch (_: Exception) { null }
 
@@ -107,15 +108,62 @@ internal object RuntimeArchive {
         }
     } catch (_: Exception) { null }
 
-    private fun readBounded(input: InputStream, limit: Int): ByteArray {
-        val output = ByteArrayOutputStream()
-        val buffer = ByteArray(8192)
-        while (true) {
-            val count = input.read(buffer)
-            if (count < 0) break
-            require(output.size() + count <= limit) { "yt-dlp version metadata is too large" }
-            output.write(buffer, 0, count)
+    /** Android's ZIP readers do not consistently accept the Unix executable's shebang prefix. */
+    private fun positionAtZip(input: PushbackInputStream): Boolean {
+        val signature = byteArrayOf(0x50, 0x4b, 0x03, 0x04)
+        val first = ByteArray(4)
+        for (index in first.indices) {
+            val value = input.read()
+            if (value < 0) return false
+            first[index] = value.toByte()
         }
-        return output.toByteArray()
+        if (first.contentEquals(signature)) {
+            input.unread(signature)
+            return true
+        }
+        // Only skip the known Unix zipimport launcher, not arbitrary leading data.
+        if (first[0] != '#'.code.toByte() || first[1] != '!'.code.toByte()) return false
+        var window = 0
+        for (value in first) window = (window shl 8) or (value.toInt() and 0xff)
+        var consumed = first.size
+        while (consumed < MAX_STUB_BYTES + signature.size) {
+            val value = input.read()
+            if (value < 0) return false
+            window = (window shl 8) or value
+            consumed++
+            if (window == 0x504b0304) {
+                input.unread(signature)
+                return true
+            }
+        }
+        return false
+    }
+
+    private fun readVersionEntry(archive: ZipInputStream): String? {
+        val buffer = ByteArray(8192)
+        var total = 0L
+        repeat(MAX_ENTRIES) {
+            val entry = archive.nextEntry ?: return null
+            val isVersion = entry.name == VERSION_ENTRY && !entry.isDirectory
+            if (entry.size > MAX_SCANNED_BYTES - total || (isVersion && entry.size > MAX_VERSION_BYTES)) return null
+            val output = if (isVersion) ByteArrayOutputStream() else null
+            while (true) {
+                val count = archive.read(buffer)
+                if (count < 0) break
+                total += count
+                if (total > MAX_SCANNED_BYTES) return null
+                if (output != null) {
+                    if (output.size() + count > MAX_VERSION_BYTES) return null
+                    output.write(buffer, 0, count)
+                }
+            }
+            if (output != null) {
+                val matches = versionLine.findAll(output.toString(Charsets.UTF_8.name())).toList()
+                if (matches.size != 1) return null
+                return matches.single().groupValues[2].takeIf { components(it) != null }
+            }
+            archive.closeEntry()
+        }
+        return null
     }
 }

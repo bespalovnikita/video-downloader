@@ -110,6 +110,43 @@ class RuntimeArchiveTest {
         assertNull(RuntimeArchive.readVersion(target))
     }
 
+    @Test fun executablePrefixIsBoundedAndArbitraryLeadingBytesAreRejected() = inDirectory { directory ->
+        val target = File(directory, "yt-dlp")
+        val zip = archive(bundled)
+        target.writeBytes("#!/usr/bin/env python3\n".toByteArray() + zip)
+        assertEquals(bundled, RuntimeArchive.readVersion(target))
+        target.writeBytes("not a launcher\n".toByteArray() + zip)
+        assertNull(RuntimeArchive.readVersion(target))
+        target.writeBytes(("#!" + " ".repeat(4094)).toByteArray() + zip)
+        assertEquals("The maximum supported launcher is 4 KiB", bundled, RuntimeArchive.readVersion(target))
+        target.writeBytes(("#!" + " ".repeat(4095)).toByteArray() + zip)
+        assertNull("A longer executable stub must not be scanned", RuntimeArchive.readVersion(target))
+    }
+
+    @Test fun findsVersionAfterOrdinaryZipEntriesAndRejectsExcessiveInflation() = inDirectory { directory ->
+        val target = File(directory, "yt-dlp")
+        fun withLeadingData(size: Int): ByteArray = ByteArrayOutputStream().also { output ->
+            ZipOutputStream(output).use { zip ->
+                zip.putNextEntry(ZipEntry("yt_dlp/another.py"))
+                val buffer = ByteArray(8192)
+                var remaining = size
+                while (remaining > 0) {
+                    val count = minOf(remaining, buffer.size)
+                    zip.write(buffer, 0, count)
+                    remaining -= count
+                }
+                zip.closeEntry()
+                zip.putNextEntry(ZipEntry("yt_dlp/version.py"))
+                zip.write("__version__ = '$bundled'\n".toByteArray())
+                zip.closeEntry()
+            }
+        }.toByteArray()
+        target.writeBytes(withLeadingData(32 * 1024))
+        assertEquals(bundled, RuntimeArchive.readVersion(target))
+        target.writeBytes(withLeadingData(64 * 1024 * 1024 + 1))
+        assertNull("The decompressed scan must stay below 64 MiB", RuntimeArchive.readVersion(target))
+    }
+
     @Test fun comparesCalendarAndNightlyComponentsNumerically() {
         assertTrue(RuntimeArchive.compareVersions("2026.10.26", "2025.11.12") > 0)
         assertTrue(RuntimeArchive.compareVersions("2026.10.26.232804", bundled) > 0)
