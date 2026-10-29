@@ -494,16 +494,34 @@
                         <Button x:Name="OpenUrlButton" Content="Open URL"/>
                     </WrapPanel>
 
-                    <TextBox
-                        x:Name="LogBox"
-                        Grid.Row="3"
-                        IsReadOnly="True"
-                        TextWrapping="NoWrap"
-                        VerticalScrollBarVisibility="Auto"
-                        HorizontalScrollBarVisibility="Auto"
-                        FontFamily="Cascadia Mono"
-                        FontSize="12"
-                        Background="#0D0F13"/>
+                    <Grid Grid.Row="3">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+                        <WrapPanel Grid.Row="0" Margin="0,0,0,4" VerticalAlignment="Center">
+                            <TextBlock Text="Журнал" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,8,4"/>
+                            <ComboBox x:Name="LogProfileCombo" Width="190" Margin="0,0,6,4"
+                                      ToolTip="Подробность новых событий журнала; можно менять во время скачивания."/>
+                            <Button x:Name="CopyJournalButton" Content="Копировать журнал"/>
+                            <Button x:Name="SaveJournalButton" Content="Сохранить журнал…"/>
+                            <Button x:Name="ClearJournalButton" Content="Очистить"
+                                    ToolTip="Очистить экран и копируемый буфер. Файлы журнала сохраняются."/>
+                        </WrapPanel>
+                        <TextBlock x:Name="JournalHint" Grid.Row="1" Margin="0,0,0,6"
+                                   Style="{StaticResource MutedText}" TextWrapping="Wrap"/>
+                        <TextBox
+                            x:Name="LogBox"
+                            Grid.Row="2"
+                            IsReadOnly="True"
+                            TextWrapping="NoWrap"
+                            VerticalScrollBarVisibility="Auto"
+                            HorizontalScrollBarVisibility="Auto"
+                            FontFamily="Cascadia Mono"
+                            FontSize="12"
+                            Background="#0D0F13"/>
+                    </Grid>
                 </Grid>
             </Border>
 

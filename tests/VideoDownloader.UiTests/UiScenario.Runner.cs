@@ -37,6 +37,8 @@ internal sealed partial class UiScenario
             UiScenario.TestPreviewGallery(root);
             Stage("testing resizable panel layout and restored widths");
             UiScenario.TestPanelLayout(root);
+            Stage("testing journal profiles, trace correlation and clipboard/export");
+            UiScenario.TestJournalProfiles(root);
             Stage("testing duplicate-history dialog choices");
             UiScenario.TestDuplicateHistoryChoices(root);
             Stage("testing startup recovery dialogs and empty-queue settings");

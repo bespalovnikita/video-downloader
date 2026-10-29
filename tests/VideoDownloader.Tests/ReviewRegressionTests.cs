@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Collections.Concurrent;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text;
@@ -61,10 +62,14 @@ internal static class ReviewRegressionTests
             return true;
         }
         Console.WriteLine("__VD_TITLE__:Fixture");
-        foreach (var (stream, bytes) in new[] {
-            ("video", 100), ("video", 100), ("audio", 50),
-            ("video", 20), ("video", 70), ("audio", 50) })
-            Console.WriteLine($"__VD_PROGRESS__|50%|1KiB/s|1|{bytes}|120|{stream}");
+        foreach (var (stream, bytes, percent) in new[] {
+            ("video", 100, 100), ("video", 100, 100), ("audio", 50, 50),
+            ("video", 20, 20), ("video", 70, 70), ("audio", 50, 50) })
+            Console.WriteLine($"__VD_PROGRESS__|{percent}%|1KiB/s|1|{bytes}|120|{stream}");
+        if(url.EndsWith("unknown-percent",StringComparison.Ordinal))
+            foreach(string percent in new[]{"N/A","NaN","Infinity"})
+                Console.WriteLine($"__VD_PROGRESS__|{percent}|1KiB/s|1|50|120|audio");
+        Console.Error.WriteLine("[fixture] Process stderr remains identifiable");
         Console.WriteLine("__VD_FILE__:" + media);
         return true;
     }
@@ -179,13 +184,72 @@ internal static class ReviewRegressionTests
             {
                 var data = new AppPersistence(Path.Combine(directory, "profile"));
                 var row = new DownloadItem { Url = FixtureBase + "progress-reset" };
-                await using (var engine = new DownloadCoordinator(TestExecutable(), data, Options(directory), _ => { }, _ => { }))
+                var trace=new ConcurrentQueue<JournalRecord>();
+                string session;
+                await using (var engine = new DownloadCoordinator(TestExecutable(), data, Options(directory), _ => { }, _ => { },trace.Enqueue))
                 {
+                    session=engine.TraceSessionId;
                     engine.Add(row);
                     await engine.RunAsync().WaitAsync(TimeSpan.FromSeconds(15));
                 }
                 Require(row.Status == "Completed" && File.Exists(row.Path), "Progress fixture must complete a real subprocess and publication");
                 Require(row.TransferredBytes == 220, "100 video + 50 audio + 70 retried video bytes must total 220");
+                var records=trace.ToArray();
+                string job=DownloadTraceIdentity.JobId(row.Url);
+                Require(records.All(record=>record.Session==session && (record.Job.Length==0 || record.Job==job)),
+                    "Session and exact-URL identity must survive every traced download stage");
+                var progress=records.Where(record=>record.Level==JournalLevel.Progress).ToArray();
+                Require(progress.All(record=>record.Job==job && record.Worker=="T1") && progress.Length>=4,
+                    "A short transfer must trace initial and structural changes before the periodic sample interval");
+                foreach(string reason in new[]{"component_change","counter_reset","percent_regression","component_complete"})
+                    Require(progress.Any(record=>record.Message.Contains(reason,StringComparison.Ordinal)),"Missing progress explanation: "+reason);
+                Require(progress.Any(record=>record.Message.Contains("raw_pct=20 ",StringComparison.Ordinal) && record.Message.Contains("shown_pct=20 ",StringComparison.Ordinal)),
+                    "An actual yt-dlp percentage decrease must remain visible rather than being hidden by a monotonic maximum");
+                Require(records.Any(record=>record.Level==JournalLevel.Verbose && record.Message.Contains("stream=stderr",StringComparison.Ordinal) && record.Message.Contains("[fixture]",StringComparison.Ordinal)) &&
+                    records.Any(record=>record.Message.Contains("event=process_start ",StringComparison.Ordinal) && record.Message.Contains("pid=",StringComparison.Ordinal)) &&
+                    records.Any(record=>record.Message.Contains("event=process_exit ",StringComparison.Ordinal)) &&
+                    records.Any(record=>record.Message.Contains("event=job_finished ",StringComparison.Ordinal) && record.Message.Contains("status=Completed",StringComparison.Ordinal)),
+                    "Process identity, diagnostic stream and the verified terminal result must be traceable");
+            });
+
+            await Check("unknown and non-finite percentages retain the last finite display value", async directory=>
+            {
+                foreach(string value in new[]{"N/A","NaN","Infinity","-Infinity","1e9999"})
+                {
+                    var parsed=(YtDlpOutputEvent.Progress)YtDlpOutputParser.Parse($"__VD_PROGRESS__|{value}|1KiB/s|1|50|120|audio")!;
+                    Require(!parsed.PercentKnown && double.IsFinite(parsed.Percent),"Unknown input must never manufacture a displayable zero or NaN: "+value);
+                }
+                var data=new AppPersistence(Path.Combine(directory,"profile"));
+                var row=new DownloadItem{Url=FixtureBase+"unknown-percent"};
+                var trace=new ConcurrentQueue<JournalRecord>();
+                var observed=new ConcurrentQueue<double>();
+                await using(var engine=new DownloadCoordinator(TestExecutable(),data,Options(directory),
+                    item=>observed.Enqueue(item.Progress),_=>{},trace.Enqueue))
+                {
+                    engine.Add(row);
+                    await engine.RunAsync().WaitAsync(TimeSpan.FromSeconds(15));
+                }
+                Require(row.Status=="Completed" && observed.All(double.IsFinite),"Non-finite child output must not invalidate the UI or publication");
+                var unknown=trace.Where(record=>record.Message.Contains("raw_pct=unknown",StringComparison.Ordinal)).ToArray();
+                Require(unknown.Length>0 && unknown.All(record=>record.Message.Contains("shown_pct=50 ",StringComparison.Ordinal)) &&
+                    unknown.Any(record=>record.Message.Contains("unknown_percent",StringComparison.Ordinal)),
+                    "An unknown upstream percentage must keep the previous 50% and explain why its raw value is missing");
+                Require(row.TransferredBytes==220,"Unknown percentages must not disturb byte accounting");
+            });
+
+            await Check("a failing trace consumer cannot change a verified download result", async directory=>
+            {
+                var data=new AppPersistence(Path.Combine(directory,"profile"));
+                var row=new DownloadItem{Url=FixtureBase+"trace-consumer-failure"};
+                int callbacks=0;
+                await using(var engine=new DownloadCoordinator(TestExecutable(),data,Options(directory),_=>{},_=>{},
+                    _=>{Interlocked.Increment(ref callbacks);throw new InvalidOperationException("Isolated failing diagnostics consumer");}))
+                {
+                    engine.Add(row);
+                    await engine.RunAsync().WaitAsync(TimeSpan.FromSeconds(15));
+                }
+                Require(callbacks>0 && row.Status=="Completed" && File.Exists(row.Path) && data.ReadHistory().ContainsKey(row.Url),
+                    "Diagnostics failure must not abort a native subprocess, media publication or successful history");
             });
 
             await Check("background yt-dlp preview fetch, callback and cache work without WPF thread access", async directory =>

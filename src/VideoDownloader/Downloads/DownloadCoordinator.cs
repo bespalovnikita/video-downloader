@@ -22,6 +22,11 @@ public sealed class DownloadCoordinator : IAsyncDisposable
     private readonly DownloadOptions _options;
     private readonly Action<DownloadItem> _changed;
     private readonly Action<string> _log;
+    private readonly Action<JournalRecord>? _trace;
+    private readonly ConcurrentDictionary<string,string> _traceJobIds=new(StringComparer.Ordinal);
+    private readonly Stopwatch _traceClock=Stopwatch.StartNew();
+    private long _traceSequence;
+    public string TraceSessionId { get; }=Guid.NewGuid().ToString("N")[..8];
     private readonly string _stageRoot=Path.Combine(Path.GetTempPath(),"vd-native-"+Guid.NewGuid().ToString("N"));
     private readonly WindowsDownloadPause _pause=new();
     private readonly YtDlpArguments _arguments;
@@ -38,9 +43,9 @@ public sealed class DownloadCoordinator : IAsyncDisposable
     public bool IsRunning {get;private set;}=true;
 
     public DownloadCoordinator(string ytDlp,AppPersistence data,DownloadOptions options,
-        Action<DownloadItem> changed,Action<string> log)
+        Action<DownloadItem> changed,Action<string> log,Action<JournalRecord>? trace=null)
     {
-        _ytDlp=ytDlp;_data=data;_options=options;_changed=changed;_log=log;
+        _ytDlp=ytDlp;_data=data;_options=options;_changed=changed;_log=log;_trace=trace;
         _arguments=new YtDlpArguments(options);
         _options.PinOutputDirectory();
         OwnedFiles.NoReparseAncestors(Path.Combine(_options.OutputDirectory,"__check__"));
@@ -57,8 +62,10 @@ public sealed class DownloadCoordinator : IAsyncDisposable
         item.OutputRoot=outputRoot;
         _outputRoots[item.Url]=outputRoot;
         _items[item.Url]=item;
+        Trace(item,JournalLevel.Information,"job_queued",$"url={DownloadProgressTrace.Quoted(item.Url)} outstanding={Outstanding}",worker:"");
         if (!_queue.Writer.TryWrite(item))
         {
+            Trace(item,JournalLevel.Warning,"queue_rejected","reason=ingress_closed",worker:"");
             _queued.TryRemove(item.Url,out _);
             _items.TryRemove(item.Url,out _);
             _outputRoots.TryRemove(item.Url,out _);
@@ -72,6 +79,7 @@ public sealed class DownloadCoordinator : IAsyncDisposable
         ReferenceEquals(item,owned) && !item.AttemptFinished;
     public void Cancel(DownloadItem item)
     {
+        Trace(item,JournalLevel.Information,"cancel_requested",$"status={item.Status}");
         // Serializes cancellation with the final success/ownership transition.
         // If success wins, the GUI sees Completed and deletes OwnedPaths.
         // If cancellation wins, the worker must not mark it Completed.
@@ -88,9 +96,15 @@ public sealed class DownloadCoordinator : IAsyncDisposable
             }
         }
     }
-    public void Pause(bool pause)=>_pause.SetPaused(pause);
+    public void Pause(bool pause)
+    {
+        bool changed=_pause.IsPaused!=pause;
+        _pause.SetPaused(pause);
+        if(changed)Trace(null,JournalLevel.Information,pause?"session_paused":"session_resumed",$"outstanding={Outstanding}");
+    }
     public void Stop()
     {
+        if(IsRunning && !_stop.IsCancellationRequested)Trace(null,JournalLevel.Information,"stop_requested",$"outstanding={Outstanding}");
         if (_pause.IsPaused) Pause(false);
         _stop.Cancel();
         foreach(var src in _itemCancels.Values) { try { src.Cancel(); } catch(ObjectDisposedException){} }
@@ -99,6 +113,7 @@ public sealed class DownloadCoordinator : IAsyncDisposable
     public Task RunAsync() => _runTask ??= RunCoreAsync();
     private async Task RunCoreAsync()
     {
+        Trace(null,JournalLevel.Information,"session_start",$"parallel={_options.Parallel} fragments={_options.FragmentCount} quality={DownloadProgressTrace.Quoted(_options.Quality)}");
         var workers=Enumerable.Range(1,_options.Parallel)
             .Select(i=>Task.Run(()=>WorkerAsync(i),CancellationToken.None)).ToArray();
         try
@@ -121,6 +136,7 @@ public sealed class DownloadCoordinator : IAsyncDisposable
             _queue.Writer.TryComplete();
             await Task.WhenAll(workers).ConfigureAwait(false);
             IsRunning=false;
+            Trace(null,JournalLevel.Information,"session_complete",$"completed={Completed} outstanding={Outstanding} stopped={_stop.IsCancellationRequested}");
             // A failed cleanup remains on disk, with its paths in the checkpoint.
             // Never recursively erase another row's retained staging context.
             try { if (!Directory.EnumerateFileSystemEntries(_stageRoot).Any()) Directory.Delete(_stageRoot); }
@@ -140,6 +156,7 @@ public sealed class DownloadCoordinator : IAsyncDisposable
                     item.Status="Interrupted";item.State="Cancelled";continue;
                 }
                 item.Slot="T"+slot;item.Status="Running";item.State="Starting";_changed(item);
+                Trace(item,JournalLevel.Information,"job_start",$"url={DownloadProgressTrace.Quoted(item.Url)}");
                 // Cancellation can arrive between the previous check and CTS registration.
                 if (_cancelled.ContainsKey(item.Url)) linked.Cancel();
                 var result=await DownloadAsync(item,linked.Token).ConfigureAwait(false);
@@ -193,6 +210,10 @@ public sealed class DownloadCoordinator : IAsyncDisposable
             {
                 if (item.CleanupError.Length>0) DownloadCleanup.Failed(item,item.CleanupError);
                 item.AttemptFinished=true;
+                Trace(item,item.Status=="Failed" || item.CleanupError.Length>0 ? JournalLevel.Error : JournalLevel.Information,
+                    "job_finished",$"status={item.Status} state={DownloadProgressTrace.Quoted(item.State)} shown_pct={DownloadProgressTrace.Number(item.Progress)} transferred={item.TransferredBytes}"+
+                    (item.RawError.Length>0 ? " error="+DownloadProgressTrace.Quoted(item.RawError) : "")+
+                    (item.CleanupError.Length>0 ? " cleanup_error="+DownloadProgressTrace.Quoted(item.CleanupError) : ""));
                 _changed(item);
                 _itemCancels.TryRemove(item.Url,out _);
                 Interlocked.Decrement(ref _outstanding);
@@ -215,6 +236,20 @@ public sealed class DownloadCoordinator : IAsyncDisposable
     }
     public static double ParseSize(string raw)=>YtDlpOutputParser.ParseSize(raw);
 
+    private void Trace(DownloadItem? item,JournalLevel level,string eventName,string details="",string category="download",string? worker=null)
+    {
+        if(_trace==null)return;
+        try
+        {
+            long sequence=Interlocked.Increment(ref _traceSequence);
+            var record=new JournalRecord(level,category,
+                $"event={eventName} seq={sequence} elapsed_ms={_traceClock.ElapsedMilliseconds}"+(details.Length>0?" "+details:""),
+                TraceSessionId,item==null?"":_traceJobIds.GetOrAdd(item.Url,DownloadTraceIdentity.JobId),worker??item?.Slot??"");
+            _trace(record);
+        }
+        catch(Exception) { /* Diagnostics must not change a download's outcome. */ }
+    }
+
     private async Task<DownloadResult> DownloadAsync(DownloadItem item,CancellationToken ct)
     {
         string outputRoot=_outputRoots[item.Url];
@@ -226,6 +261,7 @@ public sealed class DownloadCoordinator : IAsyncDisposable
         string mediaPath="";
         var streamed=new Dictionary<string,long>(StringComparer.Ordinal);
         long transferred=0;
+        var progressTrace=new DownloadProgressTrace();
         try
         {
             OwnedFiles.ValidateTemplate(_options.FilenameTemplate);
@@ -234,15 +270,21 @@ public sealed class DownloadCoordinator : IAsyncDisposable
                 for (int attempt=0;attempt<=3;attempt++)
                 {
                     ct.ThrowIfCancellationRequested();
+                    Trace(item,JournalLevel.Information,"attempt_start",$"attempt={attempt+1} quality={DownloadProgressTrace.Quoted(q)} previous_shown_pct={DownloadProgressTrace.Number(item.Progress)} transferred={transferred}");
                     var errors=new ConcurrentQueue<string>();
-                    void Line(string line)
+                    void Line(string line,string source)
                     {
-                        switch(YtDlpOutputParser.Parse(line))
+                        var parsed=YtDlpOutputParser.Parse(line);
+                        if(parsed is not YtDlpOutputEvent.Progress)
+                            Trace(item,JournalLevel.Verbose,"output",$"attempt={attempt+1} quality={DownloadProgressTrace.Quoted(q)} stream={source} text={DownloadProgressTrace.Quoted(line)}",category:"yt-dlp");
+                        switch(parsed)
                         {
                             case YtDlpOutputEvent.Title title:
-                                item.Title=title.Value;_changed(item);break;
+                                item.Title=title.Value;_changed(item);
+                                Trace(item,JournalLevel.Information,"title",$"attempt={attempt+1} stream={source} title={DownloadProgressTrace.Quoted(title.Value)}");break;
                             case YtDlpOutputEvent.MediaPath media:
-                                mediaPath=media.Value;break;
+                                mediaPath=media.Value;
+                                Trace(item,JournalLevel.Information,"media_reported",$"attempt={attempt+1} stream={source}");break;
                             case YtDlpOutputEvent.Progress progress:
                                 // stdout and stderr are consumed by independent async
                                 // tasks. Progress samples must not race each other.
@@ -255,19 +297,32 @@ public sealed class DownloadCoordinator : IAsyncDisposable
                                     // identical final samples still contribute zero.
                                     transferred+=bytes<previous ? bytes : bytes-previous;
                                     streamed[progress.Component]=bytes;
-                                    item.Progress=Math.Clamp(progress.Percent,0,100);item.Speed=progress.Speed;
+                                    if(progress.PercentKnown)item.Progress=Math.Clamp(progress.Percent,0,100);
+                                    item.Speed=progress.Speed;
                                     item.Downloaded=DownloadFormat.Bytes(bytes)+(progress.TotalBytes>0 ? " / "+DownloadFormat.Bytes(progress.TotalBytes) : "");
                                     item.ETA=progress.Eta;item.TransferredBytes=transferred;
                                     if (item.Progress>0) item.State=$"{item.Progress:0.0}%";
+                                    string? traceDetails=_trace==null ? null : progressTrace.Observe(progress,item.Progress,transferred,attempt+1,q,source);
+                                    // Record the immutable sample before the other child pipe
+                                    // can update this same URL. Sequence then reflects the
+                                    // actual percentage/counter transition, not callback races.
+                                    if(traceDetails!=null)Trace(item,JournalLevel.Progress,"progress",traceDetails);
                                 }
                                 _changed(item);break;
                             case YtDlpOutputEvent.Diagnostic diagnostic:
                                 if(diagnostic.Error is {} error) errors.Enqueue(error);
-                                if(diagnostic.Merging) { item.State="Merging";_changed(item); }
+                                if(diagnostic.Error!=null)
+                                    Trace(item,line.StartsWith("ERROR:",StringComparison.OrdinalIgnoreCase)?JournalLevel.Error:JournalLevel.Warning,
+                                        "diagnostic",$"attempt={attempt+1} stream={source} text={DownloadProgressTrace.Quoted(diagnostic.Error)}",category:"yt-dlp");
+                                if(diagnostic.Merging)
+                                {
+                                    item.State="Merging";_changed(item);
+                                    Trace(item,JournalLevel.Information,"merging",$"attempt={attempt+1} stream={source}");
+                                }
                                 break;
                         }
                     }
-                    int exitCode=await RunProcessAsync(item.Url,_arguments.Build(item.Url,stage,q),Line,ct).ConfigureAwait(false);
+                    int exitCode=await RunProcessAsync(item,q,attempt+1,_arguments.Build(item.Url,stage,q),Line,ct).ConfigureAwait(false);
                     ct.ThrowIfCancellationRequested();
                     if (exitCode==0)
                     {
@@ -281,8 +336,10 @@ public sealed class DownloadCoordinator : IAsyncDisposable
                                 "yt-dlp did not produce the requested container: "+_options.Container,transferred);
                         // Publication updates the row's manifest after each move,
                         // so even a failed rollback retains exact cleanup paths.
+                        Trace(item,JournalLevel.Information,"publishing",$"attempt={attempt+1} quality={DownloadProgressTrace.Quoted(q)}");
                         var published=OwnedFiles.Publish(stage,outputRoot,mediaPath,
                             paths=>item.CleanupPaths=paths.ToList(),renameCollisions:true);
+                        Trace(item,JournalLevel.Information,"published",$"attempt={attempt+1} files={published.OwnedPaths.Count}");
                         if (ct.IsCancellationRequested || _cancelled.ContainsKey(item.Url))
                         {
                             return new DownloadResult(false,true,published.Path,published.OwnedPaths,"",transferred);
@@ -293,11 +350,13 @@ public sealed class DownloadCoordinator : IAsyncDisposable
                     if (err.Length==0) err="yt-dlp exit code "+exitCode;
                     if (YtDlpOutputParser.FormatUnavailable(err) && q != _arguments.QualityLevels().Last())
                     {
+                        Trace(item,JournalLevel.Warning,"quality_fallback",$"attempt={attempt+1} quality={DownloadProgressTrace.Quoted(q)} error={DownloadProgressTrace.Quoted(err)}");
                         _log($"Format unavailable at {q}, trying lower quality."); break;
                     }
                     if (YtDlpOutputParser.IsTransient(err) && attempt<3)
                     {
                         int delay=Math.Min(60,5*(1<<attempt));
+                        Trace(item,JournalLevel.Warning,"retry_scheduled",$"attempt={attempt+1} next_attempt={attempt+2} quality={DownloadProgressTrace.Quoted(q)} delay_s={delay} error={DownloadProgressTrace.Quoted(err)}");
                         _log($"Transient error on {item.Url}, retry {attempt+1}/3 in {delay}s: {err}");
                         await Task.Delay(TimeSpan.FromSeconds(delay),ct).ConfigureAwait(false);
                         continue;
@@ -320,7 +379,7 @@ public sealed class DownloadCoordinator : IAsyncDisposable
         }
     }
 
-    private async Task<int> RunProcessAsync(string url,IEnumerable<string> args,Action<string> onLine,CancellationToken token)
+    private async Task<int> RunProcessAsync(DownloadItem item,string quality,int attempt,IEnumerable<string> args,Action<string,string> onLine,CancellationToken token)
     {
         var psi=new ProcessStartInfo(_ytDlp)
         {
@@ -332,24 +391,34 @@ public sealed class DownloadCoordinator : IAsyncDisposable
         await _pause.WaitForResumeAsync(token).ConfigureAwait(false);
         using var child=ManagedChildProcess.Start(psi);
         var process=child.Process;
-        _pause.Register(url,process);
+        _pause.Register(item.Url,process);
+        Trace(item,JournalLevel.Information,"process_start",$"attempt={attempt} quality={DownloadProgressTrace.Quoted(quality)} pid={process.Id}");
         using var reg=token.Register(()=>
         {
             try { if (!process.HasExited) { _pause.ResumeForCancellation(process); process.Kill(true); } }
             catch (InvalidOperationException) { } catch(System.ComponentModel.Win32Exception) { }
         });
-        async Task Pump(StreamReader stream)
+        async Task Pump(StreamReader stream,string source)
         {
-            while (await stream.ReadLineAsync().ConfigureAwait(false) is { } line) onLine(line);
+            while (await stream.ReadLineAsync().ConfigureAwait(false) is { } line) onLine(line,source);
         }
         try
         {
-            await Task.WhenAll(Pump(child.StandardOutput),Pump(child.StandardError),process.WaitForExitAsync())
+            await Task.WhenAll(Pump(child.StandardOutput,"stdout"),Pump(child.StandardError,"stderr"),process.WaitForExitAsync())
                 .ConfigureAwait(false);
             token.ThrowIfCancellationRequested();
             return process.ExitCode;
         }
-        finally { _pause.Unregister(url); }
+        finally
+        {
+            try
+            {
+                if(process.HasExited)Trace(item,JournalLevel.Information,"process_exit",
+                    $"attempt={attempt} quality={DownloadProgressTrace.Quoted(quality)} pid={process.Id} exit_code={process.ExitCode} cancelled={token.IsCancellationRequested}");
+            }
+            catch(Exception) { /* Reading diagnostic process metadata must not change the outcome. */ }
+            _pause.Unregister(item.Url);
+        }
     }
     public async ValueTask DisposeAsync()
     {

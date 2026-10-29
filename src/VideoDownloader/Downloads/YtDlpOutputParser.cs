@@ -8,7 +8,11 @@ internal abstract record YtDlpOutputEvent
     internal sealed record Title(string Value) : YtDlpOutputEvent;
     internal sealed record MediaPath(string Value) : YtDlpOutputEvent;
     internal sealed record Progress(double Percent,string Speed,string Eta,long DownloadedBytes,long TotalBytes,string Component)
-        : YtDlpOutputEvent;
+        : YtDlpOutputEvent
+    {
+        internal bool PercentKnown { get; init; } = true;
+        internal string RawPercent { get; init; } = "";
+    }
     internal sealed record Diagnostic(string? Error,bool Merging) : YtDlpOutputEvent;
 }
 
@@ -26,10 +30,13 @@ internal static class YtDlpOutputParser
             var segments=line.Split('|',7);
             if (segments.Length<7) return null;
             var percentText=Regex.Replace(segments[1],@"[\x1B\[][0-9;]*m","").Replace("%","").Trim();
-            if (!double.TryParse(percentText,NumberStyles.Float,CultureInfo.InvariantCulture,out double pct)) pct=0;
+            bool percentKnown=double.TryParse(percentText,NumberStyles.Float,CultureInfo.InvariantCulture,out double pct)
+                && double.IsFinite(pct);
+            if (!percentKnown) pct=0;
             long.TryParse(segments[4],NumberStyles.Integer,CultureInfo.InvariantCulture,out long bytes);
             long.TryParse(segments[5],NumberStyles.Integer,CultureInfo.InvariantCulture,out long total);
-            return new YtDlpOutputEvent.Progress(pct,segments[2].Trim(),segments[3].Trim(),bytes,total,segments[6]);
+            return new YtDlpOutputEvent.Progress(pct,segments[2].Trim(),segments[3].Trim(),bytes,total,segments[6])
+                { PercentKnown=percentKnown, RawPercent=percentText };
         }
         bool diagnostic=line.StartsWith("ERROR:",StringComparison.OrdinalIgnoreCase)
             || line.StartsWith("WARNING:",StringComparison.OrdinalIgnoreCase)

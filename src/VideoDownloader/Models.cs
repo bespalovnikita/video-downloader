@@ -98,6 +98,7 @@ public sealed class DownloadOptions
     public bool AudioOnly { get; set; }
     public bool WatchClipboard { get; set; }
     public bool ShowVideoTitles { get; set; }
+    public string LogProfile { get; set; } = "Standard";
     public double QueuePanelWidth { get; set; } = 380d*4/3;
     public double PreviewPanelWidth { get; set; } = 390;
     public int Parallel => int.TryParse(Threads, out int n) ? Math.Clamp(n,1,32) : 4;
