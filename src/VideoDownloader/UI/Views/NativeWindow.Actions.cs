@@ -85,16 +85,22 @@ public sealed partial class NativeWindow
     }
     private void BindActions()
     {
-        F<Button>("AddUrlButton").Click+=(_,_)=>{AddUrls(ParseUrls(B("UrlInput").Text));B("UrlInput").Clear();};
+        F<Button>("AddUrlButton").Click+=(_,_)=>{AddInputText(B("UrlInput").Text);B("UrlInput").Clear();};
         F<Button>("PasteClipboardButton").Click+=(_,_)=>Paste(true);
-        B("UrlInput").KeyDown+=(_,e)=>{if(e.Key==Key.Enter){AddUrls(ParseUrls(B("UrlInput").Text));B("UrlInput").Clear();e.Handled=true;}};
+        B("UrlInput").KeyDown+=(_,e)=>{if(e.Key==Key.Enter){AddInputText(B("UrlInput").Text);B("UrlInput").Clear();e.Handled=true;}};
+        F<Button>("PortableQueueButton").Click+=(_,_)=>OpenPortableQueueMenu();
         F<Button>("OpenListButton").Click+=(_,_)=>
         {
             using var picker=new Forms.OpenFileDialog
             {
-                Title="Open URL list",Filter="Link files|*.txt;*.url|All files|*.*"
+                Title="Open URL list",Filter="Queue and link files|*.vdqueue;*.txt;*.url|All files|*.*"
             };
-            if(picker.ShowDialog()==Forms.DialogResult.OK)AddUrls(ReadInputFile(picker.FileName));
+            if(picker.ShowDialog()==Forms.DialogResult.OK)
+            {
+                if(Path.GetExtension(picker.FileName).Equals(".vdqueue",StringComparison.OrdinalIgnoreCase))
+                    _ = ImportPortableFileAsync(picker.FileName);
+                else AddUrls(ReadInputFile(picker.FileName));
+            }
         };
         F<Button>("RemoveQueueButton").Click+=(_,_)=>RemoveRows(Q.SelectedItems.Cast<DownloadItem>().ToArray());
         F<Button>("SubscriptionsButton").Click+=(_,_)=>OpenSubscriptions();

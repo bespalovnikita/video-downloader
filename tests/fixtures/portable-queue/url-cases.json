@@ -1,0 +1,22 @@
+[
+  { "url": "https://www.youtube.com/watch?v=AbC&Token=%2f", "valid": true },
+  { "url": "HTTPS://EXAMPLE.org/Видео/%D0%90?token=abc%2Fd#part", "valid": true },
+  { "url": "https://пример.рф/видео", "valid": true },
+  { "url": "https://some_host.example/video", "valid": true },
+  { "url": "https://127.1/video", "valid": true },
+  { "url": "https://-bad.example/video", "valid": true },
+  { "url": "https://[::1]/video", "valid": true },
+  { "url": "https://[fe80::1%25eth0]/video", "valid": true },
+  { "url": "https://example.org:0/video", "valid": true },
+  { "url": "https://example.org:65535/video", "valid": true },
+  { "url": "https://example.org:65536/video", "valid": false },
+  { "url": "https://example.org:9999999999/video", "valid": false },
+  { "url": "https://user:pass@example.org/video", "valid": false },
+  { "url": "https://@example.org/video", "valid": false },
+  { "url": "https://example.org/a b", "valid": false },
+  { "url": "https://example.org/a\nvideo", "valid": false },
+  { "url": "https://example.org/%ZZ", "valid": false },
+  { "url": "https://example..org/video", "valid": false },
+  { "url": "file:///tmp/video.mp4", "valid": false },
+  { "url": "https:///video", "valid": false }
+]

@@ -15,6 +15,7 @@ internal static class QueueSessionControllerTests
             new DownloadOptions{Output=Path.Combine(root,"replacement")},_=>{},_=>{});
         try
         {
+            TestPortablePersistenceBounds(root,options);
             var old=new DownloadItem{Url="https://queue-owner.invalid/old",Status="Completed"};
             var current=new DownloadItem{Url="https://queue-owner.invalid/Video"};
             var differentCase=new DownloadItem{Url="https://queue-owner.invalid/video"};
@@ -76,6 +77,39 @@ internal static class QueueSessionControllerTests
             await first.RunAsync();await replacement.RunAsync();
             Directory.Delete(root,true);
         }
+    }
+
+    private static void TestPortablePersistenceBounds(string root,DownloadOptions options)
+    {
+        var data=new AppPersistence(Path.Combine(root,"portable-bounds"));
+        var owner=new QueueSessionController();
+        var existing=new DownloadItem{Url="https://queue-owner.invalid/existing",Status="Completed",Progress=100,Order=1};
+        owner.TryAdd(existing);
+        data.Save(owner.Queue,options);
+        byte[] previous=File.ReadAllBytes(data.SessionPath);
+        // Cyrillic is valid in a compact portable packet, but session JSON
+        // escapes each character and can exceed the persisted 16 MiB limit.
+        string title=new('Ж',3_000_000);
+        var packet=PortableQueueCodec.Encode([new PortableQueueEntry(existing.Url,"Новое название"),new PortableQueueEntry("https://queue-owner.invalid/too-large",title)]);
+        var entries=PortableQueueCodec.Decode(packet);
+        Refuses(()=>owner.ImportPortable(entries,options),"A valid transfer must be rejected before exceeding the complete persisted checkpoint byte limit");
+        Require(owner.Queue.Count==1 && ReferenceEquals(owner.Queue[0],existing) && existing.Title=="" &&
+            existing.Status=="Completed" && existing.Progress==100 && File.ReadAllBytes(data.SessionPath).SequenceEqual(previous),
+            "A rejected portable import must not partially enrich titles, append rows or overwrite the prior checkpoint");
+        Refuses(()=>data.Save([new DownloadItem{Url="https://queue-owner.invalid/too-large",Title=title}],options),
+            "Save must not overwrite a recoverable checkpoint with a snapshot Restore would reject");
+        Refuses(()=>data.Save(Enumerable.Repeat(existing,AppPersistence.MaxQueueItems+1).ToArray(),options),
+            "The saved queue count limit applies before serialization");
+        Require(File.ReadAllBytes(data.SessionPath).SequenceEqual(previous) && data.Restore()!.Queue.Count==1,
+            "Rejected byte and count boundaries leave the existing session readable and unchanged");
+        Console.WriteLine("PASS: portable queue preflight bounds the full checkpoint before any title, queue or disk mutation");
+    }
+
+    private static void Refuses(Action action,string error)
+    {
+        try{action();}
+        catch(InvalidDataException){return;}
+        throw new InvalidOperationException(error);
     }
 
     private static void Require(bool condition,string error)

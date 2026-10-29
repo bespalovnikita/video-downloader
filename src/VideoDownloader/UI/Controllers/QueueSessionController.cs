@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Text.Json;
 
 namespace VideoDownloader.Native;
 
@@ -39,6 +40,48 @@ internal sealed class QueueSessionController
         if(Queue.Any(existing=>string.Equals(existing.Url,row.Url,StringComparison.Ordinal)))return false;
         Queue.Add(row);
         return true;
+    }
+    // Portable queues carry display data only. They never enter a live coordinator.
+    internal IReadOnlyList<DownloadItem> ImportPortable(IReadOnlyList<PortableQueueEntry> entries,DownloadOptions settings)
+    {
+        var added=new List<DownloadItem>();
+        var existing=Queue.ToDictionary(row=>row.Url,StringComparer.Ordinal);
+        var titles=new Dictionary<DownloadItem,string>();
+        var seen=new HashSet<string>(StringComparer.Ordinal);
+        foreach(var entry in entries)
+        {
+            if(!seen.Add(entry.Url))continue;
+            if(existing.TryGetValue(entry.Url,out var known))
+            {
+                if((string.IsNullOrWhiteSpace(known.Title) || string.Equals(known.Title,known.Url,StringComparison.Ordinal)) &&
+                    !string.IsNullOrWhiteSpace(entry.Title))titles.Add(known,entry.Title);
+                continue;
+            }
+            if(Queue.Count+added.Count>=AppPersistence.MaxQueueItems)
+                throw new InvalidDataException("Очередь не помещается в сохранение: допустимо не более 100 000 ссылок. Перенеси её частями.");
+            var row=new DownloadItem{Url=entry.Url,Title=entry.Title,DeferredToNextStart=true,Order=Queue.Count+added.Count+1};
+            existing.Add(row.Url,row);added.Add(row);
+        }
+        // Imported JSON is much smaller than the full persisted DownloadItem.
+        // Check the complete resulting checkpoint, including enriched titles,
+        // before changing any live row or its observable queue.
+        var proposed=new List<DownloadItem>(Queue.Count+added.Count);
+        foreach(var row in Queue)
+        {
+            int order=proposed.Count+1;
+            if(titles.TryGetValue(row,out string? title) || row.Order!=order)
+            {
+                var copy=JsonSerializer.Deserialize<DownloadItem>(JsonSerializer.SerializeToUtf8Bytes(row,AppPersistence.Json),AppPersistence.Json)!;
+                if(title!=null)copy.Title=title;
+                copy.Order=order;proposed.Add(copy);
+            }
+            else proposed.Add(row);
+        }
+        proposed.AddRange(added);
+        AppPersistence.ValidateCanSave(proposed,settings);
+        foreach(var (row,title) in titles)row.Title=title;
+        foreach(var row in added)Queue.Add(row);
+        return added;
     }
     internal void Forget(DownloadItem row)
     {

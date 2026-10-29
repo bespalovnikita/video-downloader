@@ -4,15 +4,41 @@
 
 ## Цель проекта
 
-Video Downloader — Windows-приложение на **C# / .NET 8 / WPF** с одной пользовательской UI-версией.
+Video Downloader имеет две пользовательские UI-версии: **Windows на C# / .NET 8 / WPF** и **Android на Kotlin / Jetpack Compose**. Пользовательского CLI и CMD-launcher нет. Платформенные проекты и хранилища данных разделены.
+
+### Windows
 
 - Точка запуска — `VideoDownloader.exe`; пользовательского CLI, CMD-launcher и резервного GUI нет.
-- Единственный проект приложения: `src/VideoDownloader/VideoDownloader.csproj`. Окна и XAML находятся в `src/VideoDownloader/UI/Views/`, владельцы состояния — в `src/VideoDownloader/UI/Controllers/`.
+- Единственный Windows-проект приложения: `src/VideoDownloader/VideoDownloader.csproj`. Окна и XAML находятся в `src/VideoDownloader/UI/Views/`, владельцы состояния — в `src/VideoDownloader/UI/Controllers/`.
 - Модели и entry point находятся в корне проекта; загрузки, превью, подписки, хранение и совместимость разделены по `Downloads/`, `Preview/`, `Subscriptions/`, `Persistence/`, `Compatibility/`; Windows-процессы — в `Infrastructure/Windows/`.
 - C# unit/integration-тесты: `tests/VideoDownloader.Tests/`; настоящие WPF-сценарии: `tests/VideoDownloader.UiTests/`. Оба проекта ссылаются на приложение через ProjectReference. Не включай тестовые partial-классы, сценарии или переключатели запуска тестов в релизный EXE.
 - Единые команды build/test/publish: `scripts/build.ps1`. PowerShell нужен разработке и CI, не приложению.
 - Релизный ZIP автономен: пользователь не устанавливает PowerShell, Python или .NET Runtime.
 - Сохраняй чтение прежних пользовательских данных в `%LOCALAPPDATA%\VideoDownloader`, включая финальные Result-события и защиту от живого старого работника `pwsh`.
+
+### Android
+
+- Gradle root — `android/`; модули `:core` (Kotlin/JVM, модели, правила подписок, парсеры и хранение) и `:app` (Android/Compose, yt-dlp, служба и публикация). Не переноси Android-код в C#-проект.
+- JDK 17, Kotlin 2.1.20, AGP 8.9.2, Gradle wrapper 8.11.1; `minSdk 26`, `compileSdk/targetSdk 35`. ABI — `arm64-v8a` и `x86_64`. Зафиксированные версии меняй согласованно с workflow и инструкцией сборки.
+- Точки запуска — `DownloaderApplication` / `MainActivity`. `AppGraph` владеет общими зависимостями, `DownloaderViewModel` связывает Compose с хранилищем и командами. Не привязывай активное скачивание к Activity, Compose effects или `viewModelScope`.
+- `download/DownloadService` — foreground service типа `dataSync` с уведомлением и собственным scope. Запуск только по явному Start; Home, смена Activity и поворот не останавливают загрузки. Сохраняй `stopWithTask=false`, управление из уведомления, освобождение WakeLock и обработку системного таймаута API 35. После принудительной остановки процесса или перезагрузки самопроизвольного скачивания нет.
+- `engine/AndroidYtDlp` запускает Android-рантайм `youtubedl-android` и FFmpeg, инициализируется вне UI thread. Не передавай недоступный в этой сборке `--impersonate chrome`. Отмена должна дождаться завершения native-вызова до очистки staging; Windows job-object гарантии сюда не переносятся.
+- Extractor yt-dlp закреплён отдельно в `android/yt-dlp.properties`: версия и SHA-256 официального Unix zipimport. Генерируемый `res/raw/ytdlp` заменяет устаревший ресурс wrapper; не коммить скачанный бинарник. При старте `RuntimeArchive` мигрирует старую приватную копию атомарно, сохраняет более новую ручную установку и проверяет ресурс до замены. Проверяй миграцию и фактический `--version` на устройстве; SharedPreferences wrapper не доказывают версию установленного архива.
+- Публикуй только проверенный ffprobe медиафайл из собственного staging. `MediaPublisher` использует MediaStore на API 29+, app external Movies на API 26–28 или выбранную пользователем SAF-папку. Не требуй `MANAGE_EXTERNAL_STORAGE`; сохраняй явные гранты SAF. История и processed — только после успешной публикации. Отмена, rollback, manifest известных URI и повторная очистка должны переживать восстановление.
+- Android-снимок `files/state.json` объединяет настройки, очередь, подписки и историю. Это отдельный формат, не замена Windows JSON/JSONL. Повреждённый снимок не перезаписывай автоматически. При импорте копии очищай чужие URI/пути, stage/run IDs, cookies и SAF grants; данные импортированного файла не доказывают владение файлами.
+- Точные HTTP(S) URL сравниваются с учётом регистра; ключ материала — SubscriptionId + URL. Подписки проверяются вручную полным обходом, RSS дополняет только названия подтверждённых URL. Проверка и постановка в очередь не запускают скачивание. Превью запрашиваются после добавления URL и успешного scan, независимо от активной строки; листание не создаёт сеть.
+- Cookies импортируются как приватная копия Netscape-файла, не читаются из профилей браузера и не включаются в backup. Не включай cookies, keystore, `local.properties`, SDK, APK и Gradle build/cache в Git.
+- Проверки из `android/`: `./gradlew :core:test :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleDebugAndroidTest`; на устройстве/эмуляторе API 35 x86_64 — `./gradlew :app:connectedDebugAndroidTest`. В Windows используй `.\gradlew.bat`. Инструментальный сценарий `foregroundDownloadCompletesAfterPressingHome` должен проверить настоящий медленный transfer, Home, читаемый опубликованный файл и историю; наличия foreground-маркера в исходниках недостаточно.
+- Android CI — `.github/workflows/android.yml`; не заменяй им native Windows CI и не подключай Android debug APK к автоматическому Windows Release. Публичная подпись и выпуск APK требуют отдельной настройки. Учитывай GPL-3.0 Android-рантайма и [THIRD_PARTY_NOTICES.md](android/THIRD_PARTY_NOTICES.md), не меняй лицензию собственного кода без отдельного решения владельца.
+- Инструкции: [сборка APK](android/README.md), [пользовательское руководство и схемы Android](docs/ANDROID.md). Правила ниже, ссылающиеся на C#, WPF, EXE, Windows API и `%LOCALAPPDATA%`, относятся к Windows; общие требования точных URL, успешной публикации, ручных подписок и отсутствия перезаписи чужих файлов действуют на обеих платформах.
+
+## Перенос очереди между платформами
+
+- Общий контракт — [tests/fixtures/portable-queue/README.md](tests/fixtures/portable-queue/README.md): `VDQUEUE1:` + padded Base64 от GZIP UTF-8 JSON, версия 1. C# `PortableQueueCodec` и Kotlin `PortableQueue` должны читать одни и те же фикстуры, сохранять точные URL, Unicode-названия и порядок. Проверяй обмен пакетами в обоих направлениях; равенство GZIP-байтов не требуется.
+- Переносятся только URL и названия всех строк. Не переноси статусы, историю, настройки, cookies, локальные пути, grant URI, владение файлами и связь с подписками. Создавай новые строки с `DeferredToNextStart` / `deferredNextStart`, а в Android — с новыми IDs; импорт не присоединяется к активной загрузке. Существующие строки сохраняют порядок, состояние и принадлежность; допускается дополнение пустого названия.
+- Проверяй весь пакет до применения: точные дубли объединяются с сохранением первой записи. Семейство `VDQUEUE` распознавай до обычного извлечения URL, чтобы неизвестная версия или повреждённый пакет отклонялись целиком. Не импортируй переносимую очередь через Watch clipboard без явного действия пользователя.
+- Ограничения: 100 000 входных записей до дедупликации, 16 МиБ JSON и сжатых данных, глубина 32, 24 МиБ входного текста; строгие UTF-8, Unicode и Base64. Общий предел экспорта в буфер — 262 144 символа; для больших пакетов и ошибок записи буфера предлагай `.vdqueue`. Сжатие и разбор выполняй вне UI thread; распаковку ограничивай во время чтения.
+- Изменения общего формата или фикстур требуют Windows и Android CI, unit-тестов в обеих реализациях и реальных UI-сценариев явного копирования/вставки. Сохраняй импорт обычных URL, TXT и InternetShortcut. Пользовательские действия описаны в [docs/QUEUE_TRANSFER.md](docs/QUEUE_TRANSFER.md).
 
 ## Автоматические стабильные GitHub Releases
 
@@ -280,7 +306,7 @@ Reorder / drag/drop / download selected остаются заблокирова�
 
 ## Сборка и packaging
 
-Единственный проект приложения — `src/VideoDownloader/VideoDownloader.csproj`: Windows x64, .NET 8, WPF, автономный EXE. Пользователь запускает EXE напрямую. Обязательны соседние yt-dlp, XAML, ресурсы и `collection-plugins/`; единственный EXE не заменяет весь portable ZIP.
+Единственный Windows-проект приложения — `src/VideoDownloader/VideoDownloader.csproj`: Windows x64, .NET 8, WPF, автономный EXE. Пользователь запускает EXE напрямую. Обязательны соседние yt-dlp, XAML, ресурсы и `collection-plugins/`; единственный EXE не заменяет весь portable ZIP. Android собирается отдельно из `android/`, как описано выше.
 
 `scripts/build.ps1 -Task Publish` создаёт `dist/native`, `dist/VideoDownloader-native.zip` и SHA-256. Параметры `-Version`, `-OutputDirectory`, `-ArchivePath`, `-ChecksumPath` позволяют main-only release job выбрать версию и имена файлов без второго упаковщика.
 
@@ -306,7 +332,7 @@ pwsh -NoProfile -File scripts/build.ps1 -Task Test
 pwsh -NoProfile -File scripts/build.ps1 -Task Publish
 ~~~
 
-Для изменений кода, тестов, скриптов и сборки единственный Windows workflow `native-windows.yml` должен быть зелёным перед merge. Smoke проверяет синтаксис скриптов разработки, XAML и обязательные файлы/контролы; функциональные проверки выполняют C#-тесты. PR только с Markdown может не запускать workflow из-за фильтра путей: перед его merge проверь ссылки, якоря, Mermaid и соответствие инструкций исходникам. После push в `main` полный workflow запускается независимо от состава изменений.
+Для изменений Windows-кода, тестов, скриптов и сборки Windows workflow `native-windows.yml` должен быть зелёным перед merge. Для Android-кода обязателен `android.yml`; изменения общих `collection-plugins/` и `tests/fixtures/portable-queue/` проверяются обеими платформами. Smoke проверяет синтаксис скриптов разработки, XAML и обязательные файлы/контролы; функциональные проверки выполняют C#-тесты. PR только с Markdown может не запускать workflow из-за фильтра путей: перед его merge проверь ссылки, якоря, Mermaid и соответствие инструкций исходникам. После push в `main` полный Windows workflow запускается независимо от состава изменений.
 
 ## Git workflow
 
@@ -331,6 +357,9 @@ pwsh -NoProfile -File scripts/build.ps1 -Task Publish
 - `docs/LOGGING.md` — профили журнала, диагностика прогресса, копирование, сохранение и ограничения;
 - `AGENTS.md` — архитектурные правила и обязательные проверки;
 - `RELEASING.md` — сборка и публикация, если менялся выпуск.
+- `android/README.md` — актуальные инструменты и команды сборки/установки APK, проверки и подпись;
+- `docs/ANDROID.md` — мобильные сценарии, foreground service, хранение, резервные копии и схемы.
+- `docs/QUEUE_TRANSFER.md` — перенос очереди между Windows и Android, буфер обмена, файл `.vdqueue` и ограничения.
 
 Документация должна описывать текущую реализацию и реальные ограничения, а не планируемые функции.
 

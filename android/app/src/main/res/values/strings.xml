@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Video Downloader</string>
+    <string name="download_channel_name">Загрузки</string>
+    <string name="download_channel_description">Состояние загрузок видео и аудио</string>
+</resources>
