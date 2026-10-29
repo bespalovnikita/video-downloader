@@ -229,7 +229,7 @@ internal static class ReviewRegressionTests
                     "A short transfer must trace initial and structural changes before the periodic sample interval");
                 foreach(string reason in new[]{"component_change","counter_reset","percent_regression","component_complete"})
                     Require(progress.Any(record=>record.Message.Contains(reason,StringComparison.Ordinal)),"Missing progress explanation: "+reason);
-                Require(progress.Any(record=>record.Message.Contains("raw_pct=20 ",StringComparison.Ordinal) && record.Message.Contains("shown_pct=20 ",StringComparison.Ordinal)),
+                Require(progress.Any(record=>record.Message.Contains(" raw_pct=20 ",StringComparison.Ordinal) && record.Message.Contains(" shown_pct=20 ",StringComparison.Ordinal)),
                     "An actual yt-dlp percentage decrease must remain visible rather than being hidden by a monotonic maximum");
                 Require(records.Any(record=>record.Level==JournalLevel.Verbose && record.Message.Contains("stream=stderr",StringComparison.Ordinal) && record.Message.Contains("[fixture]",StringComparison.Ordinal)) &&
                     records.Any(record=>record.Message.Contains("event=process_start ",StringComparison.Ordinal) && record.Message.Contains("pid=",StringComparison.Ordinal)) &&
@@ -256,10 +256,13 @@ internal static class ReviewRegressionTests
                     await engine.RunAsync().WaitAsync(TimeSpan.FromSeconds(15));
                 }
                 Require(row.Status=="Completed" && observed.All(double.IsFinite),"Non-finite child output must not invalidate the UI or publication");
-                var unknown=trace.Where(record=>record.Message.Contains("raw_pct=unknown",StringComparison.Ordinal)).ToArray();
-                Require(unknown.Length>0 && unknown.All(record=>record.Message.Contains("shown_pct=50 ",StringComparison.Ordinal)) &&
+                // Match the current field, not previous_raw_pct=unknown on a
+                // component's first perfectly valid percentage sample.
+                var unknown=trace.Where(record=>record.Message.Contains(" raw_pct=unknown ",StringComparison.Ordinal)).ToArray();
+                Require(unknown.Length>0 && unknown.All(record=>record.Message.Contains(" shown_pct=50 ",StringComparison.Ordinal)) &&
                     unknown.Any(record=>record.Message.Contains("unknown_percent",StringComparison.Ordinal)),
-                    "An unknown upstream percentage must keep the previous 50% and explain why its raw value is missing");
+                    "An unknown upstream percentage must keep the previous 50% and explain why its raw value is missing: "+
+                    string.Join(" | ",unknown.Select(record=>record.Message)));
                 Require(row.TransferredBytes==220,"Unknown percentages must not disturb byte accounting");
             });
 
