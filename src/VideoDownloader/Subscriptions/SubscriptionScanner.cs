@@ -341,13 +341,14 @@ public sealed class SubscriptionScanner : IDisposable
             string url = String(entry, "webpage_url");
             if (url.Length == 0) url = String(entry, "url");
             if (url == id || url.Length == 0) url = canonical;
-            // The flat extractor must still identify one video and preserve its
-            // exact URL. An unexpected redirect/collection forces a full scan.
+            // Match the full YoutubeIE discovery URL after validating this
+            // adapter's specific flat routes and ID. User-entered and already
+            // persisted URLs retain the application's exact-URL semantics.
             if (!(url == canonical || url == "https://www.youtube.com/shorts/" + id || url == "https://www.youtube.com/live/" + id) ||
-                !known.Add(url))
+                !known.Add(canonical))
                 throw new InvalidDataException("Окно YouTube содержит повторный или посторонний URL.");
             string title = String(entry, "title");
-            found.Add(new(url, title.Length == 0 ? url : title));
+            found.Add(new(canonical, title.Length == 0 ? canonical : title));
         }
         string caption = String(root, "title");
         string suggested = new[] { String(root, "channel"), String(root, "uploader"), caption }

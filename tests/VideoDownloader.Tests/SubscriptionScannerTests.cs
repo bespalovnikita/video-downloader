@@ -21,7 +21,8 @@ internal static class SubscriptionScannerTests
             Thread.Sleep(TimeSpan.FromSeconds(30));
             return true;
         }
-        bool youtube = args.LastOrDefault() == "https://www.youtube.com/@vd-offline/videos";
+        bool youtube = new[] { "videos", "shorts", "streams" }.Any(tab =>
+            args.LastOrDefault() == "https://www.youtube.com/@vd-offline/" + tab);
         if (!youtube && args.LastOrDefault()?.StartsWith(Prefix, StringComparison.Ordinal) != true) return false;
         bool recent = args.Contains("--flat-playlist", StringComparer.Ordinal);
         foreach (string required in new[] { "--ignore-config", recent ? "--flat-playlist" : "--no-flat-playlist", "--dump-single-json", "--skip-download", "--abort-on-error" })
@@ -124,6 +125,29 @@ internal static class SubscriptionScannerTests
                 Require(result.Scope == SubscriptionScanScope.RecentWindow && result.Items.Count(item => !known.Contains(item.Url)) == 2 &&
                     File.ReadAllLines(Path.Combine(directory, "calls.jsonl")).Length == 1,
                     "A window containing two new URLs and known older content must not repeat the full scan");
+            });
+
+            await Check("flat Shorts and live routes match full discovery without duplicate subscription rows", async directory =>
+            {
+                foreach (var (tab, route) in new[] { ("shorts", "shorts/"), ("streams", "live/") })
+                {
+                    var store = new SubscriptionStore(Path.Combine(directory, tab));
+                    var added = store.Add(YoutubeSource(false, tab).Url, false);
+                    var baseline = SubscriptionScanner.ParseMetadata(YoutubeFull(Enumerable.Range(0, 20)), added.Url);
+                    store.ApplyScan(added.Id, baseline, []);
+                    var source = store.Read().Subscriptions.Single();
+                    var known = store.Read().Items.Select(item => item.Url).ToHashSet(StringComparer.Ordinal);
+                    string config = WindowFixture(directory, YoutubeWindow(Enumerable.Range(0, 20), "https://www.youtube.com/" + route, tab),
+                        YoutubeFull(Enumerable.Range(0, 20)));
+                    File.Delete(Path.Combine(directory, "calls.jsonl"));
+                    using var scanner = new SubscriptionScanner(TestExecutable());
+                    var result = await scanner.ScanAsync(source, config, CancellationToken.None, knownUrls: known);
+                    var applied = store.ApplyScan(source.Id, result, []);
+                    Require(result.Scope == SubscriptionScanScope.RecentWindow && result.Items.Count == 20 &&
+                        result.Items.All(item => known.Contains(item.Url)) && applied.Items.Count == 20 &&
+                        applied.Items.All(item => item.State == "Baseline") && File.ReadAllLines(Path.Combine(directory, "calls.jsonl")).Length == 1,
+                        "Strictly validated flat " + route + " discovery must match full watch URLs with one window process and no duplicate/new rows");
+                }
             });
 
             await Check("a missing anchor or invalid recent response falls back to the full collection", async directory =>
@@ -447,12 +471,12 @@ internal static class SubscriptionScannerTests
 
     private static object Entry(string url, string title) => new { _type = "video", id = url, webpage_url = url, title };
     private static string YoutubeUrl(int index) => "https://www.youtube.com/watch?v=" + index.ToString("D11", System.Globalization.CultureInfo.InvariantCulture);
-    private static SubscriptionDefinition YoutubeSource(bool initialized) => new() {
-        Id = "offline-youtube", Url = "https://www.youtube.com/@vd-offline/videos", Initialized = initialized };
-    private static string YoutubeWindow(IEnumerable<int> indices) => JsonSerializer.Serialize(new {
-        _type = "playlist", extractor_key = "YoutubeTab", webpage_url = YoutubeSource(true).Url, title = "Newest uploads", playlist_count = 125,
+    private static SubscriptionDefinition YoutubeSource(bool initialized, string tab = "videos") => new() {
+        Id = "offline-youtube", Url = "https://www.youtube.com/@vd-offline/" + tab, Initialized = initialized };
+    private static string YoutubeWindow(IEnumerable<int> indices, string urlPrefix = "https://www.youtube.com/watch?v=", string tab = "videos") => JsonSerializer.Serialize(new {
+        _type = "playlist", extractor_key = "YoutubeTab", webpage_url = YoutubeSource(true, tab).Url, title = "Newest uploads", playlist_count = 125,
         entries = indices.Select(index => new { _type = "url", ie_key = "Youtube", id = index.ToString("D11", System.Globalization.CultureInfo.InvariantCulture),
-            url = YoutubeUrl(index), title = "Video " + index }).ToArray() });
+            url = urlPrefix + index.ToString("D11", System.Globalization.CultureInfo.InvariantCulture), title = "Video " + index }).ToArray() });
     private static string YoutubeFull(IEnumerable<int> indices) => Collection(indices.Select(index => Entry(YoutubeUrl(index), "Video " + index)).ToArray());
     private static string WindowFixture(string directory, string recent, string full, string mode = "normal")
     {
