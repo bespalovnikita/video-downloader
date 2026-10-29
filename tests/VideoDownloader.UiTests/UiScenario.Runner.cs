@@ -33,6 +33,8 @@ internal sealed partial class UiScenario
             UiScenario.TestSubscriptionPreviewPrefetch(root);
             Stage("testing Russian errors and original diagnostics");
             UiScenario.TestErrorLocalization(root);
+            Stage("testing component progress labels, wrapping and status tooltips");
+            UiScenario.TestDownloadProgressStatus();
             Stage("testing hover preview gallery and manual image navigation");
             UiScenario.TestPreviewGallery(root);
             Stage("testing resizable panel layout and restored widths");

@@ -75,7 +75,8 @@ internal sealed partial class UiScenario
                     {
                         Require(document.RootElement.GetProperty("RawError").GetString()==raw &&
                                 !document.RootElement.TryGetProperty("ErrorMessage",out _) &&
-                                !document.RootElement.TryGetProperty("StateLabel",out _),
+                                !document.RootElement.TryGetProperty("StateLabel",out _) &&
+                                !document.RootElement.TryGetProperty("StateToolTip",out _),
                             "Session JSON must store the exact diagnostic without a localized display field.");
                     }
 
@@ -90,7 +91,7 @@ internal sealed partial class UiScenario
                             (column.Binding as Binding)?.Path?.Path=="StateLabel");
                         var cell=stateColumn.GetCellContent(row) as TextBlock;
                         Require(cell!=null && cell.Text==(russian?"Ошибка":"Failed") &&
-                                cell.ToolTip as string==failureSummary,
+                                cell.ToolTip as string==row.StateLabel+Environment.NewLine+failureSummary,
                             "Both actual grids must render the localized state and error explanation.");
                         Require((cell!.Foreground as SolidColorBrush)?.Color==Color.FromRgb(0xFB,0x71,0x85),
                             "Failed-row colors must still follow the stable Status identifier.");

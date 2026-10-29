@@ -18,6 +18,7 @@ public sealed class DownloadItem : INotifyPropertyChanged
     private string _rawError = "";
     private string _slot = "";
     private string _url = "";
+    private string _progressDetail = "";
     public event PropertyChangedEventHandler? PropertyChanged;
     private void Changed([CallerMemberName] string? name = null)
     {
@@ -28,15 +29,18 @@ public sealed class DownloadItem : INotifyPropertyChanged
     }
     public int Order { get => _order; set { _order = value; Changed(); } }
     public string Url { get => _url; set { _url = value; Changed(); } }
-    public string State { get => _state; set { _state = value; Changed(); Changed(nameof(StateLabel)); } }
+    public string State { get => _state; set { _state = value; Changed(); Changed(nameof(StateLabel)); Changed(nameof(StateToolTip)); } }
     public string Status { get => _status; set { _status = value; Changed(); } }
     public double Progress { get => _progress; set { _progress = value; Changed(); } }
+    // Runtime phase details are presentation only; old checkpoint State/Status
+    // IDs remain readable and never imply that a component's 100% is success.
+    [JsonIgnore] public string ProgressDetail { get => _progressDetail; set { _progressDetail=value; Changed(); Changed(nameof(StateLabel)); Changed(nameof(StateToolTip)); } }
     public string Title { get => _title; set { _title = value?.Trim() ?? ""; Changed(); } }
     public string Speed { get => _speed; set { _speed = value; Changed(); } }
     public string Downloaded { get => _downloaded; set { _downloaded = value; Changed(); } }
     public string ETA { get => _eta; set { _eta = value; Changed(); } }
     public string Path { get => _path; set { _path = value; Changed(); } }
-    public string RawError { get => _rawError; set { _rawError = value; Changed(); Changed(nameof(ErrorMessage)); } }
+    public string RawError { get => _rawError; set { _rawError = value; Changed(); Changed(nameof(ErrorMessage)); Changed(nameof(StateToolTip)); } }
     [JsonIgnore] public string ErrorMessage => ErrorMessages.ForDisplay(RawError);
     // Presentation follows the Windows UI language; checkpoint IDs and colors
     // continue to use the original State/Status values.
@@ -44,6 +48,10 @@ public sealed class DownloadItem : INotifyPropertyChanged
     {
         "Queued" => ErrorMessages.Text("В очереди",State),
         "Starting" => ErrorMessages.Text("Запуск",State),
+        "Downloading" => ProgressDetail.Length>0 ? ProgressDetail : ErrorMessages.Text("Загрузка",State),
+        "Retrying" => ErrorMessages.Text("Повторная попытка",State)+(ProgressDetail.Length>0 ? " · "+ProgressDetail : ""),
+        "Processing" => ErrorMessages.Text("Обработка медиа",State),
+        "Publishing" => ErrorMessages.Text("Сохранение файла",State),
         "Merging" => ErrorMessages.Text("Объединение",State),
         "Done" => ErrorMessages.Text("Готово",State),
         "Failed" => ErrorMessages.Text("Ошибка",State),
@@ -54,6 +62,7 @@ public sealed class DownloadItem : INotifyPropertyChanged
         "Removal pending — use Remove" => ErrorMessages.Text("Ожидается удаление — нажмите Remove",State),
         _ => State
     };
+    [JsonIgnore] public string StateToolTip => ErrorMessage.Length==0 ? StateLabel : StateLabel+Environment.NewLine+ErrorMessage;
     public string Slot { get => _slot; set { _slot = value; Changed(); } }
     // Captured when a subscription creates this queue row. Renaming the source
     // later must not redirect an already accepted download or its cleanup.

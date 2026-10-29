@@ -296,7 +296,9 @@
 
         <!-- Status colors follow stable Status rather than transient text/percent. -->
         <Style x:Key="QueueStatusTextStyle" TargetType="TextBlock" BasedOn="{StaticResource GridTextStyle}">
-            <Setter Property="ToolTip" Value="{Binding ErrorMessage}"/>
+            <Setter Property="TextWrapping" Value="Wrap"/>
+            <Setter Property="TextTrimming" Value="None"/>
+            <Setter Property="ToolTip" Value="{Binding StateToolTip}"/>
             <Setter Property="Foreground" Value="#67D7FD"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
             <Style.Triggers>

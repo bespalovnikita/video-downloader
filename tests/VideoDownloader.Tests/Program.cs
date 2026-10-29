@@ -228,6 +228,7 @@ try
     long[] expectedSizes=[192*1024,256*1024,320*1024,384*1024];
     var trace=new System.Collections.Concurrent.ConcurrentQueue<JournalRecord>();
     var reachedParallelStart=new System.Collections.Concurrent.ConcurrentDictionary<string,byte>(StringComparer.Ordinal);
+    var prematureCompletions=new System.Collections.Concurrent.ConcurrentQueue<string>();
     string traceSession;
     using(var parallelStart=new Barrier(realRows.Length))
     {
@@ -236,6 +237,7 @@ try
         // four serial transfers on an unusually busy CI worker.
         void ObserveParallelStart(DownloadItem row)
         {
+            if(row.Status=="Running" && row.Progress>=100)prematureCompletions.Enqueue(row.Url+" "+row.State);
             if(row.Status!="Running" || !reachedParallelStart.TryAdd(row.Url,0))return;
             if(!parallelStart.SignalAndWait(TimeSpan.FromSeconds(15)))
                 throw new TimeoutException($"Four-worker native trace test did not start all jobs: {reachedParallelStart.Count}/4 observed, {parallelStart.ParticipantsRemaining} still missing.");
@@ -250,6 +252,8 @@ try
     Assert(realRows.All(row=>row.Status=="Completed"),"Native engine must successfully download four local files: "+
         string.Join(" | ",realRows.Select(row=>$"{row.Slot}: {row.Status} {row.RawError}")));
     Assert(realRows.All(row=>row.Progress==100),"Native progress must reach 100% for every local file");
+    Assert(prematureCompletions.IsEmpty,"A real transfer must reserve 100% for successful publication: "+
+        string.Join(" | ",prematureCompletions));
     Assert(realRows.All(row=>File.Exists(row.Path)),"Successful URLs must publish real media");
     Assert(realRows.All(row=>row.OwnedPaths.Count>0),"Native results must record owned files");
     Assert(realRows.All(row=>row.OutputRoot==realOptions.OutputDirectory),
@@ -273,6 +277,8 @@ try
             "Each real file must produce its own start, native progress and completed trace records: "+row.Url);
         Assert(jobRecords.Where(record=>record.Worker.Length>0).All(record=>record.Worker==row.Slot),
             "A job's stdout/stderr and lifecycle records must keep its actual worker identity");
+        Assert(jobRecords.Any(record=>record.Message.StartsWith("event=download_plan ",StringComparison.Ordinal)),
+            "The packaged yt-dlp before_dl hook must report a real download plan for each file: "+row.Url);
     }
     Console.WriteLine("PASS: four real packaged yt-dlp downloads retain isolated job/worker progress traces and exact media bytes");
     OwnedFiles.DeleteOwned(realOptions.Output,one.OwnedPaths);
