@@ -3,6 +3,7 @@ package ru.bespalov.videodownloader
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import androidx.lifecycle.Lifecycle
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
 import androidx.compose.ui.test.onNodeWithTag
@@ -61,9 +62,9 @@ class AndroidPortInstrumentedTest {
     private fun sample(): ByteArray = InstrumentationRegistry.getInstrumentation().context.assets
         .open("offline-sample.mp4").use { it.readBytes() }
 
-    private fun slowSample(): ByteArray {
+    private fun slowSample(paddingBytes: Int = 512 * 1024): ByteArray {
         // A standards-compliant free box adds transfer time without changing the media.
-        val padding = ByteBuffer.allocate(512 * 1024).apply {
+        val padding = ByteBuffer.allocate(paddingBytes).apply {
             putInt(capacity())
             put("free".toByteArray(Charsets.US_ASCII))
         }.array()
@@ -250,7 +251,7 @@ class AndroidPortInstrumentedTest {
         initialize()
         // An ISO BMFF free box keeps the fixture valid while making the real HTTP transfer
         // long enough to observe background progress. No external network is involved.
-        LoopbackMediaServer(slowSample(), chunkBytes = 8192, chunkDelayMillis = 100).use { origin ->
+        LoopbackMediaServer(slowSample(2 * 1024 * 1024), chunkBytes = 8192, chunkDelayMillis = 100).use { origin ->
             val token = "android-background-${UUID.randomUUID()}"
             val task = DownloadTask(url = "${origin.baseUrl}/$token.mp4")
             val originalSettings = graph.repository.state.value.settings
@@ -270,19 +271,41 @@ class AndroidPortInstrumentedTest {
                     val configurator = Configurator.getInstance()
                     val idleTimeout = configurator.waitForIdleTimeout
                     try {
-                        // Progress changes continuously. Do not wait ten seconds for the
-                        // download screen to become idle before sending the actual Home key.
+                        // UiAutomator's pressHome result reports key injection, not Activity
+                        // state, and can fail while the progress UI changes continuously.
+                        // Send a real system Home event without waiting for accessibility idle,
+                        // then prove that Home actually stopped the Activity and exposed Home.
                         configurator.waitForIdleTimeout = 500
-                        assertTrue("Home key must move the application to the background", device.pressHome())
-                        device.waitForIdle(500)
+                        val launcher = device.launcherPackageName
+                        assertTrue("The test device must have a Home launcher", !launcher.isNullOrBlank())
+                        val homeOutput = device.executeShellCommand("input keyevent KEYCODE_HOME")
+                        assertTrue("System Home command failed: $homeOutput", homeOutput.isBlank())
+                        runBlocking(Dispatchers.IO) {
+                            withTimeout(10_000) {
+                                while (activity.state != Lifecycle.State.CREATED || device.currentPackageName != launcher) delay(50)
+                            }
+                        }
+                        assertEquals("Home must stop the application's Activity", Lifecycle.State.CREATED, activity.state)
+                        assertEquals("Home must expose the real launcher", launcher, device.currentPackageName)
                         assertTrue("The foreground download service must survive Home", DownloadService.isRunning.value)
-                        assertTrue("The launcher must be visible while downloading", device.currentPackageName != context.packageName)
+                        val backgroundBytes = DownloadService.progress.value[task.id]?.downloadedBytes ?: 0
+                        runBlocking(Dispatchers.IO) {
+                            withTimeout(15_000) {
+                                while ((DownloadService.progress.value[task.id]?.downloadedBytes ?: 0) <= backgroundBytes) {
+                                    assertEquals("The Activity must stay stopped during background transfer", Lifecycle.State.CREATED, activity.state)
+                                    assertTrue("The service must remain active while bytes arrive in the background", DownloadService.isRunning.value)
+                                    delay(50)
+                                }
+                            }
+                        }
+                        assertEquals("The Activity must stay stopped after background progress", Lifecycle.State.CREATED, activity.state)
                     } finally {
                         configurator.waitForIdleTimeout = idleTimeout
                     }
                     val completed = awaitTerminal(task.id)
                     published = completed.outputUris
                     assertEquals("Background transfer must publish successfully: ${completed.rawError}", DownloadStatus.COMPLETED, completed.status)
+                    assertEquals("Publication must complete without reopening the Activity", Lifecycle.State.CREATED, activity.state)
                     assertTrue("The published background result must be readable", hash(published.first()).isNotEmpty())
                     assertTrue("Success must be saved while the activity is backgrounded", graph.repository.state.value.history.any { it.url == task.url && it.outputUris == published })
                     awaitServiceIdle()
