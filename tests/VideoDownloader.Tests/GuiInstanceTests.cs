@@ -157,6 +157,9 @@ internal static class GuiInstanceTests
             Require(FindWindow(first.Id)==window && CheckpointMatches(urls),"Reactivation must preserve the original window and its exact queue.");
             Require(!File.Exists(data.HistoryPath) && cacheBytes.All(pair=>File.ReadAllBytes(pair.Key).SequenceEqual(pair.Value)),
                 "GUI-only ingress must neither record downloads nor replace its pre-seeded offline metadata cache.");
+            string journal=Path.Combine(Path.GetDirectoryName(data.SessionPath)!,"logs","journal.log");
+            Require(File.Exists(journal) && new FileInfo(journal).Length>0,
+                "The real GUI must write its automatic journal before the forced-exit cleanup is exercised.");
             Console.WriteLine("PASS: real native GUI singleton, second-process protocol/TXT/exact URLs, minimize-to-tray and empty-launch restore");
         }
         finally
@@ -181,7 +184,20 @@ internal static class GuiInstanceTests
                 catch(Exception error) when(error is OperationCanceledException or System.ComponentModel.Win32Exception) {errors.Add(error);}
                 finally {process.Dispose();}
             }
-            try {Directory.Delete(root,true);}
+            try
+            {
+                // All owned roots have been waited above. Windows can retain
+                // their asynchronous file handles briefly during forced-exit
+                // rundown (the journal now keeps one open while the GUI runs).
+                // Retry only this isolated directory, within the same cleanup
+                // deadline; a persistent lock still fails the scenario.
+                while(true)
+                {
+                    try {Directory.Delete(root,true);break;}
+                    catch(IOException) when(!cleanup.IsCancellationRequested) {await Task.Delay(25);}
+                    catch(UnauthorizedAccessException) when(!cleanup.IsCancellationRequested) {await Task.Delay(25);}
+                }
+            }
             catch(Exception error) when(error is IOException or UnauthorizedAccessException) {errors.Add(error);}
             if(errors.Count>0)throw new AggregateException("Could not clean up all isolated GUI fixtures.",errors);
         }

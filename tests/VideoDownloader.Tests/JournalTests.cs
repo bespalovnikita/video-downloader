@@ -73,6 +73,8 @@ internal static class JournalTests
             Require(File.ReadAllText(concurrent.FilePath).Split('\n').Count(line=>line.Contains("event=sample"))==1000,
                 "DisposeAsync flushes actual queued records to disk");
             Require(concurrent.DroppedFileEntries==0 && concurrent.LastFileError.Length==0,"The writer reports no loss when queue capacity is sufficient");
+            using(var reopened=new FileStream(concurrent.FilePath,FileMode.Open,FileAccess.ReadWrite,FileShare.None))
+                Require(reopened.Length>0,"DisposeAsync must release the actual journal handle for an exclusive reopen");
 
             var rotation=new DiagnosticJournal(Path.Combine(root,"rotation"),JournalProfile.Detailed,
                 new JournalLimits(MemoryEntries:1000,MemoryBytes:1024*1024,FileBytes:2048,FileQueueEntries:1000));
