@@ -13,7 +13,11 @@ public static class JournalSanitizer
     private const string Truncated=" …[усечено]";
     private const RegexOptions Options=RegexOptions.IgnoreCase|RegexOptions.CultureInvariant|RegexOptions.NonBacktracking;
     private static readonly Regex Url=new(@"\bhttps?://[^\s<>""']+",Options);
-    private static readonly Regex CookieRow=new(@"^(?:#HttpOnly_)?\.?[^\s]+\t(?:TRUE|FALSE)\t[^\r\n]*",Options|RegexOptions.Multiline);
+    // Cookie parsers may echo a malformed row as Python repr(), including
+    // literal \t escapes and a warning prefix. It must not become a raw log.
+    private static readonly Regex CookieRow=new(@"(?:#HttpOnly_)?\.?[^\s""'\\]+(?:\t|\\t)(?:TRUE|FALSE)(?:\t|\\t)[^\r\n]*",Options);
+    private static readonly Regex CookieDiagnostic=new(
+        @"(?<context>\b(?:cookie\s+file\s+(?:entr(?:y|ies)|line)\b(?:\s+due\s+to\s+invalid\s+length\s+\d+\s*:)?|invalid\s+Netscape\s+format\s+cookies?\s+file\b|(?:(?:failed|unable)\s+to|could\s+not)\s+(?:parse|load|read)\s+cookies?(?:\s+file)?\b))[^\r\n]*",Options);
     private static readonly Regex SecretOption=new(
         "(?<option>--(?:cookies(?:-from-browser)?|username|password|video-password|add-headers?|proxy|client-certificate(?:-key|-password)?|certificate-password)\\b)(?:\\s*=\\s*|\\s+)(?:\"[^\"\\r\\n]*\"?|'[^'\\r\\n]*'?|[^\\s]+)",Options);
     private static readonly Regex Header=new(
@@ -30,6 +34,7 @@ public static class JournalSanitizer
         text=DecodeEngineOutput(text);
         // Keep real line boundaries until headers and Netscape cookie rows have
         // been removed. Flattening first could merge a secret into a later line.
+        text=CookieDiagnostic.Replace(text,match=>match.Groups["context"].Value+" [содержимое cookies скрыто]");
         text=CookieRow.Replace(text,"[строка cookies скрыта]");
         text=SecretOption.Replace(text,match=>match.Groups["option"].Value+" "+Hidden);
         text=Url.Replace(text,match=>RedactUrl(match.Value));

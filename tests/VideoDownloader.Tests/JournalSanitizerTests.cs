@@ -53,6 +53,25 @@ internal static class JournalSanitizerTests
         }
         Require(JournalSanitizer.Redact(Engine("https://example.org/Видео?token=private")).Contains("https://example.org/Видео?[скрыто]"),
             "Decoded raw output retains host/path after JSON escaping");
+        foreach(string raw in new[]{
+            @"WARNING: skipping cookie file entry due to invalid length 8: '.example.org\tTRUE\t/\tTRUE\t1790000000\tSID\tPRIVATE_COOKIE\textra'",
+            "WARNING: skipping cookie file entry due to invalid length 8: '.example.org\tTRUE\t/\tTRUE\t1790000000\tSID\tPRIVATE_COOKIE\textra'",
+            "WARNING: skipping cookie file entry due to invalid expires at: 'PRIVATE_COOKIE without any valid delimiters'",
+            @"ERROR: http.cookiejar.LoadError: invalid Netscape format cookies file 'cookies.txt': '.example.org\tTRUE\t/\tTRUE\t1790000000\tSID\tPRIVATE_COOKIE'",
+            @"Parse failure: '.example.org\tTRUE\t/\tTRUE\t1790000000\tSID\tPRIVATE_COOKIE'",
+            "ERROR: failed to load cookies file: malformed content PRIVATE_COOKIE",
+            "ERROR: could not read cookies file: malformed content PRIVATE_COOKIE",
+            "WARNING: cookie file entry was empty: PRIVATE_COOKIE"
+        })
+        {
+            Require(!JournalSanitizer.Redact(raw).Contains("PRIVATE_COOKIE"),
+                "Cookie parsing warnings and failures must never echo raw or Python-repr credential rows");
+            string redacted=JournalSanitizer.Redact(Engine(raw));
+            Require(!redacted.Contains("PRIVATE_COOKIE") && redacted.Contains("component=video:137") && redacted.Contains("percent=12.5"),
+                "JSON-wrapped malformed cookie diagnostics must hide values while retaining trace correlation");
+        }
+        Require(JournalSanitizer.Redact(@"WARNING: skipping cookie file entry due to invalid length 8: 'PRIVATE_COOKIE'")
+            .Contains("due to invalid length 8:"),"Safe cookie-parser reason and field count remain available for diagnosis");
         Require(!JournalSanitizer.Redact("event=output text=\"--password \\u0022private incomplete").Contains("private incomplete"),
             "A truncated escaped raw-output field must fail closed");
         Console.WriteLine("PASS: journal credential redaction, Unicode, line-injection defense and bounded diagnostic text");
