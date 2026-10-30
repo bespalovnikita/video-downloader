@@ -4,6 +4,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Markup;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using System.Xml;
 
@@ -44,7 +45,10 @@ internal sealed partial class UiScenario
         Directory.CreateDirectory(root);
         string callsFile=Path.Combine(root,"metadata-calls.jsonl");
         string? oldLog=Environment.GetEnvironmentVariable("VD_NATIVE_TITLE_FIXTURE_LOG");
+        string? oldThumbnail=Environment.GetEnvironmentVariable("VD_NATIVE_TITLE_FIXTURE_THUMBNAIL");
+        using var thumbnails=new PreviewThumbnailServer();
         Environment.SetEnvironmentVariable("VD_NATIVE_TITLE_FIXTURE_LOG",callsFile);
+        Environment.SetEnvironmentVariable("VD_NATIVE_TITLE_FIXTURE_THUMBNAIL",thumbnails.Url);
         UiScenario? controller=null;
         Window? window=null;
         try
@@ -67,8 +71,10 @@ internal sealed partial class UiScenario
             string[] urls=["https://title-ingress.invalid/Video?token=AbC",
                 "https://title-ingress.invalid/video?token=AbC",
                 "https://title-ingress.invalid/Shortcut?token=XyZ",
-                "https://title-ingress.invalid/Subscription?token=AbC"];
-            string[] titles=["Название из URL","Название из файла","Название из ярлыка","Название из подписки"];
+                "https://title-ingress.invalid/Subscription?token=AbC",
+                "https://title-ingress.invalid/SubscriptionPreview?token=AbC"];
+            string[] titles=["Название из URL","Название из файла","Название из ярлыка","Название из подписки","Название успешной подписки"];
+            int completedImages=0;
 
             void RequireIdle()
             {
@@ -76,7 +82,8 @@ internal sealed partial class UiScenario
                     ui.SessionState.Queue.All(row=>row.Status=="Queued" && row.Path.Length==0 && row.OwnedPaths.Count==0),
                     "Background metadata must leave every row queued and never start a download");
                 Require(selections==0 && ui.Q.SelectedItem==null && ui.D.SelectedItem==null && ui._preview.SelectedUrl.Length==0 &&
-                    ui.T("PreviewTitle").Text==originalPanel,"Background metadata must never select a row or replace the preview panel");
+                    ui.T("PreviewTitle").Text==originalPanel && ui.F<Image>("PreviewImage").Source==null,
+                    "Background metadata must never select a row or replace the preview panel");
             }
             void VerifyRenderedTitle(DownloadItem row,string title)
             {
@@ -99,9 +106,14 @@ internal sealed partial class UiScenario
             void VerifyTitle(int index)
             {
                 var row=ui.SessionState.Queue.Single(row=>string.Equals(row.Url,urls[index],StringComparison.Ordinal));
-                PumpUntil(()=>row.Title==titles[index],"The actual metadata worker must fill the title for "+urls[index]);
+                PumpUntil(()=>row.Title==titles[index] && ui._preview.GetCached(row.Url) is { } ready &&
+                    ready.ThumbnailBase64==thumbnails.Encoded && ready.ThumbnailsBase64.Length==1,
+                    "The actual metadata child and HTTP worker must fetch the title and PNG before selection/Start: "+urls[index]);
                 var cached=ui._preview.GetCached(row.Url);
                 Require(cached?.Title==titles[index],"The real worker must persist its metadata result in the preview cache");
+                Require(thumbnails.Requests==++completedImages && thumbnails.Errors.IsEmpty &&
+                    PreviewImage.Decode(Convert.FromBase64String(cached!.ThumbnailBase64)) is {PixelWidth:PreviewThumbnailServer.Width,PixelHeight:PreviewThumbnailServer.Height},
+                    "Every cold successful ingress must independently fetch and validate exactly one real HTTP image");
                 VerifyRenderedTitle(row,titles[index]);
             }
 
@@ -138,31 +150,64 @@ internal sealed partial class UiScenario
             Require(ui.SessionState.Queue.Single(row=>row.Url==urls[3]).Title==titles[3] && ui._preview.GetCached(urls[3])==null,
                 "A failed cold metadata request must preserve the immediate subscription title");
             VerifyRenderedTitle(ui.SessionState.Queue.Single(row=>row.Url==urls[3]),titles[3]);
+            Require(thumbnails.Requests==3,"Failed metadata must not manufacture or fetch an unrelated thumbnail");
+
+            // Re-accepting an existing queue row must retry a failed cold
+            // preview too; it must not depend on selecting that row.
+            var failedRow=ui.SessionState.Queue.Single(row=>row.Url==urls[3]);
+            File.WriteAllText(Path.Combine(root,"subscription-recovered"),"");
+            var recovered=ui.QueueSubscriptionUrls([urls[3]],"cold-ingress-subscription","123",
+                new Dictionary<string,string>(StringComparer.Ordinal){[urls[3]]=titles[3]});
+            Require(recovered.SequenceEqual(new[]{urls[3]}) && ui.SessionState.Queue.Count==4 &&
+                ReferenceEquals(ui.SessionState.Queue.Single(row=>row.Url==urls[3]),failedRow),
+                "Subscription re-acceptance must keep the existing row while scheduling its failed preview again");
+            VerifyTitle(3);
+
+            Require(ui._preview.GetCached(urls[4])==null,"Successful subscription ingress must also start without cached metadata");
+            accepted=ui.QueueSubscriptionUrls([urls[4]],"cold-success-subscription","456",
+                new Dictionary<string,string>(StringComparer.Ordinal){[urls[4]]=titles[4]});
+            Require(accepted.SequenceEqual(new[]{urls[4]}) && ui.SessionState.Queue.Single(row=>row.Url==urls[4]).Title==titles[4],
+                "A fresh subscription must show its discovery title before its independent thumbnail fetch");
+            VerifyTitle(4);
 
             ui.SaveCheckpoint();
             var saved=storage.Restore()!;
             Require(saved.Queue.Select(row=>row.Url).SequenceEqual(urls,StringComparer.Ordinal) &&
                 saved.Queue.Select(row=>row.Title).SequenceEqual(titles,StringComparer.Ordinal),
-                "All four exact URLs and their discovered titles must survive checkpoint persistence");
+                "All five exact URLs and their discovered titles must survive checkpoint persistence");
+
+            // Only after every cold result is ready may selection render the
+            // cached image. Neither selection nor Start was used to obtain it.
+            foreach(int index in new[]{0,4})
+            {
+                ui.Q.SelectedItem=ui.SessionState.Queue.Single(row=>row.Url==urls[index]);
+                PumpUntil(()=>ui._preview.SelectedUrl==urls[index] &&
+                    ui.F<Image>("PreviewImage").Source is BitmapSource {PixelWidth:PreviewThumbnailServer.Width,PixelHeight:PreviewThumbnailServer.Height},
+                    "Selecting a prefetched URL/subscription must render its actual cached PNG");
+            }
             var calls=File.ReadAllLines(callsFile,Encoding.UTF8)
                 .Where(line=>!string.IsNullOrWhiteSpace(line)).Select(line=>JsonDocument.Parse(line)).ToArray();
             try
             {
-                Require(calls.Length==4 && calls.Select(call=>call.RootElement.GetProperty("Url").GetString())
-                    .SequenceEqual(urls,StringComparer.Ordinal),"Each exact URL must execute exactly one metadata child, in ingress order");
+                Require(calls.Length==6 && calls.Select(call=>call.RootElement.GetProperty("Url").GetString())
+                    .SequenceEqual(new[]{urls[0],urls[1],urls[2],urls[3],urls[3],urls[4]},StringComparer.Ordinal),
+                    "Five URLs and one explicit failed-preview recovery must execute six children; cached selection must not repeat metadata");
                 Require(calls.All(call=>call.RootElement.GetProperty("MetadataOnly").GetBoolean() &&
                     call.RootElement.GetProperty("ProcessId").GetInt32()!=Environment.ProcessId),
-                    "All four requests must run in actual metadata-only child processes");
+                    "All six requests must run in actual metadata-only child processes");
             }
             finally { foreach(var call in calls)call.Dispose(); }
-            Require(!File.Exists(storage.HistoryPath),"Metadata prefetch must never record a successful download");
-            Console.WriteLine("PASS: native cold title ingress URL, TXT, InternetShortcut, subscription; 4 exact URLs, 4 metadata-only children, 0 downloads, 0 selections");
+            Require(thumbnails.Requests==5 && thumbnails.Errors.IsEmpty && !File.Exists(storage.HistoryPath) &&
+                ui.SessionState.Coordinator==null && ui.SessionState.Downloads.Count==0,
+                "Cached display must not repeat HTTP acquisition, start downloads or record success");
+            Console.WriteLine("PASS: cold URL/TXT/InternetShortcut/subscription title+HTTP PNG before selection/Start; existing subscription preview recovery; cached WPF images; 6 metadata-only children, 5 HTTP images, 0 downloads");
         }
         finally
         {
             controller?.Dispose();
             window?.Close();
             Environment.SetEnvironmentVariable("VD_NATIVE_TITLE_FIXTURE_LOG",oldLog);
+            Environment.SetEnvironmentVariable("VD_NATIVE_TITLE_FIXTURE_THUMBNAIL",oldThumbnail);
         }
     }
 }
