@@ -42,7 +42,11 @@ internal static class PreviewSchedulingTests
                 if(deadline.Elapsed>TimeSpan.FromSeconds(20))throw new TimeoutException("Fixture gate was not released: "+name);
                 Thread.Sleep(10);
             }
-            Console.WriteLine(JsonSerializer.Serialize(new {title="Metadata "+name,uploader="Scheduling fixture",duration=1}));
+            string thumbnailFile=Path.Combine(root,"thumbnail-url.txt");
+            Console.WriteLine(JsonSerializer.Serialize(new {
+                title="Metadata "+name,uploader="Scheduling fixture",duration=1,
+                thumbnail=File.Exists(thumbnailFile)?File.ReadAllText(thumbnailFile,Encoding.UTF8).Trim():""
+            }));
             return true;
         }
         finally

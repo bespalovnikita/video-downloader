@@ -77,6 +77,11 @@ internal static class PreviewGalleryTests
         }
         static TaskCompletionSource<PreviewData> Completion()=>new(TaskCreationOptions.RunContinuationsAsynchronously);
         string Cache(string url)=>Path.Combine(storage.PreviewDir,Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(url))).ToLowerInvariant()+".json");
+        void WriteCache(string url,string title,DateTime savedAtUtc,string error,string cover="")=>File.WriteAllText(Cache(url),JsonSerializer.Serialize(new {
+            CacheVersion=1,PreviewFetchVersion=3,Url=url,SavedAtUtc=savedAtUtc,Success=true,ThumbnailError=error,
+            Title=title,Uploader="",PlaylistTitle="",Duration=0,Extractor="",MaxHeight=0,MaxFps=0,Codecs="",DynamicRange="",
+            ThumbnailBase64=cover,ThumbnailsBase64=cover.Length==0?Array.Empty<string>():new[]{cover}
+        }));
         try
         {
             var ready=Completion();var updates=new ConcurrentQueue<PreviewData>();int finalCalls=0;
@@ -148,6 +153,63 @@ internal static class PreviewGalleryTests
                 Require(cached.Title=="Upgraded title" && cached.ThumbnailsBase64.Length==2 && cold.Peek(legacyUrl)?.Title==cached.Title &&
                     coldReadyCalls==1 && failures.IsEmpty,"A cold cache request must deliver and warm its gallery once, without a metadata child");
             }
+            foreach(bool warmMemory in new[]{false,true})
+            {
+                string name=warmMemory?"retry-warm":"retry-cold",url=Prefix+name;
+                string title="Known title survives a failed cover";
+                WriteCache(url,title,DateTime.UtcNow.AddMinutes(-2),"HTTP Error 503: temporary thumbnail failure");
+                int imageIndex=warmMemory?7:6;
+                string imagePath=$"/image/{imageIndex}.png";
+                int before=requests.Count(path=>path==imagePath);
+                control=Control(name,Metadata("",imagePath));
+                ready=Completion();
+                using var retry=new PreviewService(executable,storage,()=>control,value=>ready.TrySetResult(value),_=>{});
+                if(warmMemory)
+                    Require(retry.Get(url)?.Title==title,"The failed-cover cache must remain immediately usable for its known title");
+                else Require(retry.Peek(url)==null,"A cold failed-cover retry must begin without a memory cache entry");
+                retry.Request(url);retry.Request(url);
+                var recovered=await ready.Task.WaitAsync(TimeSpan.FromSeconds(10));
+                Require(recovered.Title==title && recovered.ThumbnailsBase64.Length==1 &&
+                        Convert.FromBase64String(recovered.ThumbnailBase64).SequenceEqual(images[imageIndex]),
+                    "An expired failed-cover result must retry acquisition and retain useful metadata: "+name);
+                Require(File.ReadAllLines(Path.Combine(root,name+".calls")).Length==1 && requests.Count(path=>path==imagePath)==before+1,
+                    "A failed-cover retry must execute one actual metadata child and one actual HTTP image request: "+name);
+                Require(retry.Peek(url)?.ThumbnailBase64==recovered.ThumbnailBase64,
+                    "A recovered thumbnail must replace the failed-cover memory cache immediately");
+            }
+
+            string recentFailure=Prefix+"recent-thumbnail-failure",noCandidates=Prefix+"no-thumbnail-candidates",
+                partialCover=Prefix+"partial-gallery-with-cover";
+            WriteCache(recentFailure,"Fresh failed cover",DateTime.UtcNow,"HTTP Error 503: thumbnail failure");
+            WriteCache(noCandidates,"Source has no cover",DateTime.UtcNow.AddHours(-2),"");
+            WriteCache(partialCover,"Usable partial gallery",DateTime.UtcNow.AddHours(-2),"Thumbnail timed out",Convert.ToBase64String(images[8]));
+            byte[] recentBytes=File.ReadAllBytes(Cache(recentFailure)),noCandidateBytes=File.ReadAllBytes(Cache(noCandidates));
+            byte[] partialBytes=File.ReadAllBytes(Cache(partialCover));
+            string suppressionControl=Control("retry-suppression",Metadata("Must not fetch","/image/8.png"));
+            var delivered=new ConcurrentQueue<string>();var suppressedFailures=new ConcurrentQueue<string>();ready=Completion();
+            int requestsBeforeSuppression=requests.Count;
+            using(var suppressed=new PreviewService(executable,storage,()=>suppressionControl,value=>
+                {delivered.Enqueue(value.Url);if(value.Url==legacyUrl)ready.TrySetResult(value);},_=>{},
+                failed:(url,error)=>suppressedFailures.Enqueue(url+": "+error)))
+            {
+                Require(suppressed.Get(recentFailure)?.Title=="Fresh failed cover" && suppressed.Get(noCandidates)?.Title=="Source has no cover" &&
+                        suppressed.Get(partialCover)?.ThumbnailBase64==Convert.ToBase64String(images[8]),
+                    "Fresh failures, sources without images and useful partial galleries must expose their cached metadata immediately");
+                suppressed.Request(recentFailure);suppressed.Request(noCandidates);suppressed.Request(partialCover);
+                // This valid disk gallery is a FIFO barrier: once its callback
+                // arrives, the single worker has finished any wrongly admitted
+                // retries queued by the three requests above.
+                suppressed.Request(legacyUrl);
+                await ready.Task.WaitAsync(TimeSpan.FromSeconds(10));
+                Require(delivered.SequenceEqual(new[]{legacyUrl}) && suppressedFailures.IsEmpty &&
+                        !File.Exists(Path.Combine(root,"retry-suppression.calls")) && requests.Count==requestsBeforeSuppression,
+                    "Fresh failed covers must be throttled; sources without images and galleries with a usable cover must keep their normal cache without retrying");
+                Require(File.ReadAllBytes(Cache(recentFailure)).SequenceEqual(recentBytes) &&
+                        File.ReadAllBytes(Cache(noCandidates)).SequenceEqual(noCandidateBytes) &&
+                        File.ReadAllBytes(Cache(partialCover)).SequenceEqual(partialBytes),
+                    "Suppressed requests must not rewrite failed-cover, no-image or usable partial-gallery cache records");
+            }
+
             string unavailable=Prefix+"legacy-upgrade-unavailable";
             File.WriteAllText(Cache(unavailable),JsonSerializer.Serialize(new{CacheVersion=1,PreviewFetchVersion=2,Url=unavailable,SavedAtUtc=DateTime.UtcNow,
                 Title="Usable legacy cover",Uploader="",PlaylistTitle="",Duration=0,Extractor="",MaxHeight=0,MaxFps=0,Codecs="",DynamicRange="",
@@ -180,7 +242,7 @@ internal static class PreviewGalleryTests
             }
             MemoryBudget(Path.Combine(root,"memory-budget"));
             Require(!File.Exists(storage.HistoryPath),"Gallery acquisition must never record a successful media download");
-            Console.WriteLine("PASS: native preview galleries; fifteen-image limit, fallback, duplicate suppression, progressive delivery, legacy upgrade, exact cache identity and body deadline");
+            Console.WriteLine("PASS: native preview galleries; fifteen-image limit, fallback, duplicate suppression, progressive delivery, legacy upgrade, failed-cover retry/throttle, exact cache identity and body deadline");
         }
         finally
         {
