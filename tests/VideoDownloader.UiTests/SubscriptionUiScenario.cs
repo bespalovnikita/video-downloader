@@ -24,6 +24,7 @@ internal sealed partial class UiScenario
         string? sourceId=null;
         string suffix=Guid.NewGuid().ToString("N");
         string baselineUrl="https://example.com/subscription-ui-baseline/"+suffix;
+        string manualBaselineUrl="https://example.invalid/subscription-baseline-manual/"+suffix;
         string queueUrl="https://example.com/subscription-ui-queue/"+suffix;
         string skipUrl="https://example.com/subscription-ui-skip/"+suffix;
         string freshUrl="https://example.invalid/subscription-import/"+suffix+"/Video";
@@ -66,9 +67,9 @@ internal sealed partial class UiScenario
             var definition=subscriptions.TestStore.Add("https://example.com/subscription-ui-source/"+suffix,false);
             sourceId=definition.Id;
             subscriptions.TestStore.ApplyScan(sourceId,new SubscriptionScan("Проверка интерфейса",
-                [new DiscoveredMedia(baselineUrl,"Исходный материал")],"","","Канал 123"),[]);
+                [new DiscoveredMedia(baselineUrl,"Исходный материал"),new DiscoveredMedia(manualBaselineUrl,"Исходный вручную")],"","","Канал 123"),[]);
             subscriptions.TestStore.ApplyScan(sourceId,new SubscriptionScan("Проверка интерфейса",
-                [new DiscoveredMedia(baselineUrl,"Исходный материал"),new DiscoveredMedia(queueUrl,"Добавить вручную"),
+                [new DiscoveredMedia(baselineUrl,"Исходный материал"),new DiscoveredMedia(manualBaselineUrl,"Исходный вручную"),new DiscoveredMedia(queueUrl,"Добавить вручную"),
                  new DiscoveredMedia(skipUrl,"Пропустить вручную"),new DiscoveredMedia(freshUrl,"Название из подписки"),
                  new DiscoveredMedia(caseUrl,"Другое название")],"",""),[]);
             var beforeOpen=subscriptions.TestStore.Read().Subscriptions.Single(x=>x.Id==sourceId);
@@ -96,6 +97,8 @@ internal sealed partial class UiScenario
             var window=subscriptions.TestWindow!;
             Require(window.Owner==_window && window.IsVisible && _window.IsEnabled,"Subscriptions must be a modeless window owned by the main window");
             Require(subscriptions.TestControl<CheckBox>("DownloadExistingCheck").IsChecked==false,"The initial-scan choice must default to baseline");
+            Require(subscriptions.TestControl<CheckBox>("FullSubscriptionCheck").IsChecked==false,
+                "Manual checks must default to the optimized mode with an explicit full-check override");
             Require(subscriptions.TestControl<TextBox>("SubscriptionFeedBox")!=null,"Optional RSS / Atom input must be available");
             Require(subscriptions.TestControl<TextBox>("NewSubscriptionNameBox").Text.Length==0,
                 "A new subscription name must default to automatic channel detection");
@@ -144,6 +147,7 @@ internal sealed partial class UiScenario
             subscriptions.TestProgress.SetStage(progressBatch,sourceId,5,"Сравниваем и сохраняем результат…");
             firstProgress.Report(new("Ready",3,2048));
             firstProgress.Report(new("Enumerating",MetadataBytes:1));
+            firstProgress.Report(new("FullFallback"));
             DrainProgressCallbacks();
             Require(subscriptions.TestControl<TextBlock>("SubscriptionCheckStageText").Text=="Сравниваем и сохраняем результат…" &&
                     subscriptions.TestControl<ProgressBar>("SubscriptionCheckOverallProgress").Value==0,
@@ -156,6 +160,21 @@ internal sealed partial class UiScenario
             Require(subscriptions.TestControl<TextBlock>("SubscriptionCheckSourceText").Text==nextProgressSource.Title &&
                     !subscriptions.TestControl<TextBlock>("SubscriptionCheckDetailText").Text.Contains("999"),
                 "A late report for the previous exact source must not alter the next source");
+            var recentProgress=subscriptions.TestProgress.CreateObserver(progressBatch,nextProgressSource.Id);
+            recentProgress.Report(new("RecentWindow"));
+            recentProgress.Report(new("Enumerating",MetadataBytes:512));
+            recentProgress.Report(new("Parsing",20,512));
+            DrainProgressCallbacks();
+            Require(subscriptions.TestControl<TextBlock>("SubscriptionCheckStageText").Text=="Сравниваем окно новых материалов…" &&
+                    subscriptions.TestControl<TextBlock>("SubscriptionCheckDetailText").Text.Contains("проверенном окне: 20"),
+                "An incremental probe must display its 20-item window without claiming a complete collection");
+            recentProgress.Report(new("FullFallback"));
+            recentProgress.Report(new("Enumerating",MetadataBytes:1024));
+            recentProgress.Report(new("Parsing",100,2048));
+            DrainProgressCallbacks();
+            Require(subscriptions.TestControl<TextBlock>("SubscriptionCheckStageText").Text=="Разбираем и проверяем полный список…" &&
+                    subscriptions.TestControl<TextBlock>("SubscriptionCheckDetailText").Text.Contains("полном списке: 100"),
+                "A deliberate full fallback must reset the probe phase and show the full collection count");
             subscriptions.TestProgress.SetStage(progressBatch,nextProgressSource.Id,7,"Источник не проверен: тестовая ошибка");
             subscriptions.TestProgress.CompleteSource(progressBatch,nextProgressSource.Id);
             subscriptions.TestProgress.SkipSource(progressBatch);
@@ -217,7 +236,15 @@ internal sealed partial class UiScenario
             subscriptions.TestSources.UpdateLayout();
             WaitFor(()=>subscriptions.TestSources.Columns[1].GetCellContent(subscriptions.TestSources.SelectedItem) is TextBlock folder && folder.Text=="123",
                 "The actual source grid cell must bind the short folder name");
-            Require(subscriptions.TestInbox.Items.Count==4,"Baseline materials must stay out of the inbox");
+            Require(subscriptions.TestInbox.Items.Count==6,"Existing baseline and new materials must all appear in the results");
+            var baselineView=subscriptions.TestInbox.Items.Cast<SubscriptionController.SubscriptionItemView>().Single(x=>x.Url==baselineUrl);
+            subscriptions.TestInbox.ScrollIntoView(baselineView);
+            subscriptions.TestInbox.UpdateLayout();
+            WaitFor(()=>subscriptions.TestInbox.Columns[0].GetCellContent(baselineView) is TextBlock baselineTitle && baselineTitle.Text=="Исходный материал" &&
+                        subscriptions.TestInbox.Columns[1].GetCellContent(baselineView) is TextBlock baselineState && baselineState.Text=="Исходный снимок",
+                "The actual grid must render baseline titles and their distinct Russian state");
+            Require(!SessionState.Queue.Any(row=>row.Url==baselineUrl || row.Url==manualBaselineUrl),
+                "Displaying baseline materials must not add them to the ordinary queue");
             Require(subscriptions.TestInbox.Items.Cast<SubscriptionController.SubscriptionItemView>().Any(x=>x.Title=="Добавить вручную" && x.StateLabel=="Новое"),
                 "Inbox title and localized state must bind through actual WPF columns");
 
@@ -269,7 +296,7 @@ internal sealed partial class UiScenario
             Require(queuedRow.Title=="Добавить вручную" && T("PreviewTitle").Text=="Другое выбранное видео",
                 "Enriching a different URL must leave the selected preview title alone");
 
-            foreach(string url in new[]{freshUrl,caseUrl,skipUrl})
+            foreach(string url in new[]{freshUrl,caseUrl,skipUrl,manualBaselineUrl})
             {
                 string cacheFile=Path.Combine(_storage.PreviewDir,
                     Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(url))).ToLowerInvariant()+".json");
@@ -316,6 +343,17 @@ internal sealed partial class UiScenario
                 "Skip must be durable without claiming processing");
             Require(subscriptions.TestControl<Button>("QueueSubscriptionItemsButton").IsEnabled,"Skipped items must remain available for an explicit Queue");
 
+            subscriptions.TestInbox.SelectedItem=subscriptions.TestInbox.Items.Cast<SubscriptionController.SubscriptionItemView>().Single(x=>x.Url==manualBaselineUrl);
+            Require(queueButton.IsEnabled && !subscriptions.TestControl<Button>("SkipSubscriptionItemsButton").IsEnabled,
+                "A visible baseline supports explicit Queue without presenting it as a new item");
+            queueButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            WaitFor(()=>!subscriptions.TestIsMutating && subscriptions.TestStore.Read().Items.Single(x=>x.SubscriptionId==sourceId && x.Url==manualBaselineUrl).State=="Queued",
+                "The explicit Queue button must accept a selected baseline material");
+            var manualBaselineRow=SessionState.Queue.Single(row=>row.Url==manualBaselineUrl);
+            Require(manualBaselineRow.Title=="Исходный вручную" && manualBaselineRow.SubscriptionId==sourceId && manualBaselineRow.SubscriptionName=="123" &&
+                    manualBaselineRow.Status=="Queued" && ReferenceEquals(SessionState.Coordinator,originalSession),
+                "Explicit baseline enqueue must retain title and routing and wait for manual Start");
+
             subscriptions.TestControl<Button>("PauseSubscriptionButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             WaitFor(()=>!subscriptions.TestIsMutating && subscriptions.TestStore.Read().Subscriptions.Single(x=>x.Id==sourceId).Paused,
                 "Pause button must persist the paused state");
@@ -328,6 +366,8 @@ internal sealed partial class UiScenario
             {
                 subscriptions.TestCancellation=scanCancellation;
                 subscriptions.TestUpdateButtons();
+                Require(!subscriptions.TestControl<CheckBox>("FullSubscriptionCheck").IsEnabled,
+                    "The scan mode must not change while its batch is active");
                 subscriptions.TestControl<Button>("CancelSubscriptionCheckButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                 Require(scanCancellation.IsCancellationRequested && ReferenceEquals(SessionState.Coordinator,originalSession),
                     "Scan cancellation must use its own token and leave the downloader alone");

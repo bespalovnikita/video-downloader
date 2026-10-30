@@ -50,5 +50,11 @@ public sealed class SubscriptionSnapshot
 }
 
 public sealed record DiscoveredMedia(string Url, string Title);
-public sealed record SubscriptionScan(string Title, IReadOnlyList<DiscoveredMedia> Items, string FeedUrl, string Warning, string SuggestedName = "");
+public enum SubscriptionScanScope { Full, RecentWindow }
+public sealed record SubscriptionScan(string Title, IReadOnlyList<DiscoveredMedia> Items, string FeedUrl, string Warning, string SuggestedName = "")
+{
+    // A window supplements an existing snapshot. It never establishes a baseline
+    // and must not be mistaken for a fully enumerated collection.
+    public SubscriptionScanScope Scope { get; init; } = SubscriptionScanScope.Full;
+}
 public sealed record SubscriptionScanProgress(string Stage, int? ItemCount = null, long? MetadataBytes = null);

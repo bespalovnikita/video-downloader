@@ -20,7 +20,8 @@ internal static class TitleIngressFixture
             ["https://title-ingress.invalid/Video?token=AbC"]="Название из URL",
             ["https://title-ingress.invalid/video?token=AbC"]="Название из файла",
             ["https://title-ingress.invalid/Shortcut?token=XyZ"]="Название из ярлыка",
-            ["https://title-ingress.invalid/Subscription?token=AbC"]="Название из подписки"
+            ["https://title-ingress.invalid/Subscription?token=AbC"]="Название из подписки",
+            ["https://title-ingress.invalid/SubscriptionPreview?token=AbC"]="Название успешной подписки"
         };
         Console.OutputEncoding=new UTF8Encoding(false);
         if(!metadataOnly || !titles.TryGetValue(url,out string? title))
@@ -28,12 +29,16 @@ internal static class TitleIngressFixture
             Console.Error.WriteLine("Unexpected non-metadata title fixture invocation.");
             Environment.ExitCode=2;
         }
-        else if(url=="https://title-ingress.invalid/Subscription?token=AbC")
+        else if(url=="https://title-ingress.invalid/Subscription?token=AbC" &&
+            !File.Exists(Path.Combine(Path.GetDirectoryName(log)!,"subscription-recovered")))
         {
             Console.Error.WriteLine("Cold subscription fixture metadata unavailable");
             Environment.ExitCode=7;
         }
-        else Console.WriteLine(JsonSerializer.Serialize(new {title,uploader="Cold metadata fixture",duration=42}));
+        else Console.WriteLine(JsonSerializer.Serialize(new {
+            title,uploader="Cold metadata fixture",duration=42,
+            thumbnail=Environment.GetEnvironmentVariable("VD_NATIVE_TITLE_FIXTURE_THUMBNAIL")??""
+        }));
         return true;
     }
 }

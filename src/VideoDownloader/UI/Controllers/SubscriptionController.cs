@@ -217,7 +217,6 @@ internal sealed partial class SubscriptionController : IDisposable
             .Select(x=>(x.Item.SubscriptionId,x.Url)).ToHashSet();
         var items=(_snapshot?.Items ?? [])
             .Where(x=>selected==null || x.SubscriptionId==selected.Id)
-            .Where(x=>x.State!="Baseline")
             .OrderBy(x=>x.State=="New"?0:x.State=="Queued"?1:2)
             .ThenByDescending(x=>x.DiscoveredAtUtc).ThenBy(x=>x.Url,StringComparer.Ordinal)
             .Select(x=>new SubscriptionItemView(x)).ToArray();
@@ -277,12 +276,13 @@ internal sealed partial class SubscriptionController : IDisposable
         Control<Button>("CheckSubscriptionButton").IsEnabled=ready && source!=null && !source.Definition.Paused;
         // This button also retries reading a repaired persistence file.
         Control<Button>("CheckAllSubscriptionsButton").IsEnabled=ready;
+        Control<CheckBox>("FullSubscriptionCheck").IsEnabled=ready;
         Control<Button>("CancelSubscriptionCheckButton").IsEnabled=_cancellation!=null && !_cancellation.IsCancellationRequested;
         var pause=Control<Button>("PauseSubscriptionButton");
         pause.IsEnabled=ready && source!=null;
         pause.Content=source?.Definition.Paused==true?"Возобновить":"Приостановить";
         Control<Button>("RemoveSubscriptionButton").IsEnabled=ready && source!=null;
-        Control<Button>("QueueSubscriptionItemsButton").IsEnabled=ready && items.Any(x=>x.Item.State is "New" or "Skipped" or "Queued");
+        Control<Button>("QueueSubscriptionItemsButton").IsEnabled=ready && items.Any(x=>x.Item.State is "Baseline" or "New" or "Skipped" or "Queued");
         Control<Button>("SkipSubscriptionItemsButton").IsEnabled=ready && items.Any(x=>x.Item.State=="New");
         Control<Button>("OpenSubscriptionItemButton").IsEnabled=items.Length==1;
         Control<TextBox>("SubscriptionUrlBox").IsEnabled=ready;
@@ -379,11 +379,12 @@ internal sealed partial class SubscriptionController : IDisposable
         var window=_window;
         // Capture WPF input before starting any background work.
         string cookies=_readCookies();
+        bool forceFull=Control<CheckBox>("FullSubscriptionCheck").IsChecked==true;
         using var cancel=new CancellationTokenSource();
         _cancellation=cancel;
         long progressVersion=_checkProgress.Begin(window,ids.Length);
         UpdateButtons();
-        int succeeded=0,failed=0,queued=0;
+        int succeeded=0,failed=0,queued=0,fullChecks=0,recentChecks=0;
         bool cancelled=false;
         string queueError="";
         try
@@ -392,15 +393,17 @@ internal sealed partial class SubscriptionController : IDisposable
             foreach (string id in ids)
             {
                 cancel.Token.ThrowIfCancellationRequested();
-                var source=await Task.Run(()=>_store.Read().Subscriptions.FirstOrDefault(x=>x.Id==id),cancel.Token);
+                var current=await Task.Run(()=>_store.Read(),cancel.Token);
+                var source=current.Subscriptions.FirstOrDefault(x=>x.Id==id);
                 if (source==null || source.Paused) {_checkProgress.SkipSource(progressVersion);continue;}
                 _checkProgress.StartSource(progressVersion,source);
-                string kind=PornHubChannel.ListingUrl(source.Url)!=null?"Проверка публикаций Pornhub (до 15 минут)":"Полная проверка";
+                var knownUrls=current.Items.Where(item=>item.SubscriptionId==id).Select(item=>item.Url).ToHashSet(StringComparer.Ordinal);
+                string kind=forceFull || !source.Initialized?"Полная проверка":"Проверка обновлений";
                 Status($"{kind}: {(source.Title.Length>0?source.Title:source.Url)}… Отмена не меняет исходную отметку.");
                 try
                 {
                     var progress=_checkProgress.CreateObserver(progressVersion,id);
-                    var scan=await Task.Run(()=>scanner.ScanAsync(source,cookies,cancel.Token,progress),cancel.Token);
+                    var scan=await Task.Run(()=>scanner.ScanAsync(source,cookies,cancel.Token,progress,knownUrls,forceFull),cancel.Token);
                     _checkProgress.Report(progressVersion,id,new("Ready",scan.Items.Count));
                     _checkProgress.SetStage(progressVersion,id,5,"Сравниваем и сохраняем результат…");
                     var snapshot=await Task.Run(()=>
@@ -411,6 +414,7 @@ internal sealed partial class SubscriptionController : IDisposable
                         return _store.ApplyScan(id,scan,history.Keys,cancel.Token);
                     },cancel.Token);
                     succeeded++;
+                    if (scan.Scope==SubscriptionScanScope.Full) fullChecks++;else recentChecks++;
                     if (!CurrentWindow(window)) break;
                     if (!cancel.IsCancellationRequested) PrefetchScanPreviews(snapshot,id);
                     // Only the explicit first-scan checkbox adds existing items.
@@ -464,7 +468,7 @@ internal sealed partial class SubscriptionController : IDisposable
                 await ReloadAsync();
                 _checkProgress.Finish(progressVersion,cancelled,succeeded,failed,queued);
                 Status((cancelled?"Проверка отменена.":"Проверка завершена.")+
-                    $" Полных проверок: {succeeded}; ошибок: {failed}; добавлено в очередь: {queued}. "+
+                    $" Успешных проверок: {succeeded} (полных: {fullChecks}; по окну новых: {recentChecks}); ошибок: {failed}; добавлено в очередь: {queued}. "+
                     "Новые материалы — во «Входящих». Скачивание только кнопкой Start."+
                     (queueError.Length>0?" "+queueError:""),failed>0);
             }
@@ -482,7 +486,7 @@ internal sealed partial class SubscriptionController : IDisposable
     {
         if (candidates.Count==0) return 0;
         var reconciled=await Task.Run(()=>_store.ReconcileSuccess(_readHistory().Keys));
-        var eligibleKeys=reconciled.Items.Where(x=>x.State is "New" or "Skipped" or "Queued")
+        var eligibleKeys=reconciled.Items.Where(x=>x.State is "Baseline" or "New" or "Skipped" or "Queued")
             .Select(x=>(x.SubscriptionId,x.Url)).ToHashSet();
         var currentItems=reconciled.Items.ToDictionary(x=>(x.SubscriptionId,x.Url));
         candidates=candidates.Where(x=>eligibleKeys.Contains((x.SubscriptionId,x.Url)))
@@ -514,7 +518,7 @@ internal sealed partial class SubscriptionController : IDisposable
                 var urls=acknowledgement.Urls.ToHashSet(StringComparer.Ordinal);
                 // A genuine concurrent success may already have reconciled a
                 // row. Never turn Processed/AlreadyProcessed back into Queued.
-                var eligible=current.Items.Where(x=>x.SubscriptionId==acknowledgement.Id && urls.Contains(x.Url) && x.State is "New" or "Skipped" or "Queued")
+                var eligible=current.Items.Where(x=>x.SubscriptionId==acknowledgement.Id && urls.Contains(x.Url) && x.State is "Baseline" or "New" or "Skipped" or "Queued")
                     .Select(x=>x.Url).ToArray();
                 if (eligible.Length>0) _store.MarkQueued(acknowledgement.Id,eligible);
             }
@@ -526,7 +530,7 @@ internal sealed partial class SubscriptionController : IDisposable
     {
         if (Busy || _window==null) return;
         var selected=Inbox.SelectedItems.Cast<SubscriptionItemView>().Select(x=>x.Item)
-            .Where(x=>x.State is "New" or "Skipped" or "Queued").ToArray();
+            .Where(x=>x.State is "Baseline" or "New" or "Skipped" or "Queued").ToArray();
         if (selected.Length==0) return;
         _mutation=true;
         UpdateButtons();

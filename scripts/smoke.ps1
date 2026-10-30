@@ -6,7 +6,7 @@ $xamlFiles = @{
         'WriteSubsCheck','FilenameTemplateBox','DependencyStatus','OpenOutputDirectoryButton','OpenAppSettingsButton','ShowVideoTitlesCheck')
     'DuplicateDownloadDialog.xaml' = @('YesButton','NoButton','YesAllButton','NoAllButton','CancelButton','DuplicateUrl')
     'SubscriptionsWindow.xaml' = @('SubscriptionGrid','SubscriptionInboxGrid','SubscriptionCheckProgressPanel',
-        'SubscriptionCheckOverallProgress','SubscriptionCheckActivityProgress','CancelSubscriptionCheckButton','QueueSubscriptionItemsButton')
+        'SubscriptionCheckOverallProgress','SubscriptionCheckActivityProgress','CancelSubscriptionCheckButton','QueueSubscriptionItemsButton','FullSubscriptionCheck')
 }
 foreach ($entry in $xamlFiles.GetEnumerator()) {
     [xml]$markup = Get-Content -LiteralPath (Join-Path $root "src/VideoDownloader/UI/Views/$($entry.Key)") -Raw -Encoding utf8

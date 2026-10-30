@@ -76,12 +76,15 @@ internal static class GuiInstanceTests
                 processes.Add(process);
                 return process;
             }
-            async Task Until(Func<bool> condition,string message)
+            async Task Until(Func<bool> condition,string message,Func<string>? details=null)
             {
                 while(!condition())
                 {
-                    if(deadline.IsCancellationRequested)throw new TimeoutException("GUI singleton test: "+message);
-                    await Task.Delay(25,deadline.Token);
+                    TimeoutException Timeout()=>new("GUI singleton test: "+message+
+                        (details==null ? "" : Environment.NewLine+details()));
+                    if(deadline.IsCancellationRequested)throw Timeout();
+                    try { await Task.Delay(25,deadline.Token); }
+                    catch(OperationCanceledException) when(deadline.IsCancellationRequested) { throw Timeout(); }
                 }
             }
             SessionSnapshot? Snapshot()
@@ -129,9 +132,22 @@ internal static class GuiInstanceTests
             }
 
             await Secondary(Protocol(urls[1]),list,urls[3],Protocol(urls[1]));
-            await Until(()=>CheckpointMatches(urls),"The original GUI must checkpoint the complete exact argument array once in input order.");
-            var imported=Snapshot()!;
-            Require(imported.Queue.All(row=>row.Title=="Cached "+row.Url && row.Status=="Queued" && row.Path.Length==0 && row.OwnedPaths.Count==0),
+            SessionSnapshot? imported=null,lastObserved=null;
+            await Until(()=>
+            {
+                var current=Snapshot();
+                if(current==null)return false;
+                lastObserved=current;
+                // URL admission is checkpointed before the independent preview
+                // worker reads its disk cache and dispatches cached titles.
+                // Observe one complete snapshot after both stages finish.
+                if(!current.Queue.Select(row=>row.Url).SequenceEqual(urls,StringComparer.Ordinal) ||
+                    !current.Queue.All(row=>row.Title=="Cached "+row.Url && row.Status=="Queued" && row.Path.Length==0 && row.OwnedPaths.Count==0))return false;
+                imported=current;return true;
+            },"The original GUI must checkpoint exact arguments and their asynchronously loaded cached titles without starting downloads.",
+                ()=>lastObserved==null ? "No readable checkpoint was observed." :
+                    "Last observed checkpoint: "+JsonSerializer.Serialize(lastObserved.Queue.Select(row=>new{row.Url,row.Title,row.Status,row.Path,OwnedPaths=row.OwnedPaths.Count}),AppPersistence.Json));
+            Require(imported!.Queue.All(row=>row.Title=="Cached "+row.Url && row.Status=="Queued" && row.Path.Length==0 && row.OwnedPaths.Count==0),
                 "Protocol, TXT and case-distinct plain URLs must retain cached titles and remain queued without downloading.");
 
             Require(PostMessageW(window,0x0112,(IntPtr)0xF020,IntPtr.Zero),"The test must send the normal minimize command to the actual window.");
@@ -141,6 +157,9 @@ internal static class GuiInstanceTests
             Require(FindWindow(first.Id)==window && CheckpointMatches(urls),"Reactivation must preserve the original window and its exact queue.");
             Require(!File.Exists(data.HistoryPath) && cacheBytes.All(pair=>File.ReadAllBytes(pair.Key).SequenceEqual(pair.Value)),
                 "GUI-only ingress must neither record downloads nor replace its pre-seeded offline metadata cache.");
+            string journal=Path.Combine(Path.GetDirectoryName(data.SessionPath)!,"logs","journal.log");
+            Require(File.Exists(journal) && new FileInfo(journal).Length>0,
+                "The real GUI must write its automatic journal before the forced-exit cleanup is exercised.");
             Console.WriteLine("PASS: real native GUI singleton, second-process protocol/TXT/exact URLs, minimize-to-tray and empty-launch restore");
         }
         finally
@@ -165,7 +184,20 @@ internal static class GuiInstanceTests
                 catch(Exception error) when(error is OperationCanceledException or System.ComponentModel.Win32Exception) {errors.Add(error);}
                 finally {process.Dispose();}
             }
-            try {Directory.Delete(root,true);}
+            try
+            {
+                // All owned roots have been waited above. Windows can retain
+                // their asynchronous file handles briefly during forced-exit
+                // rundown (the journal now keeps one open while the GUI runs).
+                // Retry only this isolated directory, within the same cleanup
+                // deadline; a persistent lock still fails the scenario.
+                while(true)
+                {
+                    try {Directory.Delete(root,true);break;}
+                    catch(IOException) when(!cleanup.IsCancellationRequested) {await Task.Delay(25);}
+                    catch(UnauthorizedAccessException) when(!cleanup.IsCancellationRequested) {await Task.Delay(25);}
+                }
+            }
             catch(Exception error) when(error is IOException or UnauthorizedAccessException) {errors.Add(error);}
             if(errors.Count>0)throw new AggregateException("Could not clean up all isolated GUI fixtures.",errors);
         }

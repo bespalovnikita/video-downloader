@@ -11,6 +11,7 @@ public sealed class PreviewService : IDisposable
     internal const int MaxImages=15;
     internal const int MaxImageBytes=2_000_000;
     internal const int MaxGalleryBytes=12_000_000;
+    internal static readonly TimeSpan ThumbnailFailureRetryDelay=TimeSpan.FromMinutes(1);
     private const int MaxCacheBytes=20_000_000;
     private const long MemoryCharacterBudget=32L*1024*1024; // Base64 strings are UTF-16: 64 MiB.
     private const long DiskByteBudget=512L*1024*1024;
@@ -174,6 +175,11 @@ public sealed class PreviewService : IDisposable
             data=data with {ThumbnailBase64=previous.ThumbnailBase64,ThumbnailsBase64=previous.ThumbnailsBase64};
         return data;
     }
+    private bool ThumbnailFailureExpired(PreviewData data) =>
+        data.ThumbnailBase64.Length==0 && _thumbnailErrors.TryGetValue(data.Url,out string? error) &&
+        !string.IsNullOrWhiteSpace(error) && !NeedsConverter(error) &&
+        DateTime.UtcNow-data.SavedAtUtc>=ThumbnailFailureRetryDelay;
+
     public void Request(string url,bool priority=false)
     {
         if (Volatile.Read(ref _disposed)!=0 || !AppPersistence.ValidUrl(url)) return;
@@ -186,7 +192,7 @@ public sealed class PreviewService : IDisposable
                 if (priority && _pending.Remove(url)) _pending.Insert(0,url);
                 return;
             }
-            if(cached!=null && _fetchVersions.GetValueOrDefault(url)>=3 &&
+            if(cached!=null && _fetchVersions.GetValueOrDefault(url)>=3 && !ThumbnailFailureExpired(cached) &&
                 !(cached.ThumbnailBase64.Length==0 && _thumbnailErrors.TryGetValue(url,out string? error) && NeedsConverter(error)))return;
             _known.Add(url);
             if (priority) _pending.Insert(0,url);
@@ -210,7 +216,10 @@ public sealed class PreviewService : IDisposable
             try
             {
                 var cached=Get(url);
-                if(cached!=null && _fetchVersions.GetValueOrDefault(url)>=3)
+                // A missing candidate is a valid cached result, but a failed
+                // image request must not suppress the cover for all 72 hours.
+                // Retry only on another request after the bounded cooldown.
+                if(cached!=null && _fetchVersions.GetValueOrDefault(url)>=3 && !ThumbnailFailureExpired(cached))
                 {
                     if(!_stop.IsCancellationRequested)_ready(cached);
                     continue;
@@ -227,6 +236,8 @@ public sealed class PreviewService : IDisposable
                     _updated?.Invoke(data);
                 }).ConfigureAwait(false);
                 var data=RetainKnownData(fetched.Data);
+                if(data.ThumbnailBase64.Length==0 && !string.IsNullOrWhiteSpace(fetched.ThumbnailError))
+                    data=data with {SavedAtUtc=DateTime.UtcNow};
                 if (data!=null)
                 {
                     if (_stop.IsCancellationRequested) break;

@@ -38,8 +38,7 @@ public sealed partial class NativeWindow
         {
             // A modal duplicate prompt may have let another UI action add it.
             row.DeferredToNextStart=SessionState.Coordinator?.IsRunning==true;
-            if(!SessionState.TryAdd(row))continue;
-            RequestRowPreview(row);
+            SessionState.TryAdd(row);
         }
         foreach (var row in SessionState.Queue.Where(row=>requestedSet.Contains(row.Url) &&
             row.CanResume && row.Status!="Completed"))
@@ -47,6 +46,10 @@ public sealed partial class NativeWindow
             if ((string.IsNullOrWhiteSpace(row.Title) || string.Equals(row.Title,row.Url,StringComparison.Ordinal)) &&
                 discoveredTitles.TryGetValue(row.Url,out string? title)) row.Title=title;
             _preview.RefreshKnownTitle(row);
+            // An explicitly accepted URL may already be queued after an
+            // earlier metadata failure. Re-request its preview as well; the
+            // shared worker deduplicates pending work and valid cached data.
+            RequestRowPreview(row);
         }
         Reindex();
         if (_checkpointReadOnly)

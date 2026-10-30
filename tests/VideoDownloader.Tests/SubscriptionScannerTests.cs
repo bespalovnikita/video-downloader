@@ -21,11 +21,14 @@ internal static class SubscriptionScannerTests
             Thread.Sleep(TimeSpan.FromSeconds(30));
             return true;
         }
-        if (args.LastOrDefault()?.StartsWith(Prefix, StringComparison.Ordinal) != true) return false;
-        foreach (string required in new[] { "--ignore-config", "--no-flat-playlist", "--dump-single-json", "--skip-download", "--abort-on-error" })
+        bool youtube = new[] { "videos", "shorts", "streams" }.Any(tab =>
+            args.LastOrDefault() == "https://www.youtube.com/@vd-offline/" + tab);
+        if (!youtube && args.LastOrDefault()?.StartsWith(Prefix, StringComparison.Ordinal) != true) return false;
+        bool recent = args.Contains("--flat-playlist", StringComparer.Ordinal);
+        foreach (string required in new[] { "--ignore-config", recent ? "--flat-playlist" : "--no-flat-playlist", "--dump-single-json", "--skip-download", "--abort-on-error" })
             Require(args.Contains(required, StringComparer.Ordinal), "Missing bounded collection argument: " + required);
         int end = Array.IndexOf(args, "--playlist-end");
-        Require(end >= 0 && args[end + 1] == "10001", "Full enumeration must request the truncation sentinel item");
+        Require(end >= 0 && args[end + 1] == (recent ? "20" : "10001"), "Enumeration must request the recent window or full truncation sentinel");
         int cookie = Array.IndexOf(args, "--cookies");
         Require(cookie >= 0, "Fixture state must be forwarded through --cookies");
         string statePath = args[cookie + 1];
@@ -33,7 +36,9 @@ internal static class SubscriptionScannerTests
         string state = Path.GetDirectoryName(statePath)!;
         File.AppendAllText(Path.Combine(state, "calls.jsonl"), JsonSerializer.Serialize(args) + "\n");
         File.WriteAllText(Path.Combine(state, "parent.pid"), Environment.ProcessId.ToString());
+        if (recent) File.WriteAllText(Path.Combine(state, "recent.pid"), Environment.ProcessId.ToString());
         string mode = config.RootElement.GetProperty("Mode").GetString()!;
+        if (mode == "recent-hang" && recent) { Thread.Sleep(TimeSpan.FromSeconds(30)); return true; }
         if (mode == "hang")
         {
             var child = new ProcessStartInfo(TestExecutable()) { UseShellExecute = false };
@@ -75,7 +80,8 @@ internal static class SubscriptionScannerTests
             }
             return true;
         }
-        Console.WriteLine(config.RootElement.GetProperty("Response").GetString());
+        string responseProperty = recent && config.RootElement.TryGetProperty("RecentResponse", out _) ? "RecentResponse" : "Response";
+        Console.WriteLine(config.RootElement.GetProperty(responseProperty).GetString());
         return true;
     }
 
@@ -93,6 +99,129 @@ internal static class SubscriptionScannerTests
         }
         try
         {
+            await Check("a known newest window avoids extracting the other 80 videos", async directory =>
+            {
+                string config = WindowFixture(directory, YoutubeWindow(Enumerable.Range(0, 20)), YoutubeFull(Enumerable.Range(0, 100)));
+                using var scanner = new SubscriptionScanner(TestExecutable());
+                var source = YoutubeSource(initialized: true);
+                var known = Enumerable.Range(0, 100).Select(YoutubeUrl).ToHashSet(StringComparer.Ordinal);
+                var progress = new ProgressLog();
+                var result = await scanner.ScanAsync(source, config, CancellationToken.None, progress, known).WaitAsync(TimeSpan.FromSeconds(15));
+                Require(result.Scope == SubscriptionScanScope.RecentWindow && result.Items.Count == 20 && result.Items.All(item => known.Contains(item.Url)),
+                    "Twenty known recent videos must return a supplemental window rather than re-extract all 100 videos");
+                var calls = File.ReadAllLines(Path.Combine(directory, "calls.jsonl"));
+                Require(calls.Length == 1 && calls[0].Contains("--flat-playlist", StringComparison.Ordinal) &&
+                    progress.Events.First().Value.Stage == "RecentWindow" && progress.Events.Last().Value.Stage == "Ready",
+                    "Known recent content must use one bounded flat extraction and report the actual mode");
+            });
+
+            await Check("new videos with a known anchor supplement the saved snapshot", async directory =>
+            {
+                var window = new[] { 101, 100 }.Concat(Enumerable.Range(0, 18));
+                string config = WindowFixture(directory, YoutubeWindow(window), YoutubeFull(Enumerable.Range(0, 102)));
+                using var scanner = new SubscriptionScanner(TestExecutable());
+                var known = Enumerable.Range(0, 100).Select(YoutubeUrl).ToHashSet(StringComparer.Ordinal);
+                var result = await scanner.ScanAsync(YoutubeSource(true), config, CancellationToken.None, knownUrls: known);
+                Require(result.Scope == SubscriptionScanScope.RecentWindow && result.Items.Count(item => !known.Contains(item.Url)) == 2 &&
+                    File.ReadAllLines(Path.Combine(directory, "calls.jsonl")).Length == 1,
+                    "A window containing two new URLs and known older content must not repeat the full scan");
+            });
+
+            await Check("flat Shorts and live routes match full discovery without duplicate subscription rows", async directory =>
+            {
+                foreach (var (tab, route) in new[] { ("shorts", "shorts/"), ("streams", "live/") })
+                {
+                    var store = new SubscriptionStore(Path.Combine(directory, tab));
+                    var added = store.Add(YoutubeSource(false, tab).Url, false);
+                    var baseline = SubscriptionScanner.ParseMetadata(YoutubeFull(Enumerable.Range(0, 20)), added.Url);
+                    store.ApplyScan(added.Id, baseline, []);
+                    var source = store.Read().Subscriptions.Single();
+                    var known = store.Read().Items.Select(item => item.Url).ToHashSet(StringComparer.Ordinal);
+                    string config = WindowFixture(directory, YoutubeWindow(Enumerable.Range(0, 20), "https://www.youtube.com/" + route, tab),
+                        YoutubeFull(Enumerable.Range(0, 20)));
+                    File.Delete(Path.Combine(directory, "calls.jsonl"));
+                    using var scanner = new SubscriptionScanner(TestExecutable());
+                    var result = await scanner.ScanAsync(source, config, CancellationToken.None, knownUrls: known);
+                    var applied = store.ApplyScan(source.Id, result, []);
+                    Require(result.Scope == SubscriptionScanScope.RecentWindow && result.Items.Count == 20 &&
+                        result.Items.All(item => known.Contains(item.Url)) && applied.Items.Count == 20 &&
+                        applied.Items.All(item => item.State == "Baseline") && File.ReadAllLines(Path.Combine(directory, "calls.jsonl")).Length == 1,
+                        "Strictly validated flat " + route + " discovery must match full watch URLs with one window process and no duplicate/new rows");
+                }
+            });
+
+            await Check("a missing anchor or invalid recent response falls back to the full collection", async directory =>
+            {
+                using var scanner = new SubscriptionScanner(TestExecutable());
+                var known = Enumerable.Range(0, 100).Select(YoutubeUrl).ToHashSet(StringComparer.Ordinal);
+                foreach (string recent in new[] { YoutubeWindow(Enumerable.Range(100, 20)), "{\"entries\":[null]}",
+                    YoutubeWindow([]), YoutubeWindow(Enumerable.Range(0, 20)).Replace("@vd-offline", "@another-channel", StringComparison.Ordinal),
+                    YoutubeWindow([0]).Replace("\"playlist_count\":125", "\"playlist_count\":\"invalid\"", StringComparison.Ordinal),
+                    YoutubeWindow([0]).Replace("\"entries\":", "\"n_entries\":true,\"entries\":", StringComparison.Ordinal),
+                    YoutubeWindow([0]).Replace("\"entries\":", "\"requested_entries\":[\"1\"],\"entries\":", StringComparison.Ordinal) })
+                {
+                    string config = WindowFixture(directory, recent, YoutubeFull(Enumerable.Range(0, 125)));
+                    File.Delete(Path.Combine(directory, "calls.jsonl"));
+                    var progress = new ProgressLog();
+                    var result = await scanner.ScanAsync(YoutubeSource(true), config, CancellationToken.None, progress, known);
+                    var calls = File.ReadAllLines(Path.Combine(directory, "calls.jsonl"));
+                    Require(result.Scope == SubscriptionScanScope.Full && result.Items.Count == 125 && calls.Length == 2 &&
+                        calls[0].Contains("--flat-playlist", StringComparison.Ordinal) && calls[1].Contains("--no-flat-playlist", StringComparison.Ordinal) &&
+                        progress.Events.Any(value => value.Value.Stage == "FullFallback"),
+                        "No anchor, an empty/invalid window or a different channel must trigger a complete extraction including every new video");
+                }
+            });
+
+            await Check("initialization and explicit full mode bypass the newest window", async directory =>
+            {
+                string config = WindowFixture(directory, YoutubeWindow(Enumerable.Range(0, 20)), YoutubeFull(Enumerable.Range(0, 100)));
+                using var scanner = new SubscriptionScanner(TestExecutable());
+                var known = Enumerable.Range(0, 100).Select(YoutubeUrl).ToHashSet(StringComparer.Ordinal);
+                foreach (bool initialized in new[] { false, true })
+                {
+                    File.Delete(Path.Combine(directory, "calls.jsonl"));
+                    var result = await scanner.ScanAsync(YoutubeSource(initialized), config, CancellationToken.None,
+                        knownUrls: known, forceFull: initialized);
+                    var calls = File.ReadAllLines(Path.Combine(directory, "calls.jsonl"));
+                    Require(result.Scope == SubscriptionScanScope.Full && result.Items.Count == 100 && calls.Length == 1 &&
+                        calls[0].Contains("--no-flat-playlist", StringComparison.Ordinal),
+                        "First baseline and explicit full refresh must enumerate the entire collection even with a known URL set");
+                }
+                foreach (string url in new[] { "https://www.youtube.com/playlist?list=PLoffline", "https://www.youtube.com/@vd-offline",
+                    "https://www.youtube.com/@vd-offline/videos?sort=p", "https://example.org/playlist" })
+                    Require(!SubscriptionScanner.IsNewestYouTubeTab(url), "Unordered playlists and combined/custom-sorted tabs must retain full discovery");
+                var source = Source("unordered"); source.Initialized = true;
+                File.Delete(Path.Combine(directory, "calls.jsonl"));
+                var generic = await scanner.ScanAsync(source, config, CancellationToken.None, knownUrls: known);
+                Require(generic.Scope == SubscriptionScanScope.Full && File.ReadAllLines(Path.Combine(directory, "calls.jsonl")).Length == 1,
+                    "Generic supported collections must remain available through a single complete scan");
+            });
+
+            await Check("a failed full fallback never produces a successful window", async directory =>
+            {
+                string config = WindowFixture(directory, YoutubeWindow(Enumerable.Range(100, 20)), "{\"entries\":[null]}");
+                using var scanner = new SubscriptionScanner(TestExecutable());
+                var known = Enumerable.Range(0, 100).Select(YoutubeUrl).ToHashSet(StringComparer.Ordinal);
+                var progress = new ProgressLog();
+                await RefusesAsync(() => scanner.ScanAsync(YoutubeSource(true), config, CancellationToken.None, progress, known),
+                    "Failed fallback must not commit the unattached first 20 new materials");
+                Require(progress.Events.All(value => value.Value.Stage != "Ready"),
+                    "Failed fallback must not report a ready result");
+            });
+
+            await Check("a slow newest probe releases its process and leaves time for the full fallback", async directory =>
+            {
+                string config = WindowFixture(directory, YoutubeWindow(Enumerable.Range(0, 20)), YoutubeFull(Enumerable.Range(0, 100)), "recent-hang");
+                var options = new SubscriptionScannerOptions { RecentTimeout = TimeSpan.FromSeconds(1), ScanTimeout = TimeSpan.FromSeconds(10) };
+                using var scanner = new SubscriptionScanner(TestExecutable(), options: options);
+                var known = Enumerable.Range(0, 100).Select(YoutubeUrl).ToHashSet(StringComparer.Ordinal);
+                var watch = Stopwatch.StartNew();
+                var result = await scanner.ScanAsync(YoutubeSource(true), config, CancellationToken.None, knownUrls: known).WaitAsync(TimeSpan.FromSeconds(8));
+                Require(result.Scope == SubscriptionScanScope.Full && result.Items.Count == 100 && watch.Elapsed < TimeSpan.FromSeconds(6) &&
+                    File.ReadAllLines(Path.Combine(directory, "calls.jsonl")).Length == 2 && !IsAlive(ReadPid(directory, "recent.pid")),
+                    "Probe timeout must terminate its child and then perform a successful full scan within the overall deadline");
+            });
+
             await Check("subscription scan defaults enforce the documented resource limits", _ =>
             {
                 var options = new SubscriptionScannerOptions();
@@ -103,6 +232,7 @@ internal static class SubscriptionScannerTests
                 foreach (var raised in new[] {
                     options with { ScanTimeout = TimeSpan.FromSeconds(181) }, options with { FeedTimeout = TimeSpan.FromSeconds(13) },
                     options with { ChannelScanTimeout=TimeSpan.FromMinutes(16) }, options with { MaxChannelPages=501 },
+                    options with { RecentTimeout=TimeSpan.FromSeconds(31) }, options with { ChannelRecentTimeout=TimeSpan.FromSeconds(46) },
                     options with { MaxItems = 10001 }, options with { MaxMetadataBytes = options.MaxMetadataBytes + 1 },
                     options with { MaxFeedBytes = options.MaxFeedBytes + 1 } })
                     Refuses(() => { using var scanner = new SubscriptionScanner(TestExecutable(), options: raised); },
@@ -340,6 +470,20 @@ internal static class SubscriptionScannerTests
     }
 
     private static object Entry(string url, string title) => new { _type = "video", id = url, webpage_url = url, title };
+    private static string YoutubeUrl(int index) => "https://www.youtube.com/watch?v=" + index.ToString("D11", System.Globalization.CultureInfo.InvariantCulture);
+    private static SubscriptionDefinition YoutubeSource(bool initialized, string tab = "videos") => new() {
+        Id = "offline-youtube", Url = "https://www.youtube.com/@vd-offline/" + tab, Initialized = initialized };
+    private static string YoutubeWindow(IEnumerable<int> indices, string urlPrefix = "https://www.youtube.com/watch?v=", string tab = "videos") => JsonSerializer.Serialize(new {
+        _type = "playlist", extractor_key = "YoutubeTab", webpage_url = YoutubeSource(true, tab).Url, title = "Newest uploads", playlist_count = 125,
+        entries = indices.Select(index => new { _type = "url", ie_key = "Youtube", id = index.ToString("D11", System.Globalization.CultureInfo.InvariantCulture),
+            url = urlPrefix + index.ToString("D11", System.Globalization.CultureInfo.InvariantCulture), title = "Video " + index }).ToArray() });
+    private static string YoutubeFull(IEnumerable<int> indices) => Collection(indices.Select(index => Entry(YoutubeUrl(index), "Video " + index)).ToArray());
+    private static string WindowFixture(string directory, string recent, string full, string mode = "normal")
+    {
+        string path = Path.Combine(directory, "fixture.json");
+        File.WriteAllText(path, JsonSerializer.Serialize(new { Mode = mode, Response = full, RecentResponse = recent }));
+        return path;
+    }
     private static string Collection(params object[] entries) => JsonSerializer.Serialize(new { _type = "playlist", title = "Generic collection", playlist_count = entries.Length, entries });
     private static SubscriptionDefinition Source(string name) => new() { Id = Guid.NewGuid().ToString("N"), Url = Prefix + name };
     private static string Fixture(string directory, string response, string mode = "normal")
