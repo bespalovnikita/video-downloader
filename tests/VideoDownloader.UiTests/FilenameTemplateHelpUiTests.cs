@@ -68,7 +68,7 @@ internal sealed partial class UiScenario
                 "Filename help must not start work or add queue/history records");
             Console.WriteLine("PASS: filename-template tooltip and real scrollable modal help preserve options without downloads");
         }
-        finally { window.Close(); }
+        finally { subject.Dispose();window.Close(); }
 
         static void Require(bool condition,string message)
         {
