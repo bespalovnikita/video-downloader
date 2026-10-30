@@ -254,6 +254,10 @@ public sealed partial class NativeWindow
         }
         catch(Exception error) { Log("Shutdown cleanup failed: "+error.Message); }
         SaveCheckpoint();
+        _journalCloseRequested=true;
+        try { await _journal.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(2)); }
+        catch(TimeoutException) { UpdateJournalHint("Время ожидания записи журнала истекло. Приложение закрывается."); }
+        FlushJournal();
         _panelLayout.Dispose();
         _lifecycle.Dispose();
         _closeReady=true;
@@ -265,11 +269,13 @@ public sealed partial class NativeWindow
     {
         if(_disposed)return;
         DisposeSubscriptions();
+        FlushJournal();
         _disposed=true;
         _tick.Stop();_ingress.Dispose();
         SessionState.Coordinator?.Stop();
         _preview.Dispose();
         _panelLayout.Dispose();
         _lifecycle.Dispose();
+        if(!_journalCloseRequested)_journal.Dispose();
     }
 }

@@ -151,15 +151,17 @@ internal static class NativeContractTests
 
     private static void CommonArguments(string[] args)
     {
-        foreach (string flag in new[] { "--ignore-config", "--newline", "--progress", "--no-color" })
+        foreach (string flag in new[] { "--ignore-config", "--newline", "--progress", "--no-color", "--no-quiet" })
             Require(args.Contains(flag, StringComparer.Ordinal), "Missing structured worker contract: " + flag);
         Require(Value(args, "--encoding") == "utf-8", "Worker pipe output must request UTF-8");
         Require(Value(args, "--progress-template").StartsWith("download:__VD_PROGRESS__|", StringComparison.Ordinal),
             "Progress must use the machine-readable marker");
         var printValues = args.Select((value, index) => (value, index)).Where(pair => pair.value == "--print")
             .Select(pair => args[pair.index + 1]).ToArray();
-        Require(printValues.SequenceEqual(new[] { "before_dl:__VD_TITLE__:%(title)s", "after_move:__VD_FILE__:%(filepath)s" }),
-            "Title and final media path must remain distinct machine-readable events");
+        Require(printValues.SequenceEqual(new[] { "before_dl:__VD_TITLE__:%(title)s",
+            "before_dl:__VD_PLAN__:%(.{id,format_id,requested_formats.:.format_id,playlist_autonumber,n_entries})j",
+            "after_move:__VD_FILE__:%(filepath)s" }),
+            "Title, component plan and final media path must remain distinct machine-readable events without dumping media URLs");
     }
 
     private static void JunctionBoundaries(string root)

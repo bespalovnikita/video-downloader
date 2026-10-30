@@ -60,6 +60,7 @@ public sealed partial class NativeWindow : IDisposable
         _window=window;
         _storage=persistence??new AppPersistence();
         _ytDlp=ytDlpExecutable;
+        _journal=new DiagnosticJournal(Path.Combine(Path.GetDirectoryName(_storage.SessionPath)!,"logs"));
         Q.ItemsSource=SessionState.Queue;
         D.ItemsSource=SessionState.Downloads;
         foreach(var (control,values) in new (string,string[])[]{
@@ -81,6 +82,7 @@ public sealed partial class NativeWindow : IDisposable
         _ingress=new InputIngressController(_window,AddUrls,()=>Check(K("WatchClipboardCheck")),_lifecycle.Activate,Log,
             text=>_ = ImportPortableTextAsync(text),file=>_ = ImportPortableFileAsync(file));
         BindActions();
+        InitializeJournalControls();
         K("ShowVideoTitlesCheck").Checked+=(_,_)=>SaveCheckpoint();
         K("ShowVideoTitlesCheck").Unchecked+=(_,_)=>SaveCheckpoint();
         _tick.Tick+=(_,_)=>Tick();
@@ -121,11 +123,13 @@ public sealed partial class NativeWindow : IDisposable
         Reindex();
         RefreshDependencyLabel();
         UpdateState();
+        FlushJournal();
         _tick.Start();_ingress.Start();
     }
     private void Tick()
     {
         UpdateState();
+        FlushJournal();
         if ((DateTime.UtcNow.Second%2)==0) SaveCheckpoint();
     }
     private DownloadItem[] CurrentSessionRows()=>SessionState.CurrentRows();
@@ -135,6 +139,7 @@ public sealed partial class NativeWindow : IDisposable
         // Do not count successful downloads from a previous session again.
         // Live additions join this set; removed URLs leave it.
         var metrics=SessionState.ReadMetrics();
+        TraceOverallProgress(metrics);
         bool running=metrics.Running,paused=metrics.Paused;
         T("HeaderStats").Text=$"{metrics.Active} active · {DownloadFormat.Speed(metrics.Speed)} · {metrics.Successful}/{metrics.Total}";
         F<ProgressBar>("OverallProgress").Value=metrics.Progress;
@@ -199,14 +204,7 @@ public sealed partial class NativeWindow : IDisposable
     private void Log(string message)
     {
         if (_disposed) return;
-        // Keep the original diagnostic copyable while explaining failures in
-        // the user's language. Worker/cache/persistence values stay untouched.
-        message=ErrorMessages.ForLog(message);
-        var box=B("LogBox");
-        box.AppendText($"[{DateTime.Now:HH:mm:ss}] {message}{Environment.NewLine}");
-        // Limit the log to avoid excessive WPF memory usage.
-        if (box.LineCount>3000) box.Text=string.Join(Environment.NewLine,box.Text.Split('\n').TakeLast(1500));
-        box.ScrollToEnd();
+        _journal.WriteMessage(message);
     }
     private string DisplayError(Exception error)
     {
@@ -225,10 +223,12 @@ public sealed partial class NativeWindow : IDisposable
         EmbedChapters=Check(K("EmbedChaptersCheck")),Archive=Check(K("ArchiveCheck")),
         Sponsor=Check(K("SponsorCheck")),AudioOnly=Check(K("AudioOnlyCheck")),
         WatchClipboard=Check(K("WatchClipboardCheck")),ShowVideoTitles=Check(K("ShowVideoTitlesCheck")),
+        LogProfile=JournalProfileCatalog.ToId(JournalProfileCatalog.Parse(Pick(C("LogProfileCombo")))),
         QueuePanelWidth=_panelLayout.QueueWidth,PreviewPanelWidth=_panelLayout.PreviewWidth
     };
     internal void ApplyOptions(DownloadOptions o)
     {
+        C("LogProfileCombo").SelectedItem=JournalProfileCatalog.Display(o.LogProfile);
         _panelLayout.Apply(o.QueuePanelWidth,o.PreviewPanelWidth);
         foreach(var (name,value) in new[]{
             ("ProfileCombo",ProfileCatalog.Display(o.Profile)),("QualityCombo",o.Quality),("CodecCombo",o.Codec),
@@ -469,7 +469,7 @@ public sealed partial class NativeWindow : IDisposable
                 row.AttemptFinished=false;row.DeferredToNextStart=false;
             }
             var session=new DownloadCoordinator(_ytDlp,_storage,options,OnRowChanged,
-                line=>Dispatcher.BeginInvoke(()=>Log(line)));
+                Log,trace:_journal.Write);
             SessionState.Begin(session,options,approved);
             UpdateState();SaveCheckpoint();
             Log($"Started {approved.Count} URL(s), parallel={options.Parallel}, quality={options.Quality}.");

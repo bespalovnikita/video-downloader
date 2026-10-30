@@ -4,6 +4,8 @@ using VideoDownloader.Native;
 
 if (GuiInstanceTests.TryRunFixture(args) || NativeIpcFixture.TryRunFixture(args) || TitleIngressFixture.TryRunFixture(args) || PreviewSchedulingTests.TryRunFixture(args) || PreviewGalleryTests.TryRunFixture(args) || NativeContractTests.TryRunFixture(args) || PornHubChannelTests.TryRunFixture(args) || StartupDownloadRegressionTests.TryRunFixture(args) || SubscriptionScannerTests.TryRunFixture(args) || LifecycleRegressionTests.TryRunFixture(args) || ReviewRegressionTests.TryRunFixture(args)) return;
 ErrorMessagesTests.Run();
+JournalSanitizerTests.Run();
+await JournalTests.RunAsync();
 PortableQueueTests.Run();
 await GuiInstanceTests.RunAsync();
 await QueueSessionControllerTests.RunAsync();
@@ -205,32 +207,83 @@ try
     Assert(File.Exists(ytDlp),"Bundled yt-dlp.exe is available for native integration tests");
     var inputA=Path.Combine(temp,"source-A.mp4");
     var inputB=Path.Combine(temp,"source-B.mp4");
+    var inputC=Path.Combine(temp,"source-C.mp4");
+    var inputD=Path.Combine(temp,"source-D.mp4");
     File.WriteAllBytes(inputA,new byte[192*1024]);
     File.WriteAllBytes(inputB,new byte[256*1024]);
+    File.WriteAllBytes(inputC,new byte[320*1024]);
+    File.WriteAllBytes(inputD,new byte[384*1024]);
     var urlA=new Uri(inputA).AbsoluteUri;
     var urlB=new Uri(inputB).AbsoluteUri;
     var realOptions=new DownloadOptions {
         Output=Path.Combine(temp,"real-downloads"),
-        Threads="2",RateLimit="100K",Quality="Best",
+        Threads="4",RateLimit="100K",Quality="Best",
         EmbedChapters=false,EmbedMetadata=false
     };
     var one=new DownloadItem{Url=urlA};
     var two=new DownloadItem{Url=urlB};
-    await using(var engine=new DownloadCoordinator(ytDlp,data,realOptions,_=>{},_=>{}))
+    var three=new DownloadItem{Url=new Uri(inputC).AbsoluteUri};
+    var four=new DownloadItem{Url=new Uri(inputD).AbsoluteUri};
+    DownloadItem[] realRows=[one,two,three,four];
+    long[] expectedSizes=[192*1024,256*1024,320*1024,384*1024];
+    var trace=new System.Collections.Concurrent.ConcurrentQueue<JournalRecord>();
+    var reachedParallelStart=new System.Collections.Concurrent.ConcurrentDictionary<string,byte>(StringComparer.Ordinal);
+    var prematureCompletions=new System.Collections.Concurrent.ConcurrentQueue<string>();
+    string traceSession;
+    using(var parallelStart=new Barrier(realRows.Length))
     {
-        Assert(engine.Add(one)&&engine.Add(two),"Native engine must accept two parallel URLs");
-        await engine.RunAsync();
+        // Hold only the first Running callback for each row until all four
+        // workers have admitted a job. Fast local I/O must not turn this into
+        // four serial transfers on an unusually busy CI worker.
+        void ObserveParallelStart(DownloadItem row)
+        {
+            if(row.Status=="Running" && row.Progress>=100)prematureCompletions.Enqueue(row.Url+" "+row.State);
+            if(row.Status!="Running" || !reachedParallelStart.TryAdd(row.Url,0))return;
+            if(!parallelStart.SignalAndWait(TimeSpan.FromSeconds(15)))
+                throw new TimeoutException($"Four-worker native trace test did not start all jobs: {reachedParallelStart.Count}/4 observed, {parallelStart.ParticipantsRemaining} still missing.");
+        }
+        await using(var engine=new DownloadCoordinator(ytDlp,data,realOptions,ObserveParallelStart,_=>{},trace:trace.Enqueue))
+        {
+            traceSession=engine.TraceSessionId;
+            Assert(realRows.All(engine.Add),"Native engine must accept four parallel URLs");
+            await engine.RunAsync();
+        }
     }
-    Assert(one.Status=="Completed"&&two.Status=="Completed","Native engine must successfully download two local files");
-    Assert(one.Progress==100 && two.Progress==100,"Native progress must reach 100%");
-    Assert(File.Exists(one.Path) && File.Exists(two.Path),"Successful URLs must publish real media");
-    Assert(one.OwnedPaths.Count>0 && two.OwnedPaths.Count>0,"Native results must record owned files");
-    Assert(one.OutputRoot==realOptions.OutputDirectory && two.OutputRoot==realOptions.OutputDirectory,
+    Assert(realRows.All(row=>row.Status=="Completed"),"Native engine must successfully download four local files: "+
+        string.Join(" | ",realRows.Select(row=>$"{row.Slot}: {row.Status} {row.RawError}")));
+    Assert(realRows.All(row=>row.Progress==100),"Native progress must reach 100% for every local file");
+    Assert(prematureCompletions.IsEmpty,"A real transfer must reserve 100% for successful publication: "+
+        string.Join(" | ",prematureCompletions));
+    Assert(realRows.All(row=>File.Exists(row.Path)),"Successful URLs must publish real media");
+    Assert(realRows.All(row=>row.OwnedPaths.Count>0),"Native results must record owned files");
+    Assert(realRows.All(row=>row.OutputRoot==realOptions.OutputDirectory),
         "Successful results must retain their publication root");
-    Assert(new FileInfo(one.Path).Length==192*1024 && new FileInfo(two.Path).Length==256*1024,
+    Assert(realRows.Select(row=>new FileInfo(row.Path).Length).SequenceEqual(expectedSizes),
         "Native download must preserve transferred file bytes");
+    var records=trace.ToArray();
+    var expectedJobs=realRows.ToDictionary(row=>DownloadTraceIdentity.JobId(row.Url),StringComparer.Ordinal);
+    Assert(traceSession.Length>0 && records.Length>0 && records.All(record=>record.Session==traceSession),
+        "Four native jobs must retain one trace session identity");
+    Assert(realRows.Select(row=>row.Slot).ToHashSet(StringComparer.Ordinal).SetEquals(new[]{"T1","T2","T3","T4"}),
+        "All four native worker slots must participate in the parallel transfer");
+    Assert(records.Where(record=>record.Job.Length>0).All(record=>expectedJobs.ContainsKey(record.Job)),
+        "A parallel session must never label records with another job's identity");
+    foreach(var (job,row) in expectedJobs)
+    {
+        var jobRecords=records.Where(record=>record.Job==job).ToArray();
+        Assert(jobRecords.Any(record=>record.Message.StartsWith("event=job_start ",StringComparison.Ordinal)) &&
+               jobRecords.Any(record=>record.Level==JournalLevel.Progress && record.Message.StartsWith("event=progress ",StringComparison.Ordinal)) &&
+               jobRecords.Any(record=>record.Message.StartsWith("event=job_finished ",StringComparison.Ordinal) && record.Message.Contains("status=Completed",StringComparison.Ordinal)),
+            "Each real file must produce its own start, native progress and completed trace records: "+row.Url);
+        Assert(jobRecords.Where(record=>record.Worker.Length>0).All(record=>record.Worker==row.Slot),
+            "A job's stdout/stderr and lifecycle records must keep its actual worker identity");
+        Assert(jobRecords.Any(record=>record.Message.StartsWith("event=download_plan ",StringComparison.Ordinal)),
+            "The packaged yt-dlp before_dl hook must report a real download plan for each file: "+row.Url);
+    }
+    Console.WriteLine("PASS: four real packaged yt-dlp downloads retain isolated job/worker progress traces and exact media bytes");
     OwnedFiles.DeleteOwned(realOptions.Output,one.OwnedPaths);
-    Assert(!File.Exists(one.Path) && File.Exists(two.Path),"Deleting one native download must leave another untouched");
+    Assert(!File.Exists(one.Path) && realRows.Skip(1).All(row=>File.Exists(row.Path)),
+        "Deleting one native download must leave all three other parallel publications untouched");
 
     var longInput=Path.Combine(temp,"slow-cancel.mp4");
     var shortInput=Path.Combine(temp,"short-keep.mp4");

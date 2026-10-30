@@ -121,13 +121,15 @@
                 <CheckBox Grid.Row="3" Grid.ColumnSpan="3" x:Name="DownloadExistingCheck" IsChecked="False"
                           Content="Добавить все существующие материалы в очередь (без скачивания)"/>
                 <TextBlock Grid.Row="4" Grid.ColumnSpan="3" Foreground="#B3BBCD" TextWrapping="Wrap"
-                           Text="Если флажок выключен, текущие материалы станут исходной отметкой: во «Входящие» попадут только новые. Первая полная проверка начнётся сразу после добавления."/>
+                           Text="Если флажок выключен, текущие материалы появятся в списке как «Исходный снимок» без добавления в очередь. Их можно выбрать и добавить вручную. Первая полная проверка начнётся сразу после добавления."/>
             </Grid>
         </Border>
         <StackPanel Grid.Row="2" Margin="0,0,0,8">
             <WrapPanel Margin="0,0,0,8">
                 <Button x:Name="CheckSubscriptionButton" Content="Проверить"/>
                 <Button x:Name="CheckAllSubscriptionsButton" Content="Проверить все"/>
+                <CheckBox x:Name="FullSubscriptionCheck" IsChecked="False" Content="Полная проверка" Margin="4,0,12,0" VerticalAlignment="Center"
+                          ToolTip="Повторно обойти всю коллекцию. Без флажка поддерживаемые каналы сначала проверяют 20 новых материалов; остальные источники обходятся полностью."/>
                 <Button x:Name="CancelSubscriptionCheckButton" Content="Отменить проверку" IsEnabled="False"/>
                 <Button x:Name="PauseSubscriptionButton" Content="Приостановить"/>
                 <Button x:Name="RemoveSubscriptionButton" Content="Удалить подписку"/>
@@ -176,7 +178,7 @@
                 <DataGridTextColumn Header="Подписка" Binding="{Binding Title}" Width="2*"/>
                 <DataGridTextColumn Header="Краткое имя / папка" Binding="{Binding ShortName}" Width="170"/>
                 <DataGridTextColumn Header="Состояние" Binding="{Binding StatusLabel}" Width="145"/>
-                <DataGridTextColumn Header="Последняя полная проверка" Binding="{Binding LastSuccessLabel}" Width="185"/>
+                <DataGridTextColumn Header="Последняя проверка" Binding="{Binding LastSuccessLabel}" Width="185"/>
                 <DataGridTextColumn Header="URL" Binding="{Binding Url}" Width="2*"/>
                 <DataGridTextColumn Header="Ошибка / предупреждение" Binding="{Binding Message}" Width="2*"/>
             </DataGrid.Columns>
@@ -202,7 +204,7 @@
             <Button x:Name="OpenSubscriptionItemButton" Content="Открыть URL"/>
         </WrapPanel>
         <StackPanel Grid.Row="8">
-            <TextBlock x:Name="SubscriptionStatusText" Text="Проверки по расписанию и автоматического скачивания нет."
+            <TextBlock x:Name="SubscriptionStatusText" Text="Исходный снимок виден в списке и доступен для ручного добавления в очередь. Проверки по расписанию и автоматического скачивания нет."
                        TextWrapping="Wrap" Foreground="#B3BBCD"/>
             <TextBlock Text="До 10 000 материалов. Обычная проверка — до 180 секунд; публикации Pornhub — до 15 минут и 500 страниц. Каждый ролик скачивается отдельно. Неполный список не меняет исходную отметку."
                        Foreground="#949CAE" TextWrapping="Wrap" FontSize="11" Margin="0,6,0,0"/>

@@ -294,11 +294,14 @@ class VideoDownloaderPornHubChannelIE(PornHubBaseIE):
             raise ExtractorError(f'Invalid {name} limit', expected=True)
         return int(raw)
 
-    def _page(self, base, number, channel_id):
+    def _page(self, base, number, channel_id, recent=False):
         for attempt in range(3):
             try:
+                query = {'page': number}
+                if recent:
+                    query['o'] = 'mr'
                 html, response = self._download_webpage_handle(
-                    base, channel_id, f'Publication page {number}', query={'page': number}, impersonate=True)
+                    base, channel_id, f'Publication page {number}', query=query, impersonate=True)
                 if not _same_source(base, response.url):
                     raise ExtractorError(
                         'Переход со страницы публикаций отклонён: '
@@ -319,6 +322,63 @@ class VideoDownloaderPornHubChannelIE(PornHubBaseIE):
                     raise
                 self._sleep(2 ** attempt, channel_id)
 
+    def _recent_extract(self, url, base, base_host, kind, slug, window, maximum, max_pages):
+        """An explicitly partial, newest-first window; never a full-scan proof.
+
+        The sort query alone is insufficient evidence: some site layouts ignore
+        it. Only the selected, named most-recent publication section is accepted.
+        Other layouts are left to the caller's ordinary full-scan fallback.
+        """
+        entries, pages, seen, signatures = [], [], set(), set()
+        first, total, title, endpoint, selection = None, None, slug, base, None
+        for number in range(1, min(max_pages, window) + 1):
+            cards, has_next, count, page_title, identity, endpoint = self._page(endpoint, number, slug, recent=True)
+            if not identity[1] or any(name != '#mostRecentVideosSection' for name in identity[1]):
+                raise ExtractorError('Newest-first publication order is not confirmed; use a full scan', expected=True)
+            signature = tuple(key for key, _ in cards)
+            if signature in signatures or (number > 1 and not cards):
+                raise ExtractorError('Publication pages repeat or end unexpectedly', expected=True)
+            signatures.add(signature)
+            if number == 1:
+                first, total, title, selection = signature, count, page_title or slug, identity
+                if total is not None and total > maximum:
+                    raise ExtractorError('Publication list exceeds its item limit', expected=True)
+            elif identity != selection:
+                raise ExtractorError('Publication section changed during enumeration; retry the scan', expected=True)
+            elif count is not None and total is not None and count != total:
+                raise ExtractorError('Publication count changed during enumeration; retry the scan', expected=True)
+            added = 0
+            for key, video_title in cards:
+                if key in seen:
+                    continue
+                seen.add(key)
+                if len(seen) > maximum:
+                    raise ExtractorError('Publication list exceeds its item limit', expected=True)
+                added += 1
+                entries.append(dict(_type='url', ie_key='PornHub', id=key, vd_page=number,
+                                    url=f'https://www.{base_host}/view_video.php?viewkey={key}', title=video_title or key))
+                if len(entries) == window:
+                    break
+            if number > 1 and not added:
+                raise ExtractorError('Publication page contains no new videos', expected=True)
+            pages.append(dict(number=number, count=added, has_next=has_next))
+            if len(entries) == window or not has_next:
+                break
+            if number == min(max_pages, window):
+                raise ExtractorError('Publication window exceeds its page limit', expected=True)
+            self._sleep(0.25, slug)
+        if total is not None and (total < len(entries) or (len(entries) < window and total != len(entries))):
+            raise ExtractorError('Publication window count does not match', expected=True)
+        check, check_next, check_total, _, check_selection, _ = self._page(endpoint, 1, slug, recent=True)
+        if (tuple(key for key, _ in check) != first or check_total != total
+                or check_next != pages[0]['has_next'] or check_selection != selection):
+            raise ExtractorError('Publication list changed during enumeration; retry the scan', expected=True)
+        result = self.playlist_result(entries, f'{kind}/{slug}', title)
+        result['vd_ph_recent'] = dict(version=1, scope='recent', complete=False, order='most_recent',
+                                      source_url=url, listing_url=base, verified_first_page=True,
+                                      window_size=window, item_count=len(entries), pages=pages)
+        return result
+
     def _real_extract(self, url):
         match = self._match_valid_url(url)
         domain, kind, slug = match.group('domain', 'kind', 'slug')
@@ -327,6 +387,9 @@ class VideoDownloaderPornHubChannelIE(PornHubBaseIE):
         self._set_age_cookies(base_host)
         base = f'https://{domain.lower()}/{kind}/{slug}/videos' + ('' if kind == 'channels' else '/upload')
         maximum, max_pages = self._limit('max_items', 10000), self._limit('max_pages', 500)
+        if self._configuration_arg('recent_window'):
+            window = self._limit('recent_window', 20)
+            return self._recent_extract(url, base, base_host, kind, slug, window, maximum, max_pages)
         entries, pages, seen, signatures = [], [], set(), set()
         first, total, title, endpoint, selection = None, None, slug, base, None
         for number in range(1, max_pages + 1):

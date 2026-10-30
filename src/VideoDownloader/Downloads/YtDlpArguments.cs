@@ -24,11 +24,14 @@ internal sealed class YtDlpArguments(DownloadOptions options)
 
     internal IEnumerable<string> Build(string url,string stage,string quality)
     {
-        string[] standard=["--ignore-config","--encoding","utf-8","--newline","--progress","--no-color",
+        string[] standard=["--ignore-config","--encoding","utf-8","--newline","--progress","--no-color","--no-quiet",
             "--impersonate","chrome","-N",options.FragmentCount.ToString(CultureInfo.InvariantCulture),
             "-o",Path.Combine(stage,options.FilenameTemplate),
-            "--progress-template","download:__VD_PROGRESS__|%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s|%(progress.downloaded_bytes)s|%(progress.total_bytes,progress.total_bytes_estimate)s|%(info.id)s:%(info.format_id)s",
+            "--progress-template","download:__VD_PROGRESS__|%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s|%(progress.downloaded_bytes)s|%(progress.total_bytes,progress.total_bytes_estimate)s|%(info.id)s:%(info.format_id)s|%(info.vcodec)s|%(info.acodec)s",
             "--print","before_dl:__VD_TITLE__:%(title)s",
+            // Keep only IDs/counts: a complete requested_formats dump includes
+            // signed media URLs and is unsuitable for diagnostic retention.
+            "--print","before_dl:__VD_PLAN__:%(.{id,format_id,requested_formats.:.format_id,playlist_autonumber,n_entries})j",
             "--print","after_move:__VD_FILE__:%(filepath)s"];
         var args=new List<string>(standard);
         string ffmpeg=DependencyCenter.Executable("ffmpeg.exe");
