@@ -15,6 +15,7 @@ internal static class QueueSessionControllerTests
             new DownloadOptions{Output=Path.Combine(root,"replacement")},_=>{},_=>{});
         try
         {
+            await TestElapsedClock(root);
             TestPortablePersistenceBounds(root,options);
             var old=new DownloadItem{Url="https://queue-owner.invalid/old",Status="Completed"};
             var current=new DownloadItem{Url="https://queue-owner.invalid/Video"};
@@ -77,6 +78,50 @@ internal static class QueueSessionControllerTests
             await first.RunAsync();await replacement.RunAsync();
             Directory.Delete(root,true);
         }
+    }
+
+    private static async Task TestElapsedClock(string root)
+    {
+        var time=new SessionTestTimeProvider();
+        var owner=new QueueSessionController(time);
+        var data=new AppPersistence(Path.Combine(root,"clock-profile"));
+        var options=new DownloadOptions{Output=Path.Combine(root,"clock-output"),Threads="1"};
+        await using var first=new DownloadCoordinator("must-not-launch",data,options,_=>{},_=>{});
+        await using var second=new DownloadCoordinator("must-not-launch",data,options,_=>{},_=>{});
+        var firstRow=new DownloadItem{Url="https://queue-owner.invalid/clock-first"};
+        var pending=new DownloadItem{Url="https://queue-owner.invalid/clock-pending"};
+        owner.TryAdd(firstRow);owner.TryAdd(pending);
+        time.Advance(TimeSpan.FromHours(2));
+        Require(owner.Elapsed==TimeSpan.Zero,"Idle metadata and queued URLs must not start a session clock");
+        owner.Begin(first,options,[firstRow,pending]);
+        time.Advance(TimeSpan.FromSeconds(4));
+        firstRow.Status="Completed";pending.Status="Running";
+        Require(owner.Elapsed==TimeSpan.FromSeconds(4) && owner.ReadMetrics().Running,
+            "One completed row must not stop time while other session work remains");
+        owner.Pause();time.Advance(TimeSpan.FromSeconds(3));owner.Pause();
+        Require(owner.Elapsed==TimeSpan.FromSeconds(7),"A session keeps its existing elapsed-time semantics across pause/resume");
+        first.Stop();await first.RunAsync();owner.End(first);
+        var frozen=owner.Elapsed;
+        time.Advance(TimeSpan.FromDays(1));
+        Require(owner.Elapsed==frozen && frozen==TimeSpan.FromSeconds(7),
+            "After workers and cancelled cleanup finish, idle time must never change the completed duration");
+        owner.Begin(second,options,[]);
+        Require(owner.Elapsed==TimeSpan.Zero,"A new Start/Retry must reset the elapsed clock");
+        time.Advance(TimeSpan.FromSeconds(2));owner.End(first);time.Advance(TimeSpan.FromSeconds(1));
+        Require(owner.Elapsed==TimeSpan.FromSeconds(3),"A stale previous session must not freeze its replacement's clock");
+        second.Stop();await second.RunAsync();owner.End(second);
+        time.Advance(TimeSpan.FromHours(1));
+        Require(owner.Elapsed==TimeSpan.FromSeconds(3),"The replacement freezes only when its own workers finish");
+        Console.WriteLine("PASS: deterministic session clock idle/start, multiple rows, pause, cancellation, frozen finish and replacement reset");
+    }
+
+    private sealed class SessionTestTimeProvider:TimeProvider
+    {
+        private long _ticks;
+        public override long TimestampFrequency=>TimeSpan.TicksPerSecond;
+        public override long GetTimestamp()=>_ticks;
+        public override DateTimeOffset GetUtcNow()=>new DateTimeOffset(2026,10,30,0,0,0,TimeSpan.Zero).AddTicks(_ticks);
+        internal void Advance(TimeSpan elapsed)=>_ticks+=elapsed.Ticks;
     }
 
     private static void TestPortablePersistenceBounds(string root,DownloadOptions options)

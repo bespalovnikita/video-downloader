@@ -55,6 +55,20 @@ internal static class JournalTests
                 string text=russian.Snapshot();
                 Require(text.Contains("Исходная диагностика") && text.Contains("403"),"Russian explanations retain the sanitized original diagnostic");
                 Require(!text.Contains("secret") && !text.Contains("password") && !text.Contains("#fragment"),"Localization cannot restore URL credentials or tokens");
+                const string publicUrl="https://www.youtube.com/watch?v=AbC_de-12&list=PL123";
+                russian.WriteMessage("Thumbnail timed out for "+publicUrl);
+                string warning=russian.DrainPending().Single(entry=>entry.Contains("Thumbnail timed out",StringComparison.Ordinal));
+                Require(warning.Contains("Истекло время получения обложки.") &&
+                    warning.Contains(Environment.NewLine+"    Исходная диагностика: Thumbnail timed out for "+publicUrl) &&
+                    !warning.Contains(@"\r") && !warning.Contains(@"\n"),
+                    "One localized event has real readable continuation lines and preserves the exact public video URL");
+                russian.Write(new JournalRecord(JournalLevel.Warning,"category\nforged","before\n[Warning/app] forged",Session:"session\r\nforged"));
+                string multiline=russian.Snapshot();
+                Require(multiline.Contains("[Warning/category\\nforged] session=session\\r\\nforged before"+Environment.NewLine+"    [Warning/app] forged"),
+                    "Correlation fields stay single-line and untrusted message continuations cannot forge top-level records");
+                await russian.DisposeAsync();
+                Require(File.ReadAllText(russian.FilePath)==multiline,
+                    "The actual UTF-8 journal file contains exactly the readable snapshot, including sanitized multiline messages");
             }
             finally{CultureInfo.CurrentUICulture=previousCulture;}
 

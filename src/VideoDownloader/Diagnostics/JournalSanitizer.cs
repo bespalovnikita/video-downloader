@@ -11,6 +11,13 @@ public static class JournalSanitizer
     private const int MaxInputChars=16*1024;
     private const string Hidden="[скрыто]";
     private const string Truncated=" …[усечено]";
+    // These parameters identify public collection/video positions. Unknown
+    // parameters stay private: a site may put a session or signed URL in them.
+    private static readonly HashSet<string> PublicQueryKeys=new(StringComparer.OrdinalIgnoreCase)
+    {
+        "v","list","viewkey","id","video_id","playlist","playlist_id","channel_id",
+        "index","page","p","t","start","end"
+    };
     private const RegexOptions Options=RegexOptions.IgnoreCase|RegexOptions.CultureInvariant|RegexOptions.NonBacktracking;
     private static readonly Regex Url=new(@"\bhttps?://[^\s<>""']+",Options);
     // Cookie parsers may echo a malformed row as Python repr(), including
@@ -26,7 +33,7 @@ public static class JournalSanitizer
         "(?<key>\\b(?:password|passwd|access_token|refresh_token|token|api[_-]?key|authorization|cookie|session(?:id)?|secret))[\"']?\\s*[:=]\\s*(?:\"[^\"\\r\\n]*\"?|'[^'\\r\\n]*'?|[^\\s,;|]+)",Options);
     private static readonly Regex Bearer=new(@"\bBearer\s+[^\s,;'""\r\n]+",Options);
 
-    public static string Redact(string? text)
+    public static string Redact(string? text,bool multiline=false)
     {
         if(string.IsNullOrEmpty(text))return "";
         bool truncated=text.Length>MaxInputChars;
@@ -39,7 +46,12 @@ public static class JournalSanitizer
         text=SecretOption.Replace(text,match=>match.Groups["option"].Value+" "+Hidden);
         text=Url.Replace(text,match=>RedactUrl(match.Value));
         text=Header.Replace(text,match=>match.Groups["header"].Value+": "+Hidden);
-        text=Assignment.Replace(text,match=>match.Groups["key"].Value+"="+Hidden);
+        // The URL parser already handled its parameters. A generic assignment
+        // matcher would otherwise swallow '&v=...' after a hidden token value.
+        // Outside URLs, still hide the complete opaque value (including '&').
+        var sanitizedUrls=Url.Matches(text);
+        text=Assignment.Replace(text,match=>sanitizedUrls.Any(url=>match.Index>=url.Index && match.Index+match.Length<=url.Index+url.Length)
+            ? match.Value : match.Groups["key"].Value+"="+Hidden);
         text=Bearer.Replace(text,"Bearer "+Hidden);
         var output=new StringBuilder(Math.Min(text.Length,MaxMessageChars));
         for(int index=0;index<text.Length;index++)
@@ -47,6 +59,12 @@ public static class JournalSanitizer
             char value=text[index];
             switch(value)
             {
+                // Continuations stay readable without impersonating the next
+                // timestamped journal record. Never unescape literal backslashes.
+                case '\r' when multiline:
+                    if(index+1<text.Length && text[index+1]=='\n')index++;
+                    output.Append(Environment.NewLine).Append("    ");break;
+                case '\n' when multiline:output.Append(Environment.NewLine).Append("    ");break;
                 case '\r':output.Append("\\r");break;
                 case '\n':output.Append("\\n");break;
                 case '\t':output.Append("\\t");break;
@@ -97,14 +115,31 @@ public static class JournalSanitizer
         if(authorityEnd<0)authorityEnd=value.Length;
         int userInfo=value.LastIndexOf('@',authorityEnd-1,authorityEnd-authority);
         if(userInfo>=authority)value=value[..authority]+Hidden+"@"+value[(userInfo+1)..];
-        int query=value.IndexOf('?'),fragment=value.IndexOf('#');
-        int suffix=query<0?fragment:fragment<0?query:Math.Min(query,fragment);
-        if(suffix>=0)
+        int fragment=value.IndexOf('#');
+        bool hasFragment=fragment>=0;
+        if(hasFragment)value=value[..fragment];
+        int query=value.IndexOf('?');
+        if(query>=0)
         {
-            string markers=(query>=0 && (fragment<0 || query<fragment)?"?"+Hidden:"")+(fragment>=0?"#"+Hidden:"");
-            value=value[..suffix]+markers;
+            var result=new StringBuilder(value[..(query+1)]);
+            int start=query+1;
+            for(int index=start;index<=value.Length;index++)
+            {
+                if(index<value.Length && value[index] is not ('&' or ';'))continue;
+                string parameter=value[start..index];
+                int equals=parameter.IndexOf('=');
+                string key=equals<0?parameter:parameter[..equals];
+                string decoded;
+                try{decoded=Uri.UnescapeDataString(key.Replace('+',' '));}
+                catch(UriFormatException){decoded="";}
+                if(PublicQueryKeys.Contains(decoded))result.Append(parameter);
+                else if(parameter.Length>0)result.Append(equals<0?Hidden:key+"="+Hidden);
+                if(index<value.Length)result.Append(value[index]);
+                start=index+1;
+            }
+            value=result.ToString();
         }
-        return value;
+        return value+(hasFragment?"#"+Hidden:"");
     }
 
     private static int SafeLength(string text,int length)=>length>0 && char.IsHighSurrogate(text[length-1])?length-1:length;

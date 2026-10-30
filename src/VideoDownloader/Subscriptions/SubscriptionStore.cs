@@ -56,12 +56,13 @@ public sealed class SubscriptionStore
         RequireOptionalUrl(scan.FeedUrl);
         if (scan.Items.Count > 10_000) throw new InvalidDataException("Список подписки превышает 10 000 материалов.");
         // Validate the complete result before changing even the attempt timestamp.
-        var discoveries = new Dictionary<string, DiscoveredMedia>(StringComparer.Ordinal);
+        var discoveries = new List<DiscoveredMedia>();
+        var discoveryUrls = new HashSet<string>(StringComparer.Ordinal);
         foreach (var item in scan.Items)
         {
             if (item is null || item.Title is null) throw new InvalidDataException("Повреждённый материал подписки.");
             RequireUrl(item.Url);
-            discoveries.TryAdd(item.Url, item);
+            if (discoveryUrls.Add(item.Url)) discoveries.Add(item);
         }
         var successes = MaterializeUrls(successfulUrls);
         return Update(snapshot =>
@@ -85,7 +86,7 @@ public sealed class SubscriptionStore
             var existing = snapshot.Items.Where(i => i.SubscriptionId == id)
                 .ToDictionary(i => i.Url, StringComparer.Ordinal);
             var now = DateTimeOffset.UtcNow;
-            foreach (var discovery in discoveries.Values)
+            foreach (var discovery in discoveries)
             {
                 if (existing.TryGetValue(discovery.Url, out var known))
                 {
@@ -109,6 +110,7 @@ public sealed class SubscriptionStore
                 if (processedUrls.Contains(item.Url)) reconcile.Add(item.Url);
             }
             ReconcileSuccess(snapshot, reconcile);
+            ReorderItems(snapshot, id, discoveries, discoveryUrls);
             if (!string.IsNullOrWhiteSpace(scan.Title) && scan.Title != source.Url)
                 source.Title = scan.Title;
             else if (string.IsNullOrWhiteSpace(source.Title)) source.Title = source.Url;
@@ -126,6 +128,23 @@ public sealed class SubscriptionStore
             source.LastWarning = scan.Warning;
             return snapshot;
         }, cancellationToken);
+    }
+
+    private static void ReorderItems(SubscriptionSnapshot snapshot, string id,
+        IReadOnlyList<DiscoveredMedia> discoveries, IReadOnlySet<string> discoveryUrls)
+    {
+        // The version-1 Items array is itself ordered; no new persisted field or
+        // destructive migration is required. A full scan refreshes source order,
+        // while a recent window replaces only the prefix. Preserve historical
+        // entries absent from either result, together with all their decisions.
+        int insertion = snapshot.Items.FindIndex(item => item.SubscriptionId == id);
+        if (insertion < 0) return;
+        var previous = snapshot.Items.Where(item => item.SubscriptionId == id).ToArray();
+        var byUrl = previous.ToDictionary(item => item.Url, StringComparer.Ordinal);
+        var ordered = discoveries.Select(item => byUrl[item.Url])
+            .Concat(previous.Where(item => !discoveryUrls.Contains(item.Url))).ToArray();
+        snapshot.Items.RemoveAll(item => item.SubscriptionId == id);
+        snapshot.Items.InsertRange(insertion, ordered);
     }
 
     public void RecordFailure(string id, string error)

@@ -64,7 +64,7 @@ internal sealed partial class UiScenario
         }
         try
         {
-            var definition=subscriptions.TestStore.Add("https://example.com/subscription-ui-source/"+suffix,false);
+            var definition=subscriptions.TestStore.Add("https://example.com/subscription-ui-source/Канал/"+suffix+"?list=Точный&view=All#items",false);
             sourceId=definition.Id;
             subscriptions.TestStore.ApplyScan(sourceId,new SubscriptionScan("Проверка интерфейса",
                 [new DiscoveredMedia(baselineUrl,"Исходный материал"),new DiscoveredMedia(manualBaselineUrl,"Исходный вручную")],"","","Канал 123"),[]);
@@ -96,6 +96,23 @@ internal sealed partial class UiScenario
                 "Modeless subscriptions window must bind persisted sources");
             var window=subscriptions.TestWindow!;
             Require(window.Owner==_window && window.IsVisible && _window.IsEnabled,"Subscriptions must be a modeless window owned by the main window");
+            subscriptions.TestSources.SelectedItem=subscriptions.TestSources.Items.Cast<SubscriptionController.SubscriptionSourceView>().Single(x=>x.Id==sourceId);
+            string[] sourceOrder=[baselineUrl,manualBaselineUrl,queueUrl,skipUrl,freshUrl,caseUrl];
+            Require(subscriptions.TestInbox.Items.Cast<SubscriptionController.SubscriptionItemView>().Select(x=>x.Url).SequenceEqual(sourceOrder) &&
+                    !subscriptions.TestInbox.CanUserSortColumns,
+                "The actual inbox must use persisted source order instead of state, discovery date or lexicographic URL sorting");
+            var selectedUrl=subscriptions.TestControl<TextBox>("SelectedSubscriptionUrlBox");
+            var copySource=subscriptions.TestControl<Button>("CopySubscriptionUrlButton");
+            Require(selectedUrl.IsReadOnly && selectedUrl.IsEnabled && selectedUrl.Text==definition.Url && copySource.IsEnabled,
+                "The selected subscription's complete original URL must be selectable in a read-only field");
+            selectedUrl.SelectAll();
+            Require(selectedUrl.SelectedText==definition.Url,"Ctrl+C selection must include the complete source URL");
+            System.Windows.Input.ApplicationCommands.Copy.Execute(null,selectedUrl);
+            Require(Clipboard.GetText()==definition.Url,"The read-only source field's normal Copy command must preserve Unicode, query and fragment");
+            Clipboard.SetText("subscription-copy-sentinel");
+            copySource.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Require(Clipboard.GetText()==definition.Url && subscriptions.TestControl<TextBlock>("SubscriptionStatusText").Text=="URL подписки скопирован.",
+                "The actual copy button must put the exact source URL including query and fragment on the clipboard");
             Require(subscriptions.TestControl<CheckBox>("DownloadExistingCheck").IsChecked==false,"The initial-scan choice must default to baseline");
             Require(subscriptions.TestControl<CheckBox>("FullSubscriptionCheck").IsChecked==false,
                 "Manual checks must default to the optimized mode with an explicit full-check override");
@@ -368,6 +385,8 @@ internal sealed partial class UiScenario
                 subscriptions.TestUpdateButtons();
                 Require(!subscriptions.TestControl<CheckBox>("FullSubscriptionCheck").IsEnabled,
                     "The scan mode must not change while its batch is active");
+                Require(copySource.IsEnabled && selectedUrl.IsEnabled,
+                    "Copying the source URL must remain available during an independent subscription scan");
                 subscriptions.TestControl<Button>("CancelSubscriptionCheckButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                 Require(scanCancellation.IsCancellationRequested && ReferenceEquals(SessionState.Coordinator,originalSession),
                     "Scan cancellation must use its own token and leave the downloader alone");
@@ -394,6 +413,8 @@ internal sealed partial class UiScenario
                 "Opening, queueing, skipping and closing must never run a background scan");
             Require(afterClose.Items.Single(x=>x.SubscriptionId==sourceId && x.Url==baselineUrl).State=="Baseline",
                 "Closing the subscriptions window must preserve its baseline");
+            Require(afterClose.Items.Where(x=>x.SubscriptionId==sourceId).Select(x=>x.Url).SequenceEqual(sourceOrder),
+                "Queueing, skipping and restoring the subscription UI must preserve source order");
         }
         finally
         {

@@ -144,7 +144,7 @@ public sealed partial class NativeWindow : IDisposable
         T("HeaderStats").Text=$"{metrics.Active} active · {DownloadFormat.Speed(metrics.Speed)} · {metrics.Successful}/{metrics.Total}";
         F<ProgressBar>("OverallProgress").Value=metrics.Progress;
         T("SessionStats").Text=SessionState.StartedAt.HasValue
-            ? $"Session: {metrics.Successful} OK · {metrics.Left} left · {metrics.Failed} errors · {DownloadFormat.Bytes(metrics.Transferred)} · {DateTime.Now-SessionState.StartedAt.Value:hh\\:mm\\:ss}"
+            ? $"Session: {metrics.Successful} OK · {metrics.Left} left · {metrics.Failed} errors · {DownloadFormat.Bytes(metrics.Transferred)} · {SessionState.Elapsed:hh\\:mm\\:ss}"
             : $"Session: idle · {metrics.Total} URLs";
         string title=SessionState.StartedAt.HasValue
             ? DownloadFormat.Tray(metrics.Successful,metrics.Left,metrics.Failed,metrics.Speed,running,paused) : "Video Downloader | Ready";

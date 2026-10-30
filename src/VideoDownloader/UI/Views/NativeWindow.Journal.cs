@@ -88,7 +88,7 @@ public sealed partial class NativeWindow
         if(entries.Count==0)return;
         var box=B("LogBox");
         box.AppendText(string.Join(Environment.NewLine,entries)+Environment.NewLine);
-        _visibleJournalLines+=entries.Count;
+        _visibleJournalLines+=entries.Sum(entry=>entry.Count(character=>character=='\n')+1);
         if(_visibleJournalLines>VisibleJournalLines || box.Text.Length>VisibleJournalChars)
         {
             string text=box.Text;

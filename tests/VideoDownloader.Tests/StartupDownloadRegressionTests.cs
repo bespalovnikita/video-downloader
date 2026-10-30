@@ -32,6 +32,14 @@ internal static class StartupDownloadRegressionTests
             Thread.Sleep(Timeout.Infinite);return true;
         }
         if(args.LastOrDefault()?.StartsWith(Prefix,StringComparison.Ordinal)!=true) return false;
+        string? timerGate=Environment.GetEnvironmentVariable("VD_NATIVE_SESSION_TIMER_GATE");
+        if(args[^1].EndsWith("timer-slow",StringComparison.Ordinal) && !string.IsNullOrEmpty(timerGate))
+        {
+            File.WriteAllText(timerGate+".started",Environment.ProcessId.ToString());
+            var deadline=DateTime.UtcNow.AddSeconds(30);
+            while(!File.Exists(timerGate) && DateTime.UtcNow<deadline)Thread.Sleep(20);
+            if(!File.Exists(timerGate))throw new TimeoutException("Session timer fixture was not released.");
+        }
         string stage=Path.GetDirectoryName(args[Array.IndexOf(args,"-o")+1])!;
         string extension="mp4";
         int remux=Array.IndexOf(args,"--remux-video");
