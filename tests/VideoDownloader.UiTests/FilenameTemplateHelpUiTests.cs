@@ -26,14 +26,20 @@ internal sealed partial class UiScenario
                 "Hovering the filename field must explain template syntax");
             Exception? failure=null;
             bool opened=false;
-            window.Dispatcher.BeginInvoke(DispatcherPriority.Background,new Action(()=>
+            Window? Dialog()=>Application.Current.Windows.Cast<Window>().LastOrDefault(candidate=>candidate.Owner==window);
+            var observer=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(20)};
+            var watchdog=new DispatcherTimer{Interval=TimeSpan.FromSeconds(5)};
+            observer.Tick+=(_,_)=>
             {
-                var dialog=window.OwnedWindows.Cast<Window>().SingleOrDefault();
+                var dialog=Dialog();
+                // ShowDialog can pump the dispatcher before making its window
+                // visible. Keep observing instead of consuming a one-shot callback.
+                if(dialog?.IsVisible!=true)return;
+                observer.Stop();
                 try
                 {
-                    Require(dialog!=null && dialog.IsVisible,"Help button must open a visible owned dialog");
                     opened=true;
-                    var panel=(DockPanel)dialog!.Content;
+                    var panel=(DockPanel)dialog.Content;
                     var text=panel.Children.OfType<TextBox>().Single();
                     Require(text.IsReadOnly && text.VerticalScrollBarVisibility==ScrollBarVisibility.Auto &&
                         text.Text.Contains("%(playlist_index)03d") && text.Text.Contains("#output-template"),
@@ -41,9 +47,20 @@ internal sealed partial class UiScenario
                     panel.Children.OfType<Button>().Single().RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                 }
                 catch(Exception error) { failure=error; }
-                finally { if(dialog?.IsVisible==true)dialog.Close(); }
-            }));
-            ((Button)window.FindName("FilenameTemplateHelpButton")!).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                finally { if(dialog.IsVisible)dialog.Close(); }
+            };
+            watchdog.Tick+=(_,_)=>
+            {
+                watchdog.Stop();observer.Stop();
+                failure=new TimeoutException("Filename template help did not become visible or close.");
+                Dialog()?.Close();
+            };
+            observer.Start();watchdog.Start();
+            try
+            {
+                ((Button)window.FindName("FilenameTemplateHelpButton")!).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            }
+            finally { observer.Stop();watchdog.Stop(); }
             if(failure!=null)throw failure;
             Require(opened && template.Text==before && subject.ReadOptions().FilenameTemplate==before,
                 "Opening and closing help must leave the user's actual template intact");
