@@ -15,6 +15,7 @@ internal static class SubscriptionStoreTests
             InitialSnapshotsAndFailures(Path.Combine(root, "initial"));
             ExplicitBaselineQueue(Path.Combine(root, "baseline-queue"));
             SupplementalWindows(Path.Combine(root, "windows"));
+            SourceOrderAndLegacySnapshot(Path.Combine(root, "source-order"));
             NamesAndLegacyMigration(Path.Combine(root, "names"));
             SuccessfulProcessingAndNotices(Path.Combine(root, "notices"));
             CrashRecovery(Path.Combine(root, "recovery"));
@@ -111,6 +112,59 @@ internal static class SubscriptionStoreTests
         var failed = store.Read();
         Assert(failed.Items.Count == withNews.Items.Count && failed.Subscriptions.Single().LastSuccessUtc == withNews.Subscriptions.Single().LastSuccessUtc,
             "Failed full fallback must preserve every saved item and the last successful update time");
+    }
+
+    private static void SourceOrderAndLegacySnapshot(string directory)
+    {
+        var store = new SubscriptionStore(directory);
+        var source = store.Add("https://ordered.example/playlist?list=Exact", false);
+        const string first = "https://media.example/Z?source=A", second = "https://media.example/a?source=A",
+            third = "https://media.example/M?source=A", gone = "https://media.example/removed",
+            newest = "https://media.example/new", caseSensitive = "https://media.example/z?source=A";
+        store.ApplyScan(source.Id, Scan(first, second, third, gone), []);
+        store.ApplyScan(source.Id, Scan(newest, first, second, third, gone), []);
+        store.MarkQueued(source.Id, [first, second]);
+        store.MarkSuccessful(second);
+        store.Skip(source.Id, [newest]);
+        var other = store.Add("https://ordered.example/other", false);
+        store.ApplyScan(other.Id, Scan("https://media.example/other-last", "https://media.example/other-first"), []);
+
+        // Reproduce the released writer: old discoveries stayed first and a
+        // newly found item was appended even when it led the source collection.
+        var legacy = JsonNode.Parse(File.ReadAllText(store.Path))!;
+        var savedItems = legacy["Items"]!.AsArray();
+        var oldRows = savedItems.Select(row => row!.DeepClone()).ToArray();
+        savedItems.Clear();
+        foreach (string url in new[] { first, second, third, gone, newest })
+            savedItems.Add(oldRows.Single(row => row["SubscriptionId"]!.GetValue<string>() == source.Id && row["Url"]!.GetValue<string>() == url).DeepClone());
+        foreach (var row in oldRows.Where(row => row["SubscriptionId"]!.GetValue<string>() == other.Id)) savedItems.Add(row.DeepClone());
+        File.WriteAllText(store.Path, legacy.ToJsonString());
+        byte[] original = File.ReadAllBytes(store.Path);
+        var before = new SubscriptionStore(directory).Read();
+        string[] Order(SubscriptionSnapshot snapshot, string id) => snapshot.Items.Where(item => item.SubscriptionId == id).Select(item => item.Url).ToArray();
+        var decisions = before.Items.ToDictionary(item => (item.SubscriptionId, item.Url),
+            item => (item.State, item.DiscoveredAtUtc, item.InitialQueuePending, item.SuccessAttributed, item.DuplicateSubscriptionId, item.DuplicateNotified));
+        Assert(Order(before, source.Id).SequenceEqual(new[] { first, second, third, gone, newest }) &&
+            original.SequenceEqual(File.ReadAllBytes(store.Path)), "Legacy version-1 array order must load without destructive migration or implicit rewrite");
+
+        var full = store.ApplyScan(source.Id, Scan(third, newest, first, second, third), []);
+        Assert(Order(full, source.Id).SequenceEqual(new[] { third, newest, first, second, gone }),
+            "Full scan must use exact source order, keep first duplicate position and retain absent history at the end");
+        Assert(Order(full, other.Id).SequenceEqual(Order(before, other.Id)), "Reordering one collection must preserve another collection's order");
+        Assert(full.Items.All(item => decisions[(item.SubscriptionId, item.Url)] ==
+            (item.State, item.DiscoveredAtUtc, item.InitialQueuePending, item.SuccessAttributed, item.DuplicateSubscriptionId, item.DuplicateNotified)),
+            "Full reordering must preserve queued, skipped, processed and baseline decisions and discovery timestamps");
+
+        var window = store.ApplyScan(source.Id, Scan(caseSensitive, newest, third) with { Scope = SubscriptionScanScope.RecentWindow }, []);
+        Assert(Order(window, source.Id).SequenceEqual(new[] { caseSensitive, newest, third, first, second, gone }) &&
+            Item(window, source.Id, caseSensitive).State == "New" && Item(window, source.Id, first).State == "Queued",
+            "Recent window must prepend its exact order, preserve the old tail and retain exact case-sensitive URL identity");
+        var restarted = new SubscriptionStore(directory).Read();
+        Assert(Order(restarted, source.Id).SequenceEqual(Order(window, source.Id)) && restarted.Version == 1 &&
+            JsonNode.Parse(File.ReadAllText(store.Path))!["Items"]!.AsArray().All(row => !row!.AsObject().ContainsKey("SourceOrder")),
+            "Source order must persist in the existing version-1 array without adding incompatible fields");
+        store.RecordFailure(source.Id, "An incomplete next scan");
+        Assert(Order(store.Read(), source.Id).SequenceEqual(Order(window, source.Id)), "A failed check must not discard the last successful source order");
     }
 
     private static void NamesAndLegacyMigration(string directory)

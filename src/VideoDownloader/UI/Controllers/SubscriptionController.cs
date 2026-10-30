@@ -105,6 +105,7 @@ internal sealed partial class SubscriptionController : IDisposable
             Control<Button>("QueueSubscriptionItemsButton").Click+=async(_,_)=>await QueueSelectedAsync();
             Control<Button>("SkipSubscriptionItemsButton").Click+=async(_,_)=>await SkipSelectedAsync();
             Control<Button>("OpenSubscriptionItemButton").Click+=(_,_)=>OpenItem();
+            Control<Button>("CopySubscriptionUrlButton").Click+=(_,_)=>CopySourceUrl();
             Control<TextBox>("SubscriptionUrlBox").KeyDown+=async(_,e)=>
             {
                 if (e.Key==Key.Enter && !Busy) { e.Handled=true;await AddAsync(); }
@@ -217,8 +218,6 @@ internal sealed partial class SubscriptionController : IDisposable
             .Select(x=>(x.Item.SubscriptionId,x.Url)).ToHashSet();
         var items=(_snapshot?.Items ?? [])
             .Where(x=>selected==null || x.SubscriptionId==selected.Id)
-            .OrderBy(x=>x.State=="New"?0:x.State=="Queued"?1:2)
-            .ThenByDescending(x=>x.DiscoveredAtUtc).ThenBy(x=>x.Url,StringComparer.Ordinal)
             .Select(x=>new SubscriptionItemView(x)).ToArray();
         // Rebinding after a background scan must not replace the user's main
         // preview selection. Only an explicit inbox selection requests display.
@@ -285,6 +284,7 @@ internal sealed partial class SubscriptionController : IDisposable
         Control<Button>("QueueSubscriptionItemsButton").IsEnabled=ready && items.Any(x=>x.Item.State is "Baseline" or "New" or "Skipped" or "Queued");
         Control<Button>("SkipSubscriptionItemsButton").IsEnabled=ready && items.Any(x=>x.Item.State=="New");
         Control<Button>("OpenSubscriptionItemButton").IsEnabled=items.Length==1;
+        Control<Button>("CopySubscriptionUrlButton").IsEnabled=source!=null;
         Control<TextBox>("SubscriptionUrlBox").IsEnabled=ready;
         Control<TextBox>("SubscriptionFeedBox").IsEnabled=ready;
         Control<TextBox>("NewSubscriptionNameBox").IsEnabled=ready;
@@ -299,6 +299,7 @@ internal sealed partial class SubscriptionController : IDisposable
     {
         if (_window==null) return;
         var source=Sources.SelectedItem as SubscriptionSourceView;
+        Control<TextBox>("SelectedSubscriptionUrlBox").Text=source?.Url??"";
         string id=source?.Id??"";
         string saved=source?.Definition.ShortName??"";
         // A refresh replaces grid projections. Preserve an unsaved edit when
@@ -603,6 +604,17 @@ internal sealed partial class SubscriptionController : IDisposable
         if (_window==null || Inbox.SelectedItem is not SubscriptionItemView row) return;
         try { _openUrl(row.Url); }
         catch(Exception e) { Status("Не удалось открыть ссылку: "+DisplayError(e),true); }
+    }
+
+    private void CopySourceUrl()
+    {
+        if (_window==null || Sources.SelectedItem is not SubscriptionSourceView source) return;
+        try
+        {
+            Clipboard.SetText(source.Url);
+            Status("URL подписки скопирован.");
+        }
+        catch(Exception error) { Status("Не удалось скопировать URL подписки: "+DisplayError(error),true); }
     }
 
     private async Task NotifyDuplicatesAsync(SubscriptionSnapshot snapshot,Window window)

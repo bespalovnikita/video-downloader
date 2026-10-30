@@ -609,7 +609,11 @@
                             </StackPanel>
                         </Grid>
 
-                        <TextBlock Text="Filename template" Style="{StaticResource MutedText}"/>
+                        <DockPanel>
+                            <Button x:Name="FilenameTemplateHelpButton" Content="Справка…" DockPanel.Dock="Right"
+                                    Padding="8,3" ToolTip="Поля, примеры и ограничения шаблона имени файла"/>
+                            <TextBlock x:Name="FilenameTemplateLabel" Text="Filename template" Style="{StaticResource MutedText}" VerticalAlignment="Center"/>
+                        </DockPanel>
                         <TextBox x:Name="FilenameTemplateBox" Text="%(title)s [%(id)s].%(ext)s" Margin="0,0,0,8"/>
 
                         <Expander Header="Subtitles" IsExpanded="False" Margin="0,4">

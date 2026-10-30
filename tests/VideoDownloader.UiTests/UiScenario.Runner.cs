@@ -41,6 +41,10 @@ internal sealed partial class UiScenario
             UiScenario.TestPanelLayout(root);
             Stage("testing journal profiles, trace correlation and clipboard/export");
             UiScenario.TestJournalProfiles(root);
+            Stage("testing filename-template tooltip and reference dialog");
+            UiScenario.TestFilenameTemplateHelp(root);
+            Stage("testing completed queue playback and finished session clock");
+            UiScenario.TestQueuePlaybackAndTimer(root);
             Stage("testing duplicate-history dialog choices");
             UiScenario.TestDuplicateHistoryChoices(root);
             Stage("testing portable queue clipboard and file transfer");

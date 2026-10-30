@@ -364,8 +364,11 @@ internal static class SubscriptionScannerTests
                 foreach (string json in invalid) Refuses(() => SubscriptionScanner.ParseMetadata(json, Prefix + "invalid"),
                     "Malformed, unavailable or truncated collection metadata must be rejected: " + json);
                 var nested = SubscriptionScanner.ParseMetadata(JsonSerializer.Serialize(new { entries = new object[] {
-                    new { _type = "playlist", entries = new[] { Entry(MediaA, "Nested") } }, Entry(MediaB, "Other") } }), Prefix + "nested");
-                Require(nested.Items.Count == 2, "Inline nested collections must be enumerated for generic extractors");
+                    new { _type = "playlist", entries = new[] { Entry(MediaB, "Nested first"), Entry(MediaA, "Nested second") } },
+                    Entry(MediaB, "Repeated outside nested collection"), Entry("https://media.example.org/first-alphabetically", "Last") } }), Prefix + "nested");
+                Require(nested.Items.Select(item => item.Url).SequenceEqual(new[] { MediaB, MediaA, "https://media.example.org/first-alphabetically" }) &&
+                    nested.Items[0].Title == "Nested first",
+                    "Nested source traversal order and the first exact duplicate position must survive discovery without sorting");
                 return Task.CompletedTask;
             });
 

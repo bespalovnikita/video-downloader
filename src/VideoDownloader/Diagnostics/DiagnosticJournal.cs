@@ -89,7 +89,7 @@ public sealed class DiagnosticJournal : IAsyncDisposable,IDisposable
         // Localize before masking so the original retained diagnostic is masked too.
         string raw=record.Message ?? "";
         if(raw.Length>16*1024)raw=raw[..(16*1024)];
-        string message=JournalSanitizer.Redact(ErrorMessages.ForLog(raw));
+        string message=JournalSanitizer.Redact(ErrorMessages.ForLog(raw),multiline:true);
         string category=Context(record.Category),session=Context(record.Session),job=Context(record.Job),worker=Context(record.Worker);
         lock(_gate)
         {

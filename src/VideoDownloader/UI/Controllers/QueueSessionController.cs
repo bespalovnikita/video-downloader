@@ -9,7 +9,13 @@ internal sealed class QueueSessionController
 {
     private readonly HashSet<string> _urls=new(StringComparer.Ordinal);
     private readonly Dictionary<string,string> _finalStates=new(StringComparer.Ordinal);
+    private readonly TimeProvider _timeProvider;
     private int _lastActive;
+    private long _startedTimestamp;
+    private TimeSpan _elapsedAtStop;
+    private bool _clockRunning;
+
+    internal QueueSessionController(TimeProvider? timeProvider=null)=>_timeProvider=timeProvider??TimeProvider.System;
 
     internal ObservableCollection<DownloadItem> Queue { get; }=new();
     internal ObservableCollection<DownloadItem> Downloads { get; }=new();
@@ -17,6 +23,8 @@ internal sealed class QueueSessionController
     internal Task? RunningTask { get; private set; }
     internal DownloadOptions Options { get; private set; }=new();
     internal DateTime? StartedAt { get; private set; }
+    internal TimeSpan Elapsed=>_elapsedAtStop+(_clockRunning
+        ? _timeProvider.GetElapsedTime(_startedTimestamp) : TimeSpan.Zero);
     internal bool Stopping { get; private set; }
     internal IReadOnlyCollection<string> Urls=>_urls;
 
@@ -26,6 +34,10 @@ internal sealed class QueueSessionController
     internal void SetPresentation(DateTime? startedAt,IEnumerable<string> urls)
     {
         StartedAt=startedAt;
+        _elapsedAtStop=startedAt.HasValue
+            ? TimeSpan.FromTicks(Math.Max(0,(_timeProvider.GetLocalNow().DateTime-startedAt.Value).Ticks)) : TimeSpan.Zero;
+        _startedTimestamp=_timeProvider.GetTimestamp();
+        _clockRunning=startedAt.HasValue && Coordinator?.IsRunning==true;
         ReplaceUrls(urls);
     }
     internal void ReplaceUrls(IEnumerable<string> urls)
@@ -114,13 +126,16 @@ internal sealed class QueueSessionController
     }
     internal void Begin(DownloadCoordinator coordinator,DownloadOptions options,IReadOnlyList<DownloadItem> rows)
     {
-        Options=options;Coordinator=coordinator;StartedAt=DateTime.Now;Stopping=false;
+        Options=options;Coordinator=coordinator;StartedAt=_timeProvider.GetLocalNow().DateTime;Stopping=false;
+        _elapsedAtStop=TimeSpan.Zero;_startedTimestamp=_timeProvider.GetTimestamp();_clockRunning=true;
         _finalStates.Clear();Downloads.Clear();ReplaceUrls(rows.Select(row=>row.Url));
         foreach(var row in rows)coordinator.Add(row);
     }
     internal void End(DownloadCoordinator expected)
     {
-        if(ReferenceEquals(Coordinator,expected))Coordinator=null;
+        if(!ReferenceEquals(Coordinator,expected))return;
+        _elapsedAtStop=Elapsed;_clockRunning=false;
+        Coordinator=null;
     }
     internal void MarkStopping()=>Stopping=true;
     internal void Stop()

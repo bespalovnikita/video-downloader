@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Globalization;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Markup;
@@ -77,6 +78,32 @@ internal sealed partial class UiScenario
             profiles.SelectedItem=JournalProfileCatalog.Display(JournalProfile.Detailed);
             ((ComboBox)window.FindName("ProfileCombo")!).SelectedItem=ProfileCatalog.Display("4K archive");
             Require(subject.ReadOptions().LogProfile=="Detailed","Changing the download profile must preserve journal verbosity");
+
+            var previousCulture=CultureInfo.CurrentUICulture;
+            try
+            {
+                CultureInfo.CurrentUICulture=CultureInfo.GetCultureInfo("ru-RU");
+                Click(window,"ClearJournalButton");
+                const string publicUrl="https://www.youtube.com/watch?v=AbC_de-12&list=PL123";
+                subject.Journal.WriteMessage("Thumbnail timed out for "+publicUrl);
+                subject.FlushJournal();
+                string continuation=Environment.NewLine+"    Исходная диагностика: Thumbnail timed out for "+publicUrl;
+                Require(log.Text.Contains("Истекло время получения обложки.") && log.Text.Contains(continuation) &&
+                    !log.Text.Contains(@"\r") && !log.Text.Contains(@"\n"),
+                    "The actual log control renders the original public video URL on a real continuation line");
+                Click(window,"CopyJournalButton");
+                Require(Clipboard.GetText().Contains(continuation),"Copy preserves readable diagnostic newlines and the public video URL");
+                string diagnosticFile=Path.Combine(root,"multiline-diagnostic.log");
+                Complete(subject.ExportJournalAsync(diagnosticFile));
+                Require(File.ReadAllText(diagnosticFile).Contains(continuation),"Save preserves the same readable diagnostic newlines");
+            }
+            finally{CultureInfo.CurrentUICulture=previousCulture;}
+            Click(window,"ClearJournalButton");
+            for(int index=0;index<700;index++)subject.Journal.Write(new JournalRecord(JournalLevel.Warning,"fixture",
+                $"multiline-{index:0000}\nfirst detail\nsecond detail\nthird detail"));
+            for(int index=0;index<4;index++)subject.FlushJournal();
+            Require(log.Text.Count(character=>character=='\n')<=2000 && !log.Text.Contains("multiline-0000") && log.Text.Contains("multiline-0699"),
+                "The rendered tail counts physical continuation lines rather than only event records");
 
             // An active coordinator is attached without running its workers. The UI
             // must allow hot verbosity changes without admitting work or changing rows.

@@ -12,6 +12,20 @@ public sealed partial class NativeWindow
     {
         if(File.Exists(path)) Process.Start(new ProcessStartInfo(path){UseShellExecute=true});
     }
+    private void OpenCompletedQueueFile(object? sender,MouseButtonEventArgs e)
+    {
+        if(e.ChangedButton!=MouseButton.Left || e.OriginalSource is not DependencyObject source ||
+            ItemsControl.ContainerFromElement(Q,source) is not DataGridRow container ||
+            container.Item is not DownloadItem row || row.Status!="Completed" || !File.Exists(row.Path))return;
+        e.Handled=true;
+        try { OpenFile(row.Path); }
+        catch(Exception error) when(error is IOException or ArgumentException or
+                                   System.ComponentModel.Win32Exception or UnauthorizedAccessException)
+        {
+            MessageBox.Show(_window,DisplayError(error),ErrorMessages.Text("Не удалось открыть файл","Cannot open file"),
+                MessageBoxButton.OK,MessageBoxImage.Warning);
+        }
+    }
     private void OpenFolder(string path)
     {
         string folder=Directory.Exists(path)?path:Path.GetDirectoryName(path)??"";
@@ -85,6 +99,8 @@ public sealed partial class NativeWindow
     }
     private void BindActions()
     {
+        BindFilenameTemplateHelp();
+        Q.MouseDoubleClick+=OpenCompletedQueueFile;
         F<Button>("AddUrlButton").Click+=(_,_)=>{AddInputText(B("UrlInput").Text);B("UrlInput").Clear();};
         F<Button>("PasteClipboardButton").Click+=(_,_)=>Paste(true);
         B("UrlInput").KeyDown+=(_,e)=>{if(e.Key==Key.Enter){AddInputText(B("UrlInput").Text);B("UrlInput").Clear();e.Handled=true;}};
