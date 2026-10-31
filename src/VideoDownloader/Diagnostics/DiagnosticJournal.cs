@@ -96,7 +96,8 @@ public sealed class DiagnosticJournal : IAsyncDisposable,IDisposable
             if(_closed && toFile)return null;
             long sequence=++_sequence;
             string context=(session.Length>0?" session="+session:"")+(job.Length>0?" job="+job:"")+(worker.Length>0?" worker="+worker:"");
-            string text=$"[{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss.fff zzz} #{sequence.ToString("D6",CultureInfo.InvariantCulture)}] [{record.Level}/{category}]{context} {message}";
+            string timestamp=DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff",CultureInfo.InvariantCulture);
+            string text=$"[{timestamp}] [{record.Level}/{category}]{context} {message}";
             int bytes=Encoding.UTF8.GetByteCount(text+Environment.NewLine);
             // The entry cap also works with small diagnostic limits used by the real I/O tests.
             if(bytes>_limits.MemoryBytes)

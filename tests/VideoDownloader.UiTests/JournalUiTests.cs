@@ -109,7 +109,8 @@ internal sealed partial class UiScenario
             // must allow hot verbosity changes without admitting work or changing rows.
             var rows=Enumerable.Range(1,4).Select(index=>new DownloadItem
             {
-                Url="https://journal.invalid/task-"+index,Slot="T"+index,Progress=index*10
+                Url="https://journal.invalid/task-"+index+(index==4?"?v=PublicFour&token=private-video-token":""),
+                Title=index<3?"Видео "+index:"",Order=index,Slot="T"+index,Progress=index*10
             }).ToArray();
             foreach(var row in rows)subject.SessionState.TryAdd(row);
             var options=new DownloadOptions{Output=Path.Combine(root,"output"),Threads="4"};
@@ -125,6 +126,12 @@ internal sealed partial class UiScenario
                 "Overall traces explain real aggregate decreases without replacing displayed percentages");
             Require(log.Text.Contains(coordinator.TraceSessionId) && rows.All(row=>log.Text.Contains(DownloadTraceIdentity.JobId(row.Url))),
                 "The overall trace correlates all four rows with the engine's session and job identities");
+            Require(rows.All(row=>log.Text.Contains("video_seq="+row.Order+" video=",StringComparison.Ordinal)) &&
+                log.Text.Contains("video=\"Видео 1\"",StringComparison.Ordinal) &&
+                log.Text.Contains("https://journal.invalid/task-3",StringComparison.Ordinal) &&
+                log.Text.Contains("v=PublicFour",StringComparison.Ordinal) && !log.Text.Contains("private-video-token",StringComparison.Ordinal) &&
+                log.Text.Contains("members_shown=4 members_truncated=False",StringComparison.Ordinal),
+                "The actual overall log must show all queue numbers, known titles or sanitized URL fallbacks without losing its tail");
             foreach(var profile in new[]{JournalProfile.Errors,JournalProfile.Standard,JournalProfile.Progress,JournalProfile.Detailed})
                 profiles.SelectedItem=JournalProfileCatalog.Display(profile);
             Require(profiles.IsEnabled && coordinator.Outstanding==4 && rows.All(row=>row.Status=="Queued") && !File.Exists(storage.HistoryPath),

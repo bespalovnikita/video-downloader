@@ -10,6 +10,43 @@ namespace VideoDownloader.Native;
 public static class DownloadTraceIdentity
 {
     public static string JobId(string url)=>Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(url)))[..12].ToLowerInvariant();
+
+    internal const int OverallMemberTextBudget=2800;
+
+    internal static string VideoLabel(DownloadItem item,int maxLabelChars=160)
+    {
+        string title=item.Title;
+        string label=string.IsNullOrWhiteSpace(title) || string.Equals(title,item.Url,StringComparison.Ordinal)
+            ? item.Url : title;
+        string order=item.Order>0?item.Order.ToString(CultureInfo.InvariantCulture):"?";
+        return "video_seq="+order+" video="+DownloadProgressTrace.Quoted(ShortDiagnostic(label,maxLabelChars));
+    }
+
+    internal static string OverallMembers(IEnumerable<DownloadItem> rows,out int shown)
+    {
+        var text=new StringBuilder();
+        shown=0;
+        foreach(var row in rows.Take(32))
+        {
+            string member=VideoLabel(row,64)+FormattableString.Invariant(
+                $",job={JobId(row.Url)},worker={ShortDiagnostic(row.Slot,24)},status={ShortDiagnostic(row.Status,24)},pct={row.Progress:0.###},weight_pct={(row.Status is "Completed" or "Failed" ? 100 : row.Progress):0.###}");
+            if(text.Length+member.Length+(shown>0?1:0)>OverallMemberTextBudget)break;
+            if(shown>0)text.Append(';');
+            text.Append(member);shown++;
+        }
+        return text.ToString();
+    }
+
+    private static string ShortDiagnostic(string value,int maxChars)
+    {
+        // Mask before shortening: a cut inside a signed URL or credential must
+        // never turn private content into an apparently public partial label.
+        string text=JournalSanitizer.Redact(value);
+        if(text.Length<=maxChars)return text;
+        int length=maxChars-1;
+        if(length>0 && char.IsHighSurrogate(text[length-1]))length--;
+        return text[..length]+"…";
+    }
 }
 
 // One sampler belongs to one URL, and is observed under the same lock as that

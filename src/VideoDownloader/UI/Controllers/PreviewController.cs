@@ -121,8 +121,9 @@ internal sealed class PreviewController : IDisposable
         _service.Request(row.Url,priority);
     }
 
-    // Subscription discovery warms the same worker/cache before a row joins
-    // the download queue. It never changes the user's selected preview.
+    // Subscription discovery repairs missing previews independently of scan
+    // completion and download state. The shared worker validates cold cache
+    // entries; current usable galleries do not perform another HTTP request.
     internal void PrefetchUrls(IEnumerable<string> urls)
     {
         if(_disposed)return;
@@ -139,7 +140,8 @@ internal sealed class PreviewController : IDisposable
                     _service.Request(url);
                 }
                 catch(ObjectDisposedException) when(_disposed){return;}
-                catch(Exception error){Dispatch(()=>_log("Preview prefetch failed: "+error.Message));}
+                catch(Exception error){Dispatch(()=>_log("Preview prefetch failed for "+url+
+                    ": stage=schedule error_type="+error.GetType().Name+" reason="+error.Message));}
             }
         });
     }

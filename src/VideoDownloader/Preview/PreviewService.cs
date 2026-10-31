@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -105,7 +106,7 @@ public sealed class PreviewService : IDisposable
                 return entry;
             }
         }
-        catch(Exception) { }
+        catch(Exception error) { Log("Preview cache unavailable for "+DiagnosticField(url)+": stage=cache_read "+ErrorDetails(error)); }
         try { File.Delete(path); } catch(IOException){} catch(UnauthorizedAccessException){}
         return null;
     }
@@ -251,20 +252,21 @@ public sealed class PreviewService : IDisposable
                     },AppPersistence.Json);
                     try { AppPersistence.AtomicWrite(CacheFile(url),contents);PruneDiskCache(CacheFile(url)); }
                     catch(Exception error) when(error is IOException or UnauthorizedAccessException)
-                    { _log("Preview cache write failed: "+error.Message); }
+                    { Log("Preview cache write failed for "+DiagnosticField(url)+": stage=cache_write "+ErrorDetails(error)); }
                     _ready(data);
                 }
             }
             catch(OperationCanceledException) when (_stop.IsCancellationRequested){break;}
             catch(OperationCanceledException)
             {
-                _log("Preview timed out for "+url);
+                Log("Preview timed out for "+DiagnosticField(url)+": stage=metadata timeout_ms="+
+                    _requestTimeout.TotalMilliseconds.ToString("0",CultureInfo.InvariantCulture));
                 if(Peek(url) is {} prior)_ready(prior);
                 else _failed?.Invoke(url,"Время получения метаданных истекло.");
             }
             catch(Exception e)
             {
-                _log("Preview unavailable for "+url+": "+e.Message);
+                Log("Preview unavailable for "+DiagnosticField(url)+": stage=metadata "+ErrorDetails(e));
                 if(!_stop.IsCancellationRequested)
                 {
                     if(Peek(url) is {} prior)_ready(prior);
@@ -282,6 +284,32 @@ public sealed class PreviewService : IDisposable
     {
         if (json.TryGetProperty(name,out var v) && v.ValueKind==JsonValueKind.Number && v.TryGetDouble(out var n)) return n;
         return 0;
+    }
+    private void Log(string message)
+    {
+        // Diagnostics are optional observers. A sink failure must not terminate
+        // the sole prefetch worker or prevent the next subscription's images.
+        try { _log(message); } catch(Exception) { }
+    }
+    private static string DiagnosticField(string value,int limit=1024)
+    {
+        string safe=JournalSanitizer.Redact(value,multiline:true);
+        if(safe.Length<=limit)return safe;
+        int length=limit-1;
+        if(length>0 && char.IsHighSurrogate(safe[length-1]))length--;
+        return safe[..length]+"…";
+    }
+    private static string ErrorDetails(Exception error)=>
+        "error_type="+error.GetType().Name+" reason="+DiagnosticField(error.Message)+
+        (error.InnerException is {} inner ? " inner_type="+inner.GetType().Name+" inner_reason="+DiagnosticField(inner.Message,512) : "");
+    private void LogImageFailure(string video,string image,int candidate,int count,string stage,
+        int? status,long received,long? expected,long galleryReceived,Exception error)
+    {
+        string code=(error is HttpRequestException {StatusCode:{} httpStatus} ? (int)httpStatus : status)?.ToString(CultureInfo.InvariantCulture)??"unknown";
+        Log("Thumbnail unavailable: stage="+stage+" candidate="+candidate+"/"+count+
+            " http_status="+code+" received_bytes="+received+" expected_bytes="+
+            (expected?.ToString(CultureInfo.InvariantCulture)??"unknown")+" gallery_received_bytes="+galleryReceived+" "+ErrorDetails(error)+
+            Environment.NewLine+"video="+DiagnosticField(video)+Environment.NewLine+"image="+DiagnosticField(image));
     }
     private async Task<(PreviewData Data,string ThumbnailError)> FetchAsync(string url,CancellationToken token,Action<PreviewData> publish)
     {
@@ -348,8 +376,13 @@ public sealed class PreviewService : IDisposable
             using var imageDeadline=CancellationTokenSource.CreateLinkedTokenSource(token);
             imageDeadline.CancelAfter(_thumbnailTimeout);
             long received=0;
-            foreach(var image in images)
+            for(int index=0;index<images.Length;index++)
             {
+                var image=images[index];
+                string stage="headers";
+                int? status=null;
+                long imageReceived=0;
+                long? expected=null;
                 try
                 {
                     var imageToken=imageDeadline.Token;
@@ -360,13 +393,17 @@ public sealed class PreviewService : IDisposable
                     if(Uri.TryCreate(url,UriKind.Absolute,out var referer) && referer.Scheme is "http" or "https")
                         request.Headers.Referrer=new UriBuilder(referer){UserName="",Password="",Path="/",Query="",Fragment=""}.Uri;
                     using var response=await _http.SendAsync(request,HttpCompletionOption.ResponseHeadersRead,imageToken).ConfigureAwait(false);
+                    status=(int)response.StatusCode;
+                    expected=response.Content.Headers.ContentLength;
                     response.EnsureSuccessStatusCode();
+                    stage="limits";
                     if (response.Content.Headers.ContentLength>MaxImageBytes) throw new IOException("Thumbnail exceeds 2MB");
                     if (response.Content.Headers.ContentLength>MaxGalleryBytes-received) throw new IOException("Thumbnail gallery exceeds 12MB");
+                    stage="body";
                     using var stream=await response.Content.ReadAsStreamAsync(imageToken).ConfigureAwait(false);
                     using var buffer=new MemoryStream();
                     var chunk=new byte[16384];
-                    int read;long imageReceived=0;
+                    int read;
                     while((read=await stream.ReadAsync(chunk.AsMemory(0,(int)Math.Min(chunk.Length,
                         Math.Min(MaxImageBytes+1-imageReceived,MaxGalleryBytes+1-received))),imageToken).ConfigureAwait(false))>0)
                     {
@@ -376,12 +413,22 @@ public sealed class PreviewService : IDisposable
                         buffer.Write(chunk,0,read);
                     }
                     byte[] bytes=buffer.ToArray();
-                    if(WebPImage(bytes) || AvifImage(bytes)) bytes=await ConvertWebPAsync(bytes,imageToken).ConfigureAwait(false);
+                    if(WebPImage(bytes) || AvifImage(bytes))
+                    {
+                        stage="conversion";
+                        bytes=await ConvertWebPAsync(bytes,imageToken).ConfigureAwait(false);
+                    }
+                    stage="decode";
                     if(!SupportedImage(bytes)) throw new IOException("Thumbnail response is not a supported JPEG, PNG, GIF, BMP or TIFF image.");
                     if(!_thumbnailValidator(bytes))throw new IOException("Thumbnail image is damaged or exceeds the preview dimensions limit.");
                     imageToken.ThrowIfCancellationRequested();
                     if(!imageHashes.Add(Convert.ToHexString(SHA256.HashData(bytes))))continue;
-                    if(storedBytes+bytes.Length>MaxGalleryBytes)break;
+                    if(storedBytes+bytes.Length>MaxGalleryBytes)
+                    {
+                        thumbnailError="Converted thumbnail gallery exceeds 12MB";
+                        LogImageFailure(url,image.Url,index+1,images.Length,"limits",status,imageReceived,expected,received,new IOException(thumbnailError));
+                        break;
+                    }
                     storedBytes+=bytes.Length;
                     gallery.Add(Convert.ToBase64String(bytes));
                     data=data with {ThumbnailBase64=gallery[0],ThumbnailsBase64=gallery.ToArray()};
@@ -389,19 +436,37 @@ public sealed class PreviewService : IDisposable
                     thumbnailError="";
                     if(gallery.Count==MaxImages)break;
                 }
-                catch(HttpRequestException e){thumbnailError=e.Message;_log("Thumbnail request failed: "+e.Message);}
-                catch(IOException e){thumbnailError=e.Message;_log("Thumbnail unavailable: "+e.Message);}
-                catch(OperationCanceledException) when (!_stop.IsCancellationRequested)
+                catch(HttpRequestException error)
+                {
+                    thumbnailError=error.Message;
+                    LogImageFailure(url,image.Url,index+1,images.Length,stage,status,imageReceived,expected,received,error);
+                }
+                catch(IOException error)
+                {
+                    thumbnailError=error.Message;
+                    LogImageFailure(url,image.Url,index+1,images.Length,stage,status,imageReceived,expected,received,error);
+                }
+                catch(OperationCanceledException error) when (!_stop.IsCancellationRequested)
                 {
                     // Once metadata is parsed, an image or total request timeout
                     // must not throw away the title, author or format summary.
-                    _log("Thumbnail timed out for "+url);
+                    LogImageFailure(url,image.Url,index+1,images.Length,stage,status,imageReceived,expected,received,
+                        new TimeoutException("Thumbnail timed out; gallery_timeout_ms="+
+                            _thumbnailTimeout.TotalMilliseconds.ToString("0",CultureInfo.InvariantCulture)+" request_timeout_ms="+
+                            _requestTimeout.TotalMilliseconds.ToString("0",CultureInfo.InvariantCulture),error));
                     thumbnailError="Thumbnail timed out";
                     break;
+                }
+                catch(Exception error) when(error is not OperationCanceledException)
+                {
+                    thumbnailError=error.Message;
+                    LogImageFailure(url,image.Url,index+1,images.Length,stage,status,imageReceived,expected,received,error);
                 }
                 if(received>=MaxGalleryBytes) break;
             }
         }
+        else Log("Thumbnail unavailable: stage=candidates candidate=0/0 reason=yt-dlp provided no HTTP(S) image candidates"+
+            Environment.NewLine+"video="+DiagnosticField(url));
         return (data,thumbnailError);
     }
     private static bool SupportedImage(ReadOnlySpan<byte> bytes) =>
@@ -456,17 +521,23 @@ public sealed class PreviewService : IDisposable
                 }
                 catch{stop.Cancel();throw;}
             }
-            async Task DrainErrors()
+            async Task<string> DrainErrors()
             {
+                using var retained=new MemoryStream();
                 byte[] chunk=new byte[4096];
-                while(await child.StandardError.BaseStream.ReadAsync(chunk,stop.Token).ConfigureAwait(false)>0) { }
+                int count;
+                while((count=await child.StandardError.BaseStream.ReadAsync(chunk,stop.Token).ConfigureAwait(false))>0)
+                    if(retained.Length<4096)retained.Write(chunk,0,(int)Math.Min(count,4096-retained.Length));
+                return Encoding.UTF8.GetString(retained.ToArray()).Trim();
             }
             var output=ReadOutput();var errors=DrainErrors();
             try
             {
                 await Task.WhenAll(output,errors,process.WaitForExitAsync(stop.Token)).ConfigureAwait(false);
                 token.ThrowIfCancellationRequested();
-                if(process.ExitCode!=0 || !SupportedImage(output.Result))throw new IOException("FFmpeg could not convert the WebP thumbnail; text metadata is available.");
+                if(process.ExitCode!=0 || !SupportedImage(output.Result))throw new IOException(
+                    "FFmpeg could not convert the WebP thumbnail; exit_code="+process.ExitCode+
+                    (errors.Result.Length>0?" stderr="+errors.Result:"")+"; text metadata is available.");
                 return output.Result;
             }
             finally
