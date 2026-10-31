@@ -159,10 +159,9 @@ public sealed partial class NativeWindow
         // Limit the per-row breakdown independently of queue size. Aggregate
         // counters still describe the complete current session.
         var rows=CurrentSessionRows();
-        string members=string.Join(";",rows.Take(32).Select(row=>FormattableString.Invariant(
-            $"job={DownloadTraceIdentity.JobId(row.Url)},worker={row.Slot},status={row.Status},pct={row.Progress:0.###},weight_pct={(row.Status is "Completed" or "Failed" ? 100 : row.Progress):0.###}")));
+        string members=DownloadTraceIdentity.OverallMembers(rows,out int shown);
         _journal.Write(new JournalRecord(JournalLevel.Progress,"overall",
-            FormattableString.Invariant($"event=overall_progress ui_seq={++_overallSequence} ui_elapsed_ms={now} reason={reason} previous_pct={_previousOverall:0.###} current_pct={metrics.Progress:0.###} total={metrics.Total} active={metrics.Active} successful={metrics.Successful} failed={metrics.Failed} left={metrics.Left} sum_pct={metrics.Progress*metrics.Total:0.###} transferred_bytes={metrics.Transferred} members=[{members}] members_truncated={rows.Length>32}"),
+            FormattableString.Invariant($"event=overall_progress ui_seq={++_overallSequence} ui_elapsed_ms={now} reason={reason} previous_pct={_previousOverall:0.###} current_pct={metrics.Progress:0.###} total={metrics.Total} active={metrics.Active} successful={metrics.Successful} failed={metrics.Failed} left={metrics.Left} sum_pct={metrics.Progress*metrics.Total:0.###} transferred_bytes={metrics.Transferred} members=[{members}] members_shown={shown} members_truncated={rows.Length>shown}"),
             Session:session));
         _lastOverallSample=now;_previousOverall=metrics.Progress;
         _previousOverallTotal=metrics.Total;_previousOverallRunning=metrics.Running;

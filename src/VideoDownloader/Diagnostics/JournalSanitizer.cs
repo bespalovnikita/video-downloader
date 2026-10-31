@@ -37,7 +37,16 @@ public static class JournalSanitizer
     {
         if(string.IsNullOrEmpty(text))return "";
         bool truncated=text.Length>MaxInputChars;
-        if(truncated)text=text[..SafeLength(text,MaxInputChars)];
+        if(truncated)
+        {
+            text=text[..SafeLength(text,MaxInputChars)];
+            // A cut inside URL userinfo could remove its trailing '@host' and
+            // disguise a credential as a public authority. Hide the incomplete
+            // final URL before processing the already bounded input.
+            var tail=Url.Matches(text).Cast<Match>().LastOrDefault();
+            if(tail!=null && tail.Index+tail.Length==text.Length)
+                text=text[..tail.Index]+"[слишком длинный URL скрыт]";
+        }
         text=DecodeEngineOutput(text);
         // Keep real line boundaries until headers and Netscape cookie rows have
         // been removed. Flattening first could merge a secret into a later line.

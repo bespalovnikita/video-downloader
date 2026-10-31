@@ -44,6 +44,10 @@ internal static class JournalSanitizerTests
             "Multiline rendering must not unescape ordinary Windows paths or literal backslashes");
         Require(JournalSanitizer.Redact(new string('x',100_000)).Length<=JournalSanitizer.MaxMessageChars,
             "Raw child output is bounded before regex processing and after formatting");
+        string clippedCredentials=JournalSanitizer.Redact("image failure https://private-user:"+new string('P',17_000)+"@private.example/image");
+        Require(!clippedCredentials.Contains("private-user") && !clippedCredentials.Contains(new string('P',32)) &&
+            clippedCredentials.Contains("URL скрыт") && clippedCredentials.Length<=JournalSanitizer.MaxMessageChars,
+            "Clipping a very long credentialed URL must not expose partial userinfo after removing its authority boundary");
         Require(JournalSanitizer.Redact(new string('\t',10_000)).Length<=JournalSanitizer.MaxMessageChars,
             "Escaping cannot expand past the journal entry cap");
         Require(JournalSanitizer.Redact(new string('\n',10_000),multiline:true).Length<=JournalSanitizer.MaxMessageChars,

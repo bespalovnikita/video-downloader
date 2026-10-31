@@ -256,12 +256,14 @@ internal sealed partial class SubscriptionController : IDisposable
         }
     }
 
-    private void PrefetchScanPreviews(SubscriptionSnapshot snapshot,string subscriptionId)
+    private void PrefetchScanPreviews(SubscriptionSnapshot snapshot,string subscriptionId,SubscriptionScan scan)
     {
-        // Only durable, actionable results are warmed. A baseline of thousands
-        // of old items and successful/duplicate records do not trigger metadata.
-        var urls=snapshot.Items.Where(item=>item.SubscriptionId==subscriptionId && item.State is "New" or "Queued")
-            .Select(item=>item.Url).Distinct(StringComparer.Ordinal).ToArray();
+        // Images are independent of download decisions. A full result confirms
+        // its current URLs; a newest-window check also repairs missing previews
+        // in the previously saved tail without re-enumerating that archive.
+        var urls=(scan.Scope==SubscriptionScanScope.Full ? scan.Items.Select(item=>item.Url) :
+            snapshot.Items.Where(item=>item.SubscriptionId==subscriptionId).Select(item=>item.Url))
+            .Distinct(StringComparer.Ordinal).ToArray();
         if (urls.Length==0) return;
         try { _prefetchPreviews?.Invoke(urls); }
         catch(Exception error)
@@ -427,7 +429,7 @@ internal sealed partial class SubscriptionController : IDisposable
                     successfulIds.Add(id);
                     if (scan.Scope==SubscriptionScanScope.Full) fullChecks++;else recentChecks++;
                     if (!CurrentWindow(window)) break;
-                    if (!cancel.IsCancellationRequested) PrefetchScanPreviews(snapshot,id);
+                    if (!cancel.IsCancellationRequested) PrefetchScanPreviews(snapshot,id,scan);
                     // Only the explicit first-scan checkbox adds existing items.
                     // Queue acceptance is recorded after the main UI confirms it.
                     var initial=snapshot.Items.Where(x=>x.SubscriptionId==id && x.State=="New" && x.InitialQueuePending).ToArray();

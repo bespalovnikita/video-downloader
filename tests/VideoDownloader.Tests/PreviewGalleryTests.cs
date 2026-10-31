@@ -24,6 +24,10 @@ internal static class PreviewGalleryTests
         Require(cookie>=0 && cookie+1<args.Length,"The gallery fixture needs its metadata control file");
         using var control=JsonDocument.Parse(File.ReadAllText(args[cookie+1]));
         File.AppendAllText(control.RootElement.GetProperty("Calls").GetString()!,url+Environment.NewLine);
+        if(control.RootElement.TryGetProperty("Failure",out var failure))
+        {
+            Console.Error.WriteLine(failure.GetString());Environment.ExitCode=7;return true;
+        }
         Console.WriteLine(control.RootElement.GetProperty("Metadata").GetRawText());
         return true;
     }
@@ -53,13 +57,17 @@ internal static class PreviewGalleryTests
                         int read=await stream.ReadAsync(buffer,stop.Token);
                         string target=Encoding.ASCII.GetString(buffer,0,read).Split('\r')[0].Split(' ')[1];
                         requests.Enqueue(target);
-                        byte[] bytes=target=="/bad.png"?new byte[]{0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a}:
-                            target=="/duplicate.png"?images[0]:
-                            target=="/hold.png"?images[20]:target=="/stall.png"?images[21]:
-                            images[int.Parse(target.Split('/').Last().Split('.')[0])];
-                        await stream.WriteAsync(Encoding.ASCII.GetBytes($"HTTP/1.1 200 OK\r\nContent-Length: {bytes.Length}\r\nConnection: close\r\n\r\n"),stop.Token);
-                        if(target=="/hold.png") {gateStarted.TrySetResult();await gate.Task.WaitAsync(stop.Token);}
-                        if(target=="/stall.png") {await Task.Delay(Timeout.Infinite,stop.Token);return;}
+                        string path=target.Split('?')[0];
+                        byte[] bytes=path=="/forbidden.png"?[]:
+                            path=="/bad.png"?new byte[]{0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a}:
+                            path=="/missing-converter.webp"?new byte[]{0x52,0x49,0x46,0x46,0,0,0,0,0x57,0x45,0x42,0x50}:
+                            path=="/duplicate.png"?images[0]:
+                            path=="/hold.png"?images[20]:path=="/stall.png"?images[21]:
+                            images[int.Parse(path.Split('/').Last().Split('.')[0])];
+                        string status=path=="/forbidden.png"?"403 Forbidden":"200 OK";
+                        await stream.WriteAsync(Encoding.ASCII.GetBytes($"HTTP/1.1 {status}\r\nContent-Length: {bytes.Length}\r\nConnection: close\r\n\r\n"),stop.Token);
+                        if(path=="/hold.png") {gateStarted.TrySetResult();await gate.Task.WaitAsync(stop.Token);}
+                        if(path=="/stall.png") {await Task.Delay(Timeout.Infinite,stop.Token);return;}
                         await stream.WriteAsync(bytes,stop.Token);
                     }
                 }));
@@ -101,6 +109,85 @@ internal static class PreviewGalleryTests
                     "Progress must retain exact metadata identity while the final callback fires once");
                 await Task.Delay(100);service.Request(gallery.Url,true);await Task.Delay(100);
                 Require(File.ReadAllLines(Path.Combine(root,"fifteen.calls")).Length==1,"A completed gallery must not launch another metadata worker");
+            }
+
+            var diagnosticLogs=new ConcurrentQueue<string>();
+            const string denied="/forbidden.png?token=image-secret&v=PublicImage";
+            string diagnosticUrl=Prefix+"diagnostic?v=PublicVideo&token=video-secret";
+            ready=Completion();control=Control("diagnostic",Metadata("Fallback retains text",denied,"/bad.png","/image/9.png"));
+            using(var service=new PreviewService(executable,storage,()=>control,value=>ready.TrySetResult(value),diagnosticLogs.Enqueue))
+            {
+                service.Request(diagnosticUrl);
+                var result=await ready.Task.WaitAsync(TimeSpan.FromSeconds(10));
+                Require(result.Title=="Fallback retains text" && result.ThumbnailsBase64.Length==1 &&
+                    Convert.FromBase64String(result.ThumbnailBase64).SequenceEqual(images[9]),
+                    "HTTP and decode failures must keep metadata and continue to another usable image");
+                Require(diagnosticLogs.Any(line=>line.Contains("video="+Prefix+"diagnostic?v=PublicVideo") && line.Contains("image="+address+"/forbidden.png?") &&
+                        line.Contains("candidate=1/3") && line.Contains("stage=headers") && line.Contains("http_status=403") &&
+                        line.Contains("error_type=HttpRequestException")) &&
+                    diagnosticLogs.Any(line=>line.Contains("image="+address+"/bad.png") && line.Contains("candidate=2/3") &&
+                        line.Contains("stage=decode") && line.Contains("http_status=200") && line.Contains("received_bytes=8") &&
+                        line.Contains("expected_bytes=8") && line.Contains("error_type=IOException")),
+                    "Image diagnostics must identify exact video, image, candidate, phase, HTTP response, byte count and error type");
+            }
+            string longPrivateAuthority="https://private-user:"+new string('p',20_000)+"@private.example/cover.png?signature=SIGNED-DO-NOT-LOG&v=PublicReason";
+            ready=Completion();control=Control("long-diagnostic",Metadata("Keep raw cache, sanitize diagnostic","/image/11.png"));
+            using(var service=new PreviewService(executable,storage,()=>control,value=>ready.TrySetResult(value),diagnosticLogs.Enqueue,
+                thumbnailValidator:_=>throw new IOException("Decoder refused "+longPrivateAuthority)))
+            {
+                string url=Prefix+"long-diagnostic";
+                service.Request(url);await ready.Task.WaitAsync(TimeSpan.FromSeconds(10));
+                string rendered=string.Join(Environment.NewLine,diagnosticLogs);
+                Require(!rendered.Contains("private-user") && !rendered.Contains(new string('p',80)) &&
+                    !rendered.Contains("SIGNED-DO-NOT-LOG") && rendered.Contains("слишком длинный URL скрыт"),
+                    "Credentials and signed query values must be masked before diagnostic shortening, even when '@host' follows twenty thousand password characters");
+                Require(File.ReadAllText(Cache(url)).Contains("private-user"),
+                    "Masking must affect only diagnostic presentation, leaving the existing raw thumbnail error/cache contract intact");
+            }
+            await using(var journal=new DiagnosticJournal(Path.Combine(root,"diagnostic-log"),JournalProfile.Errors))
+            {
+                foreach(string message in diagnosticLogs)journal.WriteMessage(message);
+                string rendered=journal.Snapshot();
+                Require(rendered.Contains("v=PublicVideo") && rendered.Contains("v=PublicImage") && rendered.Contains("http_status=403") &&
+                    !rendered.Contains("video-secret") && !rendered.Contains("image-secret") &&
+                    !rendered.Contains("private-user") && !rendered.Contains(new string('p',80)) && !rendered.Contains("SIGNED-DO-NOT-LOG"),
+                    "Detailed preview errors must remain useful in the actual journal without retaining authorization parameters");
+                await journal.DisposeAsync();
+                Require(File.ReadAllText(journal.FilePath)==rendered,"The actual preview error file must preserve the same sanitized diagnostics");
+            }
+            diagnosticLogs.Clear();ready=Completion();
+            control=Control("conversion-failure",Metadata("Text without converter","/missing-converter.webp"));
+            using(var service=new PreviewService(executable,storage,()=>control,value=>ready.TrySetResult(value),diagnosticLogs.Enqueue,
+                ffmpegPath:Path.Combine(root,"absent-ffmpeg.exe")))
+            {
+                service.Request(Prefix+"conversion-failure");
+                var text=await ready.Task.WaitAsync(TimeSpan.FromSeconds(10));
+                Require(text.Title=="Text without converter" && text.ThumbnailBase64.Length==0 &&
+                    diagnosticLogs.Any(line=>line.Contains("stage=conversion") && line.Contains("http_status=200") &&
+                        line.Contains("video="+text.Url) && line.Contains("image="+address+"/missing-converter.webp") &&
+                        line.Contains("error_type=IOException") && line.Contains("needs FFmpeg")),
+                    "A missing converter must retain text and report its exact image, HTTP response and conversion failure");
+            }
+            diagnosticLogs.Clear();
+            var metadataFailure=new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+            string failureControl=Control("metadata-failure",Metadata("Unused","/image/10.png"));
+            File.WriteAllText(failureControl,JsonSerializer.Serialize(new{
+                Calls=Path.Combine(root,"metadata-failure.calls"),Failure="HTTP Error 503: offline metadata fixture",Metadata=new{title="Unused"}
+            }));
+            control=failureControl;ready=Completion();
+            using(var service=new PreviewService(executable,storage,()=>control,value=>ready.TrySetResult(value),diagnosticLogs.Enqueue,
+                failed:(url,error)=>metadataFailure.TrySetResult(url+" "+error)))
+            {
+                string failedUrl=Prefix+"metadata-failure";
+                service.Request(failedUrl);
+                await metadataFailure.Task.WaitAsync(TimeSpan.FromSeconds(10));
+                Require(diagnosticLogs.Any(line=>line.Contains(failedUrl) && line.Contains("stage=metadata") &&
+                    line.Contains("error_type=IOException") && line.Contains("503")),
+                    "A failed metadata child must identify its video URL, phase, exception type and original HTTP diagnostic");
+                control=Control("after-metadata-failure",Metadata("Next collection survives","/image/10.png"));
+                service.Request(Prefix+"after-metadata-failure");
+                Require((await ready.Task.WaitAsync(TimeSpan.FromSeconds(10))).Title=="Next collection survives",
+                    "A failed metadata child must release the sole worker for another collection");
             }
 
             var partial=Completion();var complete=Completion();
@@ -232,7 +319,10 @@ internal static class PreviewGalleryTests
             {
                 service.Request(Prefix+"timeout");
                 var timed=await ready.Task.WaitAsync(TimeSpan.FromSeconds(10));
-                Require(timed.ThumbnailsBase64.Length==1 && timed.Title=="Partial after timeout" && logs.Any(line=>line.Contains("Thumbnail timed out")),
+                Require(timed.ThumbnailsBase64.Length==1 && timed.Title=="Partial after timeout" &&
+                    logs.Any(line=>line.Contains("Thumbnail timed out") && line.Contains("stage=body") &&
+                        line.Contains("video="+timed.Url) && line.Contains("image="+address+"/stall.png") &&
+                        line.Contains("candidate=2/2") && line.Contains("http_status=200") && line.Contains("error_type=TimeoutException")),
                     "The shared body deadline must retain already received gallery images and metadata");
                 ready=Completion();control=Control("after-timeout",Metadata("After stalled gallery","/image/5.png"));
                 service.Request(Prefix+"after-timeout");
@@ -242,7 +332,7 @@ internal static class PreviewGalleryTests
             }
             MemoryBudget(Path.Combine(root,"memory-budget"));
             Require(!File.Exists(storage.HistoryPath),"Gallery acquisition must never record a successful media download");
-            Console.WriteLine("PASS: native preview galleries; fifteen-image limit, fallback, duplicate suppression, progressive delivery, legacy upgrade, failed-cover retry/throttle, exact cache identity and body deadline");
+            Console.WriteLine("PASS: native preview galleries; fifteen-image limit, fallback, detailed HTTP/decode/conversion/metadata errors, sanitized journal, progressive delivery, legacy upgrade, failed-cover retry/throttle, exact cache identity and body deadline");
         }
         finally
         {

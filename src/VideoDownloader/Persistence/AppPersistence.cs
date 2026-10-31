@@ -98,9 +98,25 @@ public sealed class AppPersistence
         try
         {
             File.WriteAllText(temp,contents,new UTF8Encoding(false));
-            File.Move(temp,path,true);
+            MoveAtomically(temp,path);
         }
         finally { if(File.Exists(temp)) File.Delete(temp); }
+    }
+    private static void MoveAtomically(string temp,string destination)
+    {
+        // Windows readers and scanners can briefly deny a rename even after
+        // the replacement file is closed. Retry only that atomic operation;
+        // permanent denial preserves the original file and original exception.
+        for(int attempt=0;;attempt++)
+        {
+            try { File.Move(temp,destination,true);return; }
+            catch(Exception error) when(OperatingSystem.IsWindows() && attempt<4 &&
+                (error is IOException or UnauthorizedAccessException) &&
+                (error.HResult&0xffff) is 5 or 32 or 33)
+            {
+                Thread.Sleep(15<<attempt);
+            }
+        }
     }
     public static bool ValidUrl(string? candidate) =>
         Uri.TryCreate(candidate,UriKind.Absolute,out var uri)

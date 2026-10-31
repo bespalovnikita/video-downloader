@@ -206,10 +206,37 @@ internal static class ReviewRegressionTests
                 }
             });
 
+            await Check("readable trace labels preserve video order, privacy, Unicode and aggregate bounds", directory =>
+            {
+                var unknown=new DownloadItem{Order=17,Url="https://user:password@example.org/watch?v=PublicVideo&token=private-token"};
+                string label=DownloadTraceIdentity.VideoLabel(unknown);
+                Require(label.Contains("video_seq=17 video=",StringComparison.Ordinal) && label.Contains("v=PublicVideo",StringComparison.Ordinal) &&
+                    !label.Contains("password",StringComparison.Ordinal) && !label.Contains("private-token",StringComparison.Ordinal),
+                    "A video without a known title must retain its queue number and useful URL without credentials");
+                unknown.Title=new string('x',158)+"🎬 trailing";
+                label=DownloadTraceIdentity.VideoLabel(unknown);
+                string decoded=JsonSerializer.Deserialize<string>(label[(label.IndexOf(" video=",StringComparison.Ordinal)+7)..])!;
+                Require(decoded.Length<=160 && decoded.EndsWith('…'),"A long display label must be visibly bounded");
+                _=new UTF8Encoding(false,true).GetBytes(decoded);
+
+                var rows=Enumerable.Range(1,64).Select(index=>new DownloadItem
+                {
+                    Order=index,Title="Видео "+index+" "+new string('Ж',500),Url="https://trace.invalid/"+index,
+                    Slot="T"+index,Status="Running",Progress=index
+                }).ToArray();
+                string members=DownloadTraceIdentity.OverallMembers(rows,out int shown);
+                Require(shown>0 && shown<32 && members.Length<=DownloadTraceIdentity.OverallMemberTextBudget &&
+                    members.Contains("video_seq="+shown+" video=",StringComparison.Ordinal) &&
+                    members.Contains("job="+DownloadTraceIdentity.JobId(rows[shown-1].Url),StringComparison.Ordinal) &&
+                    !members.Contains("video_seq="+(shown+1)+" video=",StringComparison.Ordinal),
+                    "An oversized session must report only complete readable members within its independent byte-free character budget");
+                return Task.CompletedTask;
+            });
+
             await Check("transfer totals include counter resets without double-counting repeated samples", async directory =>
             {
                 var data = new AppPersistence(Path.Combine(directory, "profile"));
-                var row = new DownloadItem { Url = FixtureBase + "progress-reset" };
+                var row = new DownloadItem { Url = FixtureBase + "progress-reset",Order=17,Title="Ролик с компонентами" };
                 var trace=new ConcurrentQueue<JournalRecord>();
                 string session;
                 await using (var engine = new DownloadCoordinator(TestExecutable(), data, Options(directory), _ => { }, _ => { },trace.Enqueue))
@@ -227,6 +254,10 @@ internal static class ReviewRegressionTests
                 var progress=records.Where(record=>record.Level==JournalLevel.Progress).ToArray();
                 Require(progress.All(record=>record.Job==job && record.Worker=="T1") && progress.Length>=4,
                     "A short transfer must trace initial and structural changes before the periodic sample interval");
+                Require(records.Where(record=>record.Job==job).All(record=>record.Message.Contains("video_seq=17 video=",StringComparison.Ordinal)) &&
+                    records.Any(record=>record.Level==JournalLevel.Verbose && record.Category=="yt-dlp" &&
+                        record.Message.Contains("stream=stderr",StringComparison.Ordinal) && record.Message.Contains("video=",StringComparison.Ordinal)),
+                    "A real child process must identify the video in every output/progress record, including stderr");
                 foreach(string reason in new[]{"component_change","counter_reset","percent_regression","component_complete"})
                     Require(progress.Any(record=>record.Message.Contains(reason,StringComparison.Ordinal)),"Missing progress explanation: "+reason);
                 Require(progress.Any(record=>record.Message.Contains(" raw_pct=20 ",StringComparison.Ordinal) && record.Message.Contains(" shown_pct=20 ",StringComparison.Ordinal)),
@@ -356,8 +387,11 @@ internal static class ReviewRegressionTests
                         "Worker must read credential snapshot exactly once for the preview.");
                     Require(previews.Get(url)?.Title == result.Title,
                         "Successful async previews must be cached immediately.");
-                    Require(logs.IsEmpty,
-                        "Successful preview prefetch must not log an unrelated background-thread error.");
+                    var diagnostics=logs.ToArray();
+                    Require(diagnostics.Length==1 && diagnostics[0].StartsWith(
+                            "Thumbnail unavailable: stage=candidates candidate=0/0 ",StringComparison.Ordinal) &&
+                            diagnostics[0].Contains("video="+url,StringComparison.Ordinal),
+                        "Metadata without image candidates must log that reason and its video, without an unrelated background-thread error.");
                 }
                 using (var newService = new PreviewService("nonexistent", data, () => "",
                     _ => throw new Exception("Already cached preview must not refetch"), _ => { }))
