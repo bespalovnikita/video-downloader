@@ -23,6 +23,7 @@ internal sealed partial class UiScenario
         Directory.CreateDirectory(root);
         Stage("creating WPF application");
         var app=new Application{ShutdownMode=ShutdownMode.OnExplicitShutdown};
+        using var queueOffers=new SubscriptionQueueOfferResponder();
         UiScenario? controller=null;
         Window? window=null;
         try
@@ -31,6 +32,10 @@ internal sealed partial class UiScenario
             UiScenario.TestColdTitleIngress(root);
             Stage("testing subscription preview prefetch after complete scans");
             UiScenario.TestSubscriptionPreviewPrefetch(root);
+            Stage("testing subscription details and two shared preview images");
+            UiScenario.TestSubscriptionDetailsPreview(root);
+            Stage("testing one aggregate queue offer after subscription checks");
+            UiScenario.TestSubscriptionQueueOffer(root);
             Stage("testing Russian errors and original diagnostics");
             UiScenario.TestErrorLocalization(root);
             Stage("testing component progress labels, wrapping and status tooltips");

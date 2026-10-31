@@ -95,7 +95,7 @@ internal sealed partial class UiScenario
                     events.AddRange(requested.Select(url=>"prefetch:"+url));
                     if (failPrefetch) throw new IOException("Intentional optional preview prefetch failure");
                     ui.Preview.PrefetchUrls(requested);
-                },(url,title)=>ui.Preview.Show(url,title));
+                },ui.Preview);
             var driver=new SubscriptionScenarioDriver(subscriptions);
             var source=store.Add("https://subscription-scanner.invalid/ui-preview",false);
 
@@ -154,10 +154,11 @@ internal sealed partial class UiScenario
             Idle();
 
             driver.TestInbox.SelectedItem=driver.TestInbox.Items.Cast<SubscriptionController.SubscriptionItemView>().Single(item=>item.Url==first);
-            Require(ui.Preview.SelectedUrl==first && ((TextBlock)window.FindName("PreviewTitle")!).Text=="Metadata A" &&
-                ((Image)window.FindName("PreviewImage")!).Source is BitmapSource {PixelWidth:PreviewThumbnailServer.Width,PixelHeight:PreviewThumbnailServer.Height} &&
+            Require(ui.Preview.SelectedUrl=="https://selected.invalid/current" &&
+                driver.TestControl<TextBlock>("SubscriptionPreviewTitle").Text=="Metadata A" &&
+                driver.TestControl<Image>("SubscriptionPreviewImage").Source is BitmapSource {PixelWidth:PreviewThumbnailServer.Width,PixelHeight:PreviewThumbnailServer.Height} &&
                 thumbnails.Requests==1,
-                "Selecting the inbox material must display its already fetched real PNG without queueing or requesting another image.");
+                "Selecting the inbox material must display its cached real PNG in the subscription panel without changing the main selection or requesting another image.");
             driver.TestControl<Button>("QueueSubscriptionItemsButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             PumpUntil(()=>!driver.TestIsMutating && store.Read().Items.Single(item=>item.Url==first).State=="Queued",
                 "The explicit Queue action must retain its independent state transition.");
@@ -255,7 +256,8 @@ internal sealed partial class UiScenario
             SelectSource(source.Id);
             driver.TestInbox.SelectedItem=driver.TestInbox.Items.Cast<SubscriptionController.SubscriptionItemView>()
                 .Single(item=>item.Url==baseline);
-            Require(ui.Preview.SelectedUrl==baseline && ui.Preview.GetCached(baseline)==null,
+            Require(ui.Preview.SelectedUrl=="https://selected.invalid/current" &&
+                driver.TestControl<TextBox>("SubscriptionPreviewUrlBox").Text==baseline && ui.Preview.GetCached(baseline)==null,
                 "The selected baseline must remain a cold request while its child is gated.");
             driver.TestControl<Button>("QueueSubscriptionItemsButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             PumpUntil(()=>!driver.TestIsMutating && store.Read().Items.Single(item=>item.Url==baseline).State=="Queued" &&
@@ -268,7 +270,7 @@ internal sealed partial class UiScenario
                 "Baseline enqueue must retain one pending metadata request without selecting a main row or launching downloads.");
             File.WriteAllText(Path.Combine(metadataRoot,"release-first"),"");
             PumpUntil(()=>HasImage(baseline,"Metadata first") &&
-                ((Image)window.FindName("PreviewImage")!).Source is BitmapSource {PixelWidth:PreviewThumbnailServer.Width,PixelHeight:PreviewThumbnailServer.Height},
+                driver.TestControl<Image>("SubscriptionPreviewImage").Source is BitmapSource {PixelWidth:PreviewThumbnailServer.Width,PixelHeight:PreviewThumbnailServer.Height},
                 "The explicitly queued baseline must obtain and render its real image before Start or main-row selection.");
             Require(ui.SessionState.Queue.Single(item=>item.Url==baseline).Title=="Metadata first" &&
                 thumbnails.Requests==4 && thumbnails.Errors.IsEmpty,

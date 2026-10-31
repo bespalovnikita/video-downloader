@@ -25,13 +25,15 @@ internal sealed partial class SubscriptionController : IDisposable
     private readonly Action<string> _openUrl;
     private readonly Action<string> _log;
     private readonly Action<IEnumerable<string>>? _prefetchPreviews;
-    private readonly Action<string,string>? _showPreview;
+    private readonly PreviewController? _previews;
+    private SubscriptionPreviewController? _details;
     private readonly HashSet<string> _successes=new(StringComparer.Ordinal);
     private readonly SubscriptionCheckProgressController _checkProgress;
     private Window? _window;
     private SubscriptionSnapshot? _snapshot;
     private CancellationTokenSource? _cancellation;
     private bool _mutation;
+    private bool _finalizingCheck;
     private bool _noticeShowing;
     private bool _disposed;
     private int _refreshVersion;
@@ -44,11 +46,11 @@ internal sealed partial class SubscriptionController : IDisposable
     internal SubscriptionController(Window owner,SubscriptionStore store,string ytDlp,string viewPath,
         Func<Dictionary<string,DateTimeOffset?>> readHistory,Func<string> readCookies,
         QueueSubscriptionItems queueUrls,Action<string> openUrl,Action<string> log,
-        Action<IEnumerable<string>>? prefetchPreviews=null,Action<string,string>? showPreview=null)
+        Action<IEnumerable<string>>? prefetchPreviews=null,PreviewController? previews=null)
     {
         _owner=owner;_store=store;_ytDlp=ytDlp;_viewPath=viewPath;
         _readHistory=readHistory;_readCookies=readCookies;_queueUrls=queueUrls;_openUrl=openUrl;_log=log;
-        _prefetchPreviews=prefetchPreviews;_showPreview=showPreview;
+        _prefetchPreviews=prefetchPreviews;_previews=previews;
         _checkProgress=new SubscriptionCheckProgressController(owner.Dispatcher,CurrentWindow,
             ()=>_cancellation?.IsCancellationRequested==true);
     }
@@ -57,7 +59,7 @@ internal sealed partial class SubscriptionController : IDisposable
         (T)(_window?.FindName(name) ?? throw new InvalidOperationException("Missing subscription control: "+name));
     private DataGrid Sources => Control<DataGrid>("SubscriptionGrid");
     private DataGrid Inbox => Control<DataGrid>("SubscriptionInboxGrid");
-    private bool Busy => _mutation || _cancellation!=null || _checkProgress.IsActive;
+    private bool Busy => _mutation || _finalizingCheck || _cancellation!=null || _checkProgress.IsActive;
 
     internal void Open()
     {
@@ -80,6 +82,7 @@ internal sealed partial class SubscriptionController : IDisposable
             // the main window's resource catalog available to this owned window.
             window.Resources.MergedDictionaries.Add(_owner.Resources);
             _window=window;
+            _details=new SubscriptionPreviewController(window,_previews,_openUrl,_log);
             Control<Button>("AddSubscriptionButton").Click+=async(_,_)=>await AddAsync();
             Control<Button>("SaveSubscriptionNameButton").Click+=async(_,_)=>await SaveNameAsync();
             Control<Button>("CheckSubscriptionButton").Click+=async(_,_)=>
@@ -127,6 +130,7 @@ internal sealed partial class SubscriptionController : IDisposable
                 if (!ReferenceEquals(_window,window)) return;
                 _cancellation?.Cancel();
                 _checkProgress.Stop();
+                _details?.Dispose();_details=null;
                 _window=null;
                 _nameSelectionId="";
                 _nameSavedValue="";
@@ -138,6 +142,7 @@ internal sealed partial class SubscriptionController : IDisposable
         }
         catch(Exception e)
         {
+            _details?.Dispose();_details=null;
             _window=null;
             MessageBox.Show(_owner,"Не удалось открыть подписки:\n"+DisplayError(e),"Подписки",MessageBoxButton.OK,MessageBoxImage.Warning);
         }
@@ -148,6 +153,7 @@ internal sealed partial class SubscriptionController : IDisposable
         _disposed=true;
         _cancellation?.Cancel();
         _checkProgress.Stop();
+        _details?.Dispose();_details=null;
         _window?.Close();
         _window=null;
         _refreshVersion++;
@@ -219,8 +225,8 @@ internal sealed partial class SubscriptionController : IDisposable
         var items=(_snapshot?.Items ?? [])
             .Where(x=>selected==null || x.SubscriptionId==selected.Id)
             .Select(x=>new SubscriptionItemView(x)).ToArray();
-        // Rebinding after a background scan must not replace the user's main
-        // preview selection. Only an explicit inbox selection requests display.
+        // Preserve the inbox selection through refresh. Its own details pane
+        // never changes the main window's preview selection.
         bool wasBinding=_binding;
         _binding=true;
         try
@@ -233,13 +239,15 @@ internal sealed partial class SubscriptionController : IDisposable
         Control<TextBlock>("SubscriptionInboxTitle").Text=selected==null
             ? $"Входящие и результаты · {items.Length}"
             : $"Входящие и результаты: {selected.Title} · {items.Length}";
+        ShowSelectedPreview();
     }
 
     private void ShowSelectedPreview()
     {
-        if (_binding || _disposed || _window==null || Inbox.SelectedItems.Count!=1 ||
-            Inbox.SelectedItem is not SubscriptionItemView item) return;
-        try { _showPreview?.Invoke(item.Url,item.Title); }
+        if (_binding || _disposed || _window==null) return;
+        var item=Inbox.SelectedItems.Count==1 ? (Inbox.SelectedItem as SubscriptionItemView)?.Item : null;
+        string source=item==null?"":_snapshot?.Subscriptions.FirstOrDefault(source=>source.Id==item.SubscriptionId)?.Title??"";
+        try { _details?.Show(item,source,Inbox.SelectedItems.Count); }
         catch(Exception error)
         {
             _log(ErrorMessages.Text("Не удалось показать превью подписки: ","Subscription preview display failed: ")+
@@ -386,6 +394,7 @@ internal sealed partial class SubscriptionController : IDisposable
         long progressVersion=_checkProgress.Begin(window,ids.Length);
         UpdateButtons();
         int succeeded=0,failed=0,queued=0,fullChecks=0,recentChecks=0;
+        var successfulIds=new HashSet<string>(StringComparer.Ordinal);
         bool cancelled=false;
         string queueError="";
         try
@@ -415,6 +424,7 @@ internal sealed partial class SubscriptionController : IDisposable
                         return _store.ApplyScan(id,scan,history.Keys,cancel.Token);
                     },cancel.Token);
                     succeeded++;
+                    successfulIds.Add(id);
                     if (scan.Scope==SubscriptionScanScope.Full) fullChecks++;else recentChecks++;
                     if (!CurrentWindow(window)) break;
                     if (!cancel.IsCancellationRequested) PrefetchScanPreviews(snapshot,id);
@@ -431,6 +441,7 @@ internal sealed partial class SubscriptionController : IDisposable
                             // An acceptance/write failure must not pretend that
                             // the scan itself failed or undo its initial choice.
                             failed++;
+                            if (e is QueueAcceptanceException partial) queued+=partial.AcceptedCount;
                             queueError="Не удалось подтвердить очередь: "+DisplayError(e)+
                                 " Уже принятые ссылки могут быть в обычной очереди; повторите ручную проверку после исправления.";
                         }
@@ -463,17 +474,40 @@ internal sealed partial class SubscriptionController : IDisposable
         catch(Exception e) { failed++;Status("Не удалось начать проверку: "+DisplayError(e),true); }
         finally
         {
-            if (ReferenceEquals(_cancellation,cancel)) _cancellation=null;
-            if (CurrentWindow(window))
+            _finalizingCheck=true;
+            try
             {
-                await ReloadAsync();
-                _checkProgress.Finish(progressVersion,cancelled,succeeded,failed,queued);
-                Status((cancelled?"Проверка отменена.":"Проверка завершена.")+
-                    $" Успешных проверок: {succeeded} (полных: {fullChecks}; по окну новых: {recentChecks}); ошибок: {failed}; добавлено в очередь: {queued}. "+
-                    "Новые материалы — во «Входящих». Скачивание только кнопкой Start."+
-                    (queueError.Length>0?" "+queueError:""),failed>0);
+                if (ReferenceEquals(_cancellation,cancel)) _cancellation=null;
+                if (CurrentWindow(window))
+                {
+                    await ReloadAsync();
+                    _checkProgress.Finish(progressVersion,cancelled,succeeded,failed,queued);
+                    if (!cancelled && !cancel.IsCancellationRequested && successfulIds.Count>0)
+                    {
+                        try { queued+=await OfferNewItemsAsync(window,successfulIds); }
+                        catch(Exception error)
+                        {
+                            failed++;
+                            if (error is QueueAcceptanceException partial) queued+=partial.AcceptedCount;
+                            queueError="Не удалось подтвердить очередь: "+DisplayError(error)+
+                                " Уже принятые ссылки могут быть в обычной очереди; непринятые материалы остаются во «Входящих».";
+                        }
+                    }
+                    if (CurrentWindow(window))
+                    {
+                        await ReloadAsync();
+                        if (CurrentWindow(window))
+                        {
+                            Control<TextBlock>("SubscriptionCheckDetailText").Text=$"Успешных проверок: {succeeded}; ошибок: {failed}; добавлено в очередь: {queued}.";
+                            Status((cancelled?"Проверка отменена.":"Проверка завершена.")+
+                                $" Успешных проверок: {succeeded} (полных: {fullChecks}; по окну новых: {recentChecks}); ошибок: {failed}; добавлено в очередь: {queued}. "+
+                                "Новые материалы — во «Входящих». Скачивание только кнопкой Start."+
+                                (queueError.Length>0?" "+queueError:""),failed>0);
+                        }
+                    }
+                }
             }
-            UpdateButtons();
+            finally { _finalizingCheck=false;UpdateButtons(); }
         }
     }
 
@@ -483,11 +517,14 @@ internal sealed partial class SubscriptionController : IDisposable
         catch(Exception e) { Status("Не удалось сохранить ошибку проверки: "+DisplayError(e),true); }
     }
 
-    private async Task<int> QueueCandidatesAsync(IReadOnlyList<SubscriptionItem> candidates)
+    private async Task<int> QueueCandidatesAsync(IReadOnlyList<SubscriptionItem> candidates,
+        Func<bool>? canQueue=null,bool newOnly=false)
     {
         if (candidates.Count==0) return 0;
         var reconciled=await Task.Run(()=>_store.ReconcileSuccess(_readHistory().Keys));
-        var eligibleKeys=reconciled.Items.Where(x=>x.State is "Baseline" or "New" or "Skipped" or "Queued")
+        if (canQueue?.Invoke()==false) return 0;
+        var eligibleKeys=reconciled.Items.Where(x=>newOnly?x.State=="New" && !x.InitialQueuePending:
+                x.State is "Baseline" or "New" or "Skipped" or "Queued")
             .Select(x=>(x.SubscriptionId,x.Url)).ToHashSet();
         var currentItems=reconciled.Items.ToDictionary(x=>(x.SubscriptionId,x.Url));
         candidates=candidates.Where(x=>eligibleKeys.Contains((x.SubscriptionId,x.Url)))
@@ -496,34 +533,51 @@ internal sealed partial class SubscriptionController : IDisposable
         var sources=reconciled.Subscriptions.ToDictionary(x=>x.Id,StringComparer.Ordinal);
         var acknowledgements=new List<(string Id,string[] Urls)>();
         var acceptedUrls=new HashSet<string>(StringComparer.Ordinal);
-        foreach (var group in candidates.GroupBy(x=>x.SubscriptionId,StringComparer.Ordinal))
+        Exception? acceptanceError=null;
+        try
         {
-            if (_cancellation?.IsCancellationRequested==true) break;
-            if (!sources.TryGetValue(group.Key,out var source)) continue;
-            string suggestion=AppPersistence.ValidUrl(source.Title)?"":source.Title;
-            string name=source.ShortName.Length>0?source.ShortName:SubscriptionNames.Normalize(suggestion,
-                "Подписка "+source.Id[..Math.Min(8,source.Id.Length)]);
-            var requested=group.Select(x=>x.Url).ToHashSet(StringComparer.Ordinal);
-            var titles=group.ToDictionary(x=>x.Url,x=>x.Title,StringComparer.Ordinal);
-            var accepted=_queueUrls(requested,source.Id,name,titles).Where(requested.Contains).Distinct(StringComparer.Ordinal).ToArray();
-            if (accepted.Length==0) continue;
-            acknowledgements.Add((group.Key,accepted));
-            acceptedUrls.UnionWith(accepted);
-        }
-        if (acknowledgements.Count==0) return 0;
-        await Task.Run(()=>
-        {
-            var current=_store.Read();
-            foreach (var acknowledgement in acknowledgements)
+            foreach (var group in candidates.GroupBy(x=>x.SubscriptionId,StringComparer.Ordinal))
             {
-                var urls=acknowledgement.Urls.ToHashSet(StringComparer.Ordinal);
-                // A genuine concurrent success may already have reconciled a
-                // row. Never turn Processed/AlreadyProcessed back into Queued.
-                var eligible=current.Items.Where(x=>x.SubscriptionId==acknowledgement.Id && urls.Contains(x.Url) && x.State is "Baseline" or "New" or "Skipped" or "Queued")
-                    .Select(x=>x.Url).ToArray();
-                if (eligible.Length>0) _store.MarkQueued(acknowledgement.Id,eligible);
+                if (_cancellation?.IsCancellationRequested==true || canQueue?.Invoke()==false) break;
+                if (!sources.TryGetValue(group.Key,out var source)) continue;
+                if (newOnly && (source.Paused || source.LastError.Length>0)) continue;
+                string suggestion=AppPersistence.ValidUrl(source.Title)?"":source.Title;
+                string name=source.ShortName.Length>0?source.ShortName:SubscriptionNames.Normalize(suggestion,
+                    "Подписка "+source.Id[..Math.Min(8,source.Id.Length)]);
+                var requested=group.Select(x=>x.Url).Distinct(StringComparer.Ordinal).ToArray();
+                var requestedKeys=requested.ToHashSet(StringComparer.Ordinal);
+                var titles=group.ToDictionary(x=>x.Url,x=>x.Title,StringComparer.Ordinal);
+                var accepted=_queueUrls(requested,source.Id,name,titles).Where(requestedKeys.Contains).Distinct(StringComparer.Ordinal).ToArray();
+                if (accepted.Length==0) continue;
+                acknowledgements.Add((group.Key,accepted));
+                acceptedUrls.UnionWith(accepted);
             }
-        });
+        }
+        catch(Exception error) { acceptanceError=error; }
+        // Main-queue acceptance already happened. Preserve its acknowledgement
+        // even if a later source fails or the subscription window was closed.
+        try
+        {
+            if (acknowledgements.Count>0) await Task.Run(()=>
+            {
+                var current=_store.Read();
+                foreach (var acknowledgement in acknowledgements)
+                {
+                    var urls=acknowledgement.Urls.ToHashSet(StringComparer.Ordinal);
+                    // A genuine concurrent success may already have reconciled a
+                    // row. Never turn Processed/AlreadyProcessed back into Queued.
+                    var eligible=current.Items.Where(x=>x.SubscriptionId==acknowledgement.Id && urls.Contains(x.Url) && x.State is "Baseline" or "New" or "Skipped" or "Queued")
+                        .Select(x=>x.Url).ToArray();
+                    if (eligible.Length>0) _store.MarkQueued(acknowledgement.Id,eligible);
+                }
+            });
+        }
+        catch(Exception error) { throw new QueueAcceptanceException(acceptedUrls.Count,error); }
+        if (acceptanceError!=null)
+        {
+            if (acceptedUrls.Count>0) throw new QueueAcceptanceException(acceptedUrls.Count,acceptanceError);
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(acceptanceError).Throw();
+        }
         return acceptedUrls.Count;
     }
 
@@ -541,7 +595,11 @@ internal sealed partial class SubscriptionController : IDisposable
             await ReloadAsync();
             Status(count>0?$"В обычной очереди: {count}. Запуск только кнопкой Start.":"В очередь ничего не добавлено. Материалы остаются во «Входящих».");
         }
-        catch(Exception e) { Status("Не удалось подтвердить добавление в очередь: "+DisplayError(e)+" Уже принятые ссылки могут быть в обычной очереди; повторите действие после исправления.",true); }
+        catch(Exception e)
+        {
+            string partial=e is QueueAcceptanceException accepted?$"В обычной очереди: {accepted.AcceptedCount}. ":"";
+            Status(partial+"Не удалось подтвердить добавление в очередь: "+DisplayError(e)+" Уже принятые ссылки могут быть в обычной очереди; повторите действие после исправления.",true);
+        }
         finally { _mutation=false;UpdateButtons(); }
     }
 
