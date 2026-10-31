@@ -1,0 +1,27 @@
+# Контракты Android для агента
+
+Прочитай после [CORE.md](CORE.md) и [SHARED.md](SHARED.md), если задача затрагивает `android/`, Android CI, APK, runtime или мобильные данные. Пути в кодовых фрагментах указаны от корня репозитория. Windows-правила WPF, EXE, job objects и `%LOCALAPPDATA%` сюда не переносятся.
+
+## Стек, процессы и данные
+
+- Gradle root — `android/`; модули `:core` (Kotlin/JVM, модели, правила подписок, парсеры и хранение) и `:app` (Android/Compose, yt-dlp, служба и публикация). Не переноси Android-код в C#-проект.
+- JDK 17, Kotlin 2.1.20, AGP 8.9.2, Gradle wrapper 8.11.1; `minSdk 26`, `compileSdk/targetSdk 35`. ABI — `arm64-v8a` и `x86_64`. Зафиксированные версии меняй согласованно с workflow и инструкцией сборки.
+- Точки запуска — `DownloaderApplication` / `MainActivity`. `AppGraph` владеет общими зависимостями, `DownloaderViewModel` связывает Compose с хранилищем и командами. Не привязывай активное скачивание к Activity, Compose effects или `viewModelScope`.
+- `download/DownloadService` — foreground service типа `dataSync` с уведомлением и собственным scope. Запуск только по явному Start; Home, смена Activity и поворот не останавливают загрузки. Сохраняй `stopWithTask=false`, управление из уведомления, освобождение WakeLock и обработку системного таймаута API 35. После принудительной остановки процесса или перезагрузки самопроизвольного скачивания нет.
+- `engine/AndroidYtDlp` запускает Android-рантайм `youtubedl-android` и FFmpeg, инициализируется вне UI thread. Не передавай недоступный в этой сборке `--impersonate chrome`. Отмена должна дождаться завершения native-вызова до очистки staging; Windows job-object гарантии сюда не переносятся.
+- Extractor yt-dlp закреплён отдельно в `android/yt-dlp.properties`: версия и SHA-256 официального Unix zipimport. Генерируемый `res/raw/ytdlp` заменяет устаревший ресурс wrapper; не коммить скачанный бинарник. При старте `RuntimeArchive` мигрирует старую приватную копию атомарно, сохраняет более новую ручную установку и проверяет ресурс до замены. Проверяй миграцию и фактический `--version` на устройстве; SharedPreferences wrapper не доказывают версию установленного архива.
+- Публикуй только проверенный ffprobe медиафайл из собственного staging. `MediaPublisher` использует MediaStore на API 29+, app external Movies на API 26–28 или выбранную пользователем SAF-папку. Не требуй `MANAGE_EXTERNAL_STORAGE`; сохраняй явные гранты SAF. История и processed — только после успешной публикации. Отмена, rollback, manifest известных URI и повторная очистка должны переживать восстановление.
+- Android-снимок `files/state.json` объединяет настройки, очередь, подписки и историю. Это отдельный формат, не замена Windows JSON/JSONL. Повреждённый снимок не перезаписывай автоматически. При импорте копии очищай чужие URI/пути, stage/run IDs, cookies и SAF grants; данные импортированного файла не доказывают владение файлами.
+- Точные HTTP(S) URL сравниваются с учётом регистра; ключ материала — SubscriptionId + URL. Подписки проверяются вручную полным обходом, RSS дополняет только названия подтверждённых URL. Проверка и постановка в очередь не запускают скачивание. Превью запрашиваются после добавления URL и успешного scan, независимо от активной строки; листание не создаёт сеть.
+- Cookies импортируются как приватная копия Netscape-файла, не читаются из профилей браузера и не включаются в backup. Не включай cookies, keystore, `local.properties`, SDK, APK и Gradle build/cache в Git.
+- Проверки из `android/`: `./gradlew :core:test :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleDebugAndroidTest`; на устройстве/эмуляторе API 35 x86_64 — `./gradlew :app:connectedDebugAndroidTest`. В Windows используй `.\gradlew.bat`. Инструментальный сценарий `foregroundDownloadCompletesAfterPressingHome` должен проверить настоящий медленный transfer, Home, читаемый опубликованный файл и историю; наличия foreground-маркера в исходниках недостаточно.
+- Android CI — `.github/workflows/android.yml`; не заменяй им native Windows CI и не подключай Android debug APK к автоматическому Windows Release. Публичная подпись и выпуск APK требуют отдельной настройки. Учитывай GPL-3.0 Android-рантайма и [THIRD_PARTY_NOTICES.md](../../android/THIRD_PARTY_NOTICES.md), не меняй лицензию собственного кода без отдельного решения владельца.
+- Инструкции: [сборка APK](../developer/android-build.md), [руководство Android](../user/android.md), [архитектура](../developer/architecture.md), [проверки](../developer/testing.md). Общие требования определены в [CORE.md](CORE.md), перенос очереди — в [SHARED.md](SHARED.md).
+
+## Что проверить при изменении
+
+- Изменение сервиса проверяй настоящим фоновым скачиванием, а не только флагами манифеста: Home, завершение transfer, доступность опубликованного файла и сохранённая история.
+- Изменение runtime проверяй по фактически установленному архиву и `--version` на устройстве; версии Gradle-зависимости или сохранённого preference недостаточно.
+- Изменение публикации проверяй на отказах и отмене, включая сохранённые URI, rollback и повторную очистку после восстановления. Импортированный путь не даёт права удалить чужой файл.
+- Изменения `collection-plugins/` и общего формата очереди требуют также проверок Windows; Android CI не заменяет [Windows CI](WINDOWS.md#тесты-перед-prmerge).
+- Не описывай [план выравнивания платформ](../project/ANDROID_PARITY.md) как уже реализованный функционал.
