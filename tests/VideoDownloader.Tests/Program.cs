@@ -225,6 +225,11 @@ try
     var three=new DownloadItem{Url=new Uri(inputC).AbsoluteUri};
     var four=new DownloadItem{Url=new Uri(inputD).AbsoluteUri};
     DownloadItem[] realRows=[one,two,three,four];
+    for(int index=0;index<realRows.Length;index++)
+    {
+        realRows[index].Order=index+1;
+        if(index<2)realRows[index].Title="Локальное видео "+(index+1);
+    }
     long[] expectedSizes=[192*1024,256*1024,320*1024,384*1024];
     var trace=new System.Collections.Concurrent.ConcurrentQueue<JournalRecord>();
     var reachedParallelStart=new System.Collections.Concurrent.ConcurrentDictionary<string,byte>(StringComparer.Ordinal);
@@ -277,10 +282,20 @@ try
             "Each real file must produce its own start, native progress and completed trace records: "+row.Url);
         Assert(jobRecords.Where(record=>record.Worker.Length>0).All(record=>record.Worker==row.Slot),
             "A job's stdout/stderr and lifecycle records must keep its actual worker identity");
+        Assert(jobRecords.All(record=>record.Message.Contains("video_seq="+row.Order+" video=",StringComparison.Ordinal)) &&
+               jobRecords.Any(record=>record.Category=="yt-dlp" && record.Level==JournalLevel.Verbose &&
+                   record.Message.Contains("stream=stdout",StringComparison.Ordinal)),
+            "Each real file's verbose output and native progress must include its visible queue number and readable title/URL: "+row.Url);
+        string initialLabel=DownloadTraceIdentity.VideoLabel(new DownloadItem
+        {
+            Order=row.Order,Url=row.Url,Title=row.Order<=2?"Локальное видео "+row.Order:""
+        });
+        Assert(jobRecords.Any(record=>record.Message.StartsWith("event=job_queued "+initialLabel+" ",StringComparison.Ordinal)),
+            "The queued event must use a known title or the exact URL fallback before yt-dlp supplies metadata");
         Assert(jobRecords.Any(record=>record.Message.StartsWith("event=download_plan ",StringComparison.Ordinal)),
             "The packaged yt-dlp before_dl hook must report a real download plan for each file: "+row.Url);
     }
-    Console.WriteLine("PASS: four real packaged yt-dlp downloads retain isolated job/worker progress traces and exact media bytes");
+    Console.WriteLine("PASS: four real packaged yt-dlp downloads retain isolated job/worker progress traces, readable video order/title labels and exact media bytes");
     OwnedFiles.DeleteOwned(realOptions.Output,one.OwnedPaths);
     Assert(!File.Exists(one.Path) && realRows.Skip(1).All(row=>File.Exists(row.Path)),
         "Deleting one native download must leave all three other parallel publications untouched");

@@ -17,6 +17,12 @@ internal static class JournalTests
                 await using var journal=new DiagnosticJournal(Path.Combine(root,profile.ToString()),profile);
                 foreach(var level in Enum.GetValues<JournalLevel>())journal.Write(new JournalRecord(level,"test","marker-"+level));
                 string snapshot=journal.Snapshot();
+                string header=snapshot.Split(Environment.NewLine,StringSplitOptions.RemoveEmptyEntries)[0];
+                int timestampEnd=header.IndexOf(']');
+                Require(timestampEnd==24 && DateTime.TryParseExact(header[1..timestampEnd],"yyyy-MM-dd HH:mm:ss.fff",
+                    CultureInfo.InvariantCulture,DateTimeStyles.None,out _) &&
+                    header[(timestampEnd+1)..].StartsWith(" [",StringComparison.Ordinal),
+                    "Visible journal timestamps contain local date/time with milliseconds, without an offset or record counter");
                 Require(snapshot.Contains("marker-Error") && snapshot.Contains("marker-Warning"),"Every profile retains errors and warnings");
                 Require(snapshot.Contains("marker-Information")== (profile>=JournalProfile.Standard),"Ordinary events follow the selected verbosity");
                 Require(snapshot.Contains("marker-Progress")== (profile>=JournalProfile.Progress),"Progress has its own explicit profile");

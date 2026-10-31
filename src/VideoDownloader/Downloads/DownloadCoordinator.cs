@@ -243,7 +243,8 @@ public sealed class DownloadCoordinator : IAsyncDisposable
         {
             long sequence=Interlocked.Increment(ref _traceSequence);
             var record=new JournalRecord(level,category,
-                $"event={eventName} seq={sequence} elapsed_ms={_traceClock.ElapsedMilliseconds}"+(details.Length>0?" "+details:""),
+                $"event={eventName} "+(item==null?"":DownloadTraceIdentity.VideoLabel(item)+" ")+
+                $"seq={sequence} elapsed_ms={_traceClock.ElapsedMilliseconds}"+(details.Length>0?" "+details:""),
                 TraceSessionId,item==null?"":_traceJobIds.GetOrAdd(item.Url,DownloadTraceIdentity.JobId),worker??item?.Slot??"");
             _trace(record);
         }

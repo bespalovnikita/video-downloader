@@ -94,7 +94,10 @@ internal sealed partial class UiScenario
                     var requested=urls.ToArray();
                     events.AddRange(requested.Select(url=>"prefetch:"+url));
                     if (failPrefetch) throw new IOException("Intentional optional preview prefetch failure");
-                    ui.Preview.PrefetchUrls(requested);
+                    // This source-routing fixture implements metadata only for
+                    // its own URLs. YouTube URLs below exercise the real scan
+                    // scope, while recording every requested backfill URL.
+                    ui.Preview.PrefetchUrls(requested.Where(url=>url.StartsWith("https://preview-scheduling.invalid/",StringComparison.Ordinal)));
                 },ui.Preview);
             var driver=new SubscriptionScenarioDriver(subscriptions);
             var source=store.Add("https://subscription-scanner.invalid/ui-preview",false);
@@ -134,19 +137,38 @@ internal sealed partial class UiScenario
             PumpUntil(()=>driver.TestWindow!=null && driver.TestSources.Items.Count==1,"The real subscriptions window must bind its source.");
             SelectSource(source.Id);
             Check();
-            Require(store.Read().Items.Single().State=="Baseline" && Calls(metadataCalls)==0 && events.Count==0 && thumbnails.Requests==0,
-                "The first baseline must not fetch metadata for old items.");
+            PumpUntil(()=>File.Exists(Path.Combine(metadataRoot,"started-first")),
+                "The first baseline must schedule the real metadata worker after the scan.");
+            Require(store.Read().Items.Single().State=="Baseline" && Calls(metadataCalls)==1 &&
+                events.Contains("prefetch:"+baseline) && thumbnails.Requests==0 && ui.Preview.GetCached(baseline)==null &&
+                driver.TestControl<Button>("CheckSubscriptionButton").IsEnabled &&
+                store.Read().Subscriptions.Single().LastSuccessUtc.HasValue,
+                "A complete baseline scan must finish durably while its independent metadata child is still gated.");
+            Check();
+            Require(Calls(metadataCalls)==1 && driver.TestControl<Button>("CheckSubscriptionButton").IsEnabled,
+                "Another collection check must not wait for or duplicate the in-flight baseline preview.");
+            File.WriteAllText(Path.Combine(metadataRoot,"release-first"),"");
+            PumpUntil(()=>HasImage(baseline,"Metadata first"),
+                "A baseline must obtain a real HTTP image without selection, queue acceptance or Start.");
+            Require(thumbnails.Requests==1 && ui.SessionState.Queue.Count==0,
+                "Baseline backfill must use one metadata child and one image request without adding a queue row.");
+            Idle();
 
             ui.Preview.SelectedUrl="https://selected.invalid/current";
             ((TextBlock)window.FindName("PreviewTitle")!).Text="Оставить текущее превью";
+            // Reproduce a saved, previously processed material that never had
+            // a preview. Its state must not exclude it from full-scan backfill.
+            store.ApplyScan(source.Id,new SubscriptionScan("Проверка превью подписки",
+                [new(baseline,"Обнаружено first"),new(first,"Обнаружено A")],"",""),[]);
+            store.MarkSuccessful(first);
             Response("complete",baseline,first);
             Check();
             PumpUntil(()=>HasImage(first,"Metadata A"),
-                "New inbox material must fetch both metadata and an actual HTTP PNG immediately after the scan, before selection/queue/Start.");
-            Require(ui.SessionState.Queue.Count==0 && Calls(metadataCalls)==1 &&
-                store.Read().Items.Single(item=>item.Url==first).State=="New" && thumbnails.Requests==1 &&
+                "A saved processed material with a missing cover must fetch metadata and an actual HTTP PNG after a full scan.");
+            Require(ui.SessionState.Queue.Count==0 && Calls(metadataCalls)==2 &&
+                store.Read().Items.Single(item=>item.Url==first).State=="Processed" && thumbnails.Requests==2 &&
                 driver.TestInbox.SelectedItem==null,
-                "A cold preview must be ready before the item is accepted into the download queue.");
+                "Cold backfill must preserve the processed decision and reuse the already covered baseline without another HTTP request.");
             Require(ui.Preview.SelectedUrl=="https://selected.invalid/current" &&
                 ((TextBlock)window.FindName("PreviewTitle")!).Text=="Оставить текущее превью" &&
                 ((Image)window.FindName("PreviewImage")!).Source==null,
@@ -157,21 +179,24 @@ internal sealed partial class UiScenario
             Require(ui.Preview.SelectedUrl=="https://selected.invalid/current" &&
                 driver.TestControl<TextBlock>("SubscriptionPreviewTitle").Text=="Metadata A" &&
                 driver.TestControl<Image>("SubscriptionPreviewImage").Source is BitmapSource {PixelWidth:PreviewThumbnailServer.Width,PixelHeight:PreviewThumbnailServer.Height} &&
-                thumbnails.Requests==1,
+                thumbnails.Requests==2,
                 "Selecting the inbox material must display its cached real PNG in the subscription panel without changing the main selection or requesting another image.");
+            Require(!driver.TestControl<Button>("QueueSubscriptionItemsButton").IsEnabled,
+                "Preview backfill must not turn an already processed material into a queue candidate.");
+            driver.TestInbox.SelectedItem=driver.TestInbox.Items.Cast<SubscriptionController.SubscriptionItemView>().Single(item=>item.Url==baseline);
             driver.TestControl<Button>("QueueSubscriptionItemsButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-            PumpUntil(()=>!driver.TestIsMutating && store.Read().Items.Single(item=>item.Url==first).State=="Queued",
+            PumpUntil(()=>!driver.TestIsMutating && store.Read().Items.Single(item=>item.Url==baseline).State=="Queued",
                 "The explicit Queue action must retain its independent state transition.");
-            Require(ui.SessionState.Queue.Count==1 && ui.SessionState.Queue.Single().Url==first && Calls(metadataCalls)==1,
+            Require(ui.SessionState.Queue.Count==1 && ui.SessionState.Queue.Single().Url==baseline && Calls(metadataCalls)==2,
                 "Queueing an already prefetched URL must reuse the shared worker/cache.");
             Idle();
 
             Response("complete",baseline,first,second);
             Check();
             PumpUntil(()=>HasImage(second,"Metadata B"),"The next complete scan must prefetch the new URL's metadata and real HTTP image.");
-            Require(Calls(metadataCalls)==2 && ui.SessionState.Queue.Count==1 &&
-                events.Contains("prefetch:"+first) && events.Contains("prefetch:"+second) && thumbnails.Requests==2,
-                "Queued and new source items share prefetch, with no duplicate metadata request for the queued URL.");
+            Require(Calls(metadataCalls)==3 && ui.SessionState.Queue.Count==1 &&
+                events.Contains("prefetch:"+first) && events.Contains("prefetch:"+second) && thumbnails.Requests==3,
+                "Processed, queued and new source items share backfill, with no duplicate metadata request for ready covers.");
 
             failPrefetch=true;
             Check();
@@ -186,7 +211,7 @@ internal sealed partial class UiScenario
             Response("nonzero",baseline,first,second,imported);
             Check();
             Require(store.Read().Subscriptions.Single(item=>item.Id==source.Id).LastError.Length>0 &&
-                store.Read().Items.All(item=>item.Url!=imported) && ui.Preview.GetCached(imported)==null && Calls(metadataCalls)==2,
+                store.Read().Items.All(item=>item.Url!=imported) && ui.Preview.GetCached(imported)==null && Calls(metadataCalls)==3,
                 "A failed partial scan must preserve old results and must not prefetch its uncommitted URLs.");
 
             Response("hang",baseline,first,second,imported);
@@ -197,7 +222,7 @@ internal sealed partial class UiScenario
             driver.TestControl<Button>("CancelSubscriptionCheckButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             PumpUntil(()=>driver.TestControl<Button>("CheckSubscriptionButton").IsEnabled,
                 "Cancellation must stop the incomplete scan and release its controls.");
-            Require(store.Read().Items.All(item=>item.Url!=imported) && ui.Preview.GetCached(imported)==null && Calls(metadataCalls)==2,
+            Require(store.Read().Items.All(item=>item.Url!=imported) && ui.Preview.GetCached(imported)==null && Calls(metadataCalls)==3,
                 "A cancelled scan must not prefetch URLs from its incomplete result.");
 
             var importSource=store.Add("https://subscription-scanner.invalid/ui-preview-import",true);
@@ -206,7 +231,7 @@ internal sealed partial class UiScenario
             Check();
             PumpUntil(()=>HasImage(imported,"Metadata C"),"Download-existing must also warm metadata and a real thumbnail after its first complete scan.");
             Require(events.IndexOf("prefetch:"+imported)>=0 && events.IndexOf("prefetch:"+imported)<events.IndexOf("queue:"+imported) &&
-                Calls(metadataCalls)==3 && ui.SessionState.Queue.Count==2 && thumbnails.Requests==3,
+                Calls(metadataCalls)==4 && ui.SessionState.Queue.Count==2 && thumbnails.Requests==4,
                 "Initial imports must schedule preview acquisition before ordinary queue acceptance, without starting downloads.");
             Idle();
 
@@ -214,64 +239,69 @@ internal sealed partial class UiScenario
             // known URLs are Baseline, so this also proves the UI passes every
             // stored state rather than only downloaded/new materials.
             var orderedSource=store.Add("https://www.youtube.com/@vd-offline/videos",false);
-            var orderedItems=Enumerable.Range(0,20).Select(index=>new DiscoveredMedia(
+            var orderedItems=Enumerable.Range(0,26).Select(index=>new DiscoveredMedia(
                 "https://www.youtube.com/watch?v="+index.ToString("D11"),"Исходное видео "+index)).ToArray();
             store.ApplyScan(orderedSource.Id,new SubscriptionScan("Упорядоченный канал",orderedItems,"",""),[]);
             string fullResponse=JsonSerializer.Serialize(new {
                 _type="playlist",title="Упорядоченный канал",
-                entries=orderedItems.Select(item=>new {_type="video",webpage_url=item.Url,title=item.Title}).ToArray()
+                entries=orderedItems.Take(25).Select(item=>new {_type="video",webpage_url=item.Url,title=item.Title}).ToArray()
             });
             string recentResponse=JsonSerializer.Serialize(new {
-                _type="playlist",extractor_key="YoutubeTab",title="Упорядоченный канал",webpage_url=orderedSource.Url,playlist_count=20,
-                entries=orderedItems.Select(item=>new {_type="url",ie_key="Youtube",id=item.Url.Split('=').Last(),url=item.Url,title=item.Title}).ToArray()
+                _type="playlist",extractor_key="YoutubeTab",title="Упорядоченный канал",webpage_url=orderedSource.Url,playlist_count=26,
+                entries=orderedItems.Take(20).Select(item=>new {_type="url",ie_key="Youtube",id=item.Url.Split('=').Last(),url=item.Url,title=item.Title}).ToArray()
             });
             File.WriteAllText(scanConfig,JsonSerializer.Serialize(new {Mode="complete",Response=fullResponse,RecentResponse=recentResponse}),Encoding.UTF8);
             SelectSource(orderedSource.Id);
             int beforeWindow=Calls(scanCalls);
+            int beforeWindowPrefetch=events.Count;
             Check();
             var windowArguments=JsonSerializer.Deserialize<string[]>(File.ReadAllLines(scanCalls).Last())!;
             int recentEnd=Array.IndexOf(windowArguments,"--playlist-end");
             Require(Calls(scanCalls)==beforeWindow+1 && windowArguments.Contains("--flat-playlist") &&
                     recentEnd>=0 && windowArguments[recentEnd+1]=="20" &&
                     driver.TestControl<TextBlock>("SubscriptionStatusText").Text.Contains("по окну новых: 1") &&
-                    driver.TestInbox.Items.Count==20 && store.Read().Items.Count(item=>item.SubscriptionId==orderedSource.Id && item.State=="Baseline")==20,
+                    driver.TestInbox.Items.Count==26 && store.Read().Items.Count(item=>item.SubscriptionId==orderedSource.Id && item.State=="Baseline")==26,
                 "The ordinary Check button must pass baseline URLs to a single 20-item scan and retain the complete visible snapshot.");
+            Require(events.Skip(beforeWindowPrefetch).Where(value=>value.StartsWith("prefetch:",StringComparison.Ordinal))
+                .SequenceEqual(orderedItems.Select(item=>"prefetch:"+item.Url)),
+                "A recent-window check must backfill all saved baseline covers, including the tail beyond its twenty confirmed entries.");
             var fullCheck=driver.TestControl<CheckBox>("FullSubscriptionCheck");
             fullCheck.IsChecked=true;
             int beforeFull=Calls(scanCalls);
+            int beforeFullPrefetch=events.Count;
             Check();
             var fullArguments=JsonSerializer.Deserialize<string[]>(File.ReadAllLines(scanCalls).Last())!;
             int fullEnd=Array.IndexOf(fullArguments,"--playlist-end");
             Require(Calls(scanCalls)==beforeFull+1 && fullArguments.Contains("--no-flat-playlist") &&
                     !fullArguments.Contains("--flat-playlist") && fullEnd>=0 && fullArguments[fullEnd+1]=="10001" &&
                     driver.TestControl<TextBlock>("SubscriptionStatusText").Text.Contains("полных: 1; по окну новых: 0") &&
-                    Calls(metadataCalls)==3 && ui.SessionState.Queue.Count==2,
-                "The real Full-check checkbox must bypass the recent probe without queueing or fetching old baseline metadata.");
+                    Calls(metadataCalls)==4 && ui.SessionState.Queue.Count==2,
+                "The real Full-check checkbox must bypass the recent probe without queueing or launching unsupported metadata fixtures.");
+            Require(events.Skip(beforeFullPrefetch).Where(value=>value.StartsWith("prefetch:",StringComparison.Ordinal))
+                .SequenceEqual(orderedItems.Take(25).Select(item=>"prefetch:"+item.Url)) && driver.TestInbox.Items.Count==26,
+                "A full check must backfill only confirmed current materials, retaining absent historical rows without requesting them again.");
             fullCheck.IsChecked=false;
             Idle();
 
-            // A real baseline row can now be queued explicitly. Selecting it
-            // starts the same metadata worker, held here until after Queue is
-            // clicked; queue ingress must reuse that request, not require Start.
+            // Explicit acceptance of the same baseline must reuse the backfilled
+            // image without another metadata child, HTTP request or main-row selection.
             SelectSource(source.Id);
             driver.TestInbox.SelectedItem=driver.TestInbox.Items.Cast<SubscriptionController.SubscriptionItemView>()
                 .Single(item=>item.Url==baseline);
             Require(ui.Preview.SelectedUrl=="https://selected.invalid/current" &&
-                driver.TestControl<TextBox>("SubscriptionPreviewUrlBox").Text==baseline && ui.Preview.GetCached(baseline)==null,
-                "The selected baseline must remain a cold request while its child is gated.");
+                driver.TestControl<TextBox>("SubscriptionPreviewUrlBox").Text==baseline && HasImage(baseline,"Metadata first"),
+                "Selecting an already backfilled baseline must show its real cached image immediately.");
+            int beforeBaselineQueue=events.Count(value=>value=="queue:"+baseline);
             driver.TestControl<Button>("QueueSubscriptionItemsButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-            PumpUntil(()=>!driver.TestIsMutating && store.Read().Items.Single(item=>item.Url==baseline).State=="Queued" &&
-                File.Exists(Path.Combine(metadataRoot,"started-first")),
-                "The actual baseline Queue button must accept the row and start metadata before Start.");
-            Require(Calls(metadataCalls)==4 && thumbnails.Requests==3 && ui.Preview.GetCached(baseline)==null &&
+            PumpUntil(()=>!driver.TestIsMutating && events.Count(value=>value=="queue:"+baseline)==beforeBaselineQueue+1 &&
+                store.Read().Items.Single(item=>item.Url==baseline).State=="Queued",
+                "The actual baseline Queue button must accept the cached row before Start.");
+            Require(Calls(metadataCalls)==4 && thumbnails.Requests==4 &&
                 ((DataGrid)window.FindName("QueueGrid")!).SelectedItem==null &&
                 ((DataGrid)window.FindName("DownloadGrid")!).SelectedItem==null &&
-                ui.SessionState.Queue.Count==3 && events.Contains("queue:"+baseline),
-                "Baseline enqueue must retain one pending metadata request without selecting a main row or launching downloads.");
-            File.WriteAllText(Path.Combine(metadataRoot,"release-first"),"");
-            PumpUntil(()=>HasImage(baseline,"Metadata first") &&
+                ui.SessionState.Queue.Count==2 &&
                 driver.TestControl<Image>("SubscriptionPreviewImage").Source is BitmapSource {PixelWidth:PreviewThumbnailServer.Width,PixelHeight:PreviewThumbnailServer.Height},
-                "The explicitly queued baseline must obtain and render its real image before Start or main-row selection.");
+                "Repeated baseline enqueue must reuse its one shared metadata/image result without selecting a main row or downloading video.");
             Require(ui.SessionState.Queue.Single(item=>item.Url==baseline).Title=="Metadata first" &&
                 thumbnails.Requests==4 && thumbnails.Errors.IsEmpty,
                 "The shared metadata worker must enrich the queued baseline title and fetch exactly one validated PNG.");
@@ -280,13 +310,13 @@ internal sealed partial class UiScenario
             var calls=File.ReadAllLines(metadataCalls).Select(line=>JsonDocument.Parse(line)).ToArray();
             try
             {
-                Require(calls.Select(call=>call.RootElement.GetProperty("Url").GetString()).SequenceEqual(new[]{first,second,imported,baseline}) &&
+                Require(calls.Select(call=>call.RootElement.GetProperty("Url").GetString()).SequenceEqual(new[]{baseline,first,second,imported}) &&
                     calls.All(call=>call.RootElement.GetProperty("MetadataOnly").GetBoolean() &&
                         call.RootElement.GetProperty("ProcessId").GetInt32()!=Environment.ProcessId),
-                    "Only three new/imported URLs and the explicitly queued baseline must execute one metadata-only child each.");
+                    "Baseline, processed, new and imported materials must each execute one metadata-only child while their ready covers are reused.");
             }
             finally {foreach(var call in calls)call.Dispose();}
-            Console.WriteLine("PASS: subscription title+HTTP PNG before queue/Start/selection, explicit baseline queue with one shared request, actual WPF image, failed-scan exclusion, recent/full scan controls");
+            Console.WriteLine("PASS: nonblocking baseline and processed-cover HTTP backfill, shared cached acceptance, actual WPF image, failed-scan exclusion and full/recent backfill scope");
         }
         finally
         {
