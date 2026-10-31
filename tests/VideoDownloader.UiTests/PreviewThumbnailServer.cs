@@ -23,9 +23,9 @@ internal sealed class PreviewThumbnailServer : IDisposable
     internal int Requests=>Volatile.Read(ref _requests);
     internal ConcurrentQueue<string> Errors {get;}=new();
 
-    internal PreviewThumbnailServer()
+    internal PreviewThumbnailServer(byte color=24)
     {
-        var pixels=Enumerable.Range(0,Width*Height).SelectMany(_=>new byte[]{24,96,208,255}).ToArray();
+        var pixels=Enumerable.Range(0,Width*Height).SelectMany(_=>new byte[]{color,96,208,255}).ToArray();
         var bitmap=BitmapSource.Create(Width,Height,96,96,PixelFormats.Bgra32,null,pixels,Width*4);
         var encoder=new PngBitmapEncoder();
         encoder.Frames.Add(BitmapFrame.Create(bitmap));

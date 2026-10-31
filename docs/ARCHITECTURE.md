@@ -17,6 +17,9 @@ flowchart TB
     UI --> Queue["QueueSessionController: очередь и текущая сессия"]
     UI --> Preview["PreviewController и PreviewService: названия и обложки"]
     UI --> Subs["SubscriptionController: источники и входящие"]
+    Subs --> Details["SubscriptionPreviewController: сведения и до двух превью выбранного видео"]
+    Details -.->|"Запрос без смены основного выбора"| Preview
+    Preview -.->|"Общий кеш и callbacks"| Details
     Subs --> Scan["SubscriptionScanner: полный список или проверенное окно новинок"]
     Scan -->|"Проверенный результат"| Subs
     Subs -->|"Принятые URL через callback главного окна"| Queue
@@ -46,6 +49,8 @@ flowchart TB
 | Очередь и статистика сессии | [QueueSessionController.cs](../src/VideoDownloader/UI/Controllers/QueueSessionController.cs) |
 | Превью | [PreviewController.cs](../src/VideoDownloader/UI/Controllers/PreviewController.cs), [PreviewService.cs](../src/VideoDownloader/Preview/PreviewService.cs) |
 | Ручные проверки подписок | [SubscriptionController.cs](../src/VideoDownloader/UI/Controllers/SubscriptionController.cs), [SubscriptionScanner.cs](../src/VideoDownloader/Subscriptions/SubscriptionScanner.cs) |
+| Общий приём новинок после проверки | [SubscriptionController.QueueOffer.cs](../src/VideoDownloader/UI/Controllers/SubscriptionController.QueueOffer.cs) |
+| Сведения о выбранном видео подписки | [SubscriptionPreviewController.cs](../src/VideoDownloader/UI/Controllers/SubscriptionPreviewController.cs) |
 | Загрузка и публикация | [DownloadCoordinator.cs](../src/VideoDownloader/Downloads/DownloadCoordinator.cs), [OwnedFiles.cs](../src/VideoDownloader/Downloads/OwnedFiles.cs) |
 | Деревья процессов Windows | [ManagedChildProcess.cs](../src/VideoDownloader/Infrastructure/Windows/ManagedChildProcess.cs) |
 
@@ -169,8 +174,14 @@ flowchart TD
 После успешного `ApplyScan` в ту же очередь превью передаются точные URL
 материалов подписки в состояниях `New` / `Queued`. Неполный или отменённый обход
 этого не делает. Предзагрузка не меняет состояния, историю, выбор строки и
-границу ручного Start; выбор во «Входящих» передаёт URL и уже найденное название
-в основной Preview. Явное принятие URL из подписки запрашивает превью и для
+границу ручного Start. Выбор одного материала во «Входящих» заполняет собственную
+правую панель через `SubscriptionPreviewController`, не меняя выбор основного Preview.
+Известные название, точный URL, состояние, подписка и время обнаружения показываются
+сразу. `GetCached` читает только проверенную память, запрос повышает приоритет того же
+единственного работника, а callbacks постепенно добавляют сведения и до двух картинок.
+Панель игнорирует данные другой ссылки, очищается при множественном выборе и
+отписывается от событий при закрытии; пригодная картинка сохраняется при сбое обновления.
+Явное принятие URL из подписки запрашивает превью и для
 уже существующей пригодной незавершённой строки очереди: неудачный полный запрос можно
 повторить без выбора строки, сохранив дедупликацию работника и готового кеша.
 Панельные ширины `QueuePanelWidth` / `PreviewPanelWidth`
@@ -264,7 +275,7 @@ flowchart TD
     First -->|"Да, добавить существующие"| Initial["New и InitialQueuePending: запросить добавление в очередь"]
     First -->|"Нет"| Inbox["Ранее неизвестные URL: New во входящих"]
     Initial --> Accept["Главное окно подтверждает фактически принятые URL"]
-    Inbox -->|"Добавить выбранное в очередь"| Accept
+    Inbox -->|"Выбраны вручную либо подтверждены после всей проверки"| Accept
     Accept --> Queued["Queued в подписке; ручной Start в главном окне"]
     Inbox -->|"Пропустить"| Skipped["Skipped; можно выбрать для очереди позже"]
     Skipped --> Accept
@@ -310,6 +321,12 @@ URL из окна становятся `New`. Если все URL известн
 выполняется полный обход в пределах общего deadline. Ошибка или отмена этого
 обхода сохраняет прежний снимок.
 
+Окно 20 не ограничивает число новинок. При 100 известных и 100 новых материалах
+первые 20 не пересекаются с прежним набором, поэтому сканер выполняет полный
+обход и возвращает 200 записей, из которых все 100 неизвестных становятся `New`.
+Прежние `Processed` / `Skipped` и другие решения сохраняются. Полный обход
+по-прежнему проверяет общие пределы числа материалов, времени и объёма.
+
 Для сравнения берутся все точные URL подписки, включая `Baseline`, `Skipped`,
 `Queued` и успешные. Последняя проверка не обязательно была полной.
 Принудительная **«Полная проверка»** позволяет сверить старую часть архива;
@@ -318,6 +335,47 @@ URL из окна становятся `New`. Если все URL известн
 «Проверить все» обрабатывает источники последовательно и фиксирует каждый
 успешный результат отдельно. Отмена не откатывает уже сохранённые результаты
 предыдущих источников этой проверки.
+
+После окончания batch `SubscriptionController` собирает `New` только успешно
+проверенных источников и предлагает один общий приём в очередь в окне
+«Новые материалы подписок». В него входят и прежние новинки, оставшиеся без решения;
+`InitialQueuePending` обрабатывается отдельно существующим первым импортом.
+Отменённый batch, закрытое окно и
+отсутствие подходящих материалов не показывают диалог; источники с ошибкой
+исключаются. «Не сейчас» либо закрытие вопроса оставляет материалы `New`.
+
+```mermaid
+sequenceDiagram
+    actor User as Пользователь
+    participant Subs as SubscriptionController
+    participant Store as SubscriptionStore
+    participant Queue as Очередь главного окна
+    User->>Subs: Проверить / Проверить все
+    loop Каждый выбранный источник
+        Subs->>Store: Сохранить пригодный результат или диагностику отказа
+    end
+    Subs->>Store: Собрать New успешных источников
+    alt Проверка не отменена и есть New
+        Subs->>User: Одно предложение добавить все New в очередь
+        alt Пользователь согласился
+            Subs->>Store: Перечитать снимок и историю, снова проверить состояния
+            Subs->>Queue: Передать подходящие URL, имена и названия
+            Queue-->>Subs: Реально принятые URL
+            Subs->>Store: MarkQueued только принятых материалов
+            Note over Queue: Ожидание ручного Start
+        else Отказ или закрытие вопроса
+            Note over Store: New остаются во входящих
+        end
+    else Отмена, закрытое окно или нет New
+        Note over Subs: Общий вопрос не показывается
+    end
+```
+
+Согласие не вызывает скачивание и не присоединяет ссылки к активной сессии.
+Повторное чтение после модального диалога сохраняет актуальные состояния:
+материал мог стать обработанным, исчезнуть вместе с подпиской либо уже попасть
+в очередь. Приём использует существующее подтверждение фактически принятых URL;
+файлы `session.json` и `subscriptions.json` сохраняются отдельно.
 
 Состояния материалов хранятся в
 [SubscriptionStore](../src/VideoDownloader/Subscriptions/SubscriptionStore.cs):

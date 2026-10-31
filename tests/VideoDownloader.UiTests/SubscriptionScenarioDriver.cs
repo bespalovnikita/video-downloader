@@ -15,7 +15,8 @@ internal sealed class SubscriptionScenarioDriver(SubscriptionController subject)
     private static readonly Type Owner=typeof(SubscriptionController);
     private static readonly FieldInfo WindowField=Field("_window");
     private static readonly FieldInfo StoreField=Field("_store");
-    private static readonly FieldInfo MutationField=Field("_mutation");
+    private static readonly PropertyInfo BusyProperty=Owner.GetProperty("Busy",PrivateInstance)
+        ?? throw new MissingMemberException(Owner.FullName,"Busy");
     private static readonly FieldInfo CancellationField=Field("_cancellation");
     private static readonly FieldInfo ProgressField=Field("_checkProgress");
     private static readonly MethodInfo UpdateButtons=Owner.GetMethod("UpdateButtons",PrivateInstance)
@@ -23,7 +24,7 @@ internal sealed class SubscriptionScenarioDriver(SubscriptionController subject)
 
     internal Window? TestWindow=>(Window?)WindowField.GetValue(subject);
     internal SubscriptionStore TestStore=>(SubscriptionStore)StoreField.GetValue(subject)!;
-    internal bool TestIsMutating=>(bool)MutationField.GetValue(subject)!;
+    internal bool TestIsMutating=>(bool)BusyProperty.GetValue(subject)!;
     internal SubscriptionCheckProgressController TestProgress=>(SubscriptionCheckProgressController)ProgressField.GetValue(subject)!;
     internal DataGrid TestSources=>TestControl<DataGrid>("SubscriptionGrid");
     internal DataGrid TestInbox=>TestControl<DataGrid>("SubscriptionInboxGrid");

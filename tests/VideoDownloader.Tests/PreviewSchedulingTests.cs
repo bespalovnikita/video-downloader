@@ -43,9 +43,13 @@ internal static class PreviewSchedulingTests
                 Thread.Sleep(10);
             }
             string thumbnailFile=Path.Combine(root,"thumbnail-url.txt");
+            string galleryFile=Path.Combine(root,"thumbnails-urls.json");
+            string[] gallery=File.Exists(galleryFile)
+                ? JsonSerializer.Deserialize<string[]>(File.ReadAllText(galleryFile,Encoding.UTF8))??[] : [];
             Console.WriteLine(JsonSerializer.Serialize(new {
                 title="Metadata "+name,uploader="Scheduling fixture",duration=1,
-                thumbnail=File.Exists(thumbnailFile)?File.ReadAllText(thumbnailFile,Encoding.UTF8).Trim():""
+                thumbnail=File.Exists(thumbnailFile)?File.ReadAllText(thumbnailFile,Encoding.UTF8).Trim():"",
+                thumbnails=gallery.Select(candidate=>new {url=candidate,width=32,height=24}).ToArray()
             }));
             return true;
         }

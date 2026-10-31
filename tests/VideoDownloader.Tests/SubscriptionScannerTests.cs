@@ -33,11 +33,14 @@ internal static class SubscriptionScannerTests
         Require(cookie >= 0, "Fixture state must be forwarded through --cookies");
         string statePath = args[cookie + 1];
         using var config = JsonDocument.Parse(File.ReadAllText(statePath));
+        var settings = config.RootElement;
+        if (settings.TryGetProperty("Responses", out var responses) &&
+            responses.TryGetProperty(args[^1], out var sourceSettings)) settings = sourceSettings;
         string state = Path.GetDirectoryName(statePath)!;
         File.AppendAllText(Path.Combine(state, "calls.jsonl"), JsonSerializer.Serialize(args) + "\n");
         File.WriteAllText(Path.Combine(state, "parent.pid"), Environment.ProcessId.ToString());
         if (recent) File.WriteAllText(Path.Combine(state, "recent.pid"), Environment.ProcessId.ToString());
-        string mode = config.RootElement.GetProperty("Mode").GetString()!;
+        string mode = settings.GetProperty("Mode").GetString()!;
         if (mode == "recent-hang" && recent) { Thread.Sleep(TimeSpan.FromSeconds(30)); return true; }
         if (mode == "hang")
         {
@@ -50,7 +53,7 @@ internal static class SubscriptionScannerTests
         }
         if (mode == "nonzero")
         {
-            Console.WriteLine(config.RootElement.GetProperty("Response").GetString());
+            Console.WriteLine(settings.GetProperty("Response").GetString());
             Console.Error.WriteLine("ERROR: collection enumeration is incomplete");
             Environment.ExitCode = 1;
             return true;
@@ -71,7 +74,7 @@ internal static class SubscriptionScannerTests
         }
         if (mode == "slow-output")
         {
-            string response = config.RootElement.GetProperty("Response").GetString()!;
+            string response = settings.GetProperty("Response").GetString()!;
             for (int offset = 0; offset < response.Length; offset += 1024)
             {
                 Console.Write(response.Substring(offset, Math.Min(1024, response.Length - offset)));
@@ -80,8 +83,8 @@ internal static class SubscriptionScannerTests
             }
             return true;
         }
-        string responseProperty = recent && config.RootElement.TryGetProperty("RecentResponse", out _) ? "RecentResponse" : "Response";
-        Console.WriteLine(config.RootElement.GetProperty(responseProperty).GetString());
+        string responseProperty = recent && settings.TryGetProperty("RecentResponse", out _) ? "RecentResponse" : "Response";
+        Console.WriteLine(settings.GetProperty(responseProperty).GetString());
         return true;
     }
 
@@ -170,6 +173,59 @@ internal static class SubscriptionScannerTests
                         progress.Events.Any(value => value.Value.Stage == "FullFallback"),
                         "No anchor, an empty/invalid window or a different channel must trigger a complete extraction including every new video");
                 }
+            });
+
+            await Check("one hundred new videos beyond the newest window are all discovered and can be queued", async directory =>
+            {
+                var store = new SubscriptionStore(Path.Combine(directory, "subscriptions"));
+                var added = store.Add(YoutubeSource(false).Url, downloadExisting: true);
+                store.ApplyScan(added.Id, SubscriptionScanner.ParseMetadata(YoutubeFull(Enumerable.Range(0, 100).Reverse()), added.Url), []);
+                string[] skipped = Enumerable.Range(0, 50).Select(YoutubeUrl).ToArray();
+                string[] processed = Enumerable.Range(50, 50).Select(YoutubeUrl).ToArray();
+                store.Skip(added.Id, skipped);
+                store.MarkQueued(added.Id, processed);
+                store.ReconcileSuccess(processed);
+                var before = store.Read();
+                var priorDecisions = before.Items.ToDictionary(item => item.Url,
+                    item => (item.State, item.DiscoveredAtUtc, item.InitialQueuePending, item.SuccessAttributed), StringComparer.Ordinal);
+                Require(priorDecisions.Count == 100 && before.Items.Count(item => item.State == "Processed") == 50 &&
+                    before.Items.Count(item => item.State == "Skipped") == 50,
+                    "The saved fixture must represent 100 previously processed or skipped videos");
+
+                int[] allIndices = Enumerable.Range(0, 200).Reverse().ToArray();
+                string[] newUrls = allIndices.Take(100).Select(YoutubeUrl).ToArray();
+                string recent = YoutubeWindow(allIndices.Take(SubscriptionScanner.RecentWindowSize))
+                    .Replace("\"playlist_count\":125", "\"playlist_count\":200", StringComparison.Ordinal);
+                string config = WindowFixture(directory, recent, YoutubeFull(allIndices));
+                using var scanner = new SubscriptionScanner(TestExecutable());
+                var progress = new ProgressLog();
+                var result = await scanner.ScanAsync(before.Subscriptions.Single(), config, CancellationToken.None,
+                    progress, priorDecisions.Keys.ToHashSet(StringComparer.Ordinal)).WaitAsync(TimeSpan.FromSeconds(15));
+                string[][] calls = File.ReadAllLines(Path.Combine(directory, "calls.jsonl"))
+                    .Select(line => JsonSerializer.Deserialize<string[]>(line)!).ToArray();
+                Require(result.Scope == SubscriptionScanScope.Full && result.Items.Select(item => item.Url)
+                    .SequenceEqual(allIndices.Select(YoutubeUrl)) && calls.Length == 2 &&
+                    calls[0].Contains("--flat-playlist", StringComparer.Ordinal) &&
+                    calls[1].Contains("--no-flat-playlist", StringComparer.Ordinal) &&
+                    calls.All(call => call.Contains("--skip-download", StringComparer.Ordinal)) &&
+                    progress.Events.Any(value => value.Value.Stage == "FullFallback") &&
+                    progress.Events.Last().Value is { Stage: "Ready", ItemCount: 200 },
+                    "A full newest window without known anchors must trigger complete metadata-only discovery of all 200 videos");
+
+                var applied = store.ApplyScan(added.Id, result, processed);
+                Require(applied.Items.Count == 200 && applied.Items.Where(item => item.State == "New")
+                    .Select(item => item.Url).SequenceEqual(newUrls) &&
+                    applied.Items.Where(item => !priorDecisions.ContainsKey(item.Url)).All(item => !item.InitialQueuePending) &&
+                    applied.Items.Where(item => priorDecisions.ContainsKey(item.Url)).All(item => priorDecisions[item.Url] ==
+                        (item.State, item.DiscoveredAtUtc, item.InitialQueuePending, item.SuccessAttributed)),
+                    "Every one of the 100 new videos must become New without auto-queuing or changing old processing and skip decisions");
+                store.MarkQueued(added.Id, newUrls);
+                var queued = store.Read();
+                Require(queued.Items.Count(item => item.State == "Queued") == 100 &&
+                    queued.Items.Where(item => item.State == "Queued").Select(item => item.Url).SequenceEqual(newUrls) &&
+                    queued.Items.Count(item => item.State == "Processed") == 50 && queued.Items.Count(item => item.State == "Skipped") == 50 &&
+                    File.ReadAllLines(Path.Combine(directory, "calls.jsonl")).Length == 2,
+                    "All 100 discovered videos must be available for explicit queueing while prior states and metadata-only process count stay unchanged");
             });
 
             await Check("initialization and explicit full mode bypass the newest window", async directory =>

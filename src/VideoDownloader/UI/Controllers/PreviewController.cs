@@ -50,6 +50,8 @@ internal sealed class PreviewController : IDisposable
         }
     }
     internal string CookieSnapshot=>Volatile.Read(ref _cookies);
+    internal event Action<PreviewData,bool>? Changed;
+    internal event Action<string,string>? Failed;
 
     internal PreviewController(Window window,AppPersistence storage,string executable,
         Func<IEnumerable<DownloadItem>> rows,Action save,Action<string> log)
@@ -80,7 +82,7 @@ internal sealed class PreviewController : IDisposable
             data=>Dispatch(()=>ReceiveReady(data)),
             message=>Dispatch(()=>_log(message)),
             failed:(url,error)=>Dispatch(()=>ReceiveFailure(url,error)),
-            updated:data=>Dispatch(()=>ReceiveReady(data)));
+            updated:data=>Dispatch(()=>ReceiveReady(data,false)));
     }
 
     private void CookiesChanged(object sender,TextChangedEventArgs e)=>
@@ -93,6 +95,23 @@ internal sealed class PreviewController : IDisposable
     }
 
     internal PreviewData? GetCached(string url)=>_service.Peek(url);
+
+    // Other views share the same worker/cache without changing this panel's
+    // selection. Metadata callbacks are delivered on the owning dispatcher.
+    internal void RequestUrl(string url,bool priority=true)
+    {
+        if(!_disposed && AppPersistence.ValidUrl(url))_service.Request(url,priority);
+    }
+
+    private void Notify<T>(T? listeners,Action<T> invoke) where T:Delegate
+    {
+        if(listeners==null)return;
+        foreach(T listener in listeners.GetInvocationList())
+        {
+            try { invoke(listener); }
+            catch(Exception error) { _log("Не удалось обновить панель превью: "+error.Message); }
+        }
+    }
 
     internal void RequestRow(DownloadItem row,bool priority=false)
     {
@@ -174,14 +193,16 @@ internal sealed class PreviewController : IDisposable
 
     internal void ReceiveFailure(string url,string error)
     {
-        if(_disposed || !string.Equals(SelectedUrl,url,StringComparison.Ordinal))return;
+        if(_disposed)return;
+        Notify(Failed,listener=>listener(url,error));
+        if(!string.Equals(SelectedUrl,url,StringComparison.Ordinal))return;
         _title.Text=DisplayTitle(url,"","Не удалось получить метаданные");
         _metadata.Text=ErrorMessages.ForDisplay(error);
         _metadata.ToolTip=error;
         if(_gallery.Count==0){_formats.Text="";ClearGallery();}
     }
 
-    internal void ReceiveReady(PreviewData data)
+    internal void ReceiveReady(PreviewData data,bool isFinal=true)
     {
         if(_disposed)return;
         string receivedTitle=data.Title.Trim();
@@ -191,6 +212,7 @@ internal sealed class PreviewController : IDisposable
             _lastReceivedUrl=data.Url;_lastReceivedTitle=receivedTitle;
             if(ApplyTitle(data))_save();
         }
+        Notify(Changed,listener=>listener(data,isFinal));
         if(!string.Equals(SelectedUrl,data.Url,StringComparison.Ordinal))return;
         if(receivedTitle.Length>0 && !string.Equals(receivedTitle,data.Url,StringComparison.Ordinal))_selectedKnownTitle=receivedTitle;
         _title.Text=DisplayTitle(data.Url,data.Title,"Название пока недоступно");
@@ -323,6 +345,7 @@ internal sealed class PreviewController : IDisposable
         _previousImage.Click-=PreviousGalleryImage;
         _nextImage.Click-=NextGalleryImage;
         _gallery.Clear();_decoded.Clear();
+        Changed=null;Failed=null;
         _cookiesBox.TextChanged-=CookiesChanged;
         _service.Dispose();
     }
