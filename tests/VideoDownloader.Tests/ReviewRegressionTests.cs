@@ -387,8 +387,11 @@ internal static class ReviewRegressionTests
                         "Worker must read credential snapshot exactly once for the preview.");
                     Require(previews.Get(url)?.Title == result.Title,
                         "Successful async previews must be cached immediately.");
-                    Require(logs.IsEmpty,
-                        "Successful preview prefetch must not log an unrelated background-thread error.");
+                    var diagnostics=logs.ToArray();
+                    Require(diagnostics.Length==1 && diagnostics[0].StartsWith(
+                            "Thumbnail unavailable: stage=candidates candidate=0/0 ",StringComparison.Ordinal) &&
+                            diagnostics[0].Contains("video="+url,StringComparison.Ordinal),
+                        "Metadata without image candidates must log that reason and its video, without an unrelated background-thread error.");
                 }
                 using (var newService = new PreviewService("nonexistent", data, () => "",
                     _ => throw new Exception("Already cached preview must not refetch"), _ => { }))

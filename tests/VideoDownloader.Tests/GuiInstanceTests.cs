@@ -91,15 +91,32 @@ internal static class GuiInstanceTests
             {
                 try
                 {
-                    return File.Exists(data.SessionPath)
-                        ? JsonSerializer.Deserialize<SessionSnapshot>(File.ReadAllText(data.SessionPath,Encoding.UTF8),AppPersistence.Json)
-                        : null;
+                    if(!File.Exists(data.SessionPath))return null;
+                    // Poll the atomically replaced file without denying the
+                    // GUI's rename on Windows. The open handle keeps this
+                    // individual snapshot stable while the next is published.
+                    using var file=new FileStream(data.SessionPath,FileMode.Open,FileAccess.Read,
+                        FileShare.ReadWrite|FileShare.Delete);
+                    return JsonSerializer.Deserialize<SessionSnapshot>(file,AppPersistence.Json);
                 }
                 catch(IOException) {return null;}
                 catch(JsonException) {return null;}
             }
             bool CheckpointMatches(IEnumerable<string> expected) => Snapshot() is {} snapshot &&
                 snapshot.Queue.Select(row=>row.Url).SequenceEqual(expected,StringComparer.Ordinal);
+            string JournalTail()
+            {
+                try
+                {
+                    using var file=new FileStream(Path.Combine(Path.GetDirectoryName(data.SessionPath)!,"logs","journal.log"),
+                        FileMode.Open,FileAccess.Read,FileShare.ReadWrite|FileShare.Delete);
+                    if(file.Length>8192)file.Seek(-8192,SeekOrigin.End);
+                    using var reader=new StreamReader(file,Encoding.UTF8);
+                    return Environment.NewLine+"GUI journal tail:"+Environment.NewLine+reader.ReadToEnd();
+                }
+                catch(IOException error){return Environment.NewLine+"GUI journal unavailable: "+error.Message;}
+                catch(UnauthorizedAccessException error){return Environment.NewLine+"GUI journal unavailable: "+error.Message;}
+            }
 
             var first=Start(urls[0]);
             IntPtr window=IntPtr.Zero;
@@ -146,7 +163,7 @@ internal static class GuiInstanceTests
                 imported=current;return true;
             },"The original GUI must checkpoint exact arguments and their asynchronously loaded cached titles without starting downloads.",
                 ()=>lastObserved==null ? "No readable checkpoint was observed." :
-                    "Last observed checkpoint: "+JsonSerializer.Serialize(lastObserved.Queue.Select(row=>new{row.Url,row.Title,row.Status,row.Path,OwnedPaths=row.OwnedPaths.Count}),AppPersistence.Json));
+                    "Last observed checkpoint: "+JsonSerializer.Serialize(lastObserved.Queue.Select(row=>new{row.Url,row.Title,row.Status,row.Path,OwnedPaths=row.OwnedPaths.Count}),AppPersistence.Json)+JournalTail());
             Require(imported!.Queue.All(row=>row.Title=="Cached "+row.Url && row.Status=="Queued" && row.Path.Length==0 && row.OwnedPaths.Count==0),
                 "Protocol, TXT and case-distinct plain URLs must retain cached titles and remain queued without downloading.");
 
