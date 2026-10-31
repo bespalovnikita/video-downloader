@@ -270,6 +270,8 @@ Reorder / drag/drop / download selected остаются заблокирова�
 
 ## Session checkpoint
 
+- `AppPersistence.AtomicWrite` повторяет только `File.Move` одного закрытого temp на Windows для кодов 5/32/33: задержки 15/30/60/120 мс. Не снимай ReadOnly/ACL и не удаляй старое назначение ради обхода отказа. Постоянная ошибка сохраняет старый файл и исходный тип/HResult. Проверяй настоящий временный/постоянный sharing lock и ReadOnly в `AtomicWriteTests`; polling-readers тестов используют `FileShare.ReadWrite | FileShare.Delete`. Ошибка сохранения должна оставлять в журнале тип/HResult/стек, сохраняя защиту read-only checkpoint.
+
 - Очередь, конечные статусы и параметры сохраняются атомарно в `%LOCALAPPDATA%\\VideoDownloader\\session.json`, не в `%TEMP%`.
 - Ни в коем случае не перезапускай успешно завершённые URL обычной кнопкой Start; ручной Retry допускается.
 - При запуске восстановление требует явного подтверждения пользователя и никогда не начинает загрузку автоматически.

@@ -310,7 +310,10 @@ public sealed partial class NativeWindow : IDisposable
         }
         catch(Exception e)
         {
-            _checkpointReadOnly=true;Log("Cannot save session checkpoint: "+e.Message);
+            _checkpointReadOnly=true;
+            Log("Cannot save session checkpoint: "+e.Message+Environment.NewLine+
+                "error_type="+e.GetType().Name+" hresult=0x"+e.HResult.ToString("X8",CultureInfo.InvariantCulture)+
+                Environment.NewLine+e.StackTrace);
         }
     }
     private enum DuplicateChoice{Yes,No,YesAll,NoAll,Cancel}

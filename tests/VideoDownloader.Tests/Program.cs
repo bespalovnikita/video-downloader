@@ -6,6 +6,7 @@ if (GuiInstanceTests.TryRunFixture(args) || NativeIpcFixture.TryRunFixture(args)
 ErrorMessagesTests.Run();
 JournalSanitizerTests.Run();
 await JournalTests.RunAsync();
+await AtomicWriteTests.RunAsync();
 PortableQueueTests.Run();
 await GuiInstanceTests.RunAsync();
 await QueueSessionControllerTests.RunAsync();
