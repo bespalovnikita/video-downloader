@@ -26,6 +26,7 @@ data class Settings(
     val cookiesFile: String = "",
     val outputTreeUri: String = "",
     val showTitles: Boolean = true,
+    val logProfile: String = "Standard",
 )
 
 @Serializable

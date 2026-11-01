@@ -18,7 +18,6 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.json.JSONObject
 import ru.bespalov.video.core.DownloadTask
-import ru.bespalov.video.core.ErrorText
 import ru.bespalov.video.core.FullScan
 import ru.bespalov.video.core.PornHubCollections
 import ru.bespalov.video.core.RssParser
@@ -137,35 +136,100 @@ class AndroidYtDlp(context: Context) {
         }
 
     suspend fun download(requestId: String, task: DownloadTask, settings: Settings, stage: File,
+                         transferCounters: EngineTransferCounters = EngineTransferCounters(),
+                         onTrace: (EngineTrace) -> Unit = {},
                          onProgress: (EngineProgress) -> Unit = {}): EngineDownloadResult = withContext(Dispatchers.IO) {
         require(Urls.isHttp(task.url)) { "Expected an HTTP(S) URL" }
         initialize()
         validateStage(stage)
         stage.mkdirs()
-        var transferred = 0L
         val levels = YtDlpArguments.qualityLevels(settings)
+        var invocation = 0
+        var last = EngineProgress(title = task.title, transferredBytes = transferCounters.totalBytes)
         for ((qualityIndex, quality) in levels.withIndex()) {
-            for (attempt in 0..3) {
+            for (attempt in 1..4) {
                 currentCoroutineContext().ensureActive()
-                var title = task.title
+                invocation++
+                val previousShown = last.percent
+                // New native invocations expose their real reset. Title/phase events below
+                // instead copy the complete snapshot and cannot accidentally reset a sample.
+                last = EngineProgress(title = last.title, transferredBytes = transferCounters.totalBytes,
+                    attempt = attempt, quality = quality, invocation = invocation)
+                val progressPlan = DownloadProgressPlan()
+                val retryBoundary = DownloadRetryBoundary()
                 val finalPaths = linkedSetOf<String>()
-                val counters = mutableMapOf<String, Long>()
+                val eventsGate = Any()
+                fun trace(event: String, message: String = "", level: EngineTraceLevel = EngineTraceLevel.INFORMATION,
+                          category: String = "download", component: String = last.component) {
+                    report(onTrace, EngineTrace(category, event, message, level, attempt, invocation, quality, component))
+                }
+                report(onProgress, last)
+                trace("attempt_start", "previous_shown_pct=$previousShown transferred=${last.transferredBytes}")
                 try {
                     execute(requestId, request(task.url, YtDlpArguments.download(settings, stage, quality), cookie(settings.cookiesFile)),
-                        6 * 60 * 60_000L, outputLimit = 4 * 1024 * 1024) { line ->
-                        when (val marker = ProgressMarkers.parse(line)) {
-                            is MarkerEvent.Title -> { title = marker.value; report(onProgress, EngineProgress(title = title, transferredBytes = transferred)) }
-                            is MarkerEvent.Media -> finalPaths += marker.path
-                            is MarkerEvent.Progress -> {
-                                val old = counters.put(marker.component, marker.value.downloadedBytes) ?: 0L
-                                val now = marker.value.downloadedBytes
-                                transferred += if (now < old) now else now - old
-                                report(onProgress, marker.value.copy(title = title, transferredBytes = transferred))
+                        6 * 60 * 60_000L, outputLimit = 4 * 1024 * 1024) { text ->
+                        for (line in text.lineSequence()) synchronized(eventsGate) {
+                            val marker = ProgressMarkers.parse(line)
+                            val wasProcessing = retryBoundary.processingStarted
+                            retryBoundary.observe(line, marker)
+                            val level = when {
+                                line.trimStart().startsWith("ERROR:", ignoreCase = true) -> EngineTraceLevel.ERROR
+                                line.trimStart().startsWith("WARNING:", ignoreCase = true) -> EngineTraceLevel.WARNING
+                                else -> EngineTraceLevel.VERBOSE
                             }
-                            null -> Unit
+                            // Detailed keeps actual child markers as well as typed progress.
+                            // The observer sanitises all text before retention or export.
+                            trace("output", line, level, "yt-dlp", (marker as? MarkerEvent.Progress)?.component ?: last.component)
+                            if (!wasProcessing && retryBoundary.processingStarted) {
+                                last = last.copy(stage = EngineStage.PROCESSING, detail = "Обработка", speed = "", eta = "")
+                                report(onProgress, last)
+                                trace("processing_started")
+                            }
+                            when (marker) {
+                                is MarkerEvent.Title -> {
+                                    last = last.copy(title = marker.value.takeIf(String::isNotBlank) ?: last.title)
+                                    report(onProgress, last)
+                                    trace("title", marker.value)
+                                }
+                                is MarkerEvent.Media -> {
+                                    finalPaths += marker.path
+                                    trace("media_reported")
+                                }
+                                is MarkerEvent.Plan -> {
+                                    last = progressPlan.begin(marker, last)
+                                    report(onProgress, last)
+                                    trace("download_plan", "components=${marker.formatIds.size} media_index=${marker.mediaIndex} media_count=${marker.mediaCount}")
+                                }
+                                is MarkerEvent.Progress -> {
+                                    val previous = last
+                                    if (marker.downloadedBytesKnown) {
+                                        val observation = transferCounters.observe(marker.component, marker.value.downloadedBytes)
+                                        if (observation.newlyLimited)
+                                            trace("transfer_tracking_limited", "The bounded stream ledger evicted an older baseline; byte totals for revisited older streams may be estimates.", EngineTraceLevel.WARNING)
+                                        if (observation.reset)
+                                            trace("counter_reset", "downloaded=${marker.value.downloadedBytes}", EngineTraceLevel.PROGRESS,
+                                                component = marker.component)
+                                    }
+                                    val selectedComponent = progressPlan.accepts(marker)
+                                    last = progressPlan.observe(marker, last).copy(transferredBytes = transferCounters.totalBytes)
+                                    if (!marker.downloadedBytesKnown && previous.component == marker.component)
+                                        last = last.copy(downloadedBytes = previous.downloadedBytes)
+                                    report(onProgress, last)
+                                    trace(if (selectedComponent) "progress" else "auxiliary_progress",
+                                        "component_pct=${marker.rawPercent} shown_pct=${last.percent} downloaded=${last.downloadedBytes} total=${last.totalBytes} transferred=${last.transferredBytes}",
+                                        EngineTraceLevel.PROGRESS, component = marker.component)
+                                }
+                                null -> Unit
+                            }
                         }
                     }
+                    // From here even a verify/manifest failure is final processing failure.
+                    // Restarting the entire native request cannot repair it.
+                    retryBoundary.nativeFinished()
                     currentCoroutineContext().ensureActive()
+                    last = last.copy(stage = EngineStage.VERIFYING, detail = "Проверка файла", speed = "", eta = "")
+                    report(onProgress, last)
+                    trace("verifying")
                     if (finalPaths.isEmpty()) throw EngineException("yt-dlp finished without reporting a downloaded media file")
                     val mediaFiles = finalPaths.map(::File)
                     mediaFiles.forEach { media ->
@@ -185,13 +249,32 @@ class AndroidYtDlp(context: Context) {
                     // manifest. yt-dlp may report Android's canonical OS alias.
                     val primary = files.first { it.canonicalFile == mediaFiles.first().canonicalFile }
                     currentCoroutineContext().ensureActive()
-                    return@withContext EngineDownloadResult(primary, files, transferred)
+                    trace("verified", "files=${files.size} transferred=${transferCounters.totalBytes}")
+                    return@withContext EngineDownloadResult(primary, files, transferCounters.totalBytes)
                 } catch (cancel: CancellationException) { throw cancel }
                 catch (error: Exception) {
                     val diagnostic = error.message.orEmpty()
-                    if (diagnostic.contains("Requested format is not available", ignoreCase = true) && qualityIndex < levels.lastIndex) break
-                    if (attempt < 3 && ErrorText.isTransient(diagnostic)) { delay(5_000L shl attempt); continue }
-                    throw error
+                    when (retryBoundary.decide(diagnostic, attempt, qualityIndex < levels.lastIndex)) {
+                        DownloadRetryDecision.LOWER_QUALITY -> {
+                            trace("quality_fallback", diagnostic, EngineTraceLevel.WARNING)
+                            last = last.copy(stage = EngineStage.RETRYING, detail = "Пробуем другое качество", speed = "", eta = "")
+                            report(onProgress, last)
+                            break
+                        }
+                        DownloadRetryDecision.RETRY -> {
+                            val delayMillis = 5_000L shl (attempt - 1)
+                            trace("retry_scheduled", "next_attempt=${attempt + 1} delay_ms=$delayMillis\n$diagnostic", EngineTraceLevel.WARNING)
+                            last = last.copy(stage = EngineStage.RETRYING,
+                                detail = "Повтор ${attempt + 1}/4 через ${delayMillis / 1000} с", speed = "", eta = "")
+                            report(onProgress, last)
+                            delay(delayMillis)
+                        }
+                        DownloadRetryDecision.FAIL -> {
+                            val processing = retryBoundary.processingStarted || diagnostic.lineSequence().any(ProgressMarkers::isPostprocessing)
+                            trace(if (processing) "processing_failed" else "download_failed", diagnostic, EngineTraceLevel.ERROR)
+                            throw error
+                        }
+                    }
                 }
             }
         }

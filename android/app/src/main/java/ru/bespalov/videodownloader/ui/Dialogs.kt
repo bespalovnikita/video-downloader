@@ -1,6 +1,9 @@
 package ru.bespalov.videodownloader.ui
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
@@ -21,11 +24,48 @@ import coil.compose.AsyncImage
 import kotlinx.coroutines.launch
 import ru.bespalov.video.core.DownloadStatus
 import ru.bespalov.video.core.ErrorText
+import ru.bespalov.video.core.JournalProfile
 import ru.bespalov.video.core.Subscription
 import ru.bespalov.video.core.SubscriptionEntry
 import java.io.File
 import java.text.DateFormat
 import java.util.Date
+
+@Composable
+internal fun JournalDialog(ui: MobileUiState, actions: MobileActions, save: () -> Unit, close: () -> Unit) {
+    val listState = rememberLazyListState()
+    var previousSize by remember { mutableIntStateOf(0) }
+    LaunchedEffect(ui.logs.size, ui.logs.lastOrNull()) {
+        val wasAtEnd = (listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: previousSize) >= previousSize - 2
+        if (wasAtEnd && ui.logs.isNotEmpty()) listState.scrollToItem(ui.logs.lastIndex)
+        previousSize = ui.logs.size
+    }
+    AlertDialog(
+        onDismissRequest = close,
+        modifier = Modifier.testTag("journalDialog"),
+        title = { Text("Журнал") },
+        text = {
+            Column(Modifier.heightIn(max = 520.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                ChoiceField("Профиль журнала", JournalProfile.parse(ui.snapshot.settings.logProfile).id,
+                    JournalProfile.entries.associate { it.id to it.displayName }, !ui.locked,
+                    modifier = Modifier.testTag("journalProfile")) { profile ->
+                    actions.saveSettings(ui.snapshot.settings.copy(logProfile = profile))
+                }
+                Text("Подробность применяется к новым событиям. Уже записанные сообщения сохраняются.", style = MaterialTheme.typography.bodySmall)
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    TextButton(onClick = actions::copyLogs, enabled = ui.logs.isNotEmpty(), modifier = Modifier.testTag("copyLogs")) { Text("Копировать") }
+                    TextButton(onClick = save, enabled = ui.logs.isNotEmpty(), modifier = Modifier.testTag("saveLogs")) { Text("Сохранить…") }
+                    TextButton(onClick = actions::clearLogs, enabled = ui.logs.isNotEmpty(), modifier = Modifier.testTag("clearLogs")) { Text("Очистить") }
+                }
+                LazyColumn(Modifier.fillMaxWidth().weight(1f, fill = false).testTag("journalEntries"), state = listState) {
+                    if (ui.logs.isEmpty()) item { Text("Сообщений пока нет") }
+                    items(ui.logs) { line -> Text(line, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(bottom = 8.dp)) }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = close) { Text("Закрыть") } },
+    )
+}
 
 /** Paging reads only downloaded local files. Changing a page never requests metadata. */
 @Composable

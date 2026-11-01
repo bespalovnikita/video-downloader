@@ -3,6 +3,8 @@ package ru.bespalov.videodownloader.ui
 import android.net.Uri
 import ru.bespalov.video.core.AppState
 import ru.bespalov.video.core.Settings
+import ru.bespalov.videodownloader.download.DownloadSessionSnapshot
+import ru.bespalov.videodownloader.engine.EngineProgress
 
 data class EntryKey(val subscriptionId: String, val url: String)
 
@@ -58,6 +60,8 @@ data class MobileUiState(
     val importing: Boolean = false,
     val recoveryRequired: Boolean = false,
     val subscriptionQueuePrompt: SubscriptionQueuePrompt? = null,
+    val session: DownloadSessionSnapshot? = null,
+    val taskProgress: Map<String, EngineProgress> = emptyMap(),
 )
 
 internal val MobileUiState.locked: Boolean get() = readOnly || importing
@@ -68,6 +72,9 @@ interface MobileActions {
     fun copyQueue()
     fun exportQueue(uri: Uri)
     fun importQueueText(text: String)
+    fun copyLogs() {}
+    fun exportLogs(uri: Uri) {}
+    fun clearLogs() {}
     fun importCookies(uri: Uri)
     fun selectOutput(uri: Uri)
     fun saveSettings(settings: Settings)
