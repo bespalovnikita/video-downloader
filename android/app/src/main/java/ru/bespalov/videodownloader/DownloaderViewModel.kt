@@ -14,6 +14,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
@@ -41,6 +43,7 @@ class DownloaderViewModel(application: Application) : AndroidViewModel(applicati
     private var checkJob: Job? = null
     private var checkRequest: String? = null
     private var maintenanceJob: Job? = null
+    private var subscriptionOfferEpoch = 0L
 
     init {
         viewModelScope.launch { repository.state.collect { refresh() } }
@@ -301,6 +304,12 @@ class DownloaderViewModel(application: Application) : AndroidViewModel(applicati
         graph.previews.request(url, knownTitle, priority = true)
         refreshPreview()
     }
+    override fun showSubscriptionPreview(key: EntryKey) {
+        val entry = repository.state.value.items.firstOrNull { it.subscriptionId == key.subscriptionId && it.url == key.url } ?: return
+        mutable.update { it.copy(preview = UiPreview(entry.url, entry.title, loading = true, subscriptionId = entry.subscriptionId)) }
+        graph.previews.request(entry.url, entry.title, priority = true)
+        refreshPreview()
+    }
     override fun closePreview() { mutable.update { it.copy(preview = null) } }
 
     override fun addSubscription(url: String, feedUrl: String, shortName: String, downloadExisting: Boolean) = work {
@@ -318,12 +327,15 @@ class DownloaderViewModel(application: Application) : AndroidViewModel(applicati
 
     override fun checkSubscriptions(ids: List<String>) {
         if (checkJob?.isActive == true || maintenanceJob?.isActive == true) return
+        subscriptionOfferEpoch++
+        mutable.update { it.copy(subscriptionQueuePrompt = null) }
         checkJob = viewModelScope.launch {
             try {
                 graph.ready.await(); writable()
                 check(graph.runtimeReady.value) { "Движок ещё не готов." }
                 val sources = repository.state.value.subscriptions.filter { it.id in ids && !it.paused }
                 val cookie = repository.state.value.settings.cookiesFile.takeIf(String::isNotBlank)?.let(::File)
+                val successful = mutableSetOf<String>()
                 for ((index, source) in sources.withIndex()) {
                     val requestId = "scan-${UUID.randomUUID()}"
                     checkRequest = requestId
@@ -341,6 +353,7 @@ class DownloaderViewModel(application: Application) : AndroidViewModel(applicati
                                 SubscriptionRules.queueEntries(scanned, pending)
                             }
                         }
+                        successful += source.id
                         applied.items.filter { it.subscriptionId == source.id && it.state in setOf(EntryState.NEW, EntryState.QUEUED) }
                             .forEach { graph.previews.request(it.url, it.title) }
                     } catch (cancel: CancellationException) { throw cancel }
@@ -350,6 +363,10 @@ class DownloaderViewModel(application: Application) : AndroidViewModel(applicati
                         graph.log("Subscription ${source.id}: $raw")
                     } finally { checkRequest = null }
                 }
+                currentCoroutineContext().ensureActive()
+                val pending = SubscriptionRules.pendingNewKeys(repository.state.value, successful)
+                if (pending.isNotEmpty()) mutable.update { it.copy(subscriptionQueuePrompt = SubscriptionQueuePrompt(
+                    pending.map { (sourceId, url) -> EntryKey(sourceId, url) }, pending.map { it.first }.distinct().size)) }
             } catch (cancel: CancellationException) { throw cancel }
             catch (error: Exception) { message(error.message ?: error.javaClass.simpleName) }
             finally { checkRequest = null; mutable.update { it.copy(operation = null) } }
@@ -375,6 +392,25 @@ class DownloaderViewModel(application: Application) : AndroidViewModel(applicati
         val state = repository.update { SubscriptionRules.queueEntries(it, keys.map { key -> key.subscriptionId to key.url }.toSet()) }
         state.queue.forEach { graph.previews.request(it.url, it.title) }
     }
+    override fun resolveSubscriptionQueuePrompt(accept: Boolean) {
+        val prompt = mutable.value.subscriptionQueuePrompt ?: return
+        val expectedEpoch = subscriptionOfferEpoch
+        mutable.update { it.copy(subscriptionQueuePrompt = null) }
+        if (!accept) return
+        work {
+            val state = graph.dataOperation.withLock {
+                // A restore or a newer batch invalidates decisions about the
+                // previous snapshot, even when imported IDs and URLs match.
+                if (expectedEpoch != subscriptionOfferEpoch) return@work
+                writable()
+                repository.update { SubscriptionRules.queueNewEntries(it,
+                    prompt.keys.map { key -> key.subscriptionId to key.url }.toSet()) }
+            }
+            prompt.keys.forEach { key ->
+                state.queue.firstOrNull { it.url == key.url }?.let { graph.previews.request(it.url, it.title) }
+            }
+        }
+    }
     override fun skipEntries(keys: List<EntryKey>) = work {
         writable(); repository.update { SubscriptionRules.skipEntries(it, keys.map { key -> key.subscriptionId to key.url }.toSet()) }
     }
@@ -394,6 +430,8 @@ class DownloaderViewModel(application: Application) : AndroidViewModel(applicati
         graph.dataOperation.withLock {
             idle()
             check(decision == null) { "Сначала завершите подтверждение повторной загрузки." }
+            subscriptionOfferEpoch++
+            mutable.update { it.copy(subscriptionQueuePrompt = null) }
             graph.importing.value = true
             mutable.update { it.copy(operation = UiOperation("Восстановление резервной копии")) }
             try {
@@ -405,7 +443,8 @@ class DownloaderViewModel(application: Application) : AndroidViewModel(applicati
                 // Service admission uses the same gate; a pending command also forbids replacement.
                 idle()
                 repository.replaceFromBackup(safe)
-                mutable.update { it.copy(readOnly = false, recoveryRequired = safe.queue.any { row -> row.status == DownloadStatus.INTERRUPTED }) }
+                mutable.update { it.copy(readOnly = false, subscriptionQueuePrompt = null, preview = null,
+                    recoveryRequired = safe.queue.any { row -> row.status == DownloadStatus.INTERRUPTED }) }
             } finally {
                 graph.importing.value = false
                 mutable.update { it.copy(operation = null) }

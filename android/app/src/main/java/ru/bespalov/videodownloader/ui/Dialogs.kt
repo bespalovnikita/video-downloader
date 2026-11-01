@@ -12,25 +12,35 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import kotlinx.coroutines.launch
 import ru.bespalov.video.core.DownloadStatus
 import ru.bespalov.video.core.ErrorText
+import ru.bespalov.video.core.Subscription
+import ru.bespalov.video.core.SubscriptionEntry
 import java.io.File
 import java.text.DateFormat
 import java.util.Date
 
 /** Paging reads only downloaded local files. Changing a page never requests metadata. */
 @Composable
-internal fun PreviewDialog(preview: UiPreview, close: () -> Unit) {
-    val images = preview.imageFiles.take(15)
+internal fun PreviewDialog(preview: UiPreview, close: () -> Unit, subscription: Subscription? = null, entry: SubscriptionEntry? = null) {
+    val contextual = subscription != null && entry != null
+    var allImages by remember(preview.url, preview.subscriptionId) { mutableStateOf(false) }
+    val images = preview.imageFiles.take(if (contextual && !allImages) 2 else 15)
     val pager = rememberPagerState(pageCount = { images.size })
     val scope = rememberCoroutineScope()
-    LaunchedEffect(preview.url) { if (images.isNotEmpty()) pager.scrollToPage(0) }
+    val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
+    LaunchedEffect(preview.url, preview.subscriptionId, allImages) { if (images.isNotEmpty()) pager.scrollToPage(0) }
     AlertDialog(
         onDismissRequest = close,
+        modifier = Modifier.testTag(if (contextual) "subscriptionDetails" else "previewDialog"),
         title = { Text(preview.title.ifBlank { "Превью" }) },
         text = {
             Column(
@@ -38,6 +48,15 @@ internal fun PreviewDialog(preview: UiPreview, close: () -> Unit) {
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 SelectionContainerCompat(preview.url)
+                if (subscription != null && entry != null) {
+                    Text("Подписка: ${subscription.title.ifBlank { subscription.shortName.ifBlank { subscription.url } }}", style = MaterialTheme.typography.bodyMedium)
+                    Text("Состояние: ${EntryLabel(entry.state)}", style = MaterialTheme.typography.bodySmall)
+                    Text("Обнаружено: ${DateFormat.getDateTimeInstance().format(Date(entry.discoveredAtUtc))}", style = MaterialTheme.typography.bodySmall)
+                }
+                Row {
+                    TextButton(onClick = { clipboard.setText(AnnotatedString(preview.url)) }, modifier = Modifier.testTag("copyPreviewUrl")) { Text("Копировать URL") }
+                    TextButton(onClick = { OpenUri(context, preview.url) }) { Text("Открыть URL") }
+                }
                 if (preview.uploader.isNotBlank()) Text(preview.uploader, style = MaterialTheme.typography.bodyMedium)
                 if (preview.durationSeconds > 0) Text("Длительность: ${duration(preview.durationSeconds)}", style = MaterialTheme.typography.bodySmall)
                 if (images.isNotEmpty()) {
@@ -59,6 +78,9 @@ internal fun PreviewDialog(preview: UiPreview, close: () -> Unit) {
                         TextButton(onClick = { scope.launch { pager.animateScrollToPage((pager.currentPage + 1) % images.size) } }, enabled = images.size > 1) { Text("Далее ›") }
                     }
                     if (images.size > 1) Text("Листай изображения свайпом или кнопками.", style = MaterialTheme.typography.bodySmall)
+                    if (contextual && !allImages && preview.imageFiles.size > 2) {
+                        TextButton(onClick = { allImages = true }, modifier = Modifier.testTag("showAllPreviews")) { Text("Все превью (${preview.imageFiles.size})") }
+                    }
                 } else if (!preview.loading && preview.error.isBlank()) {
                     Text("Сайт не предоставил подходящих изображений.", style = MaterialTheme.typography.bodySmall)
                 }
@@ -75,6 +97,28 @@ internal fun PreviewDialog(preview: UiPreview, close: () -> Unit) {
             }
         },
         confirmButton = { TextButton(onClick = close) { Text("Закрыть") } },
+    )
+}
+
+@Composable
+internal fun SubscriptionQueueDialog(prompt: SubscriptionQueuePrompt, enabled: Boolean, resolve: (Boolean) -> Unit) {
+    AlertDialog(
+        onDismissRequest = { resolve(false) },
+        modifier = Modifier.testTag("subscriptionQueuePrompt"),
+        title = { Text("Новые материалы подписок") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("Новых материалов: ${prompt.keys.size}. Подписок: ${prompt.sourceCount}.")
+                Text("Добавить их в общую очередь? Скачивание начнётся кнопкой Start.")
+                Text("«Не сейчас» сохранит материалы в подписках со статусом «Новое».", style = MaterialTheme.typography.bodySmall)
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { resolve(true) }, enabled = enabled, modifier = Modifier.testTag("acceptSubscriptionQueue")) { Text("Добавить в очередь") }
+        },
+        dismissButton = {
+            TextButton(onClick = { resolve(false) }, modifier = Modifier.testTag("deferSubscriptionQueue")) { Text("Не сейчас") }
+        },
     )
 }
 

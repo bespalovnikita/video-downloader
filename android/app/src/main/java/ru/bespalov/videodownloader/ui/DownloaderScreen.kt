@@ -110,7 +110,12 @@ fun DownloaderScreen(ui: MobileUiState, actions: MobileActions) {
                 }
             }
         }
-        ui.preview?.let { PreviewDialog(it, actions::closePreview) }
+        ui.preview?.let { preview ->
+            val source = ui.snapshot.subscriptions.firstOrNull { it.id == preview.subscriptionId }
+            val entry = ui.snapshot.items.firstOrNull { it.subscriptionId == preview.subscriptionId && it.url == preview.url }
+            PreviewDialog(preview, actions::closePreview, source, entry)
+        }
+        ui.subscriptionQueuePrompt?.let { SubscriptionQueueDialog(it, !ui.locked, actions::resolveSubscriptionQueuePrompt) }
         ui.duplicatePrompt?.let { DuplicateDialog(it, actions::resolveDuplicate) }
         if (ui.duplicateNotices.isNotEmpty()) {
             AlertDialog(onDismissRequest = actions::acknowledgeDuplicates,
@@ -301,6 +306,9 @@ private fun TaskCard(task: DownloadTask, ui: MobileUiState, actions: MobileActio
                 LinearProgressIndicator(progress = { (task.progress / 100f).coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp))
                 Text("${task.progress.toInt()}% · ${task.speed} · ${task.downloaded} · ${task.eta}", style = MaterialTheme.typography.bodySmall)
             }
+            if (task.status == DownloadStatus.COMPLETED && task.outputUris.isNotEmpty()) {
+                OutlinedButton(onClick = { OpenUri(context, task.outputUris.first(), true) }, modifier = Modifier.testTag("openCompletedFile:${task.id}")) { Text("Открыть файл") }
+            }
             if (task.rawError.isNotBlank()) Text(ErrorText.display(task.rawError, androidx.compose.ui.platform.LocalConfiguration.current.locales[0].language), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
         }
     }
@@ -322,8 +330,8 @@ private fun TaskCard(task: DownloadTask, ui: MobileUiState, actions: MobileActio
 internal fun EmptyState(text: String) { Text(text, Modifier.padding(vertical = 20.dp), color = MaterialTheme.colorScheme.onSurfaceVariant) }
 
 @Composable
-internal fun SelectionContainerCompat(text: String, modifier: Modifier = Modifier) {
-    androidx.compose.foundation.text.selection.SelectionContainer(modifier) { Text(text, style = MaterialTheme.typography.bodySmall) }
+internal fun SelectionContainerCompat(text: String, modifier: Modifier = Modifier, maxLines: Int = Int.MAX_VALUE) {
+    androidx.compose.foundation.text.selection.SelectionContainer(modifier) { Text(text, style = MaterialTheme.typography.bodySmall, maxLines = maxLines, overflow = TextOverflow.Ellipsis) }
 }
 
 internal fun OpenUri(context: android.content.Context, value: String, file: Boolean = false) {
