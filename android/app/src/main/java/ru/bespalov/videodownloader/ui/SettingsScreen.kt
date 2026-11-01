@@ -25,6 +25,7 @@ internal fun SettingsScreen(
 ) {
     var draft by remember(ui.snapshot.settings) { mutableStateOf(ui.snapshot.settings) }
     var restore by remember { mutableStateOf(false) }
+    var templateHelp by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text("Настройки скачивания", style = MaterialTheme.typography.titleLarge)
         Text("Изменения применятся при следующем запуске задания. Параметры текущей загрузки сохраняются до её завершения.", style = MaterialTheme.typography.bodySmall)
@@ -42,7 +43,8 @@ internal fun SettingsScreen(
         SettingToggle("Только аудио MP3", draft.audioOnly, !ui.locked) { draft = draft.copy(audioOnly = it) }
         SettingToggle("Подпапка по дате", draft.archive, !ui.locked) { draft = draft.copy(archive = it) }
         OutlinedTextField(value = draft.filenameTemplate, onValueChange = { draft = draft.copy(filenameTemplate = it) }, label = { Text("Шаблон имени файла") },
-            supportingText = { Text("Относительный путь без «..». По умолчанию: название [id].расширение") }, modifier = Modifier.fillMaxWidth(), enabled = !ui.locked)
+            supportingText = { Text("Относительный путь без «..». По умолчанию: название [id].расширение") }, modifier = Modifier.fillMaxWidth().testTag("filenameTemplate"), enabled = !ui.locked)
+        TextButton(onClick = { templateHelp = true }, modifier = Modifier.testTag("filenameTemplateHelp")) { Text("Как работает шаблон имени") }
 
         HorizontalDivider(Modifier.padding(vertical = 8.dp))
         Text("Папка загрузок", style = MaterialTheme.typography.titleMedium)
@@ -88,6 +90,24 @@ internal fun SettingsScreen(
         text = { Text("Текущие настройки, очередь, подписки и история будут заменены выбранной резервной копией. Скачанные файлы сохранятся. Сначала можно экспортировать текущие данные.") },
         confirmButton = { TextButton(onClick = { restore = false; importBackup() }) { Text("Выбрать копию") } },
         dismissButton = { TextButton(onClick = { restore = false }) { Text("Отмена") } })
+    if (templateHelp) FilenameTemplateHelpDialog { templateHelp = false }
+}
+
+@Composable
+internal fun FilenameTemplateHelpDialog(close: () -> Unit) {
+    AlertDialog(onDismissRequest = close, modifier = Modifier.testTag("filenameTemplateHelpDialog"), title = { Text("Шаблон имени файла") },
+        text = {
+            Column(Modifier.heightIn(max = 460.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("yt-dlp подставляет данные видео вместо полей вида %(поле)s. Обычный текст остаётся частью имени.")
+                SelectionContainerCompat("%(title)s — название видео\n%(id)s — ID видео на сайте\n%(uploader)s — автор публикации\n%(channel)s — название канала\n%(upload_date)s — дата публикации YYYYMMDD\n%(playlist_title)s — название плейлиста\n%(playlist_index)03d — номер в плейлисте с тремя цифрами\n%(ext)s — расширение готового файла")
+                Text("Примеры", style = MaterialTheme.typography.titleSmall)
+                SelectionContainerCompat("%(title)s [%(id)s].%(ext)s\n%(upload_date)s - %(title)s.%(ext)s\n%(uploader)s/%(title)s [%(id)s].%(ext)s\n%(playlist_title)s/%(playlist_index)03d - %(title)s.%(ext)s")
+                Text("Поля зависят от сайта и способа добавления. Для отдельного URL из подписки данные плейлиста могут отсутствовать; недоступное поле обычно заменяется на NA. Для уникальности полезно сохранять %(id)s.", style = MaterialTheme.typography.bodySmall)
+                Text("Шаблон — относительное имя или путь внутри выбранной папки. Нельзя указывать абсолютный путь, URL, пустую часть пути или «..». Подпапка по дате и краткое имя подписки добавляются отдельно. Не заменяй %(ext)s фиксированным расширением: формат зависит от настроек.", style = MaterialTheme.typography.bodySmall)
+                Text("Чтобы добавить обычный знак процента, используй %%. Изменение шаблона не переименовывает уже сохранённые файлы.", style = MaterialTheme.typography.bodySmall)
+            }
+        },
+        confirmButton = { TextButton(onClick = close) { Text("Понятно") } })
 }
 
 @Composable

@@ -9,17 +9,25 @@ object SubscriptionRules {
             "Полный список содержит некорректные или повторные материалы либо превышает 10 000 записей."
         }
         val known = state.items.filter { it.subscriptionId == sourceId }.associateBy { it.url }
-        val newItems = scan.items.filterNot { it.url in known }.map { media ->
-            SubscriptionEntry(sourceId, media.url, media.title,
-                state = if (!source.initialized && !source.downloadExisting) EntryState.BASELINE else EntryState.NEW,
-                discoveredAtUtc = now, initialQueuePending = !source.initialized && source.downloadExisting)
+        val ordered = scan.items.map { media ->
+            val previous = known[media.url]
+            when {
+                previous == null -> SubscriptionEntry(sourceId, media.url, media.title,
+                    state = if (!source.initialized && !source.downloadExisting) EntryState.BASELINE else EntryState.NEW,
+                    discoveredAtUtc = now, initialQueuePending = !source.initialized && source.downloadExisting)
+                previous.title.isBlank() || previous.title == previous.url -> previous.copy(
+                    title = media.title.takeIf { it.isNotBlank() && it != media.url } ?: previous.title)
+                else -> previous
+            }
         }
-        val titles = scan.items.associate { it.url to it.title }
-        val items = state.items.map { entry ->
-            if (entry.subscriptionId == sourceId && (entry.title.isBlank() || entry.title == entry.url))
-                entry.copy(title = titles[entry.url]?.takeIf { it.isNotBlank() && it != entry.url } ?: entry.title)
-            else entry
-        } + newItems
+        // A full result defines the source's current order, not the order in
+        // which entries happened to be discovered. Keep absent history after it.
+        val currentUrls = scan.items.mapTo(mutableSetOf()) { it.url }
+        val historical = state.items.filter { it.subscriptionId == sourceId && it.url !in currentUrls }
+        val firstSourceIndex = state.items.indexOfFirst { it.subscriptionId == sourceId }
+        val items = state.items.filterNot { it.subscriptionId == sourceId }.toMutableList().apply {
+            addAll(if (firstSourceIndex < 0) size else firstSourceIndex, ordered + historical)
+        }
         val name = source.shortName.ifBlank {
             SubscriptionNames.create(scan.suggestedName.ifBlank { scan.title }, source.id,
                 state.subscriptions.filter { it.id != sourceId }.map { it.shortName })
@@ -59,14 +67,14 @@ object SubscriptionRules {
     fun queueEntries(state: AppState, keys: Set<Pair<String, String>>): AppState {
         var result = reconcileSuccess(state)
         val sources = result.subscriptions.associateBy { it.id }
-        val candidates = result.items.filter { key(it) in keys && it.state in setOf(EntryState.NEW, EntryState.SKIPPED, EntryState.QUEUED) }
+        val candidates = result.items.filter { key(it) in keys && it.state in setOf(EntryState.BASELINE, EntryState.NEW, EntryState.SKIPPED, EntryState.QUEUED) }
         val queue = result.queue.toMutableList()
         val accepted = mutableSetOf<Pair<String, String>>()
         candidates.forEach { item ->
             val existingIndex = queue.indexOfFirst { it.url == item.url }
             if (existingIndex >= 0) {
                 val existing = queue[existingIndex]
-                if (existing.status == DownloadStatus.COMPLETED || existing.pendingRemoval || existing.status == DownloadStatus.CLEANUP_REQUIRED) return@forEach
+                if (existing.pendingRemoval || existing.status in setOf(DownloadStatus.COMPLETED, DownloadStatus.CANCELLING, DownloadStatus.CLEANUP_REQUIRED)) return@forEach
                 if ((existing.title.isBlank() || existing.title == existing.url) && item.title.isNotBlank() && item.title != item.url)
                     queue[existingIndex] = existing.copy(title = item.title)
             } else {
@@ -81,6 +89,24 @@ object SubscriptionRules {
             if (key(it) in accepted) it.copy(state = EntryState.QUEUED, initialQueuePending = false) else it
         })
         return result
+    }
+
+    /** The batch supplies only sources whose scan was successfully applied. */
+    fun pendingNewKeys(state: AppState, successfulSourceIds: Set<String>): Set<Pair<String, String>> {
+        val current = reconcileSuccess(state)
+        val eligibleSources = current.subscriptions.filter {
+            it.id in successfulSourceIds && it.initialized && !it.paused
+        }.mapTo(mutableSetOf()) { it.id }
+        return current.items.filter {
+            it.subscriptionId in eligibleSources && it.state == EntryState.NEW && !it.initialQueuePending
+        }.mapTo(linkedSetOf(), ::key)
+    }
+
+    /** Revalidate a previously shown offer against current decisions/history. */
+    fun queueNewEntries(state: AppState, requestedKeys: Set<Pair<String, String>>): AppState {
+        val sourceIds = requestedKeys.mapTo(mutableSetOf()) { it.first }
+        val stillNew = pendingNewKeys(state, sourceIds).intersect(requestedKeys)
+        return queueEntries(state, stillNew)
     }
 
     fun recordSuccess(state: AppState, taskId: String, outputUris: List<String>, title: String? = null,

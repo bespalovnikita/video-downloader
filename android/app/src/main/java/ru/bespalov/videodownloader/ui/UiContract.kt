@@ -14,7 +14,10 @@ data class UiPreview(
     val imageFiles: List<String> = emptyList(),
     val loading: Boolean = false,
     val error: String = "",
+    val subscriptionId: String = "",
 )
+
+data class SubscriptionQueuePrompt(val keys: List<EntryKey>, val sourceCount: Int)
 
 data class UiOperation(
     val title: String,
@@ -54,6 +57,7 @@ data class MobileUiState(
     val readOnly: Boolean = false,
     val importing: Boolean = false,
     val recoveryRequired: Boolean = false,
+    val subscriptionQueuePrompt: SubscriptionQueuePrompt? = null,
 )
 
 internal val MobileUiState.locked: Boolean get() = readOnly || importing
@@ -76,6 +80,7 @@ interface MobileActions {
     fun clearQueue()
     fun move(taskId: String, delta: Int)
     fun showPreview(url: String, knownTitle: String = "")
+    fun showSubscriptionPreview(key: EntryKey) { showPreview(key.url) }
     fun closePreview()
     fun addSubscription(url: String, feedUrl: String, shortName: String, downloadExisting: Boolean)
     fun checkSubscriptions(ids: List<String>)
@@ -84,6 +89,7 @@ interface MobileActions {
     fun renameSource(id: String, shortName: String)
     fun removeSource(id: String)
     fun queueEntries(keys: List<EntryKey>)
+    fun resolveSubscriptionQueuePrompt(accept: Boolean) {}
     fun skipEntries(keys: List<EntryKey>)
     fun acknowledgeDuplicates()
     fun dismissMessage()
