@@ -84,7 +84,8 @@ internal class SessionLoopbackServer(
         }
         output.write(buildString {
             append(if (range == null) "HTTP/1.1 200 OK\r\n" else "HTTP/1.1 206 Partial Content\r\n")
-            append("Content-Type: video/mp4\r\nContent-Length: ${end - start + 1}\r\nAccept-Ranges: bytes\r\n")
+            val contentType = if (path.endsWith(".html")) "text/html; charset=utf-8" else "video/mp4"
+            append("Content-Type: $contentType\r\nContent-Length: ${end - start + 1}\r\nAccept-Ranges: bytes\r\n")
             if (range != null) append("Content-Range: bytes $start-$end/${body.size}\r\n")
             append("Connection: close\r\n\r\n")
         }.toByteArray(StandardCharsets.US_ASCII))

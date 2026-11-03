@@ -286,9 +286,12 @@ class SessionJournalInstrumentedTest {
     @Test fun actualAudioPostprocessingFailureDoesNotRestartTheTransferredMedia() {
         initialize()
         val invalid = "This is deliberately not a valid MP4 container.\n".repeat(4096).toByteArray()
-        SessionLoopbackServer(mapOf("/broken.mp4" to invalid)).use { origin ->
+        // GenericIE also probes a direct media URL with GET. Keep webpage
+        // discovery separate so this counter measures only the media transfer.
+        val page = """<!doctype html><html><head><title>Broken audio fixture</title></head><body><video controls><source src="/broken.mp4" type="video/mp4"></video></body></html>""".toByteArray()
+        SessionLoopbackServer(mapOf("/broken.html" to page, "/broken.mp4" to invalid)).use { origin ->
             val token = UUID.randomUUID().toString()
-            val task = DownloadTask(url = "${origin.baseUrl}/broken.mp4")
+            val task = DownloadTask(url = "${origin.baseUrl}/broken.html")
             val stage = File(context.cacheDir, "staging/processing-$token").apply { mkdirs() }
             val traces = CopyOnWriteArrayList<EngineTrace>()
             val samples = CopyOnWriteArrayList<EngineProgress>()
@@ -308,6 +311,7 @@ class SessionJournalInstrumentedTest {
                 assertTrue("The processing boundary must be identified in a genuine native trace", traces.any { it.event == "processing_failed" })
                 assertEquals("A processing error cannot retry the whole native request", 1, traces.count { it.event == "attempt_start" })
                 assertFalse(traces.any { it.event == "retry_scheduled" || it.event == "quality_fallback" })
+                assertEquals("The source webpage must be enumerated only once", 1, origin.getCount("/broken.html"))
                 assertEquals("The completed HTTP transfer must not begin again", 1, origin.getCount("/broken.mp4"))
                 assertTrue(samples.all { it.percent.isFinite() && it.percent in 0f..99f })
                 assertEquals("A direct engine failure cannot manufacture successful history", before, graph.repository.state.value.history)
