@@ -73,7 +73,11 @@ class DownloaderViewModel(application: Application) : AndroidViewModel(applicati
         val snapshot = repository.state.value
         val live = DownloadService.progress.value
         val shown = snapshot.copy(queue = snapshot.queue.map { task ->
-            live[task.id]?.let { progress -> task.copy(progress = progress.percent, speed = progress.speed,
+            live[task.id]?.let { progress -> task.copy(
+                // A late live sample must not replace the durable success marker
+                // used to distinguish cleanup from an incomplete URI publication.
+                progress = if (task.status in setOf(DownloadStatus.COMPLETED, DownloadStatus.CLEANUP_REQUIRED)) task.progress else progress.percent,
+                speed = progress.speed,
                 downloaded = formatBytes(progress.downloadedBytes), eta = progress.eta,
                 transferredBytes = progress.transferredBytes,
                 title = progress.title?.takeIf(String::isNotBlank) ?: task.title) } ?: task
