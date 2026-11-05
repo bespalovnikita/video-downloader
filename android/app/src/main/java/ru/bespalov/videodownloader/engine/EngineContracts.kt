@@ -56,6 +56,8 @@ data class EngineMetadata(
     val images: List<File> = emptyList(),
     val extractor: String = "",
     val maxHeight: Int = 0,
+    val previewError: String = "",
+    val savedAtMillis: Long = 0,
 )
 
 /** Original diagnostics are retained; presentation localization belongs to the UI. */

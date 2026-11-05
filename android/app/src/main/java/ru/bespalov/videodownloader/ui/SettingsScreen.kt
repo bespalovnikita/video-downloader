@@ -87,9 +87,9 @@ internal fun SettingsScreen(
         Text("Загрузчик и данные", style = MaterialTheme.typography.titleMedium)
         Text("yt-dlp: ${ui.runtimeVersion.ifBlank { if (ui.runtimeReady) "версия неизвестна" else "получение версии…" }}",
             style = MaterialTheme.typography.bodySmall, modifier = Modifier.testTag("runtimeVersion"))
-        OutlinedButton(onClick = actions::updateRuntime, enabled = ui.runtimeReady && ui.operation == null && !ui.running && !ui.locked) { Text("Обновить yt-dlp") }
+        OutlinedButton(onClick = actions::updateRuntime, enabled = ui.runtimeReady && ui.operation?.active != true && !ui.running && !ui.locked) { Text("Обновить yt-dlp") }
         OutlinedButton(onClick = exportBackup) { Text("Экспорт резервной копии") }
-        OutlinedButton(onClick = { restore = true }, enabled = !ui.running && ui.operation == null) { Text("Восстановить из резервной копии") }
+        OutlinedButton(onClick = { restore = true }, enabled = !ui.running && ui.operation?.active != true) { Text("Восстановить из резервной копии") }
         Text("Резервная копия содержит настройки, очередь, подписки и историю. Скачанные видео и содержимое файла cookies в неё не входят.", style = MaterialTheme.typography.bodySmall)
         Spacer(Modifier.height(12.dp))
     }

@@ -330,25 +330,59 @@ class DownloaderViewModel(application: Application) : AndroidViewModel(applicati
         checkSubscriptions(listOf(source.id))
     }
 
-    override fun checkSubscriptions(ids: List<String>) {
+    override fun checkSubscriptions(ids: List<String>) = beginSubscriptionCheck(ids, forceFull = false)
+    override fun checkSubscriptionsFully(ids: List<String>) = beginSubscriptionCheck(ids, forceFull = true)
+
+    private fun beginSubscriptionCheck(ids: List<String>, forceFull: Boolean) {
         if (checkJob?.isActive == true || maintenanceJob?.isActive == true) return
         subscriptionOfferEpoch++
-        mutable.update { it.copy(subscriptionQueuePrompt = null) }
+        val operation = UiOperation("Проверка подписок", "Подготовка…", total = ids.distinct().size, cancellable = true)
+        mutable.update { it.copy(subscriptionQueuePrompt = null, operation = operation) }
+        fun updateOperation(change: (UiOperation) -> UiOperation) {
+            mutable.update { state ->
+                val current = state.operation
+                if (current?.id == operation.id && current.active) state.copy(operation = change(current)) else state
+            }
+        }
         checkJob = viewModelScope.launch {
+            var completed = 0
+            var failed = 0
+            var skipped = 0
+            val successful = mutableSetOf<String>()
+            var outcome = "Проверка завершена"
             try {
                 graph.ready.await(); writable()
                 check(graph.runtimeReady.value) { "Движок ещё не готов." }
                 val sources = repository.state.value.subscriptions.filter { it.id in ids && !it.paused }
+                updateOperation { it.copy(total = sources.size) }
                 val cookie = repository.state.value.settings.cookiesFile.takeIf(String::isNotBlank)?.let(::File)
-                val successful = mutableSetOf<String>()
-                for ((index, source) in sources.withIndex()) {
+                for (requested in sources) {
+                    currentCoroutineContext().ensureActive()
+                    val snapshot = repository.state.value
+                    val source = snapshot.subscriptions.firstOrNull { it.id == requested.id && !it.paused }
+                    if (source == null) {
+                        completed++; skipped++
+                        updateOperation { it.copy(completed = completed) }
+                        continue
+                    }
                     val requestId = "scan-${UUID.randomUUID()}"
                     checkRequest = requestId
-                    mutable.update { it.copy(operation = UiOperation("Проверка подписок", source.title.ifBlank { source.url }, index, sources.size, cancellable = true)) }
+                    val caption = source.title.ifBlank { source.url }
+                    updateOperation { it.copy(stage = caption, completed = completed) }
                     try {
-                        val scan = graph.engine.scan(requestId, source.url, source.feedUrl, cookie) { stage ->
-                            val translated = when (stage) { "Enumerating" -> "Полный обход"; "Parsing" -> "Разбор списка"; "Feed" -> "RSS/Atom"; "Ready" -> "Готово"; else -> stage }
-                            mutable.update { it.copy(operation = it.operation?.copy(stage = "${source.title.ifBlank { source.url }}: $translated")) }
+                        val known = snapshot.items.filter { it.subscriptionId == source.id }.mapTo(mutableSetOf()) { it.url }
+                        val scan = graph.engine.scan(requestId, source.url, source.feedUrl, cookie,
+                            initialized = source.initialized, knownUrls = known, forceFull = forceFull) { stage ->
+                            val translated = when (stage) {
+                                "RecentWindow" -> "Проверка последних 20 материалов"
+                                "FullFallback" -> "Переход к полному обходу"
+                                "Enumerating" -> "Полный обход"
+                                "Parsing" -> "Разбор списка"
+                                "Feed" -> "RSS/Atom"
+                                "Ready" -> "Результат получен"
+                                else -> stage
+                            }
+                            updateOperation { it.copy(stage = "$caption: $translated") }
                         }
                         val applied = repository.update { state ->
                             if (state.subscriptions.none { it.id == source.id }) state else {
@@ -358,24 +392,67 @@ class DownloaderViewModel(application: Application) : AndroidViewModel(applicati
                                 SubscriptionRules.queueEntries(scanned, pending)
                             }
                         }
-                        successful += source.id
-                        applied.items.filter { it.subscriptionId == source.id && it.state in setOf(EntryState.NEW, EntryState.QUEUED) }
-                            .forEach { graph.previews.request(it.url, it.title) }
+                        completed++
+                        if (applied.subscriptions.any { it.id == source.id }) {
+                            successful += source.id
+                            graph.log(JournalRecord(JournalLevel.Information, "subscriptions",
+                                "Проверка завершена: scope=${scan.scope}, материалов=${scan.items.size}",
+                                JournalContext(session = operation.id, job = source.id, video = source.url)))
+                            if (scan.warning.isNotBlank()) graph.log(JournalRecord(JournalLevel.Warning,
+                                "subscriptions", scan.warning, JournalContext(session = operation.id, job = source.id, video = source.url)))
+                            // This enqueues work only. The scanner never waits for image HTTP requests.
+                            try { prefetchSubscriptionPreviews(applied, source.id, scan) }
+                            catch (cancel: CancellationException) { throw cancel }
+                            catch (error: Exception) {
+                                graph.log(JournalRecord(JournalLevel.Warning, "preview", "Не удалось подготовить фоновые превью: ${error.message}",
+                                    JournalContext(job = source.id, video = source.url)))
+                            }
+                        } else skipped++
+                        updateOperation { it.copy(completed = completed) }
                     } catch (cancel: CancellationException) { throw cancel }
                     catch (error: Exception) {
+                        completed++; failed++
                         val raw = error.message ?: error.javaClass.simpleName
                         repository.update { SubscriptionRules.recordFailure(it, source.id, raw) }
-                        graph.log("Subscription ${source.id}: $raw")
+                        graph.log(JournalRecord(JournalLevel.Error, "subscriptions", raw,
+                            JournalContext(session = operation.id, job = source.id, video = source.url)))
+                        updateOperation { it.copy(completed = completed) }
                     } finally { checkRequest = null }
                 }
                 currentCoroutineContext().ensureActive()
                 val pending = SubscriptionRules.pendingNewKeys(repository.state.value, successful)
                 if (pending.isNotEmpty()) mutable.update { it.copy(subscriptionQueuePrompt = SubscriptionQueuePrompt(
                     pending.map { (sourceId, url) -> EntryKey(sourceId, url) }, pending.map { it.first }.distinct().size)) }
-            } catch (cancel: CancellationException) { throw cancel }
-            catch (error: Exception) { message(error.message ?: error.javaClass.simpleName) }
-            finally { checkRequest = null; mutable.update { it.copy(operation = null) } }
+            } catch (cancel: CancellationException) {
+                outcome = "Проверка отменена"
+                throw cancel
+            } catch (error: Exception) {
+                outcome = "Проверка завершилась с ошибкой"
+                message(error.message ?: error.javaClass.simpleName)
+            } finally {
+                checkRequest = null
+                updateOperation { it.copy(completed = completed, cancellable = false,
+                    stage = "$outcome. Успешно: ${successful.size}, ошибок: $failed, пропущено: $skipped.",
+                    finishedAtElapsedMillis = android.os.SystemClock.elapsedRealtime()) }
+            }
         }
+    }
+
+    private suspend fun prefetchSubscriptionPreviews(state: AppState, sourceId: String, scan: FullScan) = withContext(Dispatchers.Default) {
+        val confirmed = if (scan.scope == ScanScope.Full) scan.items.mapTo(mutableSetOf()) { it.url } else null
+        for (item in state.items) {
+            currentCoroutineContext().ensureActive()
+            if (item.subscriptionId != sourceId || (confirmed != null && item.url !in confirmed)) continue
+            try { graph.previews.request(item.url, item.title) }
+            catch (error: Exception) {
+                graph.log(JournalRecord(JournalLevel.Warning, "preview", "Не удалось поставить превью в обработку: ${error.message}",
+                    JournalContext(job = sourceId, video = item.url)))
+            }
+        }
+    }
+
+    override fun dismissOperation() {
+        mutable.update { if (it.operation?.active == false) it.copy(operation = null) else it }
     }
 
     override fun cancelCheck() { checkRequest?.let(graph.engine::cancel); checkJob?.cancel() }

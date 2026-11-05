@@ -28,11 +28,15 @@ internal fun SubscriptionsScreen(ui: MobileUiState, actions: MobileActions) {
     var add by rememberSaveable { mutableStateOf(false) }
     var selectedSource by rememberSaveable { mutableStateOf("") }
     var filter by rememberSaveable { mutableIntStateOf(0) }
+    var fullScan by rememberSaveable { mutableStateOf(false) }
     var selected by remember(selectedSource, filter) { mutableStateOf(setOf<EntryKey>()) }
     val source = ui.snapshot.subscriptions.firstOrNull { it.id == selectedSource }
     val sources = ui.snapshot.subscriptions
     val clipboard = LocalClipboardManager.current
     val sourceEntries = ui.snapshot.items.filter { it.subscriptionId == source?.id }
+    val checkSources: (List<String>) -> Unit = { ids ->
+        if (fullScan) actions.checkSubscriptionsFully(ids) else actions.checkSubscriptions(ids)
+    }
     val openSource: (String) -> Unit = { id ->
         selectedSource = id
         val entries = ui.snapshot.items.filter { it.subscriptionId == id }
@@ -41,8 +45,14 @@ internal fun SubscriptionsScreen(ui: MobileUiState, actions: MobileActions) {
     Column(Modifier.fillMaxSize().padding(horizontal = 12.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Button(onClick = { add = true }, enabled = !ui.locked, modifier = Modifier.testTag("addSubscription")) { Text("Добавить") }
-            TextButton(onClick = { actions.checkSubscriptions(sources.filterNot { it.paused }.map { it.id }) },
-                enabled = !ui.locked && ui.runtimeReady && ui.operation == null && sources.any { !it.paused }) { Text("Проверить все") }
+            TextButton(onClick = { checkSources(sources.filterNot { it.paused }.map { it.id }) },
+                enabled = !ui.locked && ui.runtimeReady && ui.operation?.active != true && sources.any { !it.paused },
+                modifier = Modifier.testTag("checkAllSubscriptions")) { Text("Проверить все") }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Checkbox(checked = fullScan, onCheckedChange = { fullScan = it },
+                enabled = !ui.locked && ui.operation?.active != true, modifier = Modifier.testTag("forceFullSubscriptions"))
+            Text("Полная проверка", style = MaterialTheme.typography.bodySmall)
         }
         if (source != null) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -56,7 +66,7 @@ internal fun SubscriptionsScreen(ui: MobileUiState, actions: MobileActions) {
             LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(vertical = 8.dp)) {
                 if (sources.isEmpty()) item { EmptyState("Добавь канал или плейлист. Проверки запускаются вручную; скачивание — кнопкой Start.") }
                 items(sources, key = { it.id }) { item ->
-                    SourceCard(item, ui, actions, onClick = { openSource(item.id) })
+                    SourceCard(item, ui, actions, check = { checkSources(listOf(item.id)) }, onClick = { openSource(item.id) })
                 }
             }
         } else {
@@ -105,7 +115,7 @@ internal fun SubscriptionsScreen(ui: MobileUiState, actions: MobileActions) {
 }
 
 @Composable
-private fun SourceCard(source: Subscription, ui: MobileUiState, actions: MobileActions, onClick: () -> Unit) {
+private fun SourceCard(source: Subscription, ui: MobileUiState, actions: MobileActions, check: () -> Unit, onClick: () -> Unit) {
     var menu by remember { mutableStateOf(false) }
     var rename by remember { mutableStateOf(false) }
     var remove by remember { mutableStateOf(false) }
@@ -130,7 +140,8 @@ private fun SourceCard(source: Subscription, ui: MobileUiState, actions: MobileA
                 Text("Новых: $count", style = MaterialTheme.typography.bodySmall)
                 val baseline = ui.snapshot.items.count { it.subscriptionId == source.id && it.state == EntryState.BASELINE }
                 if (baseline > 0) Text("Исходный набор: $baseline", style = MaterialTheme.typography.bodySmall)
-                TextButton(onClick = { actions.checkSubscriptions(listOf(source.id)) }, enabled = !ui.locked && !source.paused && ui.operation == null && ui.runtimeReady) { Text("Проверить") }
+                TextButton(onClick = check, enabled = !ui.locked && !source.paused && ui.operation?.active != true && ui.runtimeReady,
+                    modifier = Modifier.testTag("checkSubscription:${source.id}")) { Text("Проверить") }
             }
             Box {
                 TextButton(onClick = { menu = true }) { Text("⋮") }

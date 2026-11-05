@@ -12,16 +12,23 @@ import kotlinx.serialization.json.longOrNull
 import java.net.URI
 
 internal fun JsonObject.text(name: String): String = (this[name] as? JsonPrimitive)?.takeIf { it.isString }?.content.orEmpty()
+internal fun JsonElement?.scanInt(): Int? = (this as? JsonPrimitive)?.takeUnless { it.isString }?.intOrNull
+internal fun JsonElement?.scanLong(): Long? = (this as? JsonPrimitive)?.takeUnless { it.isString }?.longOrNull
+internal fun JsonElement?.scanBoolean(): Boolean? = (this as? JsonPrimitive)?.takeUnless { it.isString }?.booleanOrNull
 
 /** Full yt-dlp enumeration; preview metadata and arbitrary flat entries are not scans. */
 object ScanParser {
     const val MAX_METADATA_BYTES = 32 * 1024 * 1024
 
-    fun parse(json: String, sourceUrl: String, maxItems: Int = 10_000): FullScan {
-        require(maxItems in 1..10_000 && Urls.isHttp(sourceUrl)) { "Некорректный источник или предел проверки." }
+    fun parse(json: String, sourceUrl: String, maxItems: Int = 10_000, maxPages: Int = 500): FullScan {
+        require(maxItems in 1..10_000 && maxPages in 1..500 && Urls.isHttp(sourceUrl)) { "Некорректный источник или предел проверки." }
         require(json.toByteArray(Charsets.UTF_8).size <= MAX_METADATA_BYTES) { "Метаданные превышают 32 МиБ." }
         val root = Json.parseToJsonElement(json) as? JsonObject ?: error("Ответ не содержит коллекцию.")
-        if (PornHubCollections.listingUrl(sourceUrl) != null) return PornHubCollections.parse(root, sourceUrl, maxItems)
+        for (name in listOf("_error", "incomplete", "_incomplete", "truncated")) {
+            val flag = root[name]
+            require(flag == null || flag == JsonNull || flag == JsonPrimitive(false)) { "Источник сообщает о неполном обходе." }
+        }
+        if (PornHubCollections.listingUrl(sourceUrl) != null) return PornHubCollections.parse(root, sourceUrl, maxItems, maxPages)
         val found = linkedMapOf<String, DiscoveredMedia>()
         var enumerated = 0
         var collections = 0
@@ -38,13 +45,13 @@ object ScanParser {
             require(entries.size <= maxItems) { "В источнике больше допустимого числа материалов." }
             for (field in listOf("playlist_count", "n_entries")) {
                 val count = value[field]
-                if (count != null && count != JsonNull) require((count as? JsonPrimitive)?.longOrNull == entries.size.toLong()) {
+                if (count != null && count != JsonNull) require(count.scanLong() == entries.size.toLong()) {
                     "Количество материалов указывает на неполный обход."
                 }
             }
             value["requested_entries"]?.takeIf { it != JsonNull }?.let { requested ->
                 require(requested is JsonArray && requested.size == entries.size && requested.withIndex().all {
-                    (it.value as? JsonPrimitive)?.intOrNull == it.index + 1
+                    it.value.scanInt() == it.index + 1
                 }) { "Обход вернул только часть коллекции." }
             }
             entries.forEach { raw ->
@@ -70,7 +77,7 @@ object ScanParser {
         collection(root, 0)
         val title = root.text("title").ifEmpty { sourceUrl }
         var feed = ""
-        val host = URI(sourceUrl).host.lowercase()
+        val host = URI(sourceUrl).host?.lowercase(java.util.Locale.ROOT).orEmpty()
         if (host == "youtube.com" || host.endsWith(".youtube.com")) {
             val channel = listOf(root.text("channel_id"), root.text("uploader_id"))
                 .firstOrNull { Regex("^UC[A-Za-z0-9_-]{22}$").matches(it) }
@@ -89,38 +96,49 @@ object PornHubCollections {
         val uri = URI(url)
         val path = pathPattern.matchEntire(uri.rawPath)
         if (!Urls.isHttp(url) || !hostPattern.matches(uri.host) ||
-            (uri.port != -1 && uri.port != if (uri.scheme.lowercase() == "https") 443 else 80) || path == null) null
-        else "https://${uri.host.lowercase()}/${path.groupValues[1]}/${path.groupValues[2]}/videos" +
+            (uri.port != -1 && uri.port != if (uri.scheme.lowercase(java.util.Locale.ROOT) == "https") 443 else 80) || path == null) null
+        else "https://${uri.host.lowercase(java.util.Locale.ROOT)}/${path.groupValues[1]}/${path.groupValues[2]}/videos" +
             if (path.groupValues[1] == "channels") "" else "/upload"
     } catch (_: Exception) { null }
 
-    internal fun parse(root: JsonObject, sourceUrl: String, maxItems: Int): FullScan {
-        val proof = root["vd_ph_scan"] as? JsonObject ?: error("Нет подтверждения полноты публикаций Pornhub.")
-        require((proof["version"] as? JsonPrimitive)?.intOrNull == 1 &&
-            (proof["complete"] as? JsonPrimitive)?.booleanOrNull == true &&
-            (proof["verified_first_page"] as? JsonPrimitive)?.booleanOrNull == true &&
+    internal fun parse(root: JsonObject, sourceUrl: String, maxItems: Int, maxPages: Int = 500,
+        recentWindow: Int? = null): FullScan {
+        val proof = root[if (recentWindow == null) "vd_ph_scan" else "vd_ph_recent"] as? JsonObject
+            ?: error("Нет подтверждения списка публикаций Pornhub.")
+        require(proof["version"].scanInt() == 1 &&
+            proof["complete"].scanBoolean() == (recentWindow == null) &&
+            proof["verified_first_page"].scanBoolean() == true &&
             proof.text("source_url") == sourceUrl && proof.text("listing_url") == listingUrl(sourceUrl)) {
             "Полнота списка публикаций Pornhub не подтверждена."
         }
+        if (recentWindow != null) require("vd_ph_scan" !in root && proof.text("scope") == "recent" &&
+            proof.text("order") == "most_recent" && proof["window_size"].scanInt() == recentWindow) {
+            "Порядок новых публикаций Pornhub не подтверждён."
+        }
         val entries = root["entries"] as? JsonArray ?: error("Некорректный список публикаций.")
         val pages = proof["pages"] as? JsonArray ?: error("Нет списка страниц публикаций.")
-        val count = (proof["item_count"] as? JsonPrimitive)?.intOrNull ?: -1
-        require(count in 0..maxItems && count == entries.size && pages.size in 1..500) { "Список публикаций обрезан или превышает предел." }
+        val count = proof["item_count"].scanInt() ?: -1
+        require(count in 0..maxItems && count == entries.size && pages.size in 1..maxPages) { "Список публикаций обрезан или превышает предел." }
         val pageCounts = pages.mapIndexed { index, raw ->
             val page = raw as? JsonObject ?: error("Некорректная страница публикаций.")
-            val number = (page["number"] as? JsonPrimitive)?.intOrNull
-            val size = (page["count"] as? JsonPrimitive)?.intOrNull ?: -1
+            val number = page["number"].scanInt()
+            val size = page["count"].scanInt() ?: -1
+            val hasNext = page["has_next"].scanBoolean()
             require(number == index + 1 && size >= 0 && (size != 0 || (count == 0 && pages.size == 1)) &&
-                (page["has_next"] as? JsonPrimitive)?.booleanOrNull == (index + 1 < pages.size)) { "Нарушена последовательность страниц Pornhub." }
+                hasNext != null && (index + 1 == pages.size || hasNext) &&
+                (recentWindow != null || index + 1 < pages.size || !hasNext)) { "Нарушена последовательность страниц Pornhub." }
             size
         }.toMutableList()
-        val host = Regex("pornhub(?:premium)?\\.(?:com|net|org)$", RegexOption.IGNORE_CASE).find(URI(sourceUrl).host)!!.value.lowercase()
+        if (recentWindow != null && count < recentWindow) require((pages.last() as JsonObject)["has_next"].scanBoolean() == false) {
+            "Окно новых публикаций Pornhub обрезано до достижения предела."
+        }
+        val host = Regex("pornhub(?:premium)?\\.(?:com|net|org)$", RegexOption.IGNORE_CASE).find(URI(sourceUrl).host)!!.value.lowercase(java.util.Locale.ROOT)
         val seen = hashSetOf<String>()
         val result = entries.map { raw ->
             val item = raw as? JsonObject ?: error("Некорректный материал публикаций.")
             val id = item.text("id")
             val url = item.text("url")
-            val page = (item["vd_page"] as? JsonPrimitive)?.intOrNull ?: 0
+            val page = item["vd_page"].scanInt() ?: 0
             require(item.text("_type") == "url" && item.text("ie_key") == "PornHub" && Regex("^[a-z0-9]+$").matches(id) &&
                 url == "https://www.$host/view_video.php?viewkey=$id" && seen.add(url) && page in 1..pageCounts.size) { "Посторонний или повторный материал Pornhub." }
             pageCounts[page - 1] = pageCounts[page - 1] - 1
@@ -129,6 +147,7 @@ object PornHubCollections {
         }
         require(pageCounts.all { it == 0 }) { "Количество материалов страницы не совпадает." }
         return FullScan(root.text("title").ifEmpty { sourceUrl }, result,
-            suggestedName = listOf(root.text("channel"), root.text("uploader"), root.text("title")).firstOrNull(String::isNotBlank).orEmpty())
+            suggestedName = listOf(root.text("channel"), root.text("uploader"), root.text("title")).firstOrNull(String::isNotBlank).orEmpty(),
+            scope = if (recentWindow == null) ScanScope.Full else ScanScope.RecentWindow)
     }
 }

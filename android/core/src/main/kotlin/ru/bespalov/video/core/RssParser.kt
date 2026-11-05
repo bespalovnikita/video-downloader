@@ -51,8 +51,9 @@ object RssParser {
         val titles = feedItems.associate { it.url to it.title }
         val full = scan.items.map { it.url }.toSet()
         val unconfirmed = feedItems.count { it.url !in full }
+        val confirmedBy = if (scan.scope == ScanScope.Full) "полным обходом" else "окном новых публикаций"
         val warning = if (unconfirmed == 0) scan.warning else listOf(scan.warning,
-            "Элементов ленты, не подтверждённых полным обходом: $unconfirmed.").filter(String::isNotBlank).joinToString(" ")
+            "Элементов ленты, не подтверждённых $confirmedBy: $unconfirmed.").filter(String::isNotBlank).joinToString(" ")
         return scan.copy(items = scan.items.map {
             if (it.title.isBlank() || it.title == it.url) it.copy(title = titles[it.url]?.takeIf(String::isNotBlank) ?: it.title) else it
         }, warning = warning)

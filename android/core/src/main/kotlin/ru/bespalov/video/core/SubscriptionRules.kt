@@ -9,6 +9,10 @@ object SubscriptionRules {
             "Полный список содержит некорректные или повторные материалы либо превышает 10 000 записей."
         }
         val known = state.items.filter { it.subscriptionId == sourceId }.associateBy { it.url }
+        if (scan.scope == ScanScope.RecentWindow) require(source.initialized &&
+            scan.items.size <= RecentScanParser.RECENT_WINDOW_SIZE && scan.items.any { it.url in known }) {
+            "Быстрая проверка не пересекается с сохранённым снимком; требуется полный обход."
+        }
         val ordered = scan.items.map { media ->
             val previous = known[media.url]
             when {
@@ -20,20 +24,21 @@ object SubscriptionRules {
                 else -> previous
             }
         }
-        // A full result defines the source's current order, not the order in
-        // which entries happened to be discovered. Keep absent history after it.
+        // Full defines current source order. A recent result replaces only the
+        // verified prefix; both preserve absent history and earlier decisions.
         val currentUrls = scan.items.mapTo(mutableSetOf()) { it.url }
         val historical = state.items.filter { it.subscriptionId == sourceId && it.url !in currentUrls }
         val firstSourceIndex = state.items.indexOfFirst { it.subscriptionId == sourceId }
         val items = state.items.filterNot { it.subscriptionId == sourceId }.toMutableList().apply {
             addAll(if (firstSourceIndex < 0) size else firstSourceIndex, ordered + historical)
         }
-        val name = source.shortName.ifBlank {
+        val name = if (source.shortName.isBlank() && scan.scope == ScanScope.Full) {
             SubscriptionNames.create(scan.suggestedName.ifBlank { scan.title }, source.id,
                 state.subscriptions.filter { it.id != sourceId }.map { it.shortName })
-        }
+        } else source.shortName
         val changed = state.copy(items = items, subscriptions = state.subscriptions.map {
-            if (it.id == sourceId) it.copy(title = scan.title.ifBlank { it.url }, shortName = name,
+            if (it.id == sourceId) it.copy(title = scan.title.takeIf { title -> title.isNotBlank() && title != it.url }
+                ?: it.title.ifBlank { it.url }, shortName = name,
                 feedUrl = it.feedUrl.ifBlank { scan.feedUrl }, initialized = true, lastAttemptUtc = now,
                 lastSuccessUtc = now, lastError = "", lastWarning = scan.warning) else it
         })

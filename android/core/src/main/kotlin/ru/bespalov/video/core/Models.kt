@@ -106,12 +106,16 @@ data class AppState(
 )
 
 data class DiscoveredMedia(val url: String, val title: String = "")
+enum class ScanScope { Full, RecentWindow }
+
+/** The historical name remains source-compatible; scope defines whether this is a complete archive. */
 data class FullScan(
     val title: String,
     val items: List<DiscoveredMedia>,
     val feedUrl: String = "",
     val warning: String = "",
     val suggestedName: String = "",
+    val scope: ScanScope = ScanScope.Full,
 )
 
 @Serializable
