@@ -139,7 +139,8 @@ class SubscriptionParityInstrumentedTest {
                     val viewModel = model(activity)
                     fun checkBatch(start: Boolean = true) {
                         if (start) activity.onActivity { viewModel.checkSubscriptions(sourceIds) }
-                        compose.waitUntil(120_000) { viewModel.ui.value.subscriptionQueuePrompt != null && viewModel.ui.value.operation == null }
+                        compose.waitUntil(120_000) { viewModel.ui.value.subscriptionQueuePrompt != null && viewModel.ui.value.operation?.active == false }
+                        assertNotNull("The completed check must retain its frozen result", viewModel.ui.value.operation?.finishedAtElapsedMillis)
                         val prompt = requireNotNull(viewModel.ui.value.subscriptionQueuePrompt)
                         assertEquals(acceptedUrls, prompt.keys.map { it.url }.toSet())
                         assertEquals(2, prompt.sourceCount)
@@ -198,7 +199,8 @@ class SubscriptionParityInstrumentedTest {
                     assertNull("No question may appear before the entire batch finishes", viewModel.ui.value.subscriptionQueuePrompt)
                     compose.onNodeWithText("Отменить проверку").performClick()
                     origin.releaseSource("b")
-                    compose.waitUntil(30_000) { viewModel.ui.value.operation == null }
+                    compose.waitUntil(30_000) { viewModel.ui.value.operation?.active == false }
+                    assertTrue(viewModel.ui.value.operation!!.stage.contains("отменена"))
                     assertNull(viewModel.ui.value.subscriptionQueuePrompt)
                     assertTrue(graph.repository.state.value.queue.none { it.url in urls })
                     assertEquals(history, graph.repository.state.value.history)

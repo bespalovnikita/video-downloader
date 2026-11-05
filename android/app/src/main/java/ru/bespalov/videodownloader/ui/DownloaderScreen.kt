@@ -94,7 +94,7 @@ fun DownloaderScreen(ui: MobileUiState, actions: MobileActions) {
                         Text("Подготовка загрузчика…", Modifier.padding(start = 10.dp))
                     }
                 }
-                ui.operation?.let { OperationCard(it, actions::cancelCheck) }
+                ui.operation?.let { OperationCard(it, actions::cancelCheck, actions::dismissOperation) }
                 when (tab) {
                     0 -> QueueScreen(ui, actions, start,
                         importList = { listPicker.launch(arrayOf("text/*", "application/octet-stream")) },
@@ -154,22 +154,29 @@ fun DownloaderScreen(ui: MobileUiState, actions: MobileActions) {
 }
 
 @Composable
-private fun OperationCard(operation: UiOperation, cancel: () -> Unit) {
-    var elapsed by remember(operation.startedAtMillis) { mutableLongStateOf(0L) }
-    LaunchedEffect(operation.startedAtMillis) {
-        while (true) {
-            elapsed = ((System.currentTimeMillis() - operation.startedAtMillis) / 1000).coerceAtLeast(0)
+private fun OperationCard(operation: UiOperation, cancel: () -> Unit, dismiss: () -> Unit) {
+    var now by remember(operation.id, operation.startedAtElapsedMillis) { mutableLongStateOf(android.os.SystemClock.elapsedRealtime()) }
+    LaunchedEffect(operation.id, operation.active) {
+        while (operation.active) {
+            now = android.os.SystemClock.elapsedRealtime()
             delay(1_000)
         }
     }
-    Card(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) {
+    val elapsed = ((operation.finishedAtElapsedMillis ?: now) - operation.startedAtElapsedMillis).coerceAtLeast(0) / 1_000
+    Card(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)
+        .testTag(if (operation.active) "subscriptionCheckProgress" else "subscriptionCheckResult")) {
         Column(Modifier.padding(12.dp)) {
             Text(operation.title, style = MaterialTheme.typography.titleSmall)
             if (operation.stage.isNotBlank()) Text(operation.stage, style = MaterialTheme.typography.bodySmall)
             if (operation.total > 0) Text("Завершено источников: ${operation.completed} / ${operation.total}")
-            Text("Прошло: ${elapsed / 60} мин ${elapsed % 60} с", style = MaterialTheme.typography.bodySmall)
-            LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 8.dp))
-            if (operation.cancellable) TextButton(onClick = cancel) { Text("Отменить проверку") }
+            Text("Прошло: ${elapsed / 60} мин ${elapsed % 60} с", style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.testTag("operationElapsed"))
+            if (operation.active) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 8.dp).testTag("operationAnimation"))
+            else if (operation.total > 0) LinearProgressIndicator(
+                progress = { (operation.completed.toFloat() / operation.total).coerceIn(0f, 1f) },
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
+            if (operation.active && operation.cancellable) TextButton(onClick = cancel, modifier = Modifier.testTag("operationCancel")) { Text("Отменить проверку") }
+            if (!operation.active) TextButton(onClick = dismiss, modifier = Modifier.testTag("dismissOperation")) { Text("Скрыть результат") }
         }
     }
 }

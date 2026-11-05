@@ -5,6 +5,7 @@ import ru.bespalov.video.core.AppState
 import ru.bespalov.video.core.Settings
 import ru.bespalov.videodownloader.download.DownloadSessionSnapshot
 import ru.bespalov.videodownloader.engine.EngineProgress
+import java.util.UUID
 
 data class EntryKey(val subscriptionId: String, val url: String)
 
@@ -28,7 +29,12 @@ data class UiOperation(
     val total: Int = 0,
     val startedAtMillis: Long = System.currentTimeMillis(),
     val cancellable: Boolean = false,
-)
+    val id: String = UUID.randomUUID().toString(),
+    val startedAtElapsedMillis: Long = android.os.SystemClock.elapsedRealtime(),
+    val finishedAtElapsedMillis: Long? = null,
+) {
+    val active: Boolean get() = finishedAtElapsedMillis == null
+}
 
 data class DuplicatePrompt(
     val url: String,
@@ -91,7 +97,9 @@ interface MobileActions {
     fun closePreview()
     fun addSubscription(url: String, feedUrl: String, shortName: String, downloadExisting: Boolean)
     fun checkSubscriptions(ids: List<String>)
+    fun checkSubscriptionsFully(ids: List<String>) { checkSubscriptions(ids) }
     fun cancelCheck()
+    fun dismissOperation() {}
     fun toggleSource(id: String)
     fun renameSource(id: String, shortName: String)
     fun removeSource(id: String)

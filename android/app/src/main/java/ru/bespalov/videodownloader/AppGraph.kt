@@ -159,17 +159,29 @@ class AppRepository(private val file: File) : StateRepository {
     }
 }
 
+/** Metadata acquisition is replaceable independently from its process-wide scheduling policy. */
+internal fun interface PreviewLoader {
+    suspend fun load(requestId: String, url: String, cookies: File?,
+        onDiagnostic: (ru.bespalov.videodownloader.engine.PreviewDiagnostic) -> Unit,
+        onUpdate: (EngineMetadata) -> Unit): EngineMetadata
+}
+
 /** One independent metadata worker; hovering/swiping never starts another request. */
-class PreviewDispatcher(
-    private val engine: AndroidYtDlp,
+class PreviewDispatcher internal constructor(
+    private val loader: PreviewLoader,
     private val repository: StateRepository,
     private val scope: CoroutineScope,
-    private val log: (String) -> Unit,
+    private val log: (JournalRecord) -> Unit,
+    private val clock: () -> Long = System::currentTimeMillis,
 ) {
+    constructor(engine: AndroidYtDlp, repository: StateRepository, scope: CoroutineScope, log: (JournalRecord) -> Unit) :
+        this(PreviewLoader { requestId, url, cookies, onDiagnostic, onUpdate ->
+            engine.metadata(requestId, url, cookies, onDiagnostic, onUpdate)
+        }, repository, scope, log)
+
     private val gate = Any()
     private val pending = LinkedHashMap<String, String>()
     private val active = HashSet<String>()
-    private val completedAt = HashMap<String, Long>()
     private val signal = Channel<Unit>(Channel.CONFLATED)
     private val mutable = MutableStateFlow<Map<String, EngineMetadata>>(emptyMap())
     val metadata = mutable.asStateFlow()
@@ -177,7 +189,6 @@ class PreviewDispatcher(
     val errors = failures.asStateFlow()
     private val loading = MutableStateFlow<Set<String>>(emptySet())
     val activeUrls = loading.asStateFlow()
-    private val lastTitle = HashMap<String, String>()
 
     init {
         scope.launch {
@@ -186,24 +197,35 @@ class PreviewDispatcher(
                     val next = synchronized(gate) {
                         pending.entries.firstOrNull()?.let { (url, title) ->
                             pending.remove(url)
-                            active.add(url)
-                            loading.value = active.toSet()
                             url to title
                         }
                     } ?: break
                     val (url, knownTitle) = next
+                    val cached = synchronized(gate) { mutable.value[url] }
+                    // File validation belongs to this background owner, never the
+                    // caller's UI thread. Paging already downloaded images does no I/O here.
+                    if (cached != null && ru.bespalov.videodownloader.engine.PreviewCachePolicy.isFresh(cached, clock()) &&
+                        cached.images.all(File::isFile)) {
+                        val title = cached.title.takeIf { it.isNotBlank() && it != url } ?: knownTitle
+                        if (title.isNotBlank() && title != url) patchTitle(url, title)
+                        continue
+                    }
+                    synchronized(gate) { active.add(url); loading.value = active.toSet() }
                     try {
                         val cookie = repository.state.value.settings.cookiesFile.takeIf(String::isNotBlank)?.let(::File)
-                        val result = engine.metadata("preview-${UUID.randomUUID()}", url, cookie) { update -> publish(update) }
-                        publish(result)
-                        synchronized(gate) {
-                            completedAt[url] = System.currentTimeMillis()
-                            completedAt.keys.retainAll(mutable.value.keys)
+                        val result = loader.load("preview-${UUID.randomUUID()}", url, cookie, ::diagnostic) { update ->
+                            if (update.url == url) publish(update, knownTitle)
                         }
-                        failures.value = failures.value - url
+                        require(result.url == url) { "Preview metadata belongs to a different URL" }
+                        publish(result.copy(savedAtMillis = result.savedAtMillis.takeUnless { it == 0L } ?: clock()), knownTitle)
                     } catch (error: Exception) {
-                        failures.value = (failures.value + (url to (error.message ?: "Не удалось получить метаданные"))).entries.toList().takeLast(128).associate { it.toPair() }
-                        log("Preview $url: ${error.message}")
+                        if (error is kotlinx.coroutines.CancellationException) currentCoroutineContext().ensureActive()
+                        val reason = ru.bespalov.video.core.JournalSanitizer.redact(error.message ?: error.javaClass.simpleName)
+                        val previous = synchronized(gate) { mutable.value[url] }
+                        publish((previous ?: EngineMetadata(url, title = knownTitle)).copy(
+                            previewError = reason, savedAtMillis = clock()), knownTitle)
+                        diagnostic(ru.bespalov.videodownloader.engine.PreviewDiagnostic(
+                            "metadata", url, reason = reason))
                     } finally { synchronized(gate) { active.remove(url); loading.value = active.toSet() } }
                 }
             }
@@ -214,41 +236,71 @@ class PreviewDispatcher(
         if (!Urls.isHttp(url)) return
         synchronized(gate) {
             if (url in active) return
-            if (url in mutable.value && url !in failures.value &&
-                System.currentTimeMillis() - (completedAt[url] ?: 0L) < 72 * 60 * 60_000L) {
-                mutable.value[url]?.title?.takeIf { it.isNotBlank() && it != url }?.let { title ->
-                    scope.launch { patchTitle(url, title) }
-                }
-                return
-            }
+            val title = pending[url]?.takeIf { it.isNotBlank() && it != url } ?: knownTitle
             if (priority) {
                 val previous = pending.toMap()
                 pending.clear()
-                pending[url] = knownTitle
+                pending[url] = title
                 previous.filterKeys { it != url }.forEach { (key, value) -> pending[key] = value }
-            } else pending.putIfAbsent(url, knownTitle)
+            } else pending[url] = title
         }
         signal.trySend(Unit)
     }
 
-    private fun publish(value: EngineMetadata) {
-        mutable.value = (mutable.value - value.url + (value.url to value)).entries.toList().takeLast(128).associate { it.toPair() }
-        val title = value.title.trim()
-        if (title.isBlank() || title == value.url || lastTitle[value.url] == title) return
-        lastTitle[value.url] = title
-        if (lastTitle.size > 256) lastTitle.remove(lastTitle.keys.first())
-        scope.launch {
-            patchTitle(value.url, title)
+    private fun publish(value: EngineMetadata, knownTitle: String) {
+        val title = synchronized(gate) {
+            val previous = mutable.value[value.url]
+            val combined = value.copy(
+                title = value.title.takeIf { it.isNotBlank() && it != value.url }
+                    ?: previous?.title?.takeIf { it.isNotBlank() && it != value.url } ?: knownTitle,
+                uploader = value.uploader.ifBlank { previous?.uploader.orEmpty() },
+                durationSeconds = value.durationSeconds.takeIf { it.isFinite() && it > 0 } ?: previous?.durationSeconds ?: 0.0,
+                images = value.images.filter(File::isFile).takeIf { it.isNotEmpty() }
+                    ?: previous?.images.orEmpty().filter(File::isFile),
+                extractor = value.extractor.ifBlank { previous?.extractor.orEmpty() },
+                maxHeight = maxOf(value.maxHeight, previous?.maxHeight ?: 0),
+                previewError = ru.bespalov.video.core.JournalSanitizer.redact(value.previewError),
+            ).let { result -> result.copy(title = bounded(result.title, 4096), uploader = bounded(result.uploader, 1024),
+                extractor = bounded(result.extractor, 256), images = result.images.take(15)) }
+            mutable.value = (mutable.value - value.url + (value.url to combined)).entries.toList().takeLast(128).associate { it.toPair() }
+            failures.value = (failures.value - value.url + if (combined.previewError.isNotBlank())
+                mapOf(value.url to combined.previewError) else emptyMap()).filterKeys { it in mutable.value }
+            val goodTitle = combined.title.trim()
+            goodTitle.takeIf { it.isNotBlank() && it != value.url }
         }
+        if (title != null) scope.launch { patchTitle(value.url, title) }
+    }
+
+    private fun bounded(value: String, length: Int): String {
+        var size = minOf(value.length, length)
+        if (size > 0 && value[size - 1].isHighSurrogate()) size--
+        return value.take(size)
+    }
+
+    private fun diagnostic(value: ru.bespalov.videodownloader.engine.PreviewDiagnostic) {
+        fun safe(text: String) = ru.bespalov.video.core.JournalSanitizer.redact(text)
+        val message = "stage=${safe(value.stage)} image_index=${value.imageIndex} " +
+            "http_status=${value.httpStatus ?: "n/a"} bytes=${value.bytes ?: "n/a"} " +
+            "candidate=${safe(value.candidateUrl).ifBlank { "none" }} reason=${safe(value.reason)}"
+        try { log(JournalRecord(ru.bespalov.video.core.JournalLevel.Warning, "preview", message,
+            ru.bespalov.video.core.JournalContext(video = value.videoUrl))) }
+        catch (_: Exception) { /* Optional diagnostics do not stop metadata acquisition. */ }
     }
 
     private suspend fun patchTitle(url: String, title: String) {
         try {
+            val current = repository.state.value
+            if (current.queue.none { it.url == url && (it.title.isBlank() || it.title == url) } &&
+                current.items.none { it.url == url && (it.title.isBlank() || it.title == url) }) return
             repository.update { state -> state.copy(queue = state.queue.map { task ->
                 if (task.url == url && (task.title.isBlank() || task.title == task.url)) task.copy(title = title) else task
             }, items = state.items.map { item ->
                 if (item.url == url && (item.title.isBlank() || item.title == item.url)) item.copy(title = title) else item
             }) }
-        } catch (error: Exception) { log("Preview title checkpoint: ${error.message}") }
+        } catch (error: Exception) {
+            if (error is kotlinx.coroutines.CancellationException) currentCoroutineContext().ensureActive()
+            diagnostic(ru.bespalov.videodownloader.engine.PreviewDiagnostic("title_checkpoint", url,
+                reason = error.message ?: error.javaClass.simpleName))
+        }
     }
 }

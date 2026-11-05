@@ -19,9 +19,9 @@ import kotlinx.coroutines.withTimeout
 import org.json.JSONObject
 import ru.bespalov.video.core.DownloadTask
 import ru.bespalov.video.core.FullScan
-import ru.bespalov.video.core.PornHubCollections
-import ru.bespalov.video.core.RssParser
-import ru.bespalov.video.core.ScanParser
+import ru.bespalov.video.core.ScanMetadata
+import ru.bespalov.video.core.SubscriptionScanCoordinator
+import ru.bespalov.video.core.SubscriptionScanLimits
 import ru.bespalov.video.core.Settings
 import ru.bespalov.video.core.Urls
 import ru.bespalov.videodownloader.BuildConfig
@@ -78,7 +78,9 @@ class AndroidYtDlp(context: Context) {
         execute("version-${UUID.randomUUID()}", YoutubeDLRequest(emptyList<String>()).apply { addOption("--version") }, 15_000).out.trim()
     }
 
-    suspend fun metadata(requestId: String, url: String, cookies: File?, onUpdate: (EngineMetadata) -> Unit = {}): EngineMetadata =
+    suspend fun metadata(requestId: String, url: String, cookies: File?,
+                         onDiagnostic: (PreviewDiagnostic) -> Unit = {},
+                         onUpdate: (EngineMetadata) -> Unit = {}): EngineMetadata =
         withContext(Dispatchers.IO) {
             require(Urls.isHttp(url)) { "Expected an HTTP(S) URL" }
             metadataWorker.withLock {
@@ -89,49 +91,31 @@ class AndroidYtDlp(context: Context) {
                     var json = JSONObject(response.out)
                     if (!json.has("formats") && json.optJSONArray("entries")?.length()?.let { it > 0 } == true)
                         json = json.getJSONArray("entries").getJSONObject(0)
-                    galleries.fetch(url, json, onUpdate)
+                    galleries.fetch(url, json, onUpdate, onDiagnostic)
                 }
             }
         }
 
-    suspend fun scan(requestId: String, url: String, feedUrl: String? = null, cookies: File?, onProgress: (String) -> Unit = {}): FullScan =
+    suspend fun scan(requestId: String, url: String, feedUrl: String? = null, cookies: File?,
+                     initialized: Boolean = false, knownUrls: Set<String> = emptySet(), forceFull: Boolean = false,
+                     onProgress: (String) -> Unit = {}): FullScan =
         withContext(Dispatchers.IO) {
             require(Urls.isHttp(url)) { "Expected an HTTP(S) source URL" }
             scanWorker.withLock {
                 initialize()
-                val special = PornHubCollections.listingUrl(url) != null
-                withTimeout(if (special) 15 * 60_000L else 180_000L) {
-                    report(onProgress, "Enumerating")
-                    val arguments = mutableListOf("--ignore-config", "--dump-single-json", "--skip-download", "--abort-on-error",
-                        "--no-color", "--no-progress", "--encoding", "utf-8", "--socket-timeout", "20")
-                    if (special) arguments += listOf("--no-plugin-dirs", "--plugin-dirs", pluginRoot.path,
-                        "--use-extractors", "videodownloader:pornhub:channel", "--flat-playlist",
-                        "--extractor-args", "VideoDownloaderPornHubChannel:max_items=10000;max_pages=500")
-                    else arguments += listOf("--no-flat-playlist", "--playlist-end", "10001")
-                    val response = execute(requestId, request(url, arguments, cookies), if (special) 900_000 else 180_000)
-                    if (Regex("\\bERROR:|\\bincomplete\\b|\\btruncat\\w*|\\bpartial (?:playlist|collection)|\\bgiving up after", RegexOption.IGNORE_CASE)
-                            .containsMatchIn(response.err)) throw EngineException("Full collection enumeration was incomplete: " + response.err.take(2000))
-                    report(onProgress, "Parsing")
-                    var scan = ScanParser.parse(response.out, url)
-                    currentCoroutineContext().ensureActive()
-                    val feed = feedUrl?.takeIf(String::isNotBlank) ?: scan.feedUrl
-                    if (feed.isNotBlank()) {
-                        report(onProgress, "Feed")
-                        try {
-                            require(Urls.isHttp(feed)) { "Invalid feed URL" }
-                            val xml = withTimeout(12_000) { httpBytes(feed, 2 * 1024 * 1024, 12_000).toString(Charsets.UTF_8) }
-                            scan = RssParser.enrich(scan, RssParser.parse(xml)).copy(feedUrl = feed)
-                        } catch (cancel: CancellationException) {
-                            currentCoroutineContext().ensureActive()
-                            scan = scan.copy(feedUrl = feed, warning = "Лента не ответила вовремя; использован полный обход yt-dlp.")
-                        } catch (error: Exception) {
-                            scan = scan.copy(feedUrl = feed, warning = "Лента недоступна; использован полный обход yt-dlp. " + error.message.orEmpty())
-                        }
-                    }
-                    currentCoroutineContext().ensureActive()
-                    report(onProgress, "Ready")
-                    scan
-                }
+                val limits = SubscriptionScanLimits()
+                SubscriptionScanCoordinator(limits).scan(url, feedUrl, initialized, knownUrls, forceFull,
+                    enumerate = { scope, timeoutMillis ->
+                        val arguments = SubscriptionScanArguments.build(url, pluginRoot.path, scope, limits)
+                        // execute joins native cancellation before returning. A timed-out
+                        // probe therefore releases its request ID before the full fallback.
+                        val response = execute(requestId, request(url, arguments, cookies), timeoutMillis,
+                            outputLimit = limits.maxMetadataBytes)
+                        ScanMetadata(response.out, response.err)
+                    },
+                    readFeed = { address, timeoutMillis ->
+                        httpBytes(address, limits.maxFeedBytes, timeoutMillis.toInt()).toString(Charsets.UTF_8)
+                    }, onProgress = onProgress)
             }
         }
 
@@ -383,7 +367,8 @@ private val httpDeadlines = Executors.newSingleThreadScheduledExecutor { task ->
     Thread(task, "preview-http-deadline").apply { isDaemon = true }
 }
 
-internal suspend fun httpBytes(address: String, maxBytes: Int, timeoutMs: Int): ByteArray = withContext(Dispatchers.IO) {
+internal suspend fun httpBytes(address: String, maxBytes: Int, timeoutMs: Int,
+                              onTransfer: (status: Int, bytes: Int) -> Unit = { _, _ -> }): ByteArray = withContext(Dispatchers.IO) {
     require(Urls.isHttp(address)) { "Expected an HTTP(S) address" }
     require(maxBytes > 0 && timeoutMs > 0)
     val connection = URL(address).openConnection() as HttpURLConnection
@@ -393,10 +378,13 @@ internal suspend fun httpBytes(address: String, maxBytes: Int, timeoutMs: Int): 
     // A per-read timeout alone lets a server keep a worker forever by sending
     // one byte before every timeout. Bound headers and the complete body too.
     val timedOut = AtomicBoolean(false)
+    var status = 0
+    var transferred = 0
     val deadline = httpDeadlines.schedule({ timedOut.set(true); connection.disconnect() }, timeoutMs.toLong(), TimeUnit.MILLISECONDS)
     try {
         connection.connect()
-        if (connection.responseCode !in 200..299) throw IOException("HTTP Error ${connection.responseCode}: ${connection.responseMessage}")
+        status = connection.responseCode
+        if (status !in 200..299) throw IOException("HTTP Error $status: ${connection.responseMessage}")
         if (connection.contentLengthLong > maxBytes) throw IOException("HTTP response exceeds its size limit")
         connection.inputStream.use { input ->
             val output = ByteArrayOutputStream()
@@ -405,6 +393,7 @@ internal suspend fun httpBytes(address: String, maxBytes: Int, timeoutMs: Int): 
                 currentCoroutineContext().ensureActive()
                 val size = input.read(buffer)
                 if (size < 0) break
+                transferred += size
                 if (output.size().toLong() + size > maxBytes) throw IOException("HTTP response exceeds its size limit")
                 output.write(buffer, 0, size)
             }
@@ -414,5 +403,8 @@ internal suspend fun httpBytes(address: String, maxBytes: Int, timeoutMs: Int): 
     } catch (error: IOException) {
         if (timedOut.get()) throw SocketTimeoutException("HTTP response timed out").apply { initCause(error) }
         throw error
-    } finally { deadline.cancel(false); connection.disconnect() }
+    } finally {
+        runCatching { onTransfer(status, transferred) }
+        deadline.cancel(false); connection.disconnect()
+    }
 }
