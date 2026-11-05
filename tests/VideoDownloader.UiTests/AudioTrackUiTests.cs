@@ -35,7 +35,8 @@ internal sealed partial class UiScenario
             subject.ApplyOptions(storage.Restore()!.Settings);
             Require(languages.IsEnabled && languages.Text=="ru,en" && subject.ReadOptions().AudioTrack=="Languages","Checkpoint restore restores both mode and language field");
             Require(subject.SessionState.Queue.Count==0 && subject.SessionState.Coordinator==null,"Audio settings must not start downloads");
+            Console.WriteLine("PASS: audio-track controls, language selection and saved settings without downloads");
         }
-        finally { if(window.IsVisible)window.Close(); }
+        finally { subject.Dispose();if(window.IsVisible)window.Close(); }
     }
 }
