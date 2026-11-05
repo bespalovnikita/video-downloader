@@ -26,6 +26,8 @@ data class Settings(
     val cookiesFile: String = "",
     val outputTreeUri: String = "",
     val showTitles: Boolean = true,
+    val audioTrack: String = "Default",
+    val audioLanguages: String = "ru",
     val logProfile: String = "Standard",
 )
 

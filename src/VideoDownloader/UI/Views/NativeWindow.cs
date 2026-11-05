@@ -67,6 +67,7 @@ public sealed partial class NativeWindow : IDisposable
             ("QualityCombo",["Best","2160","1440","1080","720"]),
             ("CodecCombo",["Auto","H264","VP9","AV1"]),
             ("ContainerCombo",["Auto","MP4","MKV","WebM"]),
+            ("AudioTrackCombo",AudioTrackSelection.DisplayNames),
             ("RateLimitCombo",["Unlimited","1M","5M","10M","25M","50M"]),
             ("FragmentsCombo",["Auto","1","2","3","4","6","8"]),
             ("ProfileCombo",ProfileCatalog.DisplayNames)})
@@ -82,6 +83,7 @@ public sealed partial class NativeWindow : IDisposable
         _ingress=new InputIngressController(_window,AddUrls,()=>Check(K("WatchClipboardCheck")),_lifecycle.Activate,Log,
             text=>_ = ImportPortableTextAsync(text),file=>_ = ImportPortableFileAsync(file));
         BindActions();
+        C("AudioTrackCombo").SelectionChanged+=(_,_)=>B("AudioLanguagesBox").IsEnabled=AudioTrackSelection.ToId(Pick(C("AudioTrackCombo")))=="Languages";
         InitializeJournalControls();
         K("ShowVideoTitlesCheck").Checked+=(_,_)=>SaveCheckpoint();
         K("ShowVideoTitlesCheck").Unchecked+=(_,_)=>SaveCheckpoint();
@@ -218,6 +220,7 @@ public sealed partial class NativeWindow : IDisposable
         Threads=B("ThreadsBox").Text,Fragments=Pick(C("FragmentsCombo")),
         FilenameTemplate=B("FilenameTemplateBox").Text,Output=B("OutputBox").Text,
         Cookies=B("CookiesBox").Text,SubtitleLangs=B("SubtitleLangsBox").Text,
+        AudioTrack=AudioTrackSelection.ToId(Pick(C("AudioTrackCombo"))),AudioLanguages=B("AudioLanguagesBox").Text,
         WriteSubs=Check(K("WriteSubsCheck")),AutoSubs=Check(K("AutoSubsCheck")),EmbedSubs=Check(K("EmbedSubsCheck")),
         EmbedThumbnail=Check(K("EmbedThumbnailCheck")),EmbedMetadata=Check(K("EmbedMetadataCheck")),
         EmbedChapters=Check(K("EmbedChaptersCheck")),Archive=Check(K("ArchiveCheck")),
@@ -229,6 +232,7 @@ public sealed partial class NativeWindow : IDisposable
     internal void ApplyOptions(DownloadOptions o)
     {
         C("LogProfileCombo").SelectedItem=JournalProfileCatalog.Display(o.LogProfile);
+        C("AudioTrackCombo").SelectedItem=AudioTrackSelection.Display(o.AudioTrack);
         _panelLayout.Apply(o.QueuePanelWidth,o.PreviewPanelWidth);
         foreach(var (name,value) in new[]{
             ("ProfileCombo",ProfileCatalog.Display(o.Profile)),("QualityCombo",o.Quality),("CodecCombo",o.Codec),
@@ -237,7 +241,7 @@ public sealed partial class NativeWindow : IDisposable
         C("RateLimitCombo").Text=o.RateLimit;
         foreach(var(name,value)in new[]{
             ("ThreadsBox",o.Threads),("FilenameTemplateBox",o.FilenameTemplate),
-            ("OutputBox",o.Output),("CookiesBox",o.Cookies),("SubtitleLangsBox",o.SubtitleLangs)})
+            ("OutputBox",o.Output),("CookiesBox",o.Cookies),("SubtitleLangsBox",o.SubtitleLangs),("AudioLanguagesBox",o.AudioLanguages)})
             B(name).Text=value;
         foreach(var(name,value)in new[]{
             ("WriteSubsCheck",o.WriteSubs),("AutoSubsCheck",o.AutoSubs),("EmbedSubsCheck",o.EmbedSubs),
@@ -438,6 +442,7 @@ public sealed partial class NativeWindow : IDisposable
         var options=ReadOptions();
         try
         {
+            AudioTrackSelection.Validate(options);
             DependencyCenter.ValidateDownloadTools(_ytDlp);
             if(!string.IsNullOrWhiteSpace(options.Cookies)&&!File.Exists(options.Cookies))
                 throw new FileNotFoundException("Cookie file is missing.",options.Cookies);

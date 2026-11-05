@@ -65,6 +65,7 @@ object FilenameTemplates {
 /** Validate persisted and pinned options before handing any values to the native engine. */
 object SettingsRules {
     fun validate(settings: Settings) {
+        AudioTracks.validate(settings)
         require(settings.profile in Profiles.names) { "Неизвестный профиль." }
         require(settings.quality in setOf("Best", "2160", "1440", "1080", "720")) { "Неизвестное качество." }
         require(settings.codec in setOf("Auto", "H264", "VP9", "AV1")) { "Неизвестный кодек." }

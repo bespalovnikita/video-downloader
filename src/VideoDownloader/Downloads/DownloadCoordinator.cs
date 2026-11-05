@@ -45,6 +45,7 @@ public sealed class DownloadCoordinator : IAsyncDisposable
     public DownloadCoordinator(string ytDlp,AppPersistence data,DownloadOptions options,
         Action<DownloadItem> changed,Action<string> log,Action<JournalRecord>? trace=null)
     {
+        AudioTrackSelection.Validate(options);
         _ytDlp=ytDlp;_data=data;_options=options;_changed=changed;_log=log;_trace=trace;
         _arguments=new YtDlpArguments(options);
         _options.PinOutputDirectory();

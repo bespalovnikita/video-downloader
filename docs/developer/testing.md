@@ -50,6 +50,7 @@ pwsh -NoProfile -File .\scripts\build.ps1 -Task Publish
 | Поведение | Основные тесты |
 | --- | --- |
 | Аргументы yt-dlp, обработка процесса, финальный файл и отмена | [NativeContractTests](../../tests/VideoDownloader.Tests/NativeContractTests.cs), [LifecycleRegressionTests](../../tests/VideoDownloader.Tests/LifecycleRegressionTests.cs), [ReviewRegressionTests](../../tests/VideoDownloader.Tests/ReviewRegressionTests.cs) |
+| Языки звука, оригинальная дорожка, отсутствие подстановки и настройки UI | [AudioTrackSelectionTests](../../tests/VideoDownloader.Tests/AudioTrackSelectionTests.cs), [AudioTrackUiTests](../../tests/VideoDownloader.UiTests/AudioTrackUiTests.cs) |
 | Атомарная замена checkpoint, временные и постоянные Windows-блокировки | [AtomicWriteTests](../../tests/VideoDownloader.Tests/AtomicWriteTests.cs) |
 | Чтение старых checkpoint и результатов | [LegacyCompatibilityTests](../../tests/VideoDownloader.Tests/LegacyCompatibilityTests.cs), [legacy fixtures](../../tests/fixtures/legacy/) |
 | Источники, окно новинок, полный fallback, RSS и состояния | [SubscriptionScannerTests](../../tests/VideoDownloader.Tests/SubscriptionScannerTests.cs), [SubscriptionStoreTests](../../tests/VideoDownloader.Tests/SubscriptionStoreTests.cs) |
@@ -85,6 +86,8 @@ python tests/pornhub-collector-tests.py
 [`core`-тесты](../../android/core/src/test/) проверяют правила и хранение без Android-устройства; [`app` unit-тесты](../../android/app/src/test/) — приватные пути, аргументы движка и правила выбора runtime. Lint и сборка выявляют платформенные ошибки, но не доказывают поведение установленного APK.
 
 ## Android: устройство и Home
+
+`AudioTrackInstrumentedTest` выполняет реальные запросы установленного yt-dlp в режиме `--simulate --load-info-json` на общих [фикстурах аудиодорожек](../../tests/fixtures/audio-tracks/CONTRACT.md), проверяет отсутствие подстановки другого языка и сохранение настроек через Compose. Эта проверка выбора формата не скачивает медиа и не заменяет проверку фоновой загрузки ниже.
 
 Запусти эмулятор **API 35, x86_64**, дождись загрузки и выполни из `android/`:
 
