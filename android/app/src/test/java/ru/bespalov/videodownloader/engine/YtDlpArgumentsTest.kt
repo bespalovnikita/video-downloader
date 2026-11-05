@@ -59,6 +59,32 @@ class YtDlpArgumentsTest {
         }
     }
 
+    @Test fun requestedAudioSurvivesEveryQualityAndCodecFallbackIncludingMp3() {
+        for (codec in listOf("Auto", "H264", "VP9", "AV1")) {
+            val settings = Settings(audioTrack = "Languages", audioLanguages = " RU ", quality = "2160", codec = codec)
+            for (quality in YtDlpArguments.qualityLevels(settings)) {
+                val arguments = YtDlpArguments.download(settings, stage, quality)
+                val selector = arguments[arguments.indexOf("-f") + 1]
+                assertFalse("Embedded default audio must not displace explicit selection", selector.contains("bv*"))
+                for (branch in selector.split('/')) assertTrue(branch.contains("[language~='(?i)^ru(?:-|$)']"))
+            }
+        }
+        val mp3 = YtDlpArguments.download(Settings(audioTrack = "Original", audioOnly = true), stage, "best")
+        assertTrue(mp3.containsAll(listOf("-f", "-x", "--audio-format", "mp3")))
+        assertTrue(mp3[mp3.indexOf("-f") + 1].contains("original"))
+        assertFalse(mp3.contains("--audio-multistreams"))
+    }
+
+    @Test fun multipleLanguagesUseOneBestTrackPerLanguageAndMkv() {
+        val arguments = YtDlpArguments.download(Settings(audioTrack = "Languages", audioLanguages = "ru,en"), stage, "best")
+        assertTrue(arguments.contains("--audio-multistreams"))
+        assertEquals("mkv", arguments[arguments.indexOf("--merge-output-format") + 1])
+        assertEquals("mkv", arguments[arguments.indexOf("--remux-video") + 1])
+        val selector = arguments[arguments.indexOf("-f") + 1]
+        assertEquals(2, Regex("ba\\[").findAll(selector).count())
+        assertFalse(selector.contains("mergeall"))
+    }
+
     @Test fun progressAcceptsRealMarkersAndCannotCreateNonFiniteOrNegativeUiValues() {
         val event = ProgressMarkers.parse("__VD_PROGRESS__| 12.5% | 1.00MiB/s | 00:14 |123|1000|video:137") as MarkerEvent.Progress
         assertEquals(12.5f, event.value.percent, 0.001f)

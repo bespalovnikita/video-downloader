@@ -11,6 +11,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import ru.bespalov.video.core.Profiles
+import ru.bespalov.video.core.AudioTracks
 import ru.bespalov.video.core.JournalProfile
 import java.io.File
 
@@ -39,6 +40,12 @@ internal fun SettingsScreen(
             ChoiceField("Контейнер", draft.container, listOf("Auto", "MP4", "MKV", "WebM").associateWith { it }, !ui.locked, Modifier.weight(1f)) { draft = draft.copy(container = it) }
             ChoiceField("Параллельно", draft.threads.toString(), (1..4).associate { it.toString() to it.toString() }, !ui.locked, Modifier.weight(1f)) { draft = draft.copy(threads = it.toInt()) }
         }
+        ChoiceField("Аудиодорожка", draft.audioTrack, AudioTracks.names, !ui.locked, Modifier.testTag("audioTrack")) { draft = draft.copy(audioTrack = it) }
+        OutlinedTextField(value = draft.audioLanguages, onValueChange = { draft = draft.copy(audioLanguages = it) },
+            label = { Text("Языки аудио") }, supportingText = { Text("Коды через запятую: ru, en, pt-BR. Несколько языков — контейнер Auto или MKV, без MP3.") },
+            enabled = !ui.locked && draft.audioTrack == "Languages", singleLine = true,
+            modifier = Modifier.fillMaxWidth().testTag("audioLanguages"))
+        Text("«Оригинальная» требует отметки источника. Несколько языков сохраняются в MKV. Недоступная дорожка даст ошибку.", style = MaterialTheme.typography.bodySmall)
         ChoiceField("Фрагментов на видео", draft.fragments.toString(), (1..8).associate { it.toString() to it.toString() }, !ui.locked) { draft = draft.copy(fragments = it.toInt()) }
         ChoiceField("Ограничение скорости", draft.rateLimit, linkedMapOf("Unlimited" to "Без ограничения", "1M" to "1 МБ/с", "5M" to "5 МБ/с", "10M" to "10 МБ/с", "25M" to "25 МБ/с"), !ui.locked) { draft = draft.copy(rateLimit = it) }
         SettingToggle("Только аудио MP3", draft.audioOnly, !ui.locked) { draft = draft.copy(audioOnly = it) }

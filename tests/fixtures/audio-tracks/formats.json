@@ -1,0 +1,18 @@
+{
+  "id": "audio-track-fixture",
+  "title": "Offline audio track selection",
+  "extractor": "generic",
+  "webpage_url": "https://audio-track-fixture.invalid/video",
+  "formats": [
+    {"format_id":"combined-en","url":"https://audio-track-fixture.invalid/combined-en.mp4","ext":"mp4","vcodec":"avc1","acodec":"aac","height":720,"language":"en"},
+    {"format_id":"combined-ru","url":"https://audio-track-fixture.invalid/combined-ru.mp4","ext":"mp4","vcodec":"avc1","acodec":"aac","height":720,"language":"ru-RU"},
+    {"format_id":"video-h264","url":"https://audio-track-fixture.invalid/h264.mp4","ext":"mp4","vcodec":"avc1","acodec":"none","height":1080},
+    {"format_id":"video-av1","url":"https://audio-track-fixture.invalid/av1.mp4","ext":"mp4","vcodec":"av01","acodec":"none","height":1080},
+    {"format_id":"audio-unknown","url":"https://audio-track-fixture.invalid/unknown.m4a","ext":"m4a","vcodec":"none","acodec":"aac","abr":320},
+    {"format_id":"audio-rue","url":"https://audio-track-fixture.invalid/rue.m4a","ext":"m4a","vcodec":"none","acodec":"aac","abr":256,"language":"rue"},
+    {"format_id":"audio-ru-low","url":"https://audio-track-fixture.invalid/ru-low.m4a","ext":"m4a","vcodec":"none","acodec":"aac","abr":64,"language":"ru"},
+    {"format_id":"audio-ru-high","url":"https://audio-track-fixture.invalid/ru-high.m4a","ext":"m4a","vcodec":"none","acodec":"aac","abr":192,"language":"ru-RU"},
+    {"format_id":"audio-en","url":"https://audio-track-fixture.invalid/en.m4a","ext":"m4a","vcodec":"none","acodec":"aac","abr":128,"language":"en","format_note":"English (ORIGINAL)","language_preference":10},
+    {"format_id":"audio-not-original","url":"https://audio-track-fixture.invalid/dubbed.m4a","ext":"m4a","vcodec":"none","acodec":"aac","abr":256,"language":"en","format_note":"English (non-original)"}
+  ]
+}

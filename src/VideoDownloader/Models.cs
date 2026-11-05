@@ -96,6 +96,8 @@ public sealed class DownloadOptions
     public string Output { get; set; } = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads", "downloaded-video");
     public string Cookies { get; set; } = "";
     public string SubtitleLangs { get; set; } = "ru.*,en.*";
+    public string AudioTrack { get; set; } = "Default";
+    public string AudioLanguages { get; set; } = "ru";
     public bool WriteSubs { get; set; }
     public bool AutoSubs { get; set; }
     public bool EmbedSubs { get; set; }

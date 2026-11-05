@@ -103,6 +103,7 @@ android {
         exclude("**/__pycache__/**", "**/*.pyc")
     }
     sourceSets.getByName("main").res.srcDir(runtimeResources)
+    sourceSets.getByName("androidTest").assets.srcDir(rootProject.file("../tests/fixtures/audio-tracks"))
     packaging {
         jniLibs.useLegacyPackaging = true
         resources.excludes += setOf("META-INF/AL2.0", "META-INF/LGPL2.1")

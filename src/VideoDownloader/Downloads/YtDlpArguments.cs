@@ -14,16 +14,9 @@ internal sealed class YtDlpArguments(DownloadOptions options)
         _=>["best"]
     };
 
-    private string FormatSelector(string quality)
-    {
-        string code=options.Codec switch {"H264"=>"avc1","VP9"=>"vp9","AV1"=>"av01",_=>""};
-        string filter=quality=="best" ? "" : $"[height<={quality}]";
-        if (code.Length==0) return $"bv*{filter}+ba/b{filter}";
-        return $"bv*{filter}[vcodec^={code}]+ba/b{filter}[vcodec^={code}]/bv*{filter}+ba/b{filter}";
-    }
-
     internal IEnumerable<string> Build(string url,string stage,string quality)
     {
+        string? format=AudioTrackSelection.FormatSelector(options,quality);
         string[] standard=["--ignore-config","--encoding","utf-8","--newline","--progress","--no-color","--no-quiet",
             "--impersonate","chrome","-N",options.FragmentCount.ToString(CultureInfo.InvariantCulture),
             "-o",Path.Combine(stage,options.FilenameTemplate),
@@ -43,12 +36,14 @@ internal sealed class YtDlpArguments(DownloadOptions options)
         if (File.Exists(options.Cookies)) args.AddRange(["--cookies",options.Cookies]);
         if (options.RateLimit.Length>0 && options.RateLimit!="Unlimited") args.AddRange(["--limit-rate",options.RateLimit]);
         if (options.Sponsor) args.AddRange(["--sponsorblock-remove","sponsor"]);
+        if (format!=null) args.AddRange(["-f",format]);
         if (options.AudioOnly) args.AddRange(["-x","--audio-format","mp3"]);
         else
         {
-            args.AddRange(["-f",FormatSelector(quality)]);
-            if (options.Container!="Auto") args.AddRange(["--merge-output-format",options.Container.ToLowerInvariant(),
-                "--remux-video",options.Container.ToLowerInvariant()]);
+            if(AudioTrackSelection.Multiple(options))args.Add("--audio-multistreams");
+            string container=AudioTrackSelection.Container(options);
+            if (container!="Auto") args.AddRange(["--merge-output-format",container.ToLowerInvariant(),
+                "--remux-video",container.ToLowerInvariant()]);
         }
         if (options.WriteSubs || options.EmbedSubs) args.Add("--write-subs");
         if (options.WriteSubs || options.EmbedSubs || options.AutoSubs)

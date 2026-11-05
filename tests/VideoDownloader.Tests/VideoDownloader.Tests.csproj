@@ -8,6 +8,7 @@
     <UseWPF>true</UseWPF>
   </PropertyGroup>
   <ItemGroup>
+    <Content Include="..\fixtures\audio-tracks\*.json" Link="fixtures\audio-tracks\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\fixtures\pornhub-discovery.json" Link="fixtures\pornhub-discovery.json" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\fixtures\legacy\**\*" Link="fixtures\legacy\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\fixtures\portable-queue\**\*" Link="fixtures\portable-queue\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
