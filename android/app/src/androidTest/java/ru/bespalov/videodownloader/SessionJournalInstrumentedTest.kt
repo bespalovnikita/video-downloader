@@ -1,7 +1,6 @@
 package ru.bespalov.videodownloader
 
 import android.app.KeyguardManager
-import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -64,8 +63,18 @@ class SessionJournalInstrumentedTest {
     private fun padded(bytes: Int): ByteArray = sample() + ByteBuffer.allocate(bytes).apply {
         putInt(capacity()); put("free".toByteArray(Charsets.US_ASCII))
     }.array()
-    private fun await(timeout: Long = 90_000, predicate: () -> Boolean) = runBlocking(Dispatchers.IO) {
-        withTimeout(timeout) { while (!predicate()) delay(50) }
+    private fun await(timeout: Long = 90_000, label: String = "condition", predicate: () -> Boolean) {
+        val callerStack = Throwable().stackTrace.filterNot {
+            it.className == javaClass.name && it.methodName.startsWith("await")
+        }.toTypedArray()
+        try {
+            runBlocking(Dispatchers.IO) {
+                withTimeout(timeout) { while (!predicate()) delay(50) }
+            }
+        } catch (error: TimeoutCancellationException) {
+            throw AssertionError("Timed out after $timeout ms waiting for $label at ${callerStack.firstOrNull()}", error)
+                .apply { stackTrace = callerStack }
+        }
     }
     private fun settings(previous: Settings, token: String) = previous.copy(
         profile = "Universal", threads = 4, fragments = 1, quality = "Best", codec = "Auto", container = "Auto",
@@ -181,7 +190,9 @@ class SessionJournalInstrumentedTest {
                         compose.onNodeWithText(oldProfile.displayName).performClick()
                         compose.onNodeWithText(profile.displayName).performClick()
                     }
-                    await(10_000) { graph.repository.state.value.settings.logProfile == profile.id && graph.journal.profile == profile }
+                    await(10_000, "persisted and active journal profile ${profile.id}") {
+                        graph.repository.state.value.settings.logProfile == profile.id && graph.journal.profile == profile
+                    }
                     graph.journal.clear()
                     val prefix = "$token-${profile.id}"
                     listOf(JournalLevel.Error, JournalLevel.Information, JournalLevel.Progress, JournalLevel.Verbose).forEach { level ->
@@ -194,14 +205,14 @@ class SessionJournalInstrumentedTest {
                     assertEquals(profile == JournalProfile.Detailed, captured.contains("$prefix-Verbose"))
                     if (profile == JournalProfile.Errors) {
                         activity.onActivity { model.addUrls("не URL") }
-                        await(5_000) {
+                        await(5_000, "invalid-URL message and Errors-profile app record") {
                             model.ui.value.message?.text?.contains("Не найдено ссылок HTTP(S)") == true &&
                                 graph.journal.snapshotText().contains("[Error/app]")
                         }
                         assertTrue("A real ViewModel validation failure must remain visible in Errors profile",
                             graph.journal.snapshotText().contains("Не найдено ссылок HTTP(S)"))
                         activity.onActivity { model.dismissMessage() }
-                        await(5_000) { model.ui.value.message == null }
+                        await(5_000, "dismissed invalid-URL message") { model.ui.value.message == null }
                     }
                 }
                 val secret = "private-$token"
@@ -209,12 +220,11 @@ class SessionJournalInstrumentedTest {
                 graph.log(JournalRecord(JournalLevel.Error, "device-test",
                     "$token first line\nsecond line\n$public\nhttps://www.pornhub.com/view_video.php?viewkey=PublicKey&signature=$secret\nAuthorization: Bearer $secret\n.example.org\tTRUE\t/\tFALSE\t9999999999\tsession\t$secret\nliteral\\n stays literal",
                     JournalContext(session = "test-$token", job = "job-$token", videoSequence = 3, video = public)))
-                await(5_000) { model.ui.value.logs.any { it.contains(token) && it.contains("first line") } }
-                compose.onNodeWithTag("copyLogs").performClick()
-                var clipboard = ""
-                await(5_000) {
-                    activity.onActivity { clipboard = (it.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).primaryClip?.getItemAt(0)?.text?.toString().orEmpty() }
-                    clipboard.contains("$token first line")
+                await(5_000, "multiline record in the ViewModel journal") {
+                    model.ui.value.logs.any { it.contains(token) && it.contains("first line") }
+                }
+                val clipboard = copyAndAwaitClipboardText(compose, activity, "copyLogs", 5_000, "journal copyLogs") {
+                    it.contains("$token first line")
                 }
                 assertSafeDiagnostic(clipboard, secret, token)
                 activity.onActivity { model.dismissMessage() }
@@ -223,7 +233,9 @@ class SessionJournalInstrumentedTest {
                 compose.onNodeWithTag("saveLogs").assertHasClickAction()
                 // The actual VM and ContentResolver write a real provider URI, just as a picker result does.
                 activity.onActivity { model.exportLogs(uri) }
-                await(10_000) { exported.isFile && exported.length() > 0 && model.ui.value.message?.text == "Журнал сохранён." }
+                await(10_000, "journal content export and success message") {
+                    exported.isFile && exported.length() > 0 && model.ui.value.message?.text == "Журнал сохранён."
+                }
                 val saved = context.contentResolver.openInputStream(uri)!!.bufferedReader().use { it.readText() }
                 assertSafeDiagnostic(saved, secret, token)
                 runBlocking(Dispatchers.IO) { graph.journalFiles.flush() }
@@ -233,7 +245,7 @@ class SessionJournalInstrumentedTest {
                 assertFalse(files.contains(secret))
                 activity.onActivity { model.dismissMessage() }
                 compose.onNodeWithTag("clearLogs").performClick()
-                await(5_000) { model.ui.value.logs.isEmpty() }
+                await(5_000, "cleared ViewModel journal") { model.ui.value.logs.isEmpty() }
                 assertTrue("Clearing the visible journal must retain previously written files", graph.journalFiles.file.exists())
             }
         } finally {
