@@ -5,7 +5,7 @@
 
 Приложение для скачивания видео и аудио с очередью, историей, превью и ручными подписками. Доступны два клиента: **Windows 10/11 x64** на C# / .NET 8 / WPF и **Android 8.0+** на Kotlin / Jetpack Compose. Оба используют yt-dlp; набор возможностей различается.
 
-**[Скачать Windows](https://github.com/bespalovnikita/video-downloader/releases/latest)** · **[Установить Android](docs/user/android.md)** · **[Вся документация на русском](docs/README.md)**
+**[Скачать Windows и Android](https://github.com/bespalovnikita/video-downloader/releases/latest)** · **[Установить Android](docs/user/android.md)** · **[Вся документация на русском](docs/README.md)**
 
 <a id="документация"></a>
 
@@ -33,7 +33,7 @@
 
 ### Android
 
-Установи отладочный APK из [артефактов Android CI](https://github.com/bespalovnikita/video-downloader/actions/workflows/android.yml) или [собери его локально](docs/developer/android-build.md). Автоматическая публикация подписанного стабильного APK пока не настроена. После **Start** загрузкой управляет foreground service с уведомлением; переход на главный экран её не останавливает. [Ограничения Android и работа с файлами](docs/user/android.md) описаны отдельно.
+Скачай `VideoDownloader-Android.apk` из [последнего релиза](https://github.com/bespalovnikita/video-downloader/releases/latest) и открой файл на телефоне. APK содержит сборку для arm64-v8a и x86_64. [Порядок установки и обновления](docs/user/android.md#установка-apk-и-обновление) учитывает переход с прежних отладочных APK; для разработки можно [собрать APK локально](docs/developer/android-build.md). После **Start** загрузкой управляет foreground service с уведомлением; переход на главный экран её не останавливает. [Ограничения Android и работа с файлами](docs/user/android.md) описаны отдельно.
 
 <a id="руководство-по-сценариям"></a>
 <a id="кнопки-быстрого-доступа"></a>
@@ -72,4 +72,4 @@
 
 [Архитектура и диаграммы жизненного цикла](docs/developer/architecture.md) · [Проверки](docs/developer/testing.md) · [Внесение изменений](docs/developer/contributing.md) · [Публикация релизов](docs/developer/releases.md)
 
-Windows-релиз публикуется из `main` после успешной проверки нативного приложения. Android собирается отдельным workflow. Предложения по улучшениям, приоритеты и критерии готовности находятся в [дорожной карте](docs/project/ROADMAP.md); они обозначают будущую работу.
+Единый релиз Windows и Android публикуется из `main` после успешных проверок обеих платформ. Для подписи Android администратор один раз настраивает [постоянный ключ и GitHub Secrets](docs/developer/releases.md#android-артефакт-и-подпись). Предложения по улучшениям, приоритеты и критерии готовности находятся в [дорожной карте](docs/project/ROADMAP.md); они обозначают будущую работу.

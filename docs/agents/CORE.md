@@ -30,18 +30,18 @@ Video Downloader имеет две пользовательские UI-верс�
 
 Не подменяй поведенческие сценарии поиском маркеров в исходниках или холодную загрузку готовым кешем. Не выдавай офлайн-фикстуру за доступ к живому сайту. Подробности: [Windows](WINDOWS.md#тесты-перед-prmerge), [Android](ANDROID.md), [руководство по тестированию](../developer/testing.md).
 
-PR только с Markdown может не запускать workflows из-за фильтров путей. После push в `main` полный Windows workflow запускается независимо от состава изменений.
+PR только с Markdown может не запускать workflows из-за фильтров путей. После push в `main` проверки обеих платформ запускаются независимо от состава изменений.
 
 ## Автоматические стабильные GitHub Releases
 
-Любой коммит в `main` после успешного native Windows CI публикуется как стабильный GitHub Release. Main-only job `release` в `.github/workflows/native-windows.yml` создаёт следующий тег `v2.0.N`, Windows ZIP, SHA-256 и Release Notes. Публикация из PR запрещена: по умолчанию `contents: read`, запись только в release job для `main`.
+Любой коммит в `main` после успешных Windows и Android CI публикуется как стабильный GitHub Release. `.github/workflows/native-windows.yml` вызывает Android CI через `workflow_call`. Main-only job `release` создаёт следующий тег `v2.0.N`, Windows ZIP, подписанный release APK, общий SHA-256 и Release Notes; для Android требуется настроенный постоянный ключ в GitHub Secrets. Публикация из PR запрещена: по умолчанию `contents: read`, запись только в release job для `main`.
 
 - Нумерацией управляет `.github/scripts/ReleaseVersion.psm1`; `scripts/release-version-tests.ps1` выполняется в составе общей команды Test.
-- Версия публикуемого EXE совпадает с Git-тегом; параметры publish переопределяют версию проекта.
-- Release не публикуется при провале native unit/integration/UI/security tests.
+- Версия публикуемого EXE и Android `versionName` совпадают с Git-тегом без `v`; параметры сборки переопределяют локальные версии. Android `versionCode` вычисляется из той же версии по [правилам выпуска](../developer/releases.md#версии).
+- Release не публикуется при провале Windows unit/integration/UI/security tests, Android unit/lint/device tests, release-сборки или проверки подписи APK.
 - Не изменяй и не удаляй ранее опубликованные или чужие релизы. Существующий draft `v1.0.0` не трогай.
 - `main` означает релизную готовность: до merge проверь API и интерфейсную совместимость. Учитывай, что это относится и к Markdown-коммитам.
-- Android debug APK — отдельный CI-артефакт. Публичная подпись и выпуск APK требуют отдельной настройки; не подключай debug APK к автоматическому Windows Release.
+- Android debug APK остаётся отдельным CI-артефактом. В Release включается только release APK с постоянной подписью; секреты доступны только main-only release job. При отсутствии ключа или параметров подписи выпуск завершается ошибкой, без подмены отладочным APK.
 - Сохраняй лицензионные ограничения зависимостей и [Android notices](../../android/THIRD_PARTY_NOTICES.md). Лицензию собственного кода не меняй без отдельного решения владельца.
 
 Порядок выпуска и проверки результата: [руководство разработчика](../developer/releases.md).

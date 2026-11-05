@@ -9,7 +9,7 @@
 | Разобраться с URL, превью, подписками, загрузкой и хранением Windows | [Архитектура и восемь схем](architecture.md) |
 | Найти команды и границы проверок обеих платформ | [Тестирование](testing.md) |
 | Подготовить изменение и PR | [Разработка и участие](contributing.md) |
-| Понять автоматический Windows Release и Android-артефакт | [Выпуск и артефакты](releases.md) |
+| Понять общий Release Windows и Android и настроить подпись APK | [Выпуск и артефакты](releases.md) |
 
 Пользовательские действия описаны отдельно: [Windows](../user/windows.md), [Android](../user/android.md), [Cookies](../user/cookies.md), [перенос очереди](../user/queue-transfer.md). Правила для coding agents — в [разделе для агентов](../agents/README.md), идеи и ограничения развития — в [дорожной карте](../project/ROADMAP.md).
 
