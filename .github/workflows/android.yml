@@ -1,27 +1,11 @@
 name: Android Kotlin build
 
 on:
+  workflow_call:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - 'android/**'
-      - 'collection-plugins/**'
-      - 'tests/fixtures/portable-queue/**'
-      - '.github/workflows/android.yml'
-  push:
-    branches: [main]
-    paths:
-      - 'android/**'
-      - 'collection-plugins/**'
-      - 'tests/fixtures/portable-queue/**'
-      - '.github/workflows/android.yml'
 
 permissions:
   contents: read
-
-concurrency:
-  group: android-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
 
 jobs:
   android:
@@ -38,9 +22,26 @@ jobs:
           packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
           log-accepted-android-sdk-licenses: false
       - uses: gradle/actions/setup-gradle@v4
-      - name: Unit tests, lint and APK
+      - name: Unit tests, debug and release lint, APKs
         working-directory: android
-        run: ./gradlew --no-daemon :core:test :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleDebugAndroidTest
+        run: ./gradlew --no-daemon -PvdVersionName=2.0.0 -PvdVersionCode=2000000 :core:test :app:testDebugUnitTest :app:lintDebug :app:lintRelease :app:assembleDebug :app:assembleDebugAndroidTest :app:assembleRelease
+      - name: Verify release signing with a temporary test key
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ci-test-password
+          ANDROID_KEY_ALIAS: ci-test-only
+          ANDROID_KEY_PASSWORD: ci-test-password
+        run: |
+          signing_dir="$(mktemp -d "$RUNNER_TEMP/vd-android-test.XXXXXX")"
+          cleanup() {
+            rm -rf "$signing_dir"
+            rm -f work/ci-android-release.apk
+          }
+          trap cleanup EXIT
+          keytool -genkeypair -noprompt -keystore "$signing_dir/test.keystore" -storetype PKCS12 -alias "$ANDROID_KEY_ALIAS" -storepass:env ANDROID_KEYSTORE_PASSWORD -keypass:env ANDROID_KEY_PASSWORD -keyalg RSA -keysize 2048 -validity 2 -dname "CN=Video Downloader CI test only"
+          export ANDROID_KEYSTORE_BASE64
+          ANDROID_KEYSTORE_BASE64="$(base64 --wrap=0 "$signing_dir/test.keystore")"
+          pwsh -NoProfile -File scripts/build-android-release.ps1 -Version 2.0.0 -OutputPath work/ci-android-release.apk
       - name: Enable the emulator hardware accelerator
         run: sudo chmod a+rw /dev/kvm
       - name: Android device tests
@@ -52,7 +53,7 @@ jobs:
           profile: pixel_2
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
-          script: cd android && ./gradlew --no-daemon :app:connectedDebugAndroidTest
+          script: cd android && ./gradlew --no-daemon -PvdVersionName=2.0.0 -PvdVersionCode=2000000 :app:connectedDebugAndroidTest
       - name: Upload installable development APK
         uses: actions/upload-artifact@v4
         with:
@@ -69,5 +70,6 @@ jobs:
             android/app/build/reports/tests/
             android/app/build/reports/androidTests/
             android/app/build/reports/lint-results-debug.html
+            android/app/build/reports/lint-results-release.html
             android/app/build/outputs/androidTest-results/
           if-no-files-found: warn

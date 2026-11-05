@@ -2,16 +2,17 @@
 
 [Разработчику](README.md) · [Локальная сборка Windows](windows-build.md) · [Сборка APK](android-build.md) · [Проверки](testing.md)
 
-Windows ZIP публикуется автоматически после успешного CI в `main`. Android workflow создаёт устанавливаемый debug APK как Actions artifact; публичный подписанный Android Release пока не настроен. Сборка этих платформ и их номера версий независимы.
+GitHub Release содержит Windows portable ZIP и Android release APK с одной версией. Выпуск начинается после успешных проверок обеих платформ для одного коммита `main`. Подпись Android требует [однократной настройки постоянного ключа](#android-артефакт-и-подпись); без обязательных секретов выпуск завершается ошибкой.
 
 ## Правило
 
-**Каждый коммит в ветке main — кандидат на стабильный релиз.** Workflow `.github/workflows/native-windows.yml` запускается на любой push в main, включая изменения документации.
+**Каждый коммит в ветке main — кандидат на стабильный релиз.** Workflow `.github/workflows/native-windows.yml` с названием **Windows and Android build** запускается на любой push в `main`, включая изменения документации.
 
-1. Windows CI выполняет компиляцию C# / WPF, тесты GUI, сохранения данных, безопасности файлов, а также настоящие офлайн загрузки через yt-dlp.
-2. При успешных тестах job **Publish GitHub Release from main** получает разрешение на публикацию. В PR и при ручном запуске CI этот этап не выполняется.
-3. Job последовательно выбирает свободный стабильный Git-тег, собирает EXE с версией тега, формирует portable ZIP и SHA-256.
-4. GitHub публикует Release с Release Notes, файлом `VideoDownloader-Windows-x64.zip` и `SHA256SUMS.txt`.
+1. Job `native` выполняет компиляцию C# / WPF, тесты GUI, сохранения данных, безопасности файлов и настоящие офлайн загрузки через yt-dlp.
+2. Переиспользуемый `.github/workflows/android.yml` выполняет Android unit/lint, debug/release-сборки и instrumented tests на API 35, включая настоящую загрузку после Home.
+3. Только после обеих успешных проверок job **Publish GitHub Release from main** получает разрешение на публикацию. В PR и при ручном запуске этот этап не выполняется.
+4. Job последовательно выбирает стабильный Git-тег, собирает EXE и release APK с версией тега, подписывает APK постоянным ключом и проверяет подпись через `apksigner verify`.
+5. GitHub публикует Release с Release Notes, `VideoDownloader-Windows-x64.zip`, `VideoDownloader-Android.apk`, общим `SHA256SUMS.txt`, `THIRD_PARTY_NOTICES.md` и `youtubedl-android-GPL-3.0.txt`.
 
 **Скачать:** https://github.com/bespalovnikita/video-downloader/releases/latest
 
@@ -20,75 +21,109 @@ Windows ZIP публикуется автоматически после усп�
 - Линейка начинается с `v2.0.0` — базовой версии C#-проекта `src/VideoDownloader/VideoDownloader.csproj`.
 - Следующие успешные main commits получают `v2.0.1`, `v2.0.2` и т. д.
 - Изменение базовой версии проекта, например на `2.1.0`, начинает новую minor-линейку `v2.1.0`. Уже опубликованные версии не переиспользуются.
-- Существующий черновик `v1.0.0` остаётся без изменений.
-- Перезапуск CI на том же SHA использует прежний тег и **не создаёт второй релиз**.
+- Версии EXE и Android `versionName` совпадают с тегом без `v`. Android `versionCode` равен `major * 1000000 + minor * 10000 + patch`: например, `2.0.1` даёт `2000001`.
+- Для Android допустимы `minor` от 0 до 99, `patch` от 0 до 9999 и итоговый `versionCode` от 1 до 2100000000. При достижении границы patch нужно поднять базовую minor-версию; несовместимая версия останавливает выпуск.
+- Локальная сборка без переопределения сохраняет значения проекта. Для Android параметры `-PvdVersionName` и `-PvdVersionCode` передаются вместе; в Release их задаёт скрипт `scripts/build-android-release.ps1`.
+- Существующий черновик `v1.0.0` остаётся без изменений. Прежние опубликованные релизы, включая выпуски только с Windows ZIP, автоматически не дополняются.
+- Перезапуск CI на том же SHA использует прежний тег и **не создаёт второй релиз**. Существующий Release пропускается.
 - Нумерация вычисляется модулем `.github/scripts/ReleaseVersion.psm1`, проверяется `scripts/release-version-tests.ps1`.
-- Отдельная concurrency-группа блокирует одновременную выдачу одинаковых тегов при нескольких push в main.
+- Concurrency-группа `video-downloader-main-release` блокирует одновременную выдачу одинаковых тегов при нескольких push в `main`.
 
-**Проваливший CI коммит не публикуется.** Предыдущий стабильный релиз остаётся доступен.
+**Проваливший проверки, сборку или подпись коммит не публикуется.** Предыдущий стабильный релиз остаётся доступен.
 
 ## Артефакты и доступ
 
-В релизе находится автономная C# / .NET 8 / WPF Windows x64 сборка: `VideoDownloader.exe`, `yt-dlp.exe`, XAML, ресурсы и `collection-plugins/videodownloader/yt_dlp_plugins/extractor/vd_pornhub.py`. Последний файл обязателен для импорта публикаций Pornhub через подписки; CI проверяет его наличие в пакете. Пользователю не нужны PowerShell, Python или установленный .NET Runtime. FFmpeg и ffprobe проверяются перед началом загрузок; они устанавливаются через интерфейс или размещаются рядом с приложением/в PATH.
+| Файл Release | Назначение |
+| --- | --- |
+| `VideoDownloader-Windows-x64.zip` | Автономное Windows x64 приложение: EXE, yt-dlp, XAML, ресурсы и общий коллектор |
+| `VideoDownloader-Android.apk` | Подписанный release APK для Android 8.0+, arm64-v8a и x86_64 |
+| `SHA256SUMS.txt` | SHA-256 Windows ZIP и подписанного APK |
+| `THIRD_PARTY_NOTICES.md` | Сведения о сторонних компонентах Android и их исходниках |
+| `youtubedl-android-GPL-3.0.txt` | Текст GPL для Android-рантайма |
 
-Пакет собирается единой командой `pwsh -NoProfile -File scripts/build.ps1 -Task Publish`. В main-only job ей передаётся выбранная версия через `-Version`, имя релизного архива и путь `SHA256SUMS.txt`. Проверка состава отклоняет CMD, пользовательские PowerShell-скрипты и `pwsh.exe`; приложение запускается непосредственно через EXE. Скрипты `scripts/` используются только для разработки и CI.
+Windows-пакет не требует установленного PowerShell, Python или .NET Runtime. FFmpeg и ffprobe устанавливаются через интерфейс или размещаются рядом с приложением/в PATH. Проверка пакета требует `collection-plugins/videodownloader/yt_dlp_plugins/extractor/vd_pornhub.py` и отклоняет CMD, пользовательские PowerShell-скрипты и `pwsh.exe`.
 
-`SHA256SUMS.txt` позволяет проверить целостность скачанного архива.
+Windows ZIP собирается командой `pwsh -NoProfile -File scripts/build.ps1 -Task Publish` с выбранной версией и именем архива. Скрипт `scripts/build-android-release.ps1 -Version VERSION` собирает и подписывает APK; итоговый checksum-файл создаётся после сборки ZIP и подписи APK. Ключ извлекается только во временный каталог runner и удаляется после использования.
 
-- Для обычной PR-сборки сохраняется CI artifact `VideoDownloader-native-windows` в GitHub Actions, без автоматического Release.
-- При успешном push в main публикуется **GitHub Release** с долговечными файлами для скачивания без авторизации.
-- По умолчанию workflow имеет `contents: read`. Только main-only job `release` получает `contents: write`.
-- Если GitHub откажет в публикации, проверь Settings → Actions → General → Workflow permissions. Личный PAT для стандартной публикации не нужен.
+PR и ручной CI сохраняют Actions artifacts **VideoDownloader-native-windows**, **VideoDownloader-Android-debug** и отчёты **Android-test-reports**. Для их скачивания может потребоваться вход в GitHub; срок хранения ограничен. Debug APK не прикрепляется к Release, его подпись между запусками может отличаться.
+
+По умолчанию workflow имеет `contents: read`. Только main-only job `release` получает `contents: write` и секреты подписи. Личный PAT для стандартной публикации не нужен. При отказе доступа проверь **Settings → Actions → General → Workflow permissions**, сохраняя PR-сборки без write-полномочий.
 
 ## Использование
 
-1. Для скачивания используй страницу Releases → Latest.
-2. Для обновлений отправляй изменения в PR и после проверок мержи в main.
-3. Для отката скачай предыдущий стабильный ZIP — опубликованные теги и архивы не перезаписываются.
-4. Перед обновлением заверши приложение, распакуй новый ZIP целиком; пользовательские данные в `%LOCALAPPDATA%\VideoDownloader` сохраняются. Живой работник старой PowerShell-версии блокирует восстановление и новый Start, пока он не завершён.
-5. Перед выпуском выполни `pwsh -NoProfile -File scripts/build.ps1 -Task Test` и дождись зелёного workflow `native-windows.yml`, включая тесты коллектора. Кнопки интерфейса, русские профили и сохранение старых идентификаторов контролируются `scripts/russian-ui-tests.ps1` и настоящими WPF-тестами. Публичная документация проекта ведётся на русском языке.
+1. Для установки используй **Releases → Latest** и файл нужной платформы.
+2. Для обновлений отправляй изменения в PR, дождись проверок обеих платформ и мержи в `main`.
+3. Перед обновлением Windows заверши приложение и распакуй новый ZIP целиком; данные в `%LOCALAPPDATA%\VideoDownloader` сохраняются. Живой работник старой PowerShell-версии блокирует восстановление и новый Start, пока не завершён.
+4. Android обновляется поверх прежней установки при совпадении подписи и допустимом `versionCode`. Переход с debug APK может потребовать предварительного [экспорта данных](../user/android.md#установка-apk-и-обновление). Предыдущий APK с меньшим `versionCode` обычно нельзя установить как обновление.
+5. Для отката Windows скачай предыдущий стабильный ZIP. Опубликованные теги и файлы не перезаписываются.
 
-Релизы не требуют отдельного ручного подтверждения: **всё, что готово к merge в main, считается готовым к выпуску**.
+Перед выпуском выполни применимые [проверки](testing.md), включая `pwsh -NoProfile -File scripts/build.ps1 -Task Test`, и дождись CI. Релизы не требуют отдельного ручного подтверждения: **всё, что готово к merge в main, считается готовым к выпуску**.
 
 ## Ручной запуск CI
 
-Открой **Actions → Native C# Windows build → Run workflow**, выбери нужную ветку и запусти проверку. Это собирает и тестирует Windows-приложение и сохраняет `VideoDownloader-native-windows`, но не публикует Release: job `release` разрешён только для события `push` в `refs/heads/main`.
+Открой **Actions → Windows and Android build → Run workflow**, выбери ветку и запусти проверку обеих платформ. Для отдельных Android-проверок доступен **Android Kotlin build → Run workflow**. Эти запуски сохраняют Actions artifacts, но не публикуют Release: job `release` разрешён только для события `push` в `refs/heads/main`.
 
-Поэтому **This job was skipped** у `Publish GitHub Release from main` в PR или ручном workflow — ожидаемый результат. Для публикации изменение должно попасть в `main`, а запуск именно этого push — успешно пройти `native` и `release`. В интерфейсе GitHub сверяй SHA коммита и тип события, а не только название workflow.
+Поэтому **This job was skipped** у `Publish GitHub Release from main` в PR или ручном workflow — ожидаемый результат. Для публикации найди push нужного SHA в `main`, успешно прошедший Windows, Android и release job.
 
 ## Как проверить публикацию
 
-1. Найди запуск [Windows workflow для main](https://github.com/bespalovnikita/video-downloader/actions/workflows/native-windows.yml?query=branch%3Amain) с SHA нужного merge-коммита.
-2. Убедись, что `native` завершился успешно и `Publish GitHub Release from main` также выполнен успешно. Если `native` упал, публикация не начинается.
-3. Открой [Releases](https://github.com/bespalovnikita/video-downloader/releases) и проверь тег, целевой коммит, `VideoDownloader-Windows-x64.zip` и `SHA256SUMS.txt`.
-4. После распаковки проверь совпадение версии EXE с тегом. При проверке целостности сравни SHA-256 скачанного ZIP с `SHA256SUMS.txt`.
+1. Найди запуск [общего workflow для main](https://github.com/bespalovnikita/video-downloader/actions/workflows/native-windows.yml?query=branch%3Amain) с SHA нужного merge-коммита.
+2. Проверь успешность Windows и Android jobs, затем **Publish GitHub Release from main**. При провале любой платформы публикация не начинается.
+3. Открой [Releases](https://github.com/bespalovnikita/video-downloader/releases), проверь тег, SHA и все файлы из таблицы выше.
+4. Проверь совпадение версии EXE и Android `versionName` с тегом. Сверь SHA-256 скачанных ZIP и APK с `SHA256SUMS.txt`; подпись APK можно проверить `apksigner verify --verbose --print-certs VideoDownloader-Android.apk`.
 
 | Симптом | Проверка |
 | --- | --- |
-| Release job пропущен | Это PR/ручной запуск либо зависимый `native` не завершился успешно; найди push в `main` |
-| Все тесты зелёные, публикация ждёт | Проверь отдельный release job и очередь concurrency `video-downloader-main-release` |
-| Публикация получила отказ в доступе | Проверь разрешения Actions: job `release` требует `contents: write`; не расширяй права PR-сборок |
+| Release job пропущен | Это PR/ручной запуск либо Windows или Android job не завершился успешно; найди push в `main` |
+| Все тесты зелёные, публикация ждёт | Проверь release job и очередь concurrency `video-downloader-main-release` |
+| Не хватает параметров подписи Android | Настрой четыре GitHub Secrets из следующего раздела; debug APK не используется как замена |
+| Ошибка подписи APK | Проверь keystore, alias и оба пароля; сохрани прежний ключ для обновлений |
+| Публикация получила отказ в доступе | Job `release` требует `contents: write`; не расширяй права PR-сборок |
 | Повторный запуск сообщает, что Release уже существует | Это идемпотентный пропуск; проверь существующий тег и его SHA |
-| Тег указывает на другой SHA | Workflow намеренно отказывается переносить чужой тег; исследуй конфликт, сохраняя опубликованные версии |
-| Устарел локальный EXE | Локальный Publish без `-Version` использует базовую версию проекта; это отдельная сборка, не номер последнего GitHub Release |
+| Тег указывает на другой SHA | Workflow отказывается переносить чужой тег; исследуй конфликт, сохраняя опубликованные версии |
+| Устарела локальная версия | Сборка без параметра версии использует значения проекта, а не номер последнего Release |
 
-Основной workflow, выбор тега и проверка пакета находятся в [native-windows.yml](../../.github/workflows/native-windows.yml), [ReleaseVersion.psm1](../../.github/scripts/ReleaseVersion.psm1) и [verify-package.ps1](../../scripts/verify-package.ps1). Не удаляй и не переписывай опубликованные теги или существующий draft `v1.0.0` ради повторного запуска.
+Основные файлы: [native-windows.yml](../../.github/workflows/native-windows.yml), [android.yml](../../.github/workflows/android.yml), [ReleaseVersion.psm1](../../.github/scripts/ReleaseVersion.psm1), [build-android-release.ps1](../../scripts/build-android-release.ps1) и [verify-package.ps1](../../scripts/verify-package.ps1).
 
 ## Android: артефакт и подпись
 
-[Android Kotlin build](../../.github/workflows/android.yml) запускается по изменениям Android, общего коллектора или переносимых фикстур в PR и `main`; доступен и ручной запуск. Workflow выполняет unit/lint, сборку и instrumented tests на API 35, включая реальную загрузку после Home.
+Перед первым автоматическим выпуском администратор репозитория один раз задаёт постоянный ключ. Если приложение уже распространялось с release-подписью, используй прежний keystore: новый ключ не позволит обновлять те установки с сохранением данных.
 
-| Результат | Где находится | Назначение |
-| --- | --- | --- |
-| `VideoDownloader-Android-debug` | Artifacts успешного Android workflow | ZIP с устанавливаемым `app-debug.apk` |
-| `Android-test-reports` | Artifacts Android workflow, если отчёты созданы | Unit, lint и device-отчёты, в том числе при неуспехе |
-| Локальный debug APK | `android/app/build/outputs/apk/debug/app-debug.apk` | Установка и разработка с локальным debug-ключом |
-| Локальный release APK | `android/app/build/outputs/apk/release/app-release-unsigned.apk` | Результат `assembleRelease`, который нужно подписать |
+| GitHub Actions secret | Значение |
+| --- | --- |
+| `ANDROID_KEYSTORE_BASE64` | Base64 полного файла keystore |
+| `ANDROID_KEYSTORE_PASSWORD` | Пароль keystore |
+| `ANDROID_KEY_ALIAS` | Alias ключа внутри keystore |
+| `ANDROID_KEY_PASSWORD` | Пароль ключа |
 
-Для скачивания Actions artifact нужен вход в GitHub; это отличается от публичного Windows Release. Срок хранения артефакта определяется Actions. APK сейчас не прикрепляется к Windows Release, не публикуется в Google Play и не получает автоматический стабильный Android-тег.
+Если ключа ещё нет, рекомендуемый способ — запустить [скрипт первоначальной настройки](../../scripts/setup-android-signing.ps1) на своём компьютере из корня рабочей копии. Нужны PowerShell 7.3+, JDK 17 с `keytool` и GitHub CLI `gh`, авторизованный под администратором репозитория с доступом к Actions secrets. Укажи абсолютный путь в приватном каталоге вне репозитория:
 
-Debug APK подписан автоматически. Ключ временного GitHub runner между запусками может отличаться, поэтому APK из другого запуска не всегда установится поверх прежнего с сохранением данных. Для постоянных обновлений используй один собственный ключ. Перед удалением приложения из-за несовпадения подписи экспортируй нужные данные и сохрани файлы.
+```powershell
+pwsh -NoProfile -File scripts/setup-android-signing.ps1 -KeyStorePath 'C:\Private\VideoDownloaderSigning\release.p12'
+```
 
-Для release-сборки используй **Android Studio → Build → Generate Signed Bundle / APK → APK**, модуль `app`, свой keystore и конфигурацию `release`. Храни keystore и пароли вне Git, резервную копию ключа отдельно. Номер `versionCode` для обновления должен увеличиваться, а `versionName` задаёт отображаемую версию; оба определены в [app/build.gradle.kts](../../android/app/build.gradle.kts) и не связаны с Windows Git-тегом.
+Скрипт создаёт постоянный RSA-ключ 4096 бит в PKCS12 с безопасным случайным паролем, сохраняет рядом recovery JSON с параметрами восстановления и загружает четыре secrets через stdin, не выводя значения. Если загрузка в GitHub не удалась, повтори ту же команду: уже созданные материалы используются повторно, ключ не заменяется. Существующие файлы не перезаписываются. Настройка требует доступа к secrets из `gh` на этом компьютере; изменение workflow само по себе их не создаёт.
 
-Полная последовательность сборки и установки — в [гайде APK](android-build.md#release-apk-и-подпись). Перед публичным распространением выполни требования включённых компонентов к лицензиям и соответствующим исходникам, описанные в [THIRD_PARTY_NOTICES.md](../../android/THIRD_PARTY_NOTICES.md). Обновление зависимости не меняет автоматически лицензию собственного кода проекта.
+**Keystore и recovery JSON содержат секретные данные.** Храни оба файла вне Git, создай защищённую резервную копию обоих и не отправляй их в issue, PR или чат. Потеря ключа лишит возможности выпускать обновления с прежней подписью; recovery JSON содержит пароль и также должен оставаться приватным.
+
+Для ручной настройки создай secrets в **Settings → Secrets and variables → Actions → Repository secrets**. Альтернатива со своим ключом в Bash, где путь нужно заменить своим:
+
+```bash
+VD_KEYSTORE=/absolute/private/path/video-downloader-release.jks
+keytool -genkeypair -keystore "$VD_KEYSTORE" -storetype PKCS12 -alias video-downloader -keyalg RSA -keysize 4096 -validity 10000
+```
+
+`keytool` запросит пароль и сведения о владельце. Для PKCS12 пароль ключа совпадает с паролем хранилища; укажи его в обоих password secrets. Сохрани защищённую резервную копию keystore и паролей: потерянный ключ нельзя восстановить из APK.
+
+Для записи через авторизованный GitHub CLI выполни следующие команды. Base64 передаётся через stdin без вывода в терминал, password secrets вводятся по запросу `gh`:
+
+```bash
+python -c 'import base64,sys; sys.stdout.write(base64.b64encode(open(sys.argv[1], "rb").read()).decode())' "$VD_KEYSTORE" | gh secret set ANDROID_KEYSTORE_BASE64 --repo bespalovnikita/video-downloader
+gh secret set ANDROID_KEYSTORE_PASSWORD --repo bespalovnikita/video-downloader
+gh secret set ANDROID_KEY_ALIAS --body video-downloader --repo bespalovnikita/video-downloader
+gh secret set ANDROID_KEY_PASSWORD --repo bespalovnikita/video-downloader
+```
+
+Release job прекращает выпуск, если секрет отсутствует или подпись не проходит проверку. В PR секреты не передаются. Локальный `assembleRelease` по-прежнему создаёт unsigned APK; [гайд сборки](android-build.md#release-apk-и-подпись) описывает локальную подпись.
+
+Перед публичным распространением выполни требования [THIRD_PARTY_NOTICES.md](../../android/THIRD_PARTY_NOTICES.md): GPL-совместимые условия Android-приложения, применимые notices и Corresponding Source, включая необходимые материалы сборки нативных компонентов. Вложенные notices и текст GPL не заменяют эти требования. Лицензия собственного кода этой настройкой не изменяется; Google Play workflow не используется.

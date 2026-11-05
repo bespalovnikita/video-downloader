@@ -12,6 +12,30 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+// CI supplies the stable GitHub Release version without changing local builds.
+val vdVersionNameProperty = providers.gradleProperty("vdVersionName").orNull
+val vdVersionCodeProperty = providers.gradleProperty("vdVersionCode").orNull
+require((vdVersionNameProperty == null) == (vdVersionCodeProperty == null)) {
+    "Supply vdVersionName and vdVersionCode together"
+}
+val vdVersionName = vdVersionNameProperty?.also {
+    require(Regex("(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)").matches(it)) {
+        "vdVersionName must be a stable major.minor.patch version"
+    }
+} ?: "1.0.1"
+val vdVersionCode = vdVersionCodeProperty?.let {
+    require(Regex("[1-9][0-9]*").matches(it)) {
+        "vdVersionCode must be an integer between 1 and 2100000000"
+    }
+    val code = requireNotNull(it.toIntOrNull()) {
+        "vdVersionCode must be an integer between 1 and 2100000000"
+    }
+    require(code in 1..2_100_000_000) {
+        "vdVersionCode must be an integer between 1 and 2100000000"
+    }
+    code
+} ?: 2
+
 // The Android wrapper's bundled extractor can lag behind YouTube changes.
 // Override its raw resource with a reviewed, checksum-pinned official zipimport.
 val ytDlpPin = Properties().apply {
@@ -70,8 +94,8 @@ android {
         applicationId = "ru.bespalov.videodownloader"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "1.0.1"
+        versionCode = vdVersionCode
+        versionName = vdVersionName
         buildConfigField("String", "YTDLP_VERSION", "\"$ytDlpVersion\"")
         buildConfigField("String", "YTDLP_SHA256", "\"$ytDlpSha256\"")
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"

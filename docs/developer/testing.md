@@ -8,13 +8,13 @@
 
 | Что изменено | Обязательные проверки |
 | --- | --- |
-| Windows-код, XAML, тесты, скрипты или упаковка | Windows `-Task Test`, зелёный Native C# Windows build; для упаковки также `-Task Publish` |
-| Android-код или Gradle | JVM/unit, lint, debug APK и instrumented APK; тесты на эмуляторе API 35; зелёный Android Kotlin build |
+| Windows-код, XAML, тесты, скрипты или упаковка | Windows `-Task Test`, зелёный Windows and Android build; для упаковки также `-Task Publish` |
+| Android-код или Gradle | JVM/unit, lint, debug/release APK и instrumented APK; тесты на эмуляторе API 35; зелёный Android CI |
 | `collection-plugins/` | Python collector, Windows-тест настоящего упакованного yt-dlp и оба CI |
 | Формат или `tests/fixtures/portable-queue/` | Чтение общих фикстур обеими реализациями, реальный UI-импорт/экспорт в обе стороны и оба CI |
 | Только Markdown | Ссылки, якоря, Mermaid и сверка команд с исходниками; docs-only PR может не запустить платформенные workflow |
 
-После любого push в `main`, включая документацию, запускается Windows CI с возможной [публикацией релиза](releases.md). Android CI на `main` использует фильтр путей.
+После любого push в `main`, включая документацию, общий workflow запускает Windows и Android CI с последующей [публикацией единого релиза](releases.md) при успешных проверках и подписи APK. Android CI вызывается через `workflow_call` для того же SHA.
 
 ## Windows: полная проверка
 
@@ -106,13 +106,13 @@ adb devices
 | JVM core | `core/build/reports/tests/` |
 | App unit | `app/build/reports/tests/` |
 | Instrumented tests | `app/build/reports/androidTests/`, `app/build/outputs/androidTest-results/` |
-| Lint | `app/build/reports/lint-results-debug.html` |
+| Lint | `app/build/reports/lint-results-debug.html`, `app/build/reports/lint-results-release.html` |
 
 ## CI и интерпретация результата
 
 | Workflow | Когда запускается | Что сохраняет |
 | --- | --- | --- |
-| [Native C# Windows build](../../.github/workflows/native-windows.yml) | PR по Windows/общим путям, любой push в `main`, ручной запуск | `VideoDownloader-native-windows`, `Subscription-progress-preview`; после успешного push в `main` — Windows Release |
-| [Android Kotlin build](../../.github/workflows/android.yml) | PR и push в `main` по Android/общим путям, ручной запуск | `VideoDownloader-Android-debug` после успешных device-тестов; `Android-test-reports` независимо от итога, если отчёты созданы |
+| [Windows and Android build](../../.github/workflows/native-windows.yml) | PR по Windows/Android/общим путям, любой push в `main`, ручной запуск | Артефакты обеих платформ, `Subscription-progress-preview`; после успешных проверок и подписи на push в `main` — общий Release |
+| [Android Kotlin build](../../.github/workflows/android.yml) | `workflow_call` из общего CI, отдельный ручной запуск | `VideoDownloader-Android-debug` после успешных device-тестов; `Android-test-reports` независимо от итога, если отчёты созданы |
 
-Пропущенный `release` job в PR и ручном Windows workflow — штатное поведение: публикация разрешена только на push в `main`. Отсутствие CI у Markdown PR возможно из-за `paths`, а не из-за сбоя сборки. Перед merge документации проверь каждый изменённый относительный путь, переход к заголовку и отрисовку всех изменённых Mermaid-схем.
+Пропущенный `release` job в PR и ручном общем workflow — штатное поведение: публикация разрешена только на push в `main`. Отсутствие CI у Markdown PR возможно из-за `paths`, а не из-за сбоя сборки. Перед merge документации проверь каждый изменённый относительный путь, переход к заголовку и отрисовку всех изменённых Mermaid-схем.

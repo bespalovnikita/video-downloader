@@ -108,14 +108,15 @@ Debug APK автоматически подписывается локальны
 
 ## APK из GitHub Actions
 
-Собирать на своём компьютере необязательно:
+Для обычной установки скачай **`VideoDownloader-Android.apk`** из [последнего GitHub Release](https://github.com/bespalovnikita/video-downloader/releases/latest): он имеет постоянную release-подпись и общую версию с Windows ZIP. [Правила выпуска](releases.md) описывают необходимую настройку подписи.
 
-1. Открой [Actions → Android Kotlin build](https://github.com/bespalovnikita/video-downloader/actions/workflows/android.yml).
-2. Выбери успешный запуск для нужного коммита `main` или PR. Проверки и сборка выполняются автоматически; запуск вручную доступен через **Run workflow**.
-3. Внизу страницы, в **Artifacts**, скачай **VideoDownloader-Android-debug**. Для скачивания нужен вход в GitHub.
-4. Распакуй ZIP и установи находящийся внутри `app-debug.apk` по инструкции выше.
+Отладочные сборки для разработки доступны отдельно:
 
-APK сохраняется после успешных тестов на Android. Отчёты доступны отдельно в **Android-test-reports**. Это отладочная сборка: на временных GitHub runners отладочный ключ создаётся заново, поэтому подпись APK между запусками может отличаться. Для обновлений с сохранением данных используй один постоянный ключ; порядок подписи описан ниже. Перед удалением приложения ради смены подписи экспортируй данные и сохрани нужные файлы.
+1. Открой [Actions → Windows and Android build](https://github.com/bespalovnikita/video-downloader/actions/workflows/native-windows.yml) и выбери успешный запуск нужного коммита `main` или PR. Android-проверки вызываются автоматически через `workflow_call`; отдельный [Android Kotlin build](https://github.com/bespalovnikita/video-downloader/actions/workflows/android.yml) можно запустить вручную.
+2. Внизу страницы, в **Artifacts**, скачай **VideoDownloader-Android-debug**. Для скачивания нужен вход в GitHub.
+3. Распакуй ZIP и установи находящийся внутри `app-debug.apk` по инструкции выше.
+
+APK сохраняется после успешных Android-проверок. Отчёты доступны отдельно в **Android-test-reports**. У debug APK временного runner подпись между запусками может отличаться; он также не обновляется поверх release APK с другой подписью. Перед переустановкой экспортируй данные и сохрани нужные файлы. Срок хранения Actions artifacts ограничен.
 
 ## Проверки
 
@@ -134,7 +135,13 @@ adb devices
 
 Тесты запускают реальный Android-рантайм и используют локальный тестовый медиафайл. Сценарий `foregroundDownloadCompletesAfterPressingHome` выполняет настоящий медленный HTTP transfer: после Home проверяет читаемый опубликованный файл и запись в истории. Отдельно проверяются установленная версия yt-dlp и миграция рантайма. Для воспроизведения вручную используй [сценарий проверки фоновой загрузки](../user/android.md#background-check).
 
-Отчёты: `core/build/reports/tests/`, `app/build/reports/tests/`, `app/build/reports/androidTests/` и `app/build/reports/lint-results-debug.html`. Аналогичные команды запускает [Android CI](../../.github/workflows/android.yml); успешный запуск сохраняет отладочный APK в артефакте **VideoDownloader-Android-debug**. Этот workflow не публикует Android-приложение в Google Play и не создаёт подписанный Android Release.
+Для изменений сборки проверь также release-вариант и переопределение версии:
+
+```bash
+./gradlew :app:lintRelease :app:assembleRelease -PvdVersionName=2.0.0 -PvdVersionCode=2000000
+```
+
+Отчёты: `core/build/reports/tests/`, `app/build/reports/tests/`, `app/build/reports/androidTests/`, `app/build/reports/lint-results-debug.html` и `app/build/reports/lint-results-release.html`. Эти проверки запускает [переиспользуемый Android CI](../../.github/workflows/android.yml); успешный запуск сохраняет отладочный APK в артефакте **VideoDownloader-Android-debug**. Подписанный APK публикует отдельный main-only release job после проверок обеих платформ. Публикации в Google Play нет.
 
 ## Release APK и подпись
 
@@ -144,7 +151,9 @@ adb devices
 
 В текущей конфигурации команда создаёт **`app/build/outputs/apk/release/app-release-unsigned.apk`**. Неподписанный APK нельзя установить как готовое приложение. Для своей устанавливаемой release-сборки используй в Android Studio **Build → Generate Signed Bundle / APK → APK**, выбери модуль `app` и свой существующий keystore либо создай новый. Храни ключ и пароли вне репозитория, а резервную копию ключа — отдельно: следующие обновления должны иметь ту же подпись. Файлы `*.jks` и `*.keystore` исключены из Git.
 
-Публичное распространение APK требует также учёта лицензий включённого рантайма и предоставления соответствующих исходников; см. [THIRD_PARTY_NOTICES.md](../../android/THIRD_PARTY_NOTICES.md). Android-сборка не использует подпись или автоматическую нумерацию Windows ZIP: её `versionCode` и `versionName` находятся в `app/build.gradle.kts`.
+Для автоматического Release используется `scripts/build-android-release.ps1`: он получает версию выбранного Git-тега, передаёт Gradle оба параметра `-PvdVersionName` и `-PvdVersionCode`, подписывает APK через `apksigner` постоянным ключом и проверяет подпись. [Однократная настройка GitHub Secrets](releases.md#android-артефакт-и-подпись) обязательна: для нового ключа запусти на своём компьютере [setup-android-signing.ps1](../../scripts/setup-android-signing.ps1) по этой инструкции. Постоянный ключ не генерируется заново при каждом выпуске. Без параметров версии локальная сборка использует значения из `app/build.gradle.kts`.
+
+Публичное распространение APK требует также учёта лицензий включённого рантайма и предоставления соответствующих исходников; см. [THIRD_PARTY_NOTICES.md](../../android/THIRD_PARTY_NOTICES.md).
 
 ## Версия yt-dlp и YouTube HTTP 403
 
