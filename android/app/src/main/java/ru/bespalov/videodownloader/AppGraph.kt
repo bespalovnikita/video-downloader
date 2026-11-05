@@ -10,6 +10,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -20,10 +21,14 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import ru.bespalov.video.core.AppState
 import ru.bespalov.video.core.JsonStateRepository
+import ru.bespalov.video.core.DiagnosticJournal
+import ru.bespalov.video.core.JournalProfile
+import ru.bespalov.video.core.JournalRecord
 import ru.bespalov.video.core.StateRepository
 import ru.bespalov.video.core.Urls
 import ru.bespalov.videodownloader.engine.AndroidYtDlp
 import ru.bespalov.videodownloader.engine.EngineMetadata
+import ru.bespalov.videodownloader.journal.JournalFileWriter
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
@@ -39,6 +44,8 @@ class AppGraph(context: Context) {
     val importing = MutableStateFlow(false)
     val repository = AppRepository(File(context.filesDir, "state.json"))
     val engine = AndroidYtDlp(context.applicationContext)
+    val journal = DiagnosticJournal()
+    val journalFiles = JournalFileWriter(File(runCatching { context.filesDir.canonicalFile }.getOrDefault(context.filesDir), "logs"), scope, journal::fileWarning)
     private val mutableLogs = MutableStateFlow<List<String>>(emptyList())
     val logs: StateFlow<List<String>> = mutableLogs.asStateFlow()
     val runtimeReady = MutableStateFlow(false)
@@ -48,6 +55,22 @@ class AppGraph(context: Context) {
     val ready = CompletableDeferred<Unit>()
 
     init {
+        journal.fileSink = { journalFiles.enqueue(it); Unit }
+        scope.launch {
+            repository.awaitInitialized()
+            repository.state.collect { journal.profile = JournalProfile.parse(it.settings.logProfile) }
+        }
+        scope.launch {
+            var displayedRevision = -1L
+            while (true) {
+                val current = journal.revision
+                if (current != displayedRevision) {
+                    mutableLogs.value = journal.snapshotLines(maxEntries = 2000, maxBytes = 512 * 1024)
+                    displayedRevision = current
+                }
+                delay(200)
+            }
+        }
         scope.launch {
             try {
                 repository.initialize()
@@ -62,9 +85,8 @@ class AppGraph(context: Context) {
         }
     }
 
-    fun log(message: String) = synchronized(mutableLogs) {
-        mutableLogs.value = (mutableLogs.value + message).takeLast(250)
-    }
+    fun log(message: String) = journal.writeMessage(message)
+    fun log(record: JournalRecord) = journal.write(record)
 }
 
 /** Opening/parsing a potentially large snapshot never blocks Activity startup. */

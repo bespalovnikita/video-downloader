@@ -11,6 +11,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import ru.bespalov.video.core.Profiles
+import ru.bespalov.video.core.JournalProfile
 import java.io.File
 
 @Composable
@@ -28,7 +29,7 @@ internal fun SettingsScreen(
     var templateHelp by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text("Настройки скачивания", style = MaterialTheme.typography.titleLarge)
-        Text("Изменения применятся при следующем запуске задания. Параметры текущей загрузки сохраняются до её завершения.", style = MaterialTheme.typography.bodySmall)
+        Text("Параметры скачивания применятся при следующем запуске задания. Параметры текущей загрузки сохраняются до её завершения.", style = MaterialTheme.typography.bodySmall)
         ChoiceField("Профиль", draft.profile, Profiles.names, !ui.locked) { draft = Profiles.apply(draft, it) }
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             ChoiceField("Качество", draft.quality, linkedMapOf("Best" to "Лучшее", "2160" to "2160p", "1440" to "1440p", "1080" to "1080p", "720" to "720p"), !ui.locked, Modifier.weight(1f)) { draft = draft.copy(quality = it) }
@@ -74,6 +75,12 @@ internal fun SettingsScreen(
             TextButton(onClick = { draft = draft.copy(cookiesFile = "") }, enabled = !ui.locked && draft.cookiesFile.isNotBlank()) { Text("Отключить") }
         }
         TextButton(onClick = cookiesHelp) { Text("Как получить cookies из браузера") }
+
+        HorizontalDivider(Modifier.padding(vertical = 8.dp))
+        Text("Журнал", style = MaterialTheme.typography.titleMedium)
+        ChoiceField("Подробность журнала", JournalProfile.parse(draft.logProfile).id, JournalProfile.entries.associate { it.id to it.displayName },
+            !ui.locked, modifier = Modifier.testTag("settingsJournalProfile")) { draft = draft.copy(logProfile = it) }
+        Text("Профиль применяется после сохранения к новым событиям. «Прогресс загрузок» помогает различать параллельные задания, «Подробный yt-dlp» добавляет диагностику движка. Журнал также можно открыть кнопкой сверху, скопировать и сохранить в файл.", style = MaterialTheme.typography.bodySmall)
 
         Button(onClick = { actions.saveSettings(draft) }, enabled = !ui.locked, modifier = Modifier.fillMaxWidth().testTag("saveSettings")) { Text("Сохранить настройки") }
         HorizontalDivider(Modifier.padding(vertical = 8.dp))

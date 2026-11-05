@@ -58,6 +58,7 @@ class DownloaderViewModel(application: Application) : AndroidViewModel(applicati
         viewModelScope.launch { DownloadService.isRunning.collect { running -> mutable.update { it.copy(running = running) } } }
         viewModelScope.launch { DownloadService.isPaused.collect { paused -> mutable.update { it.copy(paused = paused) } } }
         viewModelScope.launch { DownloadService.progress.collect { refresh() } }
+        viewModelScope.launch { DownloadService.session.collect { session -> mutable.update { it.copy(session = session) } } }
         viewModelScope.launch {
             graph.ready.await()
             mutable.update { it.copy(runtimeReady = graph.runtimeReady.value, readOnly = repository.readOnly,
@@ -78,7 +79,7 @@ class DownloaderViewModel(application: Application) : AndroidViewModel(applicati
                 title = progress.title?.takeIf(String::isNotBlank) ?: task.title) } ?: task
         })
         val names = snapshot.subscriptions.associate { it.id to it.title.ifBlank { it.shortName } }
-        mutable.update { it.copy(snapshot = shown, readOnly = repository.readOnly,
+        mutable.update { it.copy(snapshot = shown, taskProgress = live, readOnly = repository.readOnly,
             duplicateNotices = snapshot.items.filter { row -> row.state == EntryState.ALREADY_PROCESSED && !row.duplicateNotified }
                 .map { row -> DuplicateNotice(row.title, row.url, names[row.duplicateSubscriptionId].orEmpty()) }) }
     }
@@ -98,7 +99,7 @@ class DownloaderViewModel(application: Application) : AndroidViewModel(applicati
     private fun display(raw: String) = if (raw.isBlank()) "" else ErrorText.display(raw, Locale.getDefault().language)
     private fun message(raw: String) {
         mutable.update { it.copy(message = UiMessage(display(raw), raw)) }
-        graph.log(raw)
+        graph.log(JournalRecord(JournalLevel.Error, "app", raw))
     }
     private fun work(block: suspend () -> Unit) {
         viewModelScope.launch {
@@ -113,7 +114,7 @@ class DownloaderViewModel(application: Application) : AndroidViewModel(applicati
         check(!graph.importing.value) { "Дождитесь восстановления резервной копии." }
         check(!repository.readOnly) { repository.error.ifBlank { "Хранилище доступно только для чтения." } }
     }
-    private fun idle() { check(!DownloadService.isRunning.value && checkJob?.isActive != true && maintenanceJob?.isActive != true) { "Дождитесь окончания загрузки или проверки." } }
+    private fun idle() { check(!DownloadService.isRunning.value && !DownloadService.hasOwnedTasks && checkJob?.isActive != true && maintenanceJob?.isActive != true) { "Дождитесь окончания загрузки, отмены или проверки." } }
 
     override fun addUrls(text: String) = work {
         if (isQueueTransfer(text)) importPortable(text) else add(Urls.extract(text))
@@ -226,6 +227,7 @@ class DownloaderViewModel(application: Application) : AndroidViewModel(applicati
           graph.dataOperation.withLock admission@{
             writable()
             if (DownloadService.isRunning.value) return@admission
+            check(!DownloadService.hasOwnedTasks) { "Дождитесь завершения отмены и очистки предыдущих загрузок." }
             val candidates = repository.state.value.queue.filter { task ->
                 (taskIds == null || task.id in taskIds) && !task.pendingRemoval &&
                     task.status in setOf(DownloadStatus.QUEUED, DownloadStatus.FAILED, DownloadStatus.INTERRUPTED, DownloadStatus.PAUSED, DownloadStatus.COMPLETED)
@@ -262,7 +264,10 @@ class DownloaderViewModel(application: Application) : AndroidViewModel(applicati
                 current[candidate.id]?.let { now -> now.url == candidate.url && !now.pendingRemoval &&
                     now.status == candidate.status && now.stageDirectory == candidate.stageDirectory } == true
             }.map { it.id }
-            if (allowed.isNotEmpty() && !DownloadService.isRunning.value) DownloadService.start(app, allowed)
+            if (allowed.isNotEmpty() && !DownloadService.isRunning.value) {
+                check(!DownloadService.hasOwnedTasks) { "Дождитесь завершения отмены и очистки предыдущих загрузок." }
+                DownloadService.start(app, allowed)
+            }
           }
         }
     }
@@ -420,6 +425,36 @@ class DownloaderViewModel(application: Application) : AndroidViewModel(applicati
     }
     override fun dismissMessage() { mutable.update { it.copy(message = null) } }
 
+    override fun copyLogs() = work {
+        val text = withContext(Dispatchers.IO) {
+            graph.journal.snapshotText().also {
+                require(it.toByteArray(Charsets.UTF_8).size <= 256 * 1024) {
+                    "Журнал слишком велик для буфера обмена Android. Выберите «Сохранить журнал» и перенесите файл."
+                }
+            }
+        }
+        withContext(Dispatchers.Main) {
+            try {
+                val clipboard = app.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                clipboard.setPrimaryClip(ClipData.newPlainText("Video Downloader journal", text))
+            } catch (error: Exception) {
+                throw IllegalStateException("Не удалось скопировать журнал. Выберите «Сохранить журнал» и перенесите файл.", error)
+            }
+        }
+        mutable.update { it.copy(message = UiMessage("Журнал скопирован.")) }
+    }
+
+    override fun exportLogs(uri: Uri) = work {
+        withContext(Dispatchers.IO) {
+            val text = graph.journal.snapshotText()
+            app.contentResolver.openOutputStream(uri, "wt")?.use { it.write(text.toByteArray(Charsets.UTF_8)) }
+                ?: error("Не удалось открыть файл журнала для записи.")
+        }
+        mutable.update { it.copy(message = UiMessage("Журнал сохранён.")) }
+    }
+
+    override fun clearLogs() { graph.journal.clear() }
+
     override fun exportBackup(uri: Uri) = work {
         val bytes = repository.exportBytes()
         withContext(Dispatchers.IO) { app.contentResolver.openOutputStream(uri, "wt")?.use { it.write(bytes) } ?: error("Не удалось открыть файл для записи.") }
@@ -456,7 +491,7 @@ class DownloaderViewModel(application: Application) : AndroidViewModel(applicati
         if (maintenanceJob?.isActive == true) return
         maintenanceJob = viewModelScope.launch {
             try {
-                check(!DownloadService.isRunning.value && checkJob?.isActive != true) { "Сначала остановите загрузки и проверку подписок." }
+                check(!DownloadService.isRunning.value && !DownloadService.hasOwnedTasks && checkJob?.isActive != true) { "Сначала завершите загрузки, отмену и проверку подписок." }
                 graph.ready.await()
                 writable()
                 mutable.update { it.copy(operation = UiOperation("Обновление yt-dlp")) }

@@ -27,6 +27,8 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import ru.bespalov.video.core.DownloadStatus
 import ru.bespalov.video.core.DownloadTask
+import ru.bespalov.videodownloader.download.DownloadSessionSnapshot
+import ru.bespalov.videodownloader.engine.EngineStage
 import java.text.DateFormat
 import java.util.Date
 import kotlinx.coroutines.delay
@@ -40,7 +42,6 @@ fun DownloaderScreen(ui: MobileUiState, actions: MobileActions) {
     var cookiesHelp by rememberSaveable { mutableStateOf(false) }
     var pendingStart by remember { mutableStateOf<List<String>?>(null) }
     val context = LocalContext.current
-    val clipboard = LocalClipboardManager.current
     val notifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
         actions.start(pendingStart)
         pendingStart = null
@@ -51,6 +52,7 @@ fun DownloaderScreen(ui: MobileUiState, actions: MobileActions) {
     val outputPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { it?.let(actions::selectOutput) }
     val exportPicker = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { it?.let(actions::exportBackup) }
     val backupPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { it?.let(actions::importBackup) }
+    val journalExporter = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { it?.let(actions::exportLogs) }
     val start: (List<String>?) -> Unit = { ids ->
         if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             pendingStart = ids
@@ -63,7 +65,7 @@ fun DownloaderScreen(ui: MobileUiState, actions: MobileActions) {
         Scaffold(
             topBar = {
                 TopAppBar(title = { Text("Video Downloader") }, actions = {
-                    TextButton(onClick = { showLogs = true }) { Text("Журнал") }
+                    TextButton(onClick = { showLogs = true }, modifier = Modifier.testTag("openJournal")) { Text("Журнал") }
                 })
             },
             bottomBar = {
@@ -145,13 +147,7 @@ fun DownloaderScreen(ui: MobileUiState, actions: MobileActions) {
                 dismissButton = { TextButton(onClick = { actions.recoverQueue(false) }) { Text("Не восстанавливать") } })
         }
         if (showLogs) {
-            AlertDialog(onDismissRequest = { showLogs = false }, title = { Text("Журнал") },
-                text = { LazyColumn(Modifier.heightIn(max = 450.dp)) {
-                    if (ui.logs.isEmpty()) item { Text("Сообщений пока нет") }
-                    items(ui.logs.takeLast(300)) { Text(it, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(bottom = 8.dp)) }
-                } }, confirmButton = { TextButton(onClick = { showLogs = false }) { Text("Закрыть") } },
-                dismissButton = { TextButton(onClick = { clipboard.setText(AnnotatedString(ui.logs.joinToString("\n"))) },
-                    enabled = ui.logs.isNotEmpty(), modifier = Modifier.testTag("copyLogs")) { Text("Копировать") } })
+            JournalDialog(ui, actions, save = { journalExporter.launch("video-downloader-journal.txt") }, close = { showLogs = false })
         }
         if (cookiesHelp) CookiesHelpDialog { cookiesHelp = false }
     }
@@ -196,9 +192,10 @@ private fun QueueScreen(ui: MobileUiState, actions: MobileActions, start: (List<
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Checkbox(checked = ui.snapshot.settings.showTitles, onCheckedChange = { actions.saveSettings(ui.snapshot.settings.copy(showTitles = it)) }, enabled = !ui.locked)
             Text("Названия вместо URL", Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
-            TextButton(onClick = { clear = true }, enabled = !ui.locked && !ui.running && ui.snapshot.queue.isNotEmpty()) { Text("Очистить") }
+            TextButton(onClick = { clear = true }, enabled = !ui.locked && !ui.running && ui.session?.active != true && ui.snapshot.queue.isNotEmpty()) { Text("Очистить") }
         }
         DownloadControls(ui, start, actions)
+        ui.session?.takeIf { it.id.isNotBlank() }?.let { SessionSummaryCard(it) }
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text("В очереди: ${ui.snapshot.queue.size}", style = MaterialTheme.typography.labelMedium, modifier = Modifier.weight(1f))
             Box {
@@ -229,12 +226,49 @@ private fun QueueScreen(ui: MobileUiState, actions: MobileActions, start: (List<
 @Composable
 private fun DownloadControls(ui: MobileUiState, start: (List<String>?) -> Unit, actions: MobileActions) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-        Button(onClick = { start(null) }, enabled = !ui.locked && ui.runtimeReady && !ui.running && ui.snapshot.queue.any { it.status !in setOf(DownloadStatus.COMPLETED, DownloadStatus.CLEANUP_REQUIRED, DownloadStatus.CANCELLING) },
+        Button(onClick = { start(null) }, enabled = !ui.locked && ui.runtimeReady && !ui.running && ui.session?.active != true && ui.snapshot.queue.any { it.status !in setOf(DownloadStatus.COMPLETED, DownloadStatus.CLEANUP_REQUIRED, DownloadStatus.CANCELLING) },
             modifier = Modifier.testTag("startDownloads")) { Text("Start") }
         if (ui.paused) OutlinedButton(onClick = actions::resume, enabled = !ui.locked) { Text("Продолжить") }
         else OutlinedButton(onClick = actions::pause, enabled = ui.running && !ui.locked) { Text("Пауза") }
         TextButton(onClick = actions::stop, enabled = ui.running && !ui.locked) { Text("Стоп") }
     }
+}
+
+/** All counters and elapsed time come from the foreground owner, including the final snapshot. */
+@Composable
+private fun SessionSummaryCard(session: DownloadSessionSnapshot) {
+    Card(Modifier.fillMaxWidth().padding(vertical = 6.dp).testTag("sessionSummary")) {
+        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Text(when {
+                !session.active -> "Сессия завершена"
+                session.paused -> "Сессия на паузе"
+                else -> "Текущая сессия"
+            }, style = MaterialTheme.typography.titleSmall)
+            Text("Прошло: ${ElapsedLabel(session.elapsedMillis)}", style = MaterialTheme.typography.bodySmall, modifier = Modifier.testTag("sessionElapsed"))
+            if (session.transferredBytes > 0) Text("Передано: ${android.text.format.Formatter.formatShortFileSize(LocalContext.current, session.transferredBytes)}", style = MaterialTheme.typography.bodySmall)
+            Text("Готово: ${session.completed} / ${session.total} · в работе: ${session.running} · ожидают: ${session.queued}", style = MaterialTheme.typography.bodySmall)
+            if (session.failed > 0 || session.cancelled > 0) Text("Ошибок: ${session.failed} · отменено: ${session.cancelled}", style = MaterialTheme.typography.bodySmall)
+            LinearProgressIndicator(progress = { (session.overallPercent / 100f).coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth())
+        }
+    }
+}
+
+internal fun ElapsedLabel(elapsedMillis: Long): String {
+    val total = (elapsedMillis / 1_000).coerceAtLeast(0)
+    val hours = total / 3_600
+    val minutes = total / 60 % 60
+    val seconds = total % 60
+    return if (hours > 0) "%d:%02d:%02d".format(java.util.Locale.ROOT, hours, minutes, seconds)
+    else "%02d:%02d".format(java.util.Locale.ROOT, minutes, seconds)
+}
+
+internal fun StageLabel(stage: EngineStage): String = when (stage) {
+    EngineStage.STARTING -> "Подготовка"
+    EngineStage.DOWNLOADING -> "Скачивание"
+    EngineStage.RETRYING -> "Повторная попытка"
+    EngineStage.PROCESSING -> "Обработка видео и аудио"
+    EngineStage.VERIFYING -> "Проверка готового файла"
+    EngineStage.PUBLISHING -> "Сохранение готового файла"
 }
 
 @Composable
@@ -247,6 +281,7 @@ private fun DownloadsScreen(ui: MobileUiState, actions: MobileActions, start: (L
             FilterChip(selected = history, onClick = { history = true }, label = { Text("История (${ui.snapshot.history.size})") })
         }
         DownloadControls(ui, start, actions)
+        ui.session?.takeIf { it.id.isNotBlank() }?.let { SessionSummaryCard(it) }
         if (history) LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(vertical = 12.dp)) {
             if (ui.snapshot.history.isEmpty()) item { EmptyState("История появится после успешного сохранения файлов.") }
             items(ui.snapshot.history.asReversed()) { record ->
@@ -277,12 +312,15 @@ private fun TaskCard(task: DownloadTask, ui: MobileUiState, actions: MobileActio
     var deleteFiles by remember(task.id, task.status) { mutableStateOf(task.status == DownloadStatus.CLEANUP_REQUIRED) }
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
+    val progress = ui.taskProgress[task.id]
+    val overall = progress?.percent ?: task.progress
     Card(Modifier.fillMaxWidth().testTag("queueRow:${task.id}").clickable { actions.showPreview(task.url, task.title) }) {
         Column(Modifier.padding(12.dp)) {
             Row(verticalAlignment = Alignment.Top) {
                 Column(Modifier.weight(1f)) {
                     Text(if (ui.snapshot.settings.showTitles) task.title.ifBlank { task.url } else task.url, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleSmall)
-                    Text(StatusLabel(task.status), color = StatusColor(task.status), style = MaterialTheme.typography.labelMedium)
+                    Text(if (task.status == DownloadStatus.RUNNING && progress != null) StageLabel(progress.stage) else StatusLabel(task.status),
+                        color = StatusColor(task.status), style = MaterialTheme.typography.labelMedium, modifier = Modifier.testTag("taskStage:${task.id}"))
                     if (task.subscriptionName.isNotBlank()) Text("Подписка / папка: ${task.subscriptionName}", style = MaterialTheme.typography.bodySmall)
                 }
                 Box {
@@ -303,8 +341,22 @@ private fun TaskCard(task: DownloadTask, ui: MobileUiState, actions: MobileActio
                 }
             }
             if (task.status == DownloadStatus.RUNNING) {
-                LinearProgressIndicator(progress = { (task.progress / 100f).coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp))
-                Text("${task.progress.toInt()}% · ${task.speed} · ${task.downloaded} · ${task.eta}", style = MaterialTheme.typography.bodySmall)
+                LinearProgressIndicator(progress = { (overall / 100f).coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp))
+                Text("Общий прогресс: ${overall.toInt()}%", style = MaterialTheme.typography.bodySmall, modifier = Modifier.testTag("taskOverall:${task.id}"))
+                progress?.let { value ->
+                    if (value.detail.isNotBlank()) Text(value.detail, style = MaterialTheme.typography.bodySmall, modifier = Modifier.testTag("taskComponent:${task.id}"))
+                    if (!value.planKnown && value.stage in setOf(EngineStage.DOWNLOADING, EngineStage.RETRYING)) {
+                        Text("Общий процент приблизительный: состав загрузки неизвестен.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    if (value.detail.isBlank()) value.componentPercent?.let { percent ->
+                        Text("Текущий поток: ${percent.toInt()}%" + if (value.componentIndex != null && value.componentCount != null) " (${value.componentIndex} / ${value.componentCount})" else "",
+                            style = MaterialTheme.typography.bodySmall, modifier = Modifier.testTag("taskComponent:${task.id}"))
+                    }
+                    if (value.detail.isBlank() && value.playlistIndex != null) Text("Материал коллекции: ${value.playlistIndex}" + value.playlistCount?.let { " / $it" }.orEmpty(), style = MaterialTheme.typography.bodySmall)
+                    if (value.attempt > 1 || value.stage == EngineStage.RETRYING) Text("Попытка: ${value.attempt}" + value.quality.takeIf { it.isNotBlank() }?.let { " · качество $it" }.orEmpty(), style = MaterialTheme.typography.bodySmall)
+                }
+                val transfer = listOf(task.speed, task.downloaded, task.eta).filter(String::isNotBlank).joinToString(" · ")
+                if (transfer.isNotBlank()) Text(transfer, style = MaterialTheme.typography.bodySmall)
             }
             if (task.status == DownloadStatus.COMPLETED && task.outputUris.isNotEmpty()) {
                 OutlinedButton(onClick = { OpenUri(context, task.outputUris.first(), true) }, modifier = Modifier.testTag("openCompletedFile:${task.id}")) { Text("Открыть файл") }

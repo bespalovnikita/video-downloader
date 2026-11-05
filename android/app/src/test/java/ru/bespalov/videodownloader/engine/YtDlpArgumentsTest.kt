@@ -10,11 +10,13 @@ class YtDlpArgumentsTest {
 
     @Test fun downloadUsesStructuredProgressAndPrivateOutputWithoutDesktopImpersonation() {
         val arguments = YtDlpArguments.download(Settings(), stage, "best")
-        assertTrue(arguments.containsAll(listOf("--ignore-config", "--progress", "--continue", "--abort-on-error")))
-        assertEquals("download:__VD_PROGRESS__|%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s|%(progress.downloaded_bytes)s|%(progress.total_bytes,progress.total_bytes_estimate)s|%(info.id)s:%(info.format_id)s",
+        assertTrue(arguments.containsAll(listOf("--ignore-config", "--progress", "--no-quiet", "--continue", "--abort-on-error")))
+        assertEquals("download:__VD_PROGRESS__|%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s|%(progress.downloaded_bytes)s|%(progress.total_bytes,progress.total_bytes_estimate)s|%(info.id)s:%(info.format_id)s|%(info.vcodec)s|%(info.acodec)s",
             arguments[arguments.indexOf("--progress-template") + 1])
         assertEquals(File(stage, "%(title)s [%(id)s].%(ext)s").absolutePath, arguments[arguments.indexOf("-o") + 1])
         assertTrue(arguments.contains("after_move:__VD_FILE__:%(filepath)s"))
+        assertTrue(arguments.contains("before_dl:__VD_PLAN__:%(.{id,format_id,requested_formats.:.format_id,playlist_autonumber,n_entries})j"))
+        assertFalse(arguments.any { it.contains("%(requested_formats)j") })
         assertFalse(arguments.contains("--impersonate"))
         assertFalse(arguments.contains("--simulate"))
         assertFalse(arguments.contains("--skip-download"))
@@ -64,9 +66,13 @@ class YtDlpArgumentsTest {
         assertEquals(1000L, event.value.totalBytes)
         assertEquals("video:137", event.component)
         assertEquals("00:14", event.value.eta)
+        assertEquals(12.5f, event.value.componentPercent!!)
+        assertTrue(event.downloadedBytesKnown)
         for (percent in listOf("NaN", "Infinity", "-Infinity", "N/A")) {
             val malformed = ProgressMarkers.parse("__VD_PROGRESS__|$percent|N/A|N/A|-2|N/A|id") as MarkerEvent.Progress
             assertEquals(0f, malformed.value.percent, 0f)
+            assertNull(malformed.value.componentPercent)
+            assertFalse(malformed.downloadedBytesKnown)
             assertEquals(0L, malformed.value.downloadedBytes)
             assertEquals(0L, malformed.value.totalBytes)
         }
