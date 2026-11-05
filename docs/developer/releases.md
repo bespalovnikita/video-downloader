@@ -10,7 +10,7 @@ GitHub Release содержит Windows portable ZIP и Android release APK с �
 
 1. Job `native` выполняет компиляцию C# / WPF, тесты GUI, сохранения данных, безопасности файлов и настоящие офлайн загрузки через yt-dlp.
 2. Переиспользуемый `.github/workflows/android.yml` выполняет Android unit/lint, debug/release-сборки и instrumented tests на API 35, включая настоящую загрузку после Home.
-3. Только после обеих успешных проверок job **Publish GitHub Release from main** получает разрешение на публикацию. В PR и при ручном запуске этот этап не выполняется.
+3. Только после обеих успешных проверок job **Publish GitHub Release from main** получает разрешение на публикацию. Этап выполняется для push и ручного запуска в `main`; в PR и при ручном запуске другой ветки публикация пропускается.
 4. Job вычисляет Git-тег по положению коммита в first-parent истории `main`, собирает EXE и release APK с этой версией, подписывает APK постоянным ключом и проверяет подпись через `apksigner verify`.
 5. Job создаёт собственный draft с Release Notes, загружает `VideoDownloader-Windows-x64.zip`, `VideoDownloader-Android.apk`, общий `SHA256SUMS.txt`, `THIRD_PARTY_NOTICES.md` и `youtubedl-android-GPL-3.0.txt`. Публичный Release появляется только после проверки целевого SHA и полноты всех пяти файлов.
 
@@ -69,9 +69,13 @@ PR и ручной CI сохраняют Actions artifacts **VideoDownloader-nat
 
 ## Ручной запуск CI
 
-Открой **Actions → Windows and Android build → Run workflow**, выбери ветку и запусти проверку обеих платформ. Для отдельных Android-проверок доступен **Android Kotlin build → Run workflow**. Эти запуски сохраняют Actions artifacts, но не публикуют Release: job `release` разрешён только для события `push` в `refs/heads/main`.
+Открой **Actions → Windows and Android build → Run workflow**, выбери ветку и запусти проверку обеих платформ. При выборе **main** после полного успешного Windows и Android CI выполняется тот же release job, что и после push. Ручной запуск другой ветки сохраняет Actions artifacts и пропускает публикацию. Для отдельных Android-проверок доступен **Android Kotlin build → Run workflow**; он сохраняет артефакты проверки.
 
-Поэтому **This job was skipped** у `Publish GitHub Release from main` в PR или ручном workflow — ожидаемый результат. Для публикации найди push нужного SHA в `main`, успешно прошедший Windows, Android и release job.
+Для восстановления после `startup_failure`, когда jobs не созданы и GitHub не разрешает **Re-run jobs**, выбери **Run workflow → main**. Новый запуск использует текущий SHA `main` и снова выполняет все проверки. Если ветка уже продвинулась, выпускается её текущий коммит; номер провалившегося коммита остаётся зарезервированным, поэтому возможен пропуск версии.
+
+Для одного SHA ручной запуск сохраняет детерминированные тег и версию: полный опубликованный Release пропускается, собственный незавершённый draft возобновляется по правилам выше. Защита Latest и неизменность прежних релизов действуют и при восстановлении. **Re-run jobs** старого запуска использует его исходные SHA, ref и исторический workflow; обновлённый механизм восстановления доступен через **Run workflow → main**.
+
+**This job was skipped** у `Publish GitHub Release from main` ожидается в PR и при ручном запуске другой ветки. Для публикации проверь запуск нужного SHA в `main` и успешность Windows, Android и release job.
 
 ## Как проверить публикацию
 
@@ -82,7 +86,8 @@ PR и ручной CI сохраняют Actions artifacts **VideoDownloader-nat
 
 | Симптом | Проверка |
 | --- | --- |
-| Release job пропущен | Это PR/ручной запуск либо Windows или Android job не завершился успешно; найди push в `main` |
+| Release job пропущен | Это PR/ручной запуск другой ветки либо Windows или Android job не завершился успешно; проверь запуск `main` |
+| `startup_failure`, jobs отсутствуют и повтор недоступен | Запусти **Actions → Windows and Android build → Run workflow → main**; новый запуск проверит и выпустит текущий SHA `main` |
 | Все тесты зелёные, публикация ждёт | Проверь release job и очередь concurrency `video-downloader-main-release` |
 | Не хватает параметров подписи Android | Настрой четыре GitHub Secrets из следующего раздела; debug APK не используется как замена |
 | Ошибка подписи APK | Проверь keystore, alias и оба пароля; сохрани прежний ключ для обновлений |

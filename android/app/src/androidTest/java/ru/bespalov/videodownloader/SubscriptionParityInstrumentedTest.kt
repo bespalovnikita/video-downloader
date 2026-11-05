@@ -2,7 +2,6 @@ package ru.bespalov.videodownloader
 
 import android.app.Activity
 import android.app.Instrumentation
-import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -85,11 +84,8 @@ class SubscriptionParityInstrumentedTest {
                     compose.onNodeWithTag("subscriptionFilter:1").assertIsSelected()
                     compose.onNodeWithTag("selectedSubscriptionUrl").assertIsDisplayed()
                     compose.onNodeWithText(source.url).assertIsDisplayed()
-                    compose.onNodeWithTag("copySubscriptionUrl").performClick()
-                    var copied = ""
-                    compose.waitUntil(5_000) {
-                        activity.onActivity { copied = (it.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).primaryClip?.getItemAt(0)?.text?.toString().orEmpty() }
-                        copied == source.url
+                    copyAndAwaitClipboardText(compose, activity, "copySubscriptionUrl", 5_000, "subscription URL copy") {
+                        it == source.url
                     }
                     assertFalse("Opening baseline must not request image network", origin.requests("/covers/baseline1.png") > 0)
                     compose.onNodeWithTag("selectSubscriptionEntry:${first.url}").assertIsEnabled().performClick()
@@ -153,6 +149,9 @@ class SubscriptionParityInstrumentedTest {
                     compose.waitUntil(5_000) { viewModel.ui.value.subscriptionQueuePrompt == null }
                     assertTrue(graph.repository.state.value.items.filter { it.url in acceptedUrls }.all { it.state == EntryState.NEW })
                     checkBatch()
+                    compose.onNodeWithTag("subscriptionQueuePrompt").assertIsDisplayed()
+                    compose.waitForIdle()
+                    awaitAppWindowFocus(compose, activity, "subscription queue prompt before hardware Back", dialog = true)
                     UiDevice.getInstance(InstrumentationRegistry.getInstrumentation()).pressBack()
                     compose.waitUntil(5_000) { viewModel.ui.value.subscriptionQueuePrompt == null }
                     assertTrue(graph.repository.state.value.items.filter { it.url in acceptedUrls }.all { it.state == EntryState.NEW })

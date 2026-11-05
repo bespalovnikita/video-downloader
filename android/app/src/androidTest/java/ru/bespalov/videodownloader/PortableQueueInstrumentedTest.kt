@@ -1,6 +1,5 @@
 package ru.bespalov.videodownloader
 
-import android.content.ClipboardManager
 import android.content.Context
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
 import androidx.compose.ui.test.onNodeWithTag
@@ -46,14 +45,8 @@ class PortableQueueInstrumentedTest {
                 runBlocking(Dispatchers.IO) { graph.repository.update { it.copy(queue = it.queue + rows) } }
                 ActivityScenario.launch(MainActivity::class.java).use { activity ->
                     compose.onNodeWithTag("queueTransfer").performClick()
-                    compose.onNodeWithTag("copyQueue").performClick()
-                    var transfer = ""
-                    compose.waitUntil(15_000) {
-                        activity.onActivity {
-                            transfer = (it.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
-                                .primaryClip?.getItemAt(0)?.text?.toString().orEmpty()
-                        }
-                        transfer.startsWith(PortableQueue.PREFIX)
+                    val transfer = copyAndAwaitClipboardText(compose, activity, "copyQueue", 15_000, "portable queue copy") {
+                        it.startsWith(PortableQueue.PREFIX)
                     }
                     val exported = PortableQueue.decode(transfer).filter { it.url in urls }
                     assertEquals(rows.map { PortableQueue.Entry(it.url, it.title) }, exported)
