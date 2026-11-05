@@ -4,7 +4,6 @@ import android.content.Context
 import com.yausername.ffmpeg.FFmpeg
 import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLRequest
-import com.yausername.youtubedl_android.YoutubeDLResponse
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
@@ -37,11 +36,11 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicLong
 import java.util.UUID
 
 /** Android-specific process bridge. Publication and successful history belong to the service. */
-class AndroidYtDlp(context: Context) {
+class AndroidYtDlp internal constructor(context: Context, private val runtimeUpdater: suspend (File) -> String) {
+    constructor(context: Context) : this(context, { target -> RuntimeUpdater(target).update() })
     private val app = context.applicationContext
     private val initialization = Mutex()
     private val metadataWorker = Mutex()
@@ -50,6 +49,7 @@ class AndroidYtDlp(context: Context) {
     private val admission = Mutex()
     private var updating = false
     private val operations = ConcurrentHashMap<String, Operation>()
+    private val processes = AndroidRuntimeProcess(app)
     private val executor = Executors.newCachedThreadPool { task -> Thread(task, "yt-dlp-android").apply { isDaemon = true } }
     private val galleries = PreviewGallery(app)
     private val pluginRoot = File(app.filesDir, "collection-plugins")
@@ -268,8 +268,7 @@ class AndroidYtDlp(context: Context) {
     /** Marks cancellation; completion is still awaited before the caller may clean its stage. */
     fun cancel(requestId: String): Boolean {
         val operation = operations[requestId] ?: return false
-        operation.cancelled.set(true)
-        YoutubeDL.destroyProcessById(operation.processId)
+        operation.cancel()
         return true
     }
 
@@ -280,7 +279,7 @@ class AndroidYtDlp(context: Context) {
             updating = true
         }
         try {
-            YoutubeDL.updateYoutubeDL(app, YoutubeDL.UpdateChannel.STABLE)
+            runtimeUpdater(runtimeArchive())
         } finally {
             withContext(NonCancellable) { admission.withLock { updating = false } }
         }
@@ -288,52 +287,44 @@ class AndroidYtDlp(context: Context) {
     }
 
     private suspend fun execute(requestId: String, request: YoutubeDLRequest, timeout: Long,
-                                outputLimit: Int = 32 * 1024 * 1024, line: (String) -> Unit = {}): YoutubeDLResponse {
+                                outputLimit: Int = 32 * 1024 * 1024, line: ((String) -> Unit)? = null): NativeProcessResult {
         currentCoroutineContext().ensureActive()
-        val operation = Operation(sha256(requestId))
+        val operation = Operation(processes.session())
         admission.withLock {
             check(!updating) { "Сейчас обновляется yt-dlp. Повторите действие после обновления." }
             check(operations.putIfAbsent(requestId, operation) == null) { "A request with this ID is already running" }
         }
-        val completed = CompletableDeferred<Result<YoutubeDLResponse>>()
+        val completed = CompletableDeferred<Result<NativeProcessResult>>()
         executor.execute {
             completed.complete(runCatching {
                 if (operation.cancelled.get()) throw CancellationException("Request cancelled")
-                val count = AtomicLong()
-                val response = YoutubeDL.execute(request, operation.processId, callback = { _, _, text ->
-                    val size = count.addAndGet(text.toByteArray(Charsets.UTF_8).size.toLong() + 1)
-                    if (size > outputLimit) { operation.tooLarge.set(true); operation.cancelled.set(true); YoutubeDL.destroyProcessById(operation.processId) }
-                    else if (!operation.cancelled.get()) line(text)
-                })
-                if (response.out.toByteArray(Charsets.UTF_8).size.toLong() + response.err.toByteArray(Charsets.UTF_8).size > outputLimit)
-                    throw EngineException("yt-dlp output exceeds the configured limit")
+                val response = BoundedProcessRunner.run(processes.builder(request, operation.session), operation.session,
+                    outputLimit, onLine = line)
+                if (response.exitCode != 0) throw EngineException(response.err.trim().ifBlank { "yt-dlp exited with code ${response.exitCode}" })
                 response
             })
         }
         try {
             val response = withTimeout(timeout) {
                 while (!completed.isCompleted) {
-                    if (operation.cancelled.get()) YoutubeDL.destroyProcessById(operation.processId)
                     delay(50)
                 }
                 completed.await().getOrThrow()
             }
-            if (operation.tooLarge.get()) throw EngineException("yt-dlp output exceeds the configured limit")
             if (operation.cancelled.get()) throw CancellationException("Request cancelled")
             return response
         } catch (cancel: CancellationException) {
-            operation.cancelled.set(true)
+            operation.cancel()
             // Do not return cancellation while yt-dlp still owns files. The
-            // dependency waits for its stdout/stderr readers; unlike Windows
-            // Job Objects it cannot guarantee killing every detached child.
+            // runner joins its two byte-bounded readers and its native owner;
+            // the authenticated launch group includes ordinary native children.
             withContext(NonCancellable) {
-                while (!completed.isCompleted) { YoutubeDL.destroyProcessById(operation.processId); delay(50) }
+                while (!completed.isCompleted) { operation.cancel(); delay(50) }
                 completed.await()
             }
             throw cancel
         } catch (error: Exception) {
-            if (operation.tooLarge.get()) throw EngineException("yt-dlp output exceeds the configured limit", error)
-            if (operation.cancelled.get() || error is YoutubeDL.CanceledException) throw CancellationException("Request cancelled", error)
+            if (operation.cancelled.get()) throw CancellationException("Request cancelled", error)
             throw EngineException(error.message ?: "yt-dlp request failed", error)
         } finally {
             withContext(NonCancellable) { admission.withLock { operations.remove(requestId, operation) } }
@@ -357,7 +348,10 @@ class AndroidYtDlp(context: Context) {
     }
 
     private fun <T> report(observer: (T) -> Unit, value: T) { runCatching { observer(value) } }
-    private data class Operation(val processId: String, val cancelled: AtomicBoolean = AtomicBoolean(), val tooLarge: AtomicBoolean = AtomicBoolean())
+    private class Operation(val session: ProcessSession) {
+        val cancelled = AtomicBoolean()
+        fun cancel() { cancelled.set(true); session.cancel() }
+    }
 }
 
 internal fun sha256(text: String): String = MessageDigest.getInstance("SHA-256").digest(text.toByteArray(Charsets.UTF_8))
