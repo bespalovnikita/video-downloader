@@ -2,7 +2,7 @@ using System.IO;
 using System.Text.Json;
 using VideoDownloader.Native;
 
-if (GuiInstanceTests.TryRunFixture(args) || NativeIpcFixture.TryRunFixture(args) || TitleIngressFixture.TryRunFixture(args) || PreviewSchedulingTests.TryRunFixture(args) || PreviewGalleryTests.TryRunFixture(args) || NativeContractTests.TryRunFixture(args) || PornHubChannelTests.TryRunFixture(args) || StartupDownloadRegressionTests.TryRunFixture(args) || SubscriptionScannerTests.TryRunFixture(args) || LifecycleRegressionTests.TryRunFixture(args) || ReviewRegressionTests.TryRunFixture(args)) return;
+if (PreviewOutputLimitTests.TryRunFixture(args) || GuiInstanceTests.TryRunFixture(args) || NativeIpcFixture.TryRunFixture(args) || TitleIngressFixture.TryRunFixture(args) || PreviewSchedulingTests.TryRunFixture(args) || PreviewGalleryTests.TryRunFixture(args) || NativeContractTests.TryRunFixture(args) || PornHubChannelTests.TryRunFixture(args) || StartupDownloadRegressionTests.TryRunFixture(args) || SubscriptionScannerTests.TryRunFixture(args) || LifecycleRegressionTests.TryRunFixture(args) || ReviewRegressionTests.TryRunFixture(args)) return;
 ErrorMessagesTests.Run();
 JournalSanitizerTests.Run();
 await JournalTests.RunAsync();
@@ -19,6 +19,7 @@ LegacyCompatibilityTests.Run();
 await NativeContractTests.RunAsync();
 await PreviewSchedulingTests.RunAsync();
 await PreviewGalleryTests.RunAsync();
+await PreviewOutputLimitTests.RunAsync();
 await PornHubChannelTests.RunAsync();
 await StartupDownloadRegressionTests.RunAsync();
 await DependencyInstallTests.RunAsync();

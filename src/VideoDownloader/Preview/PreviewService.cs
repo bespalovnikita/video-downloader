@@ -12,6 +12,8 @@ public sealed class PreviewService : IDisposable
     internal const int MaxImages=15;
     internal const int MaxImageBytes=2_000_000;
     internal const int MaxGalleryBytes=12_000_000;
+    internal const int MaxMetadataBytes=32*1024*1024;
+    internal const int MaxMetadataErrorBytes=2*1024*1024;
     internal static readonly TimeSpan ThumbnailFailureRetryDelay=TimeSpan.FromMinutes(1);
     private const int MaxCacheBytes=20_000_000;
     private const long MemoryCharacterBudget=32L*1024*1024; // Base64 strings are UTF-16: 64 MiB.
@@ -326,12 +328,15 @@ public sealed class PreviewService : IDisposable
         psi.ArgumentList.Add(url);
         using var child=ManagedChildProcess.Start(psi);
         var process=child.Process;
-        using var kill=token.Register(() => { try { if (!process.HasExited) process.Kill(true); }catch{} });
-        var stdout=child.StandardOutput.ReadToEndAsync(token);
-        var stderr=child.StandardError.ReadToEndAsync(token);
-        await Task.WhenAll(stdout,stderr,process.WaitForExitAsync(token)).ConfigureAwait(false);
-        if (process.ExitCode!=0) throw new IOException(stderr.Result.Trim() is {Length:>0} e ? e : "yt-dlp metadata request failed.");
-        using var doc=JsonDocument.Parse(stdout.Result);
+        var output=await BoundedProcessOutput.ReadAsync(child,MaxMetadataBytes,MaxMetadataErrorBytes,token).ConfigureAwait(false);
+        if (process.ExitCode!=0)
+        {
+            string error=DiagnosticField(Encoding.UTF8.GetString(output.StandardError).Trim(),4096);
+            throw new IOException(error.Length>0?error:"yt-dlp metadata request failed.");
+        }
+        ReadOnlyMemory<byte> metadata=output.StandardOutput;
+        if(metadata.Span.StartsWith(Encoding.UTF8.Preamble))metadata=metadata[Encoding.UTF8.Preamble.Length..];
+        using var doc=JsonDocument.Parse(metadata);
         var j=doc.RootElement;
         string playlist="";
         if (j.TryGetProperty("entries",out var entries) && entries.ValueKind==JsonValueKind.Array &&
