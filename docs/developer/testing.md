@@ -26,10 +26,18 @@ pwsh -NoProfile -File .\scripts\build.ps1 -Task Test
 
 [build.ps1](../../scripts/build.ps1) последовательно выполняет:
 
-1. [Тесты версионирования релизов](../../scripts/release-version-tests.ps1) и [smoke](../../scripts/smoke.ps1).
+1. [Тесты версионирования релизов](../../scripts/release-version-tests.ps1), включая first-parent [историю Git](../../scripts/release-history-tests.ps1) и [возобновление публикации](../../scripts/release-publication-tests.ps1), затем [smoke](../../scripts/smoke.ps1).
 2. Сборку приложения и [проверки русификации](../../scripts/russian-ui-tests.ps1).
 3. Исполняемые unit/integration/security/legacy сценарии проекта [VideoDownloader.Tests](../../tests/VideoDownloader.Tests/).
 4. Сборку [VideoDownloader.UiTests](../../tests/VideoDownloader.UiTests/), [проверку запуска GUI](../../scripts/gui-startup.ps1) и [настоящие WPF-сценарии](../../scripts/ui-tests.ps1).
+
+Для release-тестов нужен полноценный Git checkout с опорным коммитом `e93a78f6b82c04a213ec2eaf9cd93855c84ef691`; shallow checkout без него недостаточен. Их можно запустить отдельно на любой платформе с Git и PowerShell 7:
+
+```powershell
+pwsh -NoProfile -File scripts/release-version-tests.ps1
+```
+
+`release-history-tests.ps1` проверяет настоящий selector на изолированном локальном Git-репозитории без сети и без изменения исходных refs. Проверки включают переставленный порядок CI, пропущенные версии, повышение/снижение baseline, сбой посередине загрузки, повтор собственного draft, чужие drafts, неполный опубликованный Release и запрет отката Latest.
 
 Тестовые проекты — исполняемые программы со своим runner. Обычный `dotnet test` не заменяет этот запуск. Для отдельной диагностики Windows-сценариев можно выполнить из корня:
 
@@ -54,6 +62,7 @@ pwsh -NoProfile -File .\scripts\build.ps1 -Task Publish
 | Чтение старых checkpoint и результатов | [LegacyCompatibilityTests](../../tests/VideoDownloader.Tests/LegacyCompatibilityTests.cs), [legacy fixtures](../../tests/fixtures/legacy/) |
 | Источники, окно новинок, полный fallback, RSS и состояния | [SubscriptionScannerTests](../../tests/VideoDownloader.Tests/SubscriptionScannerTests.cs), [SubscriptionStoreTests](../../tests/VideoDownloader.Tests/SubscriptionStoreTests.cs) |
 | Превью до Start по всем путям ввода, без готового кеша | [ColdTitleIngressUiTests](../../tests/VideoDownloader.UiTests/ColdTitleIngressUiTests.cs), [SubscriptionPreviewPrefetchUiTests](../../tests/VideoDownloader.UiTests/SubscriptionPreviewPrefetchUiTests.cs), [PreviewSchedulingTests](../../tests/VideoDownloader.Tests/PreviewSchedulingTests.cs) |
+| Ограничение сырых stdout/stderr preview, вывод без LF, остановка собственного job и повтор после отказа | [PreviewOutputLimitTests](../../tests/VideoDownloader.Tests/PreviewOutputLimitTests.cs) |
 | Галерея и отдельная панель подписки | [GalleryUiTests](../../tests/VideoDownloader.UiTests/GalleryUiTests.cs), [SubscriptionDetailsPreviewUiTests](../../tests/VideoDownloader.UiTests/SubscriptionDetailsPreviewUiTests.cs) |
 | Общее предложение поставить новинки в очередь | [SubscriptionQueueOfferUiTests](../../tests/VideoDownloader.UiTests/SubscriptionQueueOfferUiTests.cs) |
 | Компонентный прогресс и журнал | [DownloadProgressPlanTests](../../tests/VideoDownloader.Tests/DownloadProgressPlanTests.cs), [JournalTests](../../tests/VideoDownloader.Tests/JournalTests.cs), [JournalUiTests](../../tests/VideoDownloader.UiTests/JournalUiTests.cs) |
@@ -82,7 +91,7 @@ python tests/pornhub-collector-tests.py
 ./gradlew :core:test :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleDebugAndroidTest
 ```
 
-[`core`-тесты](../../android/core/src/test/) проверяют правила и хранение без Android-устройства; [`app` unit-тесты](../../android/app/src/test/) — приватные пути, аргументы движка и правила выбора runtime. Lint и сборка выявляют платформенные ошибки, но не доказывают поведение установленного APK.
+[`core`-тесты](../../android/core/src/test/) проверяют правила и хранение без Android-устройства, включая [PublicationCleanupTest](../../android/core/src/test/kotlin/ru/bespalov/video/core/PublicationCleanupTest.kt) с точным доказательством успешной публикации. [`App` unit-тесты](../../android/app/src/test/) проверяют приватные пути, аргументы движка и runtime: [BoundedProcessRunnerTest](../../android/app/src/test/java/ru/bespalov/videodownloader/engine/BoundedProcessRunnerTest.kt) — общий бюджет потоков и строки callback до накопления, [RuntimeUpdaterTest](../../android/app/src/test/java/ru/bespalov/videodownloader/engine/RuntimeUpdaterTest.kt) — HTTP-отмену/таймауты, хеш, ZIP/версию и сохранение старого архива. Lint и сборка выявляют платформенные ошибки, но не доказывают поведение установленного APK.
 
 ## Android: устройство и Home
 
@@ -96,6 +105,10 @@ adb devices
 [Инструментальные тесты](../../android/app/src/androidTest/) запускают установленное приложение и Android-рантайм. Сценарий `foregroundDownloadCompletesAfterPressingHome` скачивает реальное видео с медленного локального HTTP-сервера, нажимает Home, ждёт завершения, проверяет читаемость опубликованного файла и историю. Это проверяет передачу данных после сворачивания, а не только наличие записи службы в manifest.
 
 Дополнительно `LiveQueueInstrumentedTest` проверяет настоящий ручной Add в активную и приостановленную сессию, отложенные переносимую очередь и подписку, Home/поворот, отмену одного задания, сохранность прежнего и постороннего файла. Отдельный сценарий подтверждает историю и проверяет Stop во время вопроса: позднее «Да» не начинает новую сессию. Чистые `ManualQueueAdmissionTest` проверяют повторную сверку ID/URL/истории и границы владения.
+
+[PublicationCleanupInstrumentedTest](../../android/app/src/androidTest/java/ru/bespalov/videodownloader/PublicationCleanupInstrumentedTest.kt) проверяет настоящие MediaStore MP4, сохранённый checkpoint после неудачной приватной очистки, флажок удаления в UI и retry с сохранением медиа/истории. [SafCleanupInstrumentedTest](../../android/app/src/androidTest/java/ru/bespalov/videodownloader/SafCleanupInstrumentedTest.kt) использует Binder DocumentsProvider из test APK: grant revoke/regrant, неизвестный доступ, отказ удаления и повтор по сохранённым URI. Обычная успешная проверка JVM не заменяет эти device-сценарии.
+
+[RuntimeProcessInstrumentedTest](../../android/app/src/androidTest/java/ru/bespalov/videodownloader/RuntimeProcessInstrumentedTest.kt) проверяет настоящие Python-процессы из APK: stdout/stderr без LF, сохранение UTF-8/CRLF, отмену группы с уже завершившимся родителем, сохранение независимой группы и отмену HTTP-обновления до освобождения engine admission.
 
 Также проверяются runtime `--version` и миграция, перенос очереди и открытие результата. Тестовый [offline-sample.mp4](../../android/app/src/androidTest/assets/offline-sample.mp4) и [описание фикстуры](../../android/app/src/androidTest/assets/README.md) находятся в репозитории. Проверка на собственном телефоне полезна дополнительно: [ручной сценарий Home](../user/android.md#background-check). Она не заменяет воспроизводимую конфигурацию CI.
 
