@@ -39,6 +39,7 @@ import ru.bespalov.video.core.DownloadTask
 import ru.bespalov.video.core.SubscriptionRules
 import ru.bespalov.video.core.ManualQueueAdmission
 import ru.bespalov.video.core.ManualQueueCandidate
+import ru.bespalov.video.core.PublicationCleanup
 import ru.bespalov.video.core.JournalContext
 import ru.bespalov.video.core.JournalLevel
 import ru.bespalov.video.core.JournalRecord
@@ -702,17 +703,16 @@ class DownloadService : Service() {
         graph.repository.update { state -> state.copy(queue = state.queue.map {
             if (it.id == task.id) it.copy(pendingRemoval = true, status = DownloadStatus.CLEANUP_REQUIRED) else it
         }) }
-        val publishedSuccessfully = graph.repository.state.value.history.any { record ->
-            record.url == task.url && task.outputUris.isNotEmpty() && record.outputUris.containsAll(task.outputUris)
-        }
+        val keepPublishedFiles = !deleteFiles && PublicationCleanup.hasSuccessfulPublication(task, graph.repository.state.value.history)
         // "Keep files" applies to completed publications; incomplete publication remnants are rolled back.
-        val retained = if (deleteFiles || !publishedSuccessfully) publisher.deleteOwned(task.outputUris) else emptyList()
+        val retained = if (keepPublishedFiles) emptyList() else publisher.deleteOwned(task.outputUris)
         val clean = safeDeleteStage(task)
         graph.repository.update { state -> state.copy(queue = state.queue.mapNotNull {
             if (it.id != task.id) it
             else if (retained.isEmpty() && clean) null
-            else it.copy(outputUris = retained, status = DownloadStatus.CLEANUP_REQUIRED,
-                rawError = "Some owned files could not be deleted. Retry removal after restoring storage access.")
+            else it.copy(outputUris = if (keepPublishedFiles) task.outputUris else retained, status = DownloadStatus.CLEANUP_REQUIRED,
+                rawError = if (keepPublishedFiles) "The download was published, but its private staging directory could not be removed."
+                    else "Some owned files could not be deleted. Retry removal after restoring storage access.")
         }) }
     }
 

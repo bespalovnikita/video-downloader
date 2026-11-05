@@ -7,6 +7,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
+import android.provider.DocumentsContract
 import android.webkit.MimeTypeMap
 import androidx.documentfile.provider.DocumentFile
 import androidx.annotation.RequiresApi
@@ -107,11 +108,16 @@ class MediaPublisher(private val context: Context) {
                 when (uri.scheme) {
                     "content" -> {
                         if (uri.authority == MediaStore.AUTHORITY) {
-                            resolver.delete(uri, null, null)
-                            exists(uri)
+                            val deleted = resolver.delete(uri, null, null)
+                            deleted <= 0 && presence(uri, MediaStore.MediaColumns._ID) != Presence.ABSENT
                         } else {
-                            val document = DocumentFile.fromSingleUri(context, uri)
-                            document != null && document.exists() && !document.delete()
+                            // DocumentFile.exists() treats revoked grants and provider errors
+                            // as absence. Keep ownership unless absence or deletion is proven.
+                            when (presence(uri, DocumentsContract.Document.COLUMN_DOCUMENT_ID)) {
+                                Presence.ABSENT -> false
+                                Presence.UNKNOWN -> true
+                                Presence.PRESENT -> !DocumentsContract.deleteDocument(resolver, uri)
+                            }
                         }
                     }
                     "file" -> {
@@ -126,7 +132,13 @@ class MediaPublisher(private val context: Context) {
         }
     }
 
-    private fun exists(uri: Uri): Boolean = resolver.query(uri, arrayOf("_id"), null, null, null)?.use { it.moveToFirst() } ?: false
+    private enum class Presence { PRESENT, ABSENT, UNKNOWN }
+
+    private fun presence(uri: Uri, idColumn: String): Presence = try {
+        resolver.query(uri, arrayOf(idColumn), null, null, null)?.use {
+            if (it.moveToFirst()) Presence.PRESENT else Presence.ABSENT
+        } ?: Presence.UNKNOWN
+    } catch (_: Exception) { Presence.UNKNOWN }
 
     private fun checkCancelled(cancelled: () -> Boolean) {
         if (cancelled()) throw CancellationException("Download cancelled before publication completed")

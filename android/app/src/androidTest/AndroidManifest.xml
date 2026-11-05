@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- The target app does not request this permission, so access depends on
+         the explicit URI grant instead of the provider being freely readable. -->
+    <permission
+        android:name="ru.bespalov.videodownloader.test.permission.CLEANUP_DOCUMENTS"
+        android:protectionLevel="signature" />
+    <application>
+        <!-- Installed only with the instrumentation APK. It stores test-owned
+             documents and exposes deterministic provider/grant failures. -->
+        <provider
+            android:name="ru.bespalov.videodownloader.CleanupDocumentsProvider"
+            android:authorities="ru.bespalov.videodownloader.test.cleanup"
+            android:exported="true"
+            android:grantUriPermissions="true">
+            <!-- Keep /control freely acquirable for fixture creation and regrant.
+                 Actual documents still require a permission or explicit URI grant. -->
+            <path-permission
+                android:pathPrefix="/document/"
+                android:readPermission="ru.bespalov.videodownloader.test.permission.CLEANUP_DOCUMENTS"
+                android:writePermission="ru.bespalov.videodownloader.test.permission.CLEANUP_DOCUMENTS" />
+        </provider>
+    </application>
+</manifest>

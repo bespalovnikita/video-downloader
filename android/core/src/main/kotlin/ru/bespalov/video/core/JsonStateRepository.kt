@@ -78,8 +78,11 @@ class JsonStateRepository(stateFile: File) : StateRepository {
                 // The success transaction precedes private staging cleanup.
                 // Process death in that window must preserve history while
                 // preventing a fresh download from orphaning the old stage.
+                // Older completed snapshots can omit progress. The completed
+                // state proves that transaction committed, including its 100% marker.
                 DownloadStatus.COMPLETED -> if (it.stageDirectory.isNotBlank())
-                    it.copy(status = DownloadStatus.CLEANUP_REQUIRED, speed = "", eta = "") else it
+                    it.copy(status = DownloadStatus.CLEANUP_REQUIRED, progress = 100f, speed = "", eta = "")
+                    else it.copy(progress = 100f)
                 DownloadStatus.RUNNING, DownloadStatus.CANCELLING -> it.copy(status =
                     if (it.outputUris.isNotEmpty() || it.pendingRemoval) DownloadStatus.CLEANUP_REQUIRED else DownloadStatus.INTERRUPTED,
                     runId = "", speed = "", eta = "")

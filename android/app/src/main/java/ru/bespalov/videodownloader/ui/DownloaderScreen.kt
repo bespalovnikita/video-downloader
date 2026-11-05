@@ -33,6 +33,7 @@ import java.text.DateFormat
 import java.util.Date
 import kotlinx.coroutines.delay
 import ru.bespalov.video.core.ErrorText
+import ru.bespalov.video.core.PublicationCleanup
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -316,7 +317,13 @@ private fun TaskCard(task: DownloadTask, ui: MobileUiState, actions: MobileActio
     var menu by remember { mutableStateOf(false) }
     var remove by remember { mutableStateOf(false) }
     var diagnostic by remember { mutableStateOf(false) }
-    var deleteFiles by remember(task.id, task.status) { mutableStateOf(task.status == DownloadStatus.CLEANUP_REQUIRED) }
+    val publishedSuccessfully = remember(task.url, task.progress, task.outputUris, ui.snapshot.history) {
+        PublicationCleanup.hasSuccessfulPublication(task, ui.snapshot.history)
+    }
+    val cleanupOnly = task.status == DownloadStatus.CLEANUP_REQUIRED && publishedSuccessfully
+    var deleteFiles by remember(task.id, task.status, publishedSuccessfully) {
+        mutableStateOf(task.status == DownloadStatus.CLEANUP_REQUIRED && !publishedSuccessfully)
+    }
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
     val progress = ui.taskProgress[task.id]
@@ -331,7 +338,7 @@ private fun TaskCard(task: DownloadTask, ui: MobileUiState, actions: MobileActio
                     if (task.subscriptionName.isNotBlank()) Text("Подписка / папка: ${task.subscriptionName}", style = MaterialTheme.typography.bodySmall)
                 }
                 Box {
-                    TextButton(onClick = { menu = true }) { Text("⋮") }
+                    TextButton(onClick = { menu = true }, modifier = Modifier.testTag("taskActions:${task.id}")) { Text("⋮") }
                     DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                         DropdownMenuItem(text = { Text("Превью") }, onClick = { menu = false; actions.showPreview(task.url, task.title) })
                         DropdownMenuItem(text = { Text("Копировать URL") }, onClick = { menu = false; clipboard.setText(AnnotatedString(task.url)) })
@@ -343,7 +350,11 @@ private fun TaskCard(task: DownloadTask, ui: MobileUiState, actions: MobileActio
                         }
                         if (task.outputUris.isNotEmpty()) DropdownMenuItem(text = { Text("Открыть файл") }, onClick = { menu = false; OpenUri(context, task.outputUris.first(), true) })
                         if (task.rawError.isNotBlank()) DropdownMenuItem(text = { Text("Исходная диагностика") }, onClick = { menu = false; diagnostic = true })
-                        DropdownMenuItem(text = { Text(if (task.status == DownloadStatus.CLEANUP_REQUIRED) "Повторить удаление" else "Удалить") }, onClick = { menu = false; remove = true }, enabled = !ui.locked)
+                        DropdownMenuItem(text = { Text(when {
+                            cleanupOnly -> "Очистить временные файлы"
+                            task.status == DownloadStatus.CLEANUP_REQUIRED -> "Повторить удаление"
+                            else -> "Удалить"
+                        }) }, onClick = { menu = false; remove = true }, enabled = !ui.locked)
                     }
                 }
             }
@@ -373,13 +384,20 @@ private fun TaskCard(task: DownloadTask, ui: MobileUiState, actions: MobileActio
     }
     if (remove) AlertDialog(onDismissRequest = { remove = false }, title = { Text("Удалить задание?") },
         text = { Column {
-            Text(if (task.outputUris.isNotEmpty()) "Задание исчезнет из очереди. История успешного скачивания сохранится." else "Активная загрузка будет отменена, её временные файлы удалены. Другие задания продолжат работу.")
+            Text(when {
+                cleanupOnly -> "Файл уже сохранён. Можно очистить временные файлы и убрать задание, сохранив результат и историю."
+                task.outputUris.isNotEmpty() -> "Задание исчезнет из очереди. История успешного скачивания сохранится."
+                else -> "Активная загрузка будет отменена, её временные файлы удалены. Другие задания продолжат работу."
+            })
             if (task.outputUris.isNotEmpty()) Row(verticalAlignment = Alignment.CenterVertically) {
-                Checkbox(checked = deleteFiles, onCheckedChange = { deleteFiles = it }, enabled = task.status != DownloadStatus.CLEANUP_REQUIRED)
+                Checkbox(checked = deleteFiles, onCheckedChange = { deleteFiles = it },
+                    enabled = task.status != DownloadStatus.CLEANUP_REQUIRED || publishedSuccessfully,
+                    modifier = Modifier.testTag("deleteTaskFiles:${task.id}"))
                 Text("Удалить файлы этого задания", style = MaterialTheme.typography.bodySmall)
             }
         } },
-        confirmButton = { TextButton(onClick = { remove = false; actions.remove(task.id, deleteFiles) }) { Text("Удалить") } },
+        confirmButton = { TextButton(onClick = { remove = false; actions.remove(task.id, deleteFiles) },
+            modifier = Modifier.testTag("confirmTaskRemoval:${task.id}")) { Text(if (cleanupOnly && !deleteFiles) "Очистить" else "Удалить") } },
         dismissButton = { TextButton(onClick = { remove = false }) { Text("Отмена") } })
     if (diagnostic) AlertDialog(onDismissRequest = { diagnostic = false }, title = { Text("Исходная диагностика") },
         text = { SelectionContainerCompat(task.rawError, Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) }, confirmButton = { TextButton(onClick = { diagnostic = false }) { Text("Закрыть") } })

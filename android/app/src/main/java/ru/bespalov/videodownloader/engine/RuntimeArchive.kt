@@ -49,8 +49,10 @@ internal object RuntimeArchive {
         target: File,
         bundledVersion: String,
         expectedSha256: String,
+        checkCancellation: () -> Unit = {},
         openAsset: () -> InputStream,
     ): String {
+        checkCancellation()
         require(components(bundledVersion) != null) { "Invalid bundled yt-dlp version" }
         require(Regex("^[a-fA-F0-9]{64}$").matches(expectedSha256)) { "Invalid yt-dlp checksum" }
         require(target.isAbsolute && target.toPath().none { it.toString() in setOf(".", "..") }) {
@@ -70,6 +72,7 @@ internal object RuntimeArchive {
                     val buffer = ByteArray(8192)
                     var total = 0L
                     while (true) {
+                        checkCancellation()
                         val count = input.read(buffer)
                         if (count < 0) break
                         total += count
@@ -80,10 +83,14 @@ internal object RuntimeArchive {
                     output.fd.sync()
                 }
             }
+            checkCancellation()
             val actualSha256 = digest.digest().joinToString("") { "%02x".format(it) }
             check(actualSha256.equals(expectedSha256, ignoreCase = true)) { "Bundled yt-dlp checksum mismatch" }
             check(readVersion(temporary) == bundledVersion) { "Bundled yt-dlp ZIP/version is invalid" }
             rejectLinks(parent, target)
+            // The rename below is the commit point. Cancellation before it must
+            // preserve the old runtime, just like an invalid checksum or ZIP.
+            checkCancellation()
             try {
                 Files.move(temporary.toPath(), target.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
             } catch (_: AtomicMoveNotSupportedException) {

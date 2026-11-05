@@ -127,6 +127,15 @@ public sealed class ManagedChildProcess : IDisposable
         }
         return result.Append('\\',slashes*2).Append('"').ToString();
     }
+    // Close only this child's job, even when its root already exited and a
+    // descendant still owns a redirected pipe. Keep readers/Process alive so
+    // callers can join them before normal disposal.
+    public void Terminate()
+    {
+        _job?.Dispose();
+        try { if(!Process.HasExited)Process.Kill(true); }
+        catch(InvalidOperationException){}catch(Win32Exception){}
+    }
     public void Dispose()
     {
         _job?.Dispose();

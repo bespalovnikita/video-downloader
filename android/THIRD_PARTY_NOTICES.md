@@ -34,6 +34,10 @@
 | AndroidX, Jetpack Compose, Material 3 | [AndroidX](https://android.googlesource.com/platform/frameworks/support/), [Apache 2.0](https://www.apache.org/licenses/LICENSE-2.0) | Apache License 2.0 |
 | Coil 2.7.0 | [coil-kt/coil](https://github.com/coil-kt/coil), [LICENSE](https://github.com/coil-kt/coil/blob/2.7.0/LICENSE.txt) | Apache License 2.0 |
 
+## HTTP-клиент обновления yt-dlp
+
+В [`app/build.gradle.kts`](app/build.gradle.kts) явно закреплён `com.squareup.okhttp3:okhttp:4.12.0`. Он используется для HTTP-запросов обновления рантайма с отменой и таймаутами. Автор upstream — **Square, Inc.**; лицензия — **Apache License 2.0**. Исходники версии: [square/okhttp, тег parent-4.12.0](https://github.com/square/okhttp/tree/parent-4.12.0), [текст LICENSE](https://github.com/square/okhttp/blob/parent-4.12.0/LICENSE.txt); опубликованные исходники — [okhttp-4.12.0-sources.jar](https://repo.maven.apache.org/maven2/com/squareup/okhttp3/okhttp/4.12.0/okhttp-4.12.0-sources.jar).
+
 Точный набор транзитивных зависимостей можно получить из `android/` командой `./gradlew :app:dependencies --configuration releaseRuntimeClasspath` (Windows: `.\gradlew.bat`). Уведомления и лицензии транзитивных и нативных компонентов также должны учитываться при распространении.
 
 ## Перед публичным распространением APK

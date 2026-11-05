@@ -1,59 +1,72 @@
 #requires -Version 7.0
 Set-StrictMode -Version Latest
 
-# Only stable, three-component SemVer tags participate in the automatic
-# release sequence. Pre-releases, dangling draft tags, and unrelated tags
-# never advance the public version number.
-function Get-VdNextReleaseTag {
+# Migration boundary: all earlier public releases keep their original versions.
+# New versions count first-parent main revisions after this immutable release,
+# including revisions whose CI has not succeeded yet. CI completion order must
+# never determine Windows/Android update order.
+$script:MainReleaseAnchor = @{
+    Commit = 'e93a78f6b82c04a213ec2eaf9cd93855c84ef691'
+    Tag = 'v2.0.35'
+}
+
+function Get-VdMainReleaseAnchor {
+    return [pscustomobject]$script:MainReleaseAnchor.Clone()
+}
+
+function Get-VdMainReleasePlan {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][string]$BaseVersion,
-        [AllowEmptyCollection()][string[]]$ExistingTags = @(),
-        [AllowEmptyCollection()][string[]]$HeadTags = @()
+        [Parameter(Mandatory)][object[]]$History,
+        [Parameter(Mandatory)][string]$TargetSha,
+        [string]$AnchorSha = $script:MainReleaseAnchor.Commit,
+        [string]$AnchorTag = $script:MainReleaseAnchor.Tag
     )
 
-    if ($BaseVersion -notmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') {
-        throw "Expected project Version in major.minor.patch format; got: $BaseVersion"
+    if ($History.Count -eq 0 -or $History[0].Sha -cne $AnchorSha) {
+        throw 'Main release history must begin at the immutable migration anchor.'
     }
-    $baseline = [version]$BaseVersion
-    $parseTag = {
-        param([string]$Name)
-        if ($Name -notmatch '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') { return $null }
-        try { return [version]$Name.Substring(1) }
-        catch { return $null }
+    if ($AnchorTag -notmatch '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') {
+        throw "Invalid main release anchor tag: $AnchorTag"
     }
-
-    # A rerun of a workflow on the same SHA must target its existing release,
-    # not create a second tag and release for the same commit.
-    # Force array type after sorting: PowerShell unwraps empty/single pipelines
-    # into $null or a scalar, which breaks .Count under StrictMode.
-    $sameCommit = @(
-        @(
-            foreach ($tag in $HeadTags) {
-                $parsed = & $parseTag $tag
-                if ($null -ne $parsed -and $parsed -ge $baseline) {
-                    [pscustomobject]@{ Version = $parsed; Tag = $tag }
-                }
+    $version = [version]$AnchorTag.Substring(1)
+    $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    for ($index = 0; $index -lt $History.Count; $index++) {
+        $revision = $History[$index]
+        if (-not $seen.Add([string]$revision.Sha)) { throw 'Duplicate main release revision.' }
+        $baseline = $null
+        if ($revision.BaseVersion -match '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') {
+            try {
+                $baseline = [version]$revision.BaseVersion
+                $null = Get-VdAndroidVersionCode -Version $baseline.ToString()
+            } catch { $baseline = $null }
+        }
+        if ($null -eq $baseline -and $revision.Sha -ceq $TargetSha) {
+            throw "Invalid project Version at main revision $($revision.Sha)."
+        }
+        if ($index -gt 0) {
+            # A broken, non-target revision still reserves its patch slot. It
+            # must not prevent a corrected descendant from releasing later.
+            if ($null -ne $baseline -and $baseline -gt $version) {
+                $version = $baseline
+            } else {
+                if ($version.Build -ge [int]::MaxValue) { throw 'Main release patch version overflow.' }
+                $version = [version]::new($version.Major, $version.Minor, $version.Build + 1)
             }
-        ) | Sort-Object Version -Descending
-    )
-    if ($sameCommit.Count -gt 0) { return [string]$sameCommit[0].Tag }
-
-    $highest = $null
-    foreach ($tag in $ExistingTags) {
-        $parsed = & $parseTag $tag
-        if ($null -ne $parsed -and ($null -eq $highest -or $parsed -gt $highest)) {
-            $highest = $parsed
+        }
+        if ($revision.Sha -ceq $TargetSha) {
+            # Validate the Android update number before either platform builds.
+            $code = Get-VdAndroidVersionCode -Version $version.ToString()
+            return [pscustomobject]@{
+                Sha = $TargetSha
+                Tag = "v$version"
+                Version = $version.ToString()
+                AndroidVersionCode = $code
+                Revision = $index
+            }
         }
     }
-
-    if ($null -eq $highest -or $highest -lt $baseline) {
-        return "v$($baseline.Major).$($baseline.Minor).$($baseline.Build)"
-    }
-    if ($highest.Build -ge [int]::MaxValue) {
-        throw "Cannot automatically increment patch component of $highest"
-    }
-    return "v$($highest.Major).$($highest.Minor).$($highest.Build + 1)"
+    throw "Commit $TargetSha is not on the managed first-parent main history."
 }
 
 function Get-VdAndroidVersionCode {
@@ -75,4 +88,4 @@ function Get-VdAndroidVersionCode {
     return [int]$code
 }
 
-Export-ModuleMember -Function Get-VdNextReleaseTag, Get-VdAndroidVersionCode
+Export-ModuleMember -Function Get-VdAndroidVersionCode, Get-VdMainReleaseAnchor, Get-VdMainReleasePlan

@@ -2,30 +2,62 @@
 $ErrorActionPreference = "Stop"
 Import-Module (Join-Path $PSScriptRoot "../.github/scripts/ReleaseVersion.psm1") -Force
 
-function Assert-Release {
-    param([string]$Expected,[string]$Base,[string[]]$Tags=@(),[string[]]$OnCommit=@())
-    $actual = Get-VdNextReleaseTag -BaseVersion $Base -ExistingTags $Tags -HeadTags $OnCommit
-    if ($actual -cne $Expected) {
-        throw "Wrong release version. Wanted '$Expected', got '$actual' (base=$Base)."
-    }
+# Versions belong to main revisions, not to the order in which CI finishes.
+$anchor = Get-VdMainReleaseAnchor
+$commitA = 'a' * 40
+$commitB = 'b' * 40
+$commitC = 'c' * 40
+$commitD = 'd' * 40
+$commitE = 'e' * 40
+$history = @(
+    [pscustomobject]@{ Sha = $anchor.Commit; BaseVersion = '2.0.0' },
+    [pscustomobject]@{ Sha = $commitA; BaseVersion = '2.0.0' },
+    [pscustomobject]@{ Sha = $commitB; BaseVersion = '2.0.0' },
+    [pscustomobject]@{ Sha = $commitC; BaseVersion = '2.1.0' },
+    [pscustomobject]@{ Sha = $commitD; BaseVersion = '2.1.0' },
+    [pscustomobject]@{ Sha = $commitE; BaseVersion = '2.0.0' }
+)
+# B passes first while A is delayed/failed; its unused slot remains reserved.
+$b = Get-VdMainReleasePlan -History $history -TargetSha $commitB
+$a = Get-VdMainReleasePlan -History $history -TargetSha $commitA
+if ($b.Tag -cne 'v2.0.37' -or $a.Tag -cne 'v2.0.36' -or $a.AndroidVersionCode -ge $b.AndroidVersionCode) {
+    throw 'Reordered CI must preserve main and Android update order.'
 }
-
-# First stable native release is 2.0.0; an old draft v1.0.0 is not touched.
-Assert-Release "v2.0.0" "2.0.0"
-Assert-Release "v2.0.0" "2.0.0" @("v1.0.0","untagged-123")
-Assert-Release "v2.0.1" "2.0.0" @("v1.0.0","v2.0.0")
-Assert-Release "v2.0.10" "2.0.0" @("v2.0.2","v2.0.9","beta-999")
-Assert-Release "v2.1.0" "2.1.0" @("v2.0.99")
-Assert-Release "v2.1.5" "2.1.0" @("v2.1.4")
-Assert-Release "v2.0.0" "2.0.0" @("v1.0.0","v2.0.0-rc.1","v2.0.0.1")
-Assert-Release "v2.0.3" "2.0.0" @("v2.0.3") @("v2.0.3")
-Assert-Release "v2.0.2" "2.0.0" @("v2.0.1","v2.0.2") @("v2.0.2")
-Assert-Release "v2.1.0" "2.1.0" @("v2.0.44") @("v2.0.44")
-
-$refused = $false
-try { [void](Get-VdNextReleaseTag -BaseVersion "2.0") }
-catch { $refused = $true }
-if (-not $refused) { throw "Invalid project version must fail closed." }
+$retryA = Get-VdMainReleasePlan -History $history -TargetSha $commitA
+if ($retryA.Tag -cne $a.Tag) { throw 'A delayed old retry must retain its original version.' }
+$d = Get-VdMainReleasePlan -History $history -TargetSha $commitD
+$c = Get-VdMainReleasePlan -History $history -TargetSha $commitC
+$e = Get-VdMainReleasePlan -History $history -TargetSha $commitE
+if ($c.Tag -cne 'v2.1.0' -or $d.Tag -cne 'v2.1.1' -or $e.Tag -cne 'v2.1.2') {
+    throw 'A baseline bump must reserve ordered slots even when CI is reordered or the project baseline is later lowered.'
+}
+$brokenHistory = @(
+    $history[0],
+    [pscustomobject]@{ Sha = $commitA; BaseVersion = $null },
+    [pscustomobject]@{ Sha = $commitB; BaseVersion = '2.0.0' }
+)
+if ((Get-VdMainReleasePlan -History $brokenHistory -TargetSha $commitB).Tag -cne 'v2.0.37') {
+    throw 'A corrected descendant must release after a broken historical project version.'
+}
+$invalidAndroidHistory = @(
+    $history[0],
+    [pscustomobject]@{ Sha = $commitA; BaseVersion = '2.100.0' },
+    [pscustomobject]@{ Sha = $commitB; BaseVersion = '2.1.0' }
+)
+if ((Get-VdMainReleasePlan -History $invalidAndroidHistory -TargetSha $commitB).Tag -cne 'v2.1.0') {
+    throw 'An invalid historical Android baseline must not poison corrected descendants.'
+}
+foreach ($invalidPlan in @(
+    @{ History = $history; TargetSha = ('f' * 40) },
+    @{ History = @($history[1], $history[2]); TargetSha = $commitB },
+    @{ History = $brokenHistory; TargetSha = $commitA },
+    @{ History = $invalidAndroidHistory; TargetSha = $commitA },
+    @{ History = @($history[0], $history[1], $history[1]); TargetSha = $commitB }
+)) {
+    $refused = $false
+    try { $null = Get-VdMainReleasePlan @invalidPlan } catch { $refused = $true }
+    if (-not $refused) { throw 'Invalid main release history must fail closed.' }
+}
 
 foreach ($case in @(
     @{ Version = '2.0.0'; Code = 2000000 },
@@ -47,3 +79,6 @@ foreach ($invalid in @('0.0.0', '2.100.0', '2.0.10000', '2100.0.1', '2.0', 'v2.0
 }
 
 Write-Host "Automatic main-release version assignment tests passed."
+
+& (Join-Path $PSScriptRoot 'release-history-tests.ps1')
+& (Join-Path $PSScriptRoot 'release-publication-tests.ps1')
