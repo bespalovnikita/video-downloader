@@ -564,6 +564,17 @@
                         <TextBlock Text="Profile" FontWeight="SemiBold" Margin="0,4,0,4"/>
                         <ComboBox x:Name="ProfileCombo" Margin="0,0,0,9"/>
 
+                        <StackPanel Margin="0,0,0,8">
+                            <TextBlock Text="Аудиодорожка" Style="{StaticResource MutedText}"/>
+                            <ComboBox x:Name="AudioTrackCombo" AutomationProperties.Name="Аудиодорожка"/>
+                            <TextBlock Text="Языки аудио" Style="{StaticResource MutedText}" Margin="0,5,0,0"/>
+                            <TextBox x:Name="AudioLanguagesBox" Text="ru" IsEnabled="False"
+                                     AutomationProperties.Name="Языки аудио"
+                                     ToolTip="Коды через запятую: ru, en, pt-BR. Несколько языков — контейнер Auto или MKV, без MP3."/>
+                            <TextBlock Text="«Оригинальная» требует отметки источника. «По языкам»: ru или ru,en. Несколько языков сохраняются в MKV; MP3 — один язык. Недоступная дорожка даст ошибку."
+                                       Style="{StaticResource MutedText}" TextWrapping="Wrap" FontSize="11" Margin="0,4,0,0"/>
+                        </StackPanel>
+
                         <Grid Margin="0,0,0,8">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*"/>

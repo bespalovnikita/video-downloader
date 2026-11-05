@@ -1,0 +1,15 @@
+[
+  {"name":"language","audioTrack":"Languages","audioLanguages":" RU ","quality":"1080","codec":"H264","expected":"video-h264+audio-ru-high"},
+  {"name":"codec-fallback","audioTrack":"Languages","audioLanguages":"ru","quality":"1080","codec":"VP9","expected":"video-av1+audio-ru-high"},
+  {"name":"original","audioTrack":"Original","quality":"best","expected":"video-av1+audio-en"},
+  {"name":"multiple","audioTrack":"Languages","audioLanguages":"ru,en","quality":"best","expected":"video-av1+audio-ru-high+audio-en"},
+  {"name":"mp3","audioTrack":"Languages","audioLanguages":"ru","audioOnly":true,"quality":"best","expected":"audio-ru-high"},
+  {"name":"missing-language","audioTrack":"Languages","audioLanguages":"ja","quality":"best","expected":null},
+  {"name":"unknown-language","audioTrack":"Languages","audioLanguages":"ru","quality":"best","formats":["video-av1","audio-unknown"],"expected":null},
+  {"name":"language-boundary","audioTrack":"Languages","audioLanguages":"ru","quality":"best","formats":["video-av1","audio-rue"],"expected":null},
+  {"name":"unmarked-original","audioTrack":"Original","quality":"best","formats":["video-av1","audio-ru-high"],"expected":null},
+  {"name":"combined-fallback","audioTrack":"Languages","audioLanguages":"ru","quality":"best","formats":["combined-en","combined-ru"],"expected":"combined-ru"},
+  {"name":"missing-second-language","audioTrack":"Languages","audioLanguages":"ru,ja","quality":"best","expected":null},
+  {"name":"specific-region","audioTrack":"Languages","audioLanguages":"ru-UA","quality":"best","expected":null},
+  {"name":"non-original-marker","audioTrack":"Original","quality":"best","formats":["video-av1","audio-not-original"],"expected":null}
+]

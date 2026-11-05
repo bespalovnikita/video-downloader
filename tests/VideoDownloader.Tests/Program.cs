@@ -17,6 +17,7 @@ if(applicationAssembly.GetTypes().Any(type=>type.Name.Contains("SelfTest",String
     throw new InvalidOperationException("Production assembly must not contain UI scenarios or self-test entry points.");
 LegacyCompatibilityTests.Run();
 await NativeContractTests.RunAsync();
+await AudioTrackSelectionTests.RunAsync();
 await PreviewSchedulingTests.RunAsync();
 await PreviewGalleryTests.RunAsync();
 await PreviewOutputLimitTests.RunAsync();

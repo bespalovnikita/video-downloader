@@ -48,6 +48,8 @@ internal sealed partial class UiScenario
             UiScenario.TestJournalProfiles(root);
             Stage("testing filename-template tooltip and reference dialog");
             UiScenario.TestFilenameTemplateHelp(root);
+            Stage("testing audio-track controls and saved settings");
+            UiScenario.TestAudioTrackSettings(root);
             Stage("testing completed queue playback and finished session clock");
             UiScenario.TestQueuePlaybackAndTimer(root);
             Stage("testing duplicate-history dialog choices");

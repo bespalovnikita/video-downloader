@@ -6,6 +6,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.intOrNull
 import ru.bespalov.video.core.Settings
+import ru.bespalov.video.core.AudioTracks
 import ru.bespalov.video.core.SettingsRules
 import java.io.File
 
@@ -40,11 +41,12 @@ object YtDlpArguments {
         if (settings.rateLimit.isNotBlank() && settings.rateLimit != "Unlimited")
             args += listOf("--limit-rate", settings.rateLimit)
         if (settings.sponsor) args += listOf("--sponsorblock-remove", "sponsor")
+        AudioTracks.formatSelector(settings, quality)?.let { args += listOf("-f", it) }
         if (settings.audioOnly) args += listOf("-x", "--audio-format", "mp3") else {
-            args += listOf("-f", formatSelector(settings, quality))
-            if (settings.container != "Auto") {
-                require(settings.container in setOf("MP4", "MKV", "WebM")) { "Unknown container" }
-                args += listOf("--merge-output-format", settings.container.lowercase(), "--remux-video", settings.container.lowercase())
+            if (AudioTracks.multiple(settings)) args += "--audio-multistreams"
+            val container = AudioTracks.container(settings)
+            if (container != "Auto") {
+                args += listOf("--merge-output-format", container.lowercase(), "--remux-video", container.lowercase())
             }
         }
         if (settings.writeSubs || settings.embedSubs) args += "--write-subs"
@@ -59,12 +61,6 @@ object YtDlpArguments {
         return args
     }
 
-    private fun formatSelector(settings: Settings, quality: String): String {
-        val filter = if (quality == "best") "" else "[height<=$quality]"
-        val code = when (settings.codec) { "H264" -> "avc1"; "VP9" -> "vp9"; "AV1" -> "av01"; else -> "" }
-        val generic = "bv*$filter+ba/b$filter"
-        return if (code.isBlank()) generic else "bv*$filter[vcodec^=$code]+ba/b$filter[vcodec^=$code]/$generic"
-    }
 }
 
 sealed interface MarkerEvent {
