@@ -96,7 +96,17 @@ PR и ручной CI сохраняют Actions artifacts **VideoDownloader-nat
 | `ANDROID_KEY_ALIAS` | Alias ключа внутри keystore |
 | `ANDROID_KEY_PASSWORD` | Пароль ключа |
 
-Создай secrets в **Settings → Secrets and variables → Actions → Repository secrets**. Ключ и его резервную копию храни вне репозитория; не отправляй их в issue, PR или чат. Для создания нового ключа нужны JDK 17 с `keytool` и приватный каталог вне рабочей копии. Пример для Bash, где путь нужно заменить своим:
+Если ключа ещё нет, рекомендуемый способ — запустить [скрипт первоначальной настройки](../../scripts/setup-android-signing.ps1) на своём компьютере из корня рабочей копии. Нужны PowerShell 7.3+, JDK 17 с `keytool` и GitHub CLI `gh`, авторизованный под администратором репозитория с доступом к Actions secrets. Укажи абсолютный путь в приватном каталоге вне репозитория:
+
+```powershell
+pwsh -NoProfile -File scripts/setup-android-signing.ps1 -KeyStorePath 'C:\Private\VideoDownloaderSigning\release.p12'
+```
+
+Скрипт создаёт постоянный RSA-ключ 4096 бит в PKCS12 с безопасным случайным паролем, сохраняет рядом recovery JSON с параметрами восстановления и загружает четыре secrets через stdin, не выводя значения. Если загрузка в GitHub не удалась, повтори ту же команду: уже созданные материалы используются повторно, ключ не заменяется. Существующие файлы не перезаписываются. Настройка требует доступа к secrets из `gh` на этом компьютере; изменение workflow само по себе их не создаёт.
+
+**Keystore и recovery JSON содержат секретные данные.** Храни оба файла вне Git, создай защищённую резервную копию обоих и не отправляй их в issue, PR или чат. Потеря ключа лишит возможности выпускать обновления с прежней подписью; recovery JSON содержит пароль и также должен оставаться приватным.
+
+Для ручной настройки создай secrets в **Settings → Secrets and variables → Actions → Repository secrets**. Альтернатива со своим ключом в Bash, где путь нужно заменить своим:
 
 ```bash
 VD_KEYSTORE=/absolute/private/path/video-downloader-release.jks
