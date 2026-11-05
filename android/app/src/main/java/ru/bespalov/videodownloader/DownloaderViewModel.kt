@@ -166,17 +166,30 @@ class DownloaderViewModel(application: Application) : AndroidViewModel(applicati
         }
         mutable.update { it.copy(message = UiMessage("Очередь добавлена: $added новых ссылок. Загрузка запускается кнопкой Start.")) }
     }
-    private suspend fun add(urls: List<String>) {
+    private suspend fun add(urls: List<String>, joinActive: Boolean = true) {
         writable()
         require(urls.isNotEmpty()) { "Не найдено ссылок HTTP(S)." }
+        val expectedSession = DownloadService.session.value?.takeIf { joinActive && it.active && DownloadService.isRunning.value }?.id
+        val added = mutableSetOf<String>()
         val changed = repository.update { state ->
             val known = state.queue.map { it.url }.toSet()
             state.copy(queue = state.queue + urls.filterNot { it in known }.map { url ->
                 DownloadTask(url = url, title = graph.previews.metadata.value[url]?.title.orEmpty(),
-                    deferredNextStart = DownloadService.isRunning.value)
+                    deferredNextStart = true).also { added += it.id }
             })
         }
         urls.forEach { url -> graph.previews.request(url, changed.queue.firstOrNull { it.url == url }?.title.orEmpty()) }
+        if (expectedSession != null && added.isNotEmpty()) startGate.withLock {
+            if (!DownloadService.isRunning.value || DownloadService.session.value?.let { it.id == expectedSession && it.active } != true) return@withLock
+            val candidates = repository.state.value.queue.filter { it.id in added }
+            val approval = approveRepeats(candidates) ?: return@withLock
+            // The service repeats this identity/history check under its admission
+            // gate. A delayed answer cannot authorize a different/new session.
+            val request = candidates.filter { it.id in approval.allowedIds }.map {
+                ManualQueueCandidate(it.id, it.url, approval.history[it.url].orEmpty())
+            }
+            if (request.isNotEmpty()) DownloadService.admitManual(expectedSession, request)
+        }
     }
 
     override fun importList(uri: Uri) = work {
@@ -186,7 +199,7 @@ class DownloaderViewModel(application: Application) : AndroidViewModel(applicati
         if (name.endsWith(".vdqueue", true) || isQueueTransfer(text)) importPortable(text)
         else {
             require(bytes.size <= 16 * 1024 * 1024) { "Файл ссылок превышает 16 МиБ." }
-            add(Urls.fromFile(name, text))
+            add(Urls.fromFile(name, text), joinActive = false)
         }
     }
 
@@ -233,34 +246,10 @@ class DownloaderViewModel(application: Application) : AndroidViewModel(applicati
                     task.status in setOf(DownloadStatus.QUEUED, DownloadStatus.FAILED, DownloadStatus.INTERRUPTED, DownloadStatus.PAUSED, DownloadStatus.COMPLETED)
             }.filter { taskIds != null || it.status != DownloadStatus.COMPLETED }
             if (candidates.isEmpty()) return@admission
-            val history = repository.state.value.history.groupBy { it.url }
-            val repeats = candidates.filter { it.url in history }
-            val rejected = mutableSetOf<String>()
-            var all: Boolean? = null
-            try {
-                for ((index, task) in repeats.withIndex()) {
-                    val accepted = all ?: run {
-                        val pending = CompletableDeferred<DuplicateDecision>()
-                        decision = pending
-                        mutable.update { it.copy(duplicatePrompt = DuplicatePrompt(task.url, task.title,
-                            history[task.url]?.maxOfOrNull { record -> record.completedAtUtc }, index + 1, repeats.size)) }
-                        when (pending.await()) {
-                            DuplicateDecision.YES -> true
-                            DuplicateDecision.NO -> false
-                            DuplicateDecision.YES_ALL -> { all = true; true }
-                            DuplicateDecision.NO_ALL -> { all = false; false }
-                            DuplicateDecision.CANCEL -> return@admission
-                        }
-                    }
-                    if (!accepted) rejected += task.id
-                }
-            } finally {
-                decision = null
-                mutable.update { it.copy(duplicatePrompt = null) }
-            }
+            val approval = approveRepeats(candidates) ?: return@admission
             // A refusal excludes this run; queue/history/files are retained.
             val current = repository.state.value.queue.associateBy { it.id }
-            val allowed = candidates.filterNot { it.id in rejected }.filter { candidate ->
+            val allowed = candidates.filter { it.id in approval.allowedIds }.filter { candidate ->
                 current[candidate.id]?.let { now -> now.url == candidate.url && !now.pendingRemoval &&
                     now.status == candidate.status && now.stageDirectory == candidate.stageDirectory } == true
             }.map { it.id }
@@ -269,6 +258,37 @@ class DownloaderViewModel(application: Application) : AndroidViewModel(applicati
                 DownloadService.start(app, allowed)
             }
           }
+        }
+    }
+
+    private data class RepeatApproval(val allowedIds: Set<String>, val history: Map<String, List<SuccessRecord>>)
+
+    private suspend fun approveRepeats(candidates: List<DownloadTask>): RepeatApproval? {
+        val history = repository.state.value.history.groupBy { it.url }
+        val repeats = candidates.filter { it.url in history }
+        val rejected = mutableSetOf<String>()
+        var all: Boolean? = null
+        try {
+            for ((index, task) in repeats.withIndex()) {
+                val accepted = all ?: run {
+                    val pending = CompletableDeferred<DuplicateDecision>()
+                    decision = pending
+                    mutable.update { it.copy(duplicatePrompt = DuplicatePrompt(task.url, task.title,
+                        history[task.url]?.maxOfOrNull { record -> record.completedAtUtc }, index + 1, repeats.size)) }
+                    when (pending.await()) {
+                        DuplicateDecision.YES -> true
+                        DuplicateDecision.NO -> false
+                        DuplicateDecision.YES_ALL -> { all = true; true }
+                        DuplicateDecision.NO_ALL -> { all = false; false }
+                        DuplicateDecision.CANCEL -> return null
+                    }
+                }
+                if (!accepted) rejected += task.id
+            }
+            return RepeatApproval(candidates.filterNot { it.id in rejected }.mapTo(mutableSetOf()) { it.id }, history)
+        } finally {
+            decision = null
+            mutable.update { it.copy(duplicatePrompt = null) }
         }
     }
 

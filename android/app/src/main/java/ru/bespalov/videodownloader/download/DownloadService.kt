@@ -23,6 +23,8 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -35,6 +37,8 @@ import kotlinx.coroutines.withContext
 import ru.bespalov.video.core.DownloadStatus
 import ru.bespalov.video.core.DownloadTask
 import ru.bespalov.video.core.SubscriptionRules
+import ru.bespalov.video.core.ManualQueueAdmission
+import ru.bespalov.video.core.ManualQueueCandidate
 import ru.bespalov.video.core.JournalContext
 import ru.bespalov.video.core.JournalLevel
 import ru.bespalov.video.core.JournalRecord
@@ -72,6 +76,7 @@ class DownloadService : Service() {
     private lateinit var publisher: MediaPublisher
     private lateinit var wakeLock: PowerManager.WakeLock
     @Volatile private var paused = false
+    @Volatile private var acceptingTasks = false
     @Volatile private var lastStart = 0
     @Volatile private var destroyed = false
     private var concurrency = 1
@@ -129,6 +134,8 @@ class DownloadService : Service() {
             stopSelfResult(startId)
             return START_NOT_STICKY
         }
+        // Close admission immediately, including commands still waiting for storage.
+        if (intent?.action == ACTION_STOP) acceptingTasks = false
         // Main-thread admission precedes foreground activation. An idle worker must not
         // stop this service while this command waits for initialization/import/the gate.
         commandsInFlight.incrementAndGet()
@@ -163,8 +170,7 @@ class DownloadService : Service() {
             } catch (cancel: CancellationException) {
                 throw cancel
             } catch (error: Exception) {
-                if (error is CancellationException) trace(JournalLevel.Information, "download", "event=command_cancelled")
-                else trace(JournalLevel.Error, "download", "event=command_failed\n${error.stackTraceToString()}")
+                trace(JournalLevel.Error, "download", "event=command_failed\n${error.stackTraceToString()}")
                 gate.withLock {
                     if (active.isEmpty()) {
                         pending.forEach { tracker.mark(sessionId, it, SessionJobState.CANCELLED) }
@@ -222,10 +228,71 @@ class DownloadService : Service() {
             trace(JournalLevel.Information, "session", "event=started tasks=${members.size}")
         }
         pending.addAll(accepted)
+        acceptingTasks = true
         concurrency = state.settings.threads.coerceIn(1, 4)
         paused = false
         mutablePaused.value = false
         tracker.setPaused(sessionId, false)
+        publishSession(forceOverall = true)
+    }
+
+    private fun acceptsManual(expected: String): Boolean = !destroyed && acceptingTasks &&
+        currentService.get() === this && sessionId == expected && tracker.snapshot()?.active == true &&
+        drainingServices.none { it !== this }
+
+    /** A direct command can only join this already-running owner; it never creates a service. */
+    @OptIn(kotlinx.coroutines.DelicateCoroutinesApi::class, kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    private fun requestManualAdmission(expected: String, candidates: List<ManualQueueCandidate>): Boolean {
+        if (candidates.isEmpty() || !acceptsManual(expected)) return false
+        commandsInFlight.incrementAndGet()
+        scope.launch(start = CoroutineStart.ATOMIC) {
+            try {
+                graph.dataOperation.withLock {
+                    gate.withLock admission@{
+                        currentCoroutineContext().ensureActive()
+                        if (!acceptsManual(expected) || graph.importing.value || graph.repository.readOnly) return@admission
+                        admitManualLocked(expected, candidates)
+                        scheduleLocked()
+                    }
+                }
+            } catch (cancel: CancellationException) { throw cancel }
+            catch (error: Exception) { trace(JournalLevel.Warning, "download", "event=live_admission_failed\n${error.stackTraceToString()}") }
+            finally {
+                withContext(NonCancellable) {
+                    gate.withLock {
+                        commandsInFlight.decrementAndGet()
+                        scheduleLocked()
+                    }
+                }
+            }
+        }
+        return true
+    }
+
+    private suspend fun admitManualLocked(expected: String, candidates: List<ManualQueueCandidate>) = withContext(NonCancellable) {
+        val accepted = mutableSetOf<String>()
+        val run = UUID.randomUUID().toString()
+        val date = LocalDate.now().toString()
+        val state = graph.repository.update { state ->
+            if (!acceptsManual(expected)) return@update state
+            val eligible = ManualQueueAdmission.eligibleIds(state, candidates)
+            state.copy(queue = state.queue.map { task ->
+                if (task.id !in eligible || task.id in pending || task.id in claimedTasks || active.containsKey(task.id)) task
+                else {
+                    accepted += task.id
+                    task.copy(status = if (paused) DownloadStatus.PAUSED else DownloadStatus.QUEUED,
+                        deferredNextStart = false, settingsSnapshot = state.settings,
+                        runId = run, archiveDate = date)
+                }
+            })
+        }
+        if (accepted.isEmpty()) return@withContext
+        pending.addAll(accepted)
+        tracker.admit(expected, state.queue.mapIndexedNotNull { index, task ->
+            if (task.id in accepted) SessionMember(task.id, index + 1, task.title, task.url) else null
+        })
+        if (paused) accepted.forEach { tracker.mark(expected, it, SessionJobState.PAUSED) }
+        trace(JournalLevel.Information, "session", "event=live_admitted tasks=${accepted.size} paused=$paused")
         publishSession(forceOverall = true)
     }
 
@@ -259,6 +326,7 @@ class DownloadService : Service() {
     }
 
     private suspend fun stopLocked() {
+        acceptingTasks = false
         val waiting = pending.toSet()
         pending.clear()
         paused = false
@@ -318,7 +386,7 @@ class DownloadService : Service() {
             }
             return
         }
-        if (!paused && !destroyed) {
+        if (!paused && !destroyed && acceptingTasks) {
             while (active.size < concurrency) {
                 val id = pending.firstOrNull { !active.containsKey(it) } ?: break
                 pending.remove(id)
@@ -739,6 +807,7 @@ class DownloadService : Service() {
     override fun onTimeout(startId: Int, fgsType: Int) {
         trace(JournalLevel.Warning, "session", "event=timeout Android stopped the dataSync foreground service after its allowed background time.")
         destroyed = true
+        acceptingTasks = false
         active.values.forEach { it.reason.compareAndSet(null, Reason.STOP); graph.engine.cancel(it.requestId) }
         scope.cancel(CancellationException("Android dataSync foreground timeout"))
         scheduleShutdown()
@@ -753,6 +822,7 @@ class DownloadService : Service() {
 
     override fun onDestroy() {
         destroyed = true
+        acceptingTasks = false
         active.values.forEach { it.reason.compareAndSet(null, Reason.STOP); graph.engine.cancel(it.requestId) }
         scope.cancel(CancellationException("Download service destroyed"))
         scheduleShutdown()
@@ -792,6 +862,9 @@ class DownloadService : Service() {
         val session: StateFlow<DownloadSessionSnapshot?> = mutableSession.asStateFlow()
         /** Native joins and delayed snapshot writes still own data after onDestroy. */
         val hasOwnedTasks: Boolean get() = claimedTasks.isNotEmpty() || drainingServices.isNotEmpty()
+        /** False means the row remains queued for the next explicit Start. */
+        fun admitManual(expectedSessionId: String, candidates: List<ManualQueueCandidate>): Boolean =
+            currentService.get()?.requestManualAdmission(expectedSessionId, candidates) ?: false
         private fun send(context: Context, action: String, configure: Intent.() -> Unit = {}) {
             ContextCompat.startForegroundService(context, Intent(context, DownloadService::class.java).setAction(action).apply(configure))
         }
