@@ -68,7 +68,7 @@ jobs:
 
   release:
     name: Publish GitHub Release from main
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     needs: [native, android]
     runs-on: windows-latest
     timeout-minutes: 45

@@ -128,7 +128,7 @@ adb devices
 
 | Workflow | Когда запускается | Что сохраняет |
 | --- | --- | --- |
-| [Windows and Android build](../../.github/workflows/native-windows.yml) | PR по Windows/Android/общим путям, любой push в `main`, ручной запуск | Артефакты обеих платформ, `Subscription-progress-preview`; после успешных проверок и подписи на push в `main` — общий Release |
+| [Windows and Android build](../../.github/workflows/native-windows.yml) | PR по Windows/Android/общим путям, любой push в `main`, ручной запуск | Артефакты обеих платформ, `Subscription-progress-preview`; после успешных проверок и подписи на push или ручном запуске в `main` — общий Release |
 | [Android Kotlin build](../../.github/workflows/android.yml) | `workflow_call` из общего CI, отдельный ручной запуск | `VideoDownloader-Android-debug` после успешных device-тестов; `Android-test-reports` независимо от итога, если отчёты созданы |
 
 Пропущенный `release` job в PR и ручном общем workflow — штатное поведение: публикация разрешена только на push в `main`. Отсутствие CI у Markdown PR возможно из-за `paths`, а не из-за сбоя сборки. Перед merge документации проверь каждый изменённый относительный путь, переход к заголовку и отрисовку всех изменённых Mermaid-схем.
