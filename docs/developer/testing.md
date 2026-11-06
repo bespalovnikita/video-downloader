@@ -31,6 +31,8 @@ pwsh -NoProfile -File .\scripts\build.ps1 -Task Test
 3. Исполняемые unit/integration/security/legacy сценарии проекта [VideoDownloader.Tests](../../tests/VideoDownloader.Tests/).
 4. Сборку [VideoDownloader.UiTests](../../tests/VideoDownloader.UiTests/), [проверку запуска GUI](../../scripts/gui-startup.ps1) и [настоящие WPF-сценарии](../../scripts/ui-tests.ps1).
 
+Проверки публикации моделируют отставание общего списка после создания draft и чтение конкретного Release по ID, ограниченный повтор подтверждённого `404`, смену ID/владельца/SHA и отказ API без записи. Отдельно проверяются настоящие построение аргументов `gh`, разбор paginated JSON и заголовки запрета кеша с управляемым ответом команды; доступ к GitHub и токен для этих тестов не нужны. Первый выпуск нового коммита в `main` дополнительно подтверждает полный путь создания свежего draft и загрузки файлов в реальном GitHub API.
+
 Для release-тестов нужен полноценный Git checkout с опорным коммитом `e93a78f6b82c04a213ec2eaf9cd93855c84ef691`; shallow checkout без него недостаточен. Их можно запустить отдельно на любой платформе с Git и PowerShell 7:
 
 ```powershell
