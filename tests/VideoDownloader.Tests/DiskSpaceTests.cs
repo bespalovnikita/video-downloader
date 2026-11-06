@@ -93,6 +93,7 @@ internal static class DiskSpaceTests
     private static async Task ProviderBounds()
     {
         using var release=new ManualResetEventSlim();
+        var bothStarted=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         int active=0,maximum=0,calls=0;
         var provider=new LocalDiskSpaceProvider(path=>
         {
@@ -100,15 +101,28 @@ internal static class DiskSpaceTests
             int observed;
             do {observed=Volatile.Read(ref maximum);if(observed>=count)break;}
                 while(Interlocked.CompareExchange(ref maximum,count,observed)!=observed);
+            if(count==2)bothStarted.TrySetResult();
             try {release.Wait();return new(path,"bounded",123,DiskSpaceAvailability.Available,"");}
             finally {Interlocked.Decrement(ref active);}
-        },TimeSpan.FromMilliseconds(150),2);
+        },TimeSpan.FromSeconds(5),2);
+        using var activeCancellation=new CancellationTokenSource();
         try
         {
-            var checks=Enumerable.Range(0,8).Select(index=>provider.ReadAsync("destination-"+index,CancellationToken.None)).ToArray();
-            var results=await Task.WhenAll(checks).WaitAsync(TimeSpan.FromSeconds(5));
-            Require(results.All(result=>result.Availability==DiskSpaceAvailability.Unknown && result.AvailableBytes is null) && maximum==2 && calls==2,
-                "Timed-out filesystem calls must retain their two slots; new checks cannot create unbounded blocked threads");
+            var cancelledProbe=provider.ReadAsync("cancel-in-flight",activeCancellation.Token);
+            var timedOutProbe=provider.ReadAsync("timeout-in-flight",CancellationToken.None);
+            // Thread-pool injection on a single-core runner need not start two
+            // blocking delegates within a short deadline. Observe actual entry
+            // before testing whether either caller can release a native lease.
+            await bothStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            activeCancellation.Cancel();bool activeCancelled=false;
+            try{await cancelledProbe;}catch(OperationCanceledException){activeCancelled=true;}
+            Require(activeCancelled && Volatile.Read(ref active)==2,
+                "Cancelling an active caller must preserve its still-blocked native slot");
+            var checks=Enumerable.Range(0,6).Select(index=>provider.ReadAsync("must-not-start-"+index,CancellationToken.None)).Prepend(timedOutProbe).ToArray();
+            var results=await Task.WhenAll(checks).WaitAsync(TimeSpan.FromSeconds(15));
+            Require(results.All(result=>result.Availability==DiskSpaceAvailability.Unknown && result.AvailableBytes is null) &&
+                Volatile.Read(ref maximum)==2 && Volatile.Read(ref calls)==2 && Volatile.Read(ref active)==2,
+                "Timed-out and cancelled callers must retain both native slots; later checks cannot start more OS queries");
         }
         finally {release.Set();await Until(()=>Volatile.Read(ref active)==0);}
         var healthy=await provider.ReadAsync("recovered",CancellationToken.None);
@@ -122,28 +136,6 @@ internal static class DiskSpaceTests
         bool cancelled=false;
         try{await provider.ReadAsync("cancelled",cancellation.Token);}catch(OperationCanceledException){cancelled=true;}
         Require(cancelled,"Caller cancellation must remain cancellation");
-
-        using var blocked=new ManualResetEventSlim();
-        int cancellationCalls=0,cancellationActive=0;
-        var cancellable=new LocalDiskSpaceProvider(path=>
-        {
-            Interlocked.Increment(ref cancellationActive);Interlocked.Increment(ref cancellationCalls);
-            try {blocked.Wait();return new(path,"cancel-bounded",123,DiskSpaceAvailability.Available,"");}
-            finally {Interlocked.Decrement(ref cancellationActive);}
-        },TimeSpan.FromMilliseconds(500),1);
-        using var activeCancellation=new CancellationTokenSource();
-        try
-        {
-            var pending=cancellable.ReadAsync("cancel-in-flight",activeCancellation.Token);
-            await Until(()=>Volatile.Read(ref cancellationCalls)==1);
-            activeCancellation.Cancel();cancelled=false;
-            try{await pending;}catch(OperationCanceledException){cancelled=true;}
-            Require(cancelled,"Cancelling an active native probe must return cancellation to its caller");
-            var waiting=await cancellable.ReadAsync("must-not-start",CancellationToken.None);
-            Require(waiting.Availability==DiskSpaceAvailability.Unknown && cancellationCalls==1,
-                "Cancelling a caller must not free its still-blocked native slot and start another OS query");
-        }
-        finally {blocked.Set();await Until(()=>Volatile.Read(ref cancellationActive)==0);}
     }
     private static async Task AssessmentStates()
     {
