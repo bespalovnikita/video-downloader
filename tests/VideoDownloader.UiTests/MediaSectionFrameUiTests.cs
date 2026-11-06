@@ -97,11 +97,6 @@ internal sealed partial class UiScenario
             PumpUntil(()=>Pixel(firstImage)==Colors.Red,"The start card must render the decoded red PNG pixels.");
             Require(firstImage.Source!.IsFrozen && firstStatus.Text.Contains(DownloadSection.FormatTimestamp(3),StringComparison.Ordinal),
                 "The real Image must own a frozen bitmap with a visible source-time caption.");
-            firstImage.BringIntoView();dialog.UpdateLayout();
-            Require(firstImage.ActualWidth>30 && lastImage.ActualWidth>30 && firstImage.ActualHeight>=100 && lastImage.ActualHeight>=100 &&
-                firstImage.TranslatePoint(new Point(),dialog).X<lastImage.TranslatePoint(new Point(),dialog).X,
-                "Both frame images must occupy distinct, usable side-by-side cards in the rendered dialog.");
-
             end.Text="00:00:12";
             PumpUntil(()=>probe.Calls.Length==2,"The end field must independently request its boundary frame.");
             var last=probe.Calls[1];
@@ -111,6 +106,15 @@ internal sealed partial class UiScenario
             PumpUntil(()=>Pixel(lastImage)==Colors.Blue,"The end card must display a different decoded frame.");
             Require(Pixel(firstImage)==Colors.Red && lastStatus.Text.Contains(DownloadSection.FormatTimestamp(11.96),StringComparison.Ordinal),
                 "The final-frame caption must describe the sampled position just before the end, without replacing the start.");
+            // A WPF Image without a Source can measure to zero width. Check
+            // usable picture geometry after both decoded sources are assigned.
+            firstImage.BringIntoView();lastImage.BringIntoView();dialog.UpdateLayout();
+            double firstX=firstImage.TranslatePoint(new Point(),dialog).X;
+            double lastX=lastImage.TranslatePoint(new Point(),dialog).X;
+            string firstGeometry=FormattableString.Invariant($"start W={firstImage.ActualWidth:0.###},H={firstImage.ActualHeight:0.###},X={firstX:0.###}");
+            string lastGeometry=FormattableString.Invariant($"end W={lastImage.ActualWidth:0.###},H={lastImage.ActualHeight:0.###},X={lastX:0.###}");
+            Require(firstImage.ActualWidth>30 && lastImage.ActualWidth>30 && firstImage.ActualHeight>=100 && lastImage.ActualHeight>=100 && firstX<lastX,
+                $"Both frame images must occupy distinct, usable side-by-side cards in the rendered dialog. {firstGeometry}; {lastGeometry}.");
 
             start.Text="5";
             Require(firstImage.Source==null,"Editing time must immediately remove the old picture.");
