@@ -28,6 +28,7 @@ public sealed class PreviewService : IDisposable
     private readonly Func<byte[],bool> _thumbnailValidator;
     private readonly List<string> _pending=new();
     private readonly HashSet<string> _known=new(StringComparer.Ordinal);
+    private readonly HashSet<string> _formatsRequested=new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string,PreviewData> _cache=new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string,string> _thumbnailErrors=new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string,int> _fetchVersions=new(StringComparer.Ordinal);
@@ -102,7 +103,7 @@ public sealed class PreviewService : IDisposable
                 Extractor:not null, Codecs:not null, DynamicRange:not null, ThumbnailBase64:not null } &&
                 entry.Duration>=0 && entry.Duration<TimeSpan.MaxValue.TotalSeconds &&
                 DateTime.UtcNow-entry.SavedAtUtc<TimeSpan.FromHours(72) &&
-                ValidGallery(entry)) {
+                ValidGallery(entry) && MediaFormatCatalog.IsValid(entry.Formats) && (!entry.IsCollection || entry.Formats.Length==0)) {
                 CacheInMemory(entry);_thumbnailErrors[url]=Str(root,"ThumbnailError");
                 _fetchVersions[url]=root.TryGetProperty("PreviewFetchVersion",out var storedVersion) && storedVersion.TryGetInt32(out int versionNumber)?versionNumber:0;
                 return entry;
@@ -136,7 +137,8 @@ public sealed class PreviewService : IDisposable
             _lastUse[data.Url]=Interlocked.Increment(ref _access);
             long Characters(PreviewData entry)=>(long)entry.Url.Length+entry.Title.Length+entry.Uploader.Length+
                 entry.PlaylistTitle.Length+entry.Extractor.Length+entry.Codecs.Length+entry.DynamicRange.Length+entry.ThumbnailBase64.Length+
-                entry.ThumbnailsBase64.Sum(image=>(long)image.Length);
+                entry.ThumbnailsBase64.Sum(image=>(long)image.Length)+entry.Formats.Sum(format=>(long)format.Id.Length+
+                    format.Extension.Length+format.VideoCodec.Length+format.AudioCodec.Length+format.Language.Length+format.DynamicRange.Length+160);
             long total=_cache.Values.Sum(Characters);
             while(_cache.Count>128 || total>MemoryCharacterBudget)
             {
@@ -183,6 +185,19 @@ public sealed class PreviewService : IDisposable
         !string.IsNullOrWhiteSpace(error) && !NeedsConverter(error) &&
         DateTime.UtcNow-data.SavedAtUtc>=ThumbnailFailureRetryDelay;
 
+    // Legacy caches contain covers but no format catalog. Only an explicit
+    // format request upgrades those entries before their normal TTL expires.
+    public void RequestFormats(string url)
+    {
+        if(Volatile.Read(ref _disposed)!=0 || !AppPersistence.ValidUrl(url))return;
+        if(Peek(url)?.FormatsLoaded==true)return;
+        lock(_gate)
+        {
+            if(Volatile.Read(ref _disposed)!=0)return;
+            _formatsRequested.Add(url);
+        }
+        Request(url,true);
+    }
     public void Request(string url,bool priority=false)
     {
         if (Volatile.Read(ref _disposed)!=0 || !AppPersistence.ValidUrl(url)) return;
@@ -195,8 +210,10 @@ public sealed class PreviewService : IDisposable
                 if (priority && _pending.Remove(url)) _pending.Insert(0,url);
                 return;
             }
-            if(cached!=null && _fetchVersions.GetValueOrDefault(url)>=3 && !ThumbnailFailureExpired(cached) &&
-                !(cached.ThumbnailBase64.Length==0 && _thumbnailErrors.TryGetValue(url,out string? error) && NeedsConverter(error)))return;
+            if(cached!=null && (!_formatsRequested.Contains(url) || cached.FormatsLoaded) &&
+                _fetchVersions.GetValueOrDefault(url)>=3 && !ThumbnailFailureExpired(cached) &&
+                !(cached.ThumbnailBase64.Length==0 && _thumbnailErrors.TryGetValue(url,out string? error) && NeedsConverter(error)))
+            {_formatsRequested.Remove(url);return;}
             _known.Add(url);
             if (priority) _pending.Insert(0,url);
             else _pending.Add(url);
@@ -211,10 +228,12 @@ public sealed class PreviewService : IDisposable
             try { await _signal.WaitAsync(_stop.Token).ConfigureAwait(false); }
             catch(OperationCanceledException) { break; }
             string? url;
+            bool requireFormats;
             lock(_gate)
             {
                 if (_pending.Count==0) continue;
                 url=_pending[0];_pending.RemoveAt(0);
+                requireFormats=_formatsRequested.Remove(url);
             }
             try
             {
@@ -222,7 +241,8 @@ public sealed class PreviewService : IDisposable
                 // A missing candidate is a valid cached result, but a failed
                 // image request must not suppress the cover for all 72 hours.
                 // Retry only on another request after the bounded cooldown.
-                if(cached!=null && _fetchVersions.GetValueOrDefault(url)>=3 && !ThumbnailFailureExpired(cached))
+                if(cached!=null && (!requireFormats || cached.FormatsLoaded) &&
+                    _fetchVersions.GetValueOrDefault(url)>=3 && !ThumbnailFailureExpired(cached))
                 {
                     if(!_stop.IsCancellationRequested)_ready(cached);
                     continue;
@@ -250,7 +270,8 @@ public sealed class PreviewService : IDisposable
                     var contents=JsonSerializer.Serialize(new {
                         CacheVersion=1, PreviewFetchVersion=3, data.SavedAtUtc, data.Url, Success=true, fetched.ThumbnailError,
                         data.Title,data.PlaylistTitle,data.Uploader,data.Duration,
-                        data.ThumbnailBase64,data.ThumbnailsBase64,data.Extractor,data.MaxHeight,data.MaxFps,data.Codecs,data.DynamicRange
+                        data.ThumbnailBase64,data.ThumbnailsBase64,data.Extractor,data.MaxHeight,data.MaxFps,data.Codecs,data.DynamicRange,
+                        data.Formats,data.FormatsLoaded,data.IsCollection,data.FormatsTruncated
                     },AppPersistence.Json);
                     try { AppPersistence.AtomicWrite(CacheFile(url),contents);PruneDiskCache(CacheFile(url)); }
                     catch(Exception error) when(error is IOException or UnauthorizedAccessException)
@@ -275,7 +296,7 @@ public sealed class PreviewService : IDisposable
                     else _failed?.Invoke(url,e.Message);
                 }
             }
-            finally { lock(_gate) { _known.Remove(url); } }
+            finally { lock(_gate) { _known.Remove(url);_formatsRequested.Remove(url); } }
         }
     }
     private static string Str(JsonElement json,string name)
@@ -338,6 +359,7 @@ public sealed class PreviewService : IDisposable
         if(metadata.Span.StartsWith(Encoding.UTF8.Preamble))metadata=metadata[Encoding.UTF8.Preamble.Length..];
         using var doc=JsonDocument.Parse(metadata);
         var j=doc.RootElement;
+        bool isCollection=j.TryGetProperty("entries",out _) || Str(j,"_type") is "playlist" or "multi_video";
         string playlist="";
         if (j.TryGetProperty("entries",out var entries) && entries.ValueKind==JsonValueKind.Array &&
             entries.GetArrayLength()>0 && !j.TryGetProperty("formats",out _))
@@ -369,8 +391,11 @@ public sealed class PreviewService : IDisposable
             .OrderByDescending(candidate=>
                 Path.GetExtension(new Uri(candidate.Url).AbsolutePath).ToLowerInvariant() is ".jpg" or ".jpeg" or ".png")
             .ThenByDescending(candidate=>candidate.Area).Take(60).ToArray();
+        bool formatsTruncated=false;
+        var formats=isCollection?[]:MediaFormatCatalog.Parse(j,out formatsTruncated);
         var data=new PreviewData(url,Str(j,"title"),Str(j,"uploader"),playlist,Number(j,"duration"),
-            Str(j,"extractor"),maxHeight,maxFps,string.Join(", ",codecs),string.Join(", ",ranges),"",DateTime.UtcNow);
+            Str(j,"extractor"),maxHeight,maxFps,string.Join(", ",codecs),string.Join(", ",ranges),"",DateTime.UtcNow)
+            {Formats=formats,FormatsLoaded=true,IsCollection=isCollection,FormatsTruncated=formatsTruncated};
         publish(data);
         string thumbnailError="";
         var gallery=new List<string>();

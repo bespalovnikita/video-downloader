@@ -25,4 +25,9 @@
     <Content Include="..\..\yt-dlp.exe" Link="yt-dlp.exe" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\collection-plugins\**\*.py" Link="collection-plugins\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- Keep package sidecars external while native .NET/WPF runtime libraries
+         are embedded for the standalone temporary update helper. -->
+    <Content Update="@(Content)" ExcludeFromSingleFile="true" />
+  </ItemGroup>
 </Project>

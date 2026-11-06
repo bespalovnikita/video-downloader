@@ -16,6 +16,7 @@ public sealed class DownloadCoordinator : IAsyncDisposable
     private readonly ConcurrentDictionary<string,byte> _queued=new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string,DownloadItem> _items=new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string,string> _outputRoots=new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string,DownloadSelection> _selections=new(StringComparer.Ordinal);
     // Tombstones outlive a worker's CTS registration and prevent cancellation races.
     private readonly ConcurrentDictionary<string,byte> _cancelled=new(StringComparer.Ordinal);
     private readonly CancellationTokenSource _stop=new();
@@ -46,8 +47,8 @@ public sealed class DownloadCoordinator : IAsyncDisposable
         Action<DownloadItem> changed,Action<string> log,Action<JournalRecord>? trace=null)
     {
         AudioTrackSelection.Validate(options);
-        _ytDlp=ytDlp;_data=data;_options=options;_changed=changed;_log=log;_trace=trace;
-        _arguments=new YtDlpArguments(options);
+        _ytDlp=ytDlp;_data=data;_options=options.Snapshot();_changed=changed;_log=log;_trace=trace;
+        _arguments=new YtDlpArguments(_options);
         _options.PinOutputDirectory();
         OwnedFiles.NoReparseAncestors(Path.Combine(_options.OutputDirectory,"__check__"));
         Directory.CreateDirectory(_stageRoot);
@@ -55,6 +56,8 @@ public sealed class DownloadCoordinator : IAsyncDisposable
     public bool Add(DownloadItem item)
     {
         if (!IsRunning || _stop.IsCancellationRequested) return false;
+        var selection=item.Selection;
+        selection?.Validate(item.Url,_options);
         string outputRoot=SubscriptionNames.ResolveOutputDirectory(_options.OutputDirectory,item.SubscriptionName);
         OwnedFiles.NoReparseAncestors(Path.Combine(outputRoot,"__check__"));
         if (!IsRunning || _stop.IsCancellationRequested || !_queued.TryAdd(item.Url,0)) return false;
@@ -62,6 +65,7 @@ public sealed class DownloadCoordinator : IAsyncDisposable
         item.AttemptFinished=false;
         item.OutputRoot=outputRoot;
         _outputRoots[item.Url]=outputRoot;
+        if(selection is not null)_selections[item.Url]=selection;
         _items[item.Url]=item;
         Trace(item,JournalLevel.Information,"job_queued",$"url={DownloadProgressTrace.Quoted(item.Url)} outstanding={Outstanding}",worker:"");
         if (!_queue.Writer.TryWrite(item))
@@ -70,6 +74,7 @@ public sealed class DownloadCoordinator : IAsyncDisposable
             _queued.TryRemove(item.Url,out _);
             _items.TryRemove(item.Url,out _);
             _outputRoots.TryRemove(item.Url,out _);
+            _selections.TryRemove(item.Url,out _);
             item.AttemptFinished=true;
             Interlocked.Decrement(ref _outstanding);
             return false;
@@ -180,9 +185,10 @@ public sealed class DownloadCoordinator : IAsyncDisposable
                         item.Path=result.Path;item.OwnedPaths=result.OwnedPaths.ToList();
                         item.CleanupPaths=[];
                         item.OutputRoot=_outputRoots[item.Url];
+                        item.CompletedSelection=_selections.GetValueOrDefault(item.Url);
                         item.Status="Completed";item.State="Done";
                         item.Progress=100;item.Speed="";item.ETA="";
-                        try { _data.AppendSuccess(item.Url); }
+                        try { if(!item.IsPartialResult)_data.AppendSuccess(item.Url); }
                         catch(Exception e) { _log($"WARNING: Could not append successful URL to history: {e.Message}"); }
                         Interlocked.Increment(ref _completed);
                         WriteResult("success",$"{item.Url} | {item.Path}");
@@ -266,10 +272,12 @@ public sealed class DownloadCoordinator : IAsyncDisposable
         var progressTrace=new DownloadProgressTrace();
         var progressPlan=new DownloadProgressPlan();
         int launch=0;
+        var selection=_selections.GetValueOrDefault(item.Url);
+        string[] qualities=_arguments.QualityLevels(selection).ToArray();
         try
         {
             OwnedFiles.ValidateTemplate(_options.FilenameTemplate);
-            foreach(var q in _arguments.QualityLevels())
+            foreach(var q in qualities)
             {
                 for (int attempt=0;attempt<=3;attempt++)
                 {
@@ -350,7 +358,7 @@ public sealed class DownloadCoordinator : IAsyncDisposable
                                 break;
                         }
                     }
-                    int exitCode=await RunProcessAsync(item,q,attempt+1,_arguments.Build(item.Url,stage,q),Line,ct).ConfigureAwait(false);
+                    int exitCode=await RunProcessAsync(item,q,attempt+1,_arguments.Build(item.Url,stage,q,selection),Line,ct).ConfigureAwait(false);
                     ct.ThrowIfCancellationRequested();
                     if (exitCode==0)
                     {
@@ -385,7 +393,7 @@ public sealed class DownloadCoordinator : IAsyncDisposable
                         Trace(item,JournalLevel.Error,"processing_failed",$"attempt={attempt+1} error={DownloadProgressTrace.Quoted(err)}");
                         return new DownloadResult(false,false,"",[],err,transferred);
                     }
-                    if (YtDlpOutputParser.FormatUnavailable(err) && q != _arguments.QualityLevels().Last())
+                    if (YtDlpOutputParser.FormatUnavailable(err) && q != qualities[^1])
                     {
                         Trace(item,JournalLevel.Warning,"quality_fallback",$"attempt={attempt+1} quality={DownloadProgressTrace.Quoted(q)} error={DownloadProgressTrace.Quoted(err)}");
                         _log($"Format unavailable at {q}, trying lower quality."); break;

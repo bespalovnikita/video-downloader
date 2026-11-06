@@ -46,6 +46,15 @@
             </Setter>
         </Style>
 
+        <Style x:Key="GuardedActionButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+            <Style.Triggers>
+                <Trigger Property="IsEnabled" Value="False">
+                    <Setter Property="Opacity" Value="0.45"/>
+                    <Setter Property="Cursor" Value="Arrow"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
         <Style TargetType="TextBox">
             <Setter Property="Foreground" Value="#EEF1F8"/>
             <Setter Property="Background" Value="{StaticResource FieldBrush}"/>
@@ -561,6 +570,12 @@
                         <TextBlock x:Name="PreviewMeta" Text="" Style="{StaticResource MutedText}" TextWrapping="Wrap"/>
                         <TextBlock x:Name="PreviewFormats" Text="" Foreground="#B7C0D8" Margin="0,5,0,12" TextWrapping="Wrap"/>
 
+                        <Button x:Name="MediaSelectionButton" Content="Формат и фрагмент…" IsEnabled="False" Style="{StaticResource GuardedActionButton}"
+                                HorizontalContentAlignment="Left"
+                                ToolTip="Выбрать точные форматы и интервал для одной строки очереди. Скачивание запускается отдельно."/>
+                        <TextBlock x:Name="MediaSelectionSummary" Text="Выберите одну строку очереди."
+                                   Style="{StaticResource MutedText}" TextWrapping="Wrap" FontSize="11" Margin="3,2,3,10"/>
+
                         <TextBlock Text="Profile" FontWeight="SemiBold" Margin="0,4,0,4"/>
                         <ComboBox x:Name="ProfileCombo" Margin="0,0,0,9"/>
 
@@ -680,6 +695,17 @@
                                     <Button x:Name="UpdateYtDlpButton" Content="Update yt-dlp"/>
                                     <Button x:Name="RegisterProtocolButton" Content="Register protocol"/>
                                     <Button x:Name="OpenAppSettingsButton" Content="📁 Открыть папку настроек" ToolTip="Открыть %LOCALAPPDATA%\VideoDownloader в Проводнике"/>
+                                </WrapPanel>
+                            </StackPanel>
+                        </Expander>
+
+                        <Expander Header="Обновление приложения" IsExpanded="True" Margin="0,8,0,0">
+                            <StackPanel Margin="8">
+                                <TextBlock x:Name="AppUpdateStatusText" Text="Проверка доступна вручную."
+                                           TextWrapping="Wrap" Foreground="#B7C0D8"/>
+                                <WrapPanel Margin="0,7,0,0">
+                                    <Button x:Name="CheckAppUpdateButton" Content="Проверить обновление" Style="{StaticResource GuardedActionButton}"/>
+                                    <Button x:Name="InstallAppUpdateButton" Content="Обновить и перезапустить" IsEnabled="False" Style="{StaticResource GuardedActionButton}"/>
                                 </WrapPanel>
                             </StackPanel>
                         </Expander>

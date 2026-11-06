@@ -2,7 +2,7 @@ using System.IO;
 using System.Text.Json;
 using VideoDownloader.Native;
 
-if (PreviewOutputLimitTests.TryRunFixture(args) || GuiInstanceTests.TryRunFixture(args) || NativeIpcFixture.TryRunFixture(args) || TitleIngressFixture.TryRunFixture(args) || PreviewSchedulingTests.TryRunFixture(args) || PreviewGalleryTests.TryRunFixture(args) || NativeContractTests.TryRunFixture(args) || PornHubChannelTests.TryRunFixture(args) || StartupDownloadRegressionTests.TryRunFixture(args) || SubscriptionScannerTests.TryRunFixture(args) || LifecycleRegressionTests.TryRunFixture(args) || ReviewRegressionTests.TryRunFixture(args)) return;
+if (AppUpdateBootstrapTests.TryRunFixture(args) || AppUpdateInstallerTests.TryRunFixture(args) || DownloadSelectionTests.TryRunFixture(args) || PreviewOutputLimitTests.TryRunFixture(args) || GuiInstanceTests.TryRunFixture(args) || NativeIpcFixture.TryRunFixture(args) || TitleIngressFixture.TryRunFixture(args) || PreviewSchedulingTests.TryRunFixture(args) || PreviewGalleryTests.TryRunFixture(args) || NativeContractTests.TryRunFixture(args) || PornHubChannelTests.TryRunFixture(args) || StartupDownloadRegressionTests.TryRunFixture(args) || SubscriptionScannerTests.TryRunFixture(args) || LifecycleRegressionTests.TryRunFixture(args) || ReviewRegressionTests.TryRunFixture(args)) return;
 ErrorMessagesTests.Run();
 JournalSanitizerTests.Run();
 await JournalTests.RunAsync();
@@ -18,6 +18,10 @@ if(applicationAssembly.GetTypes().Any(type=>type.Name.Contains("SelfTest",String
 LegacyCompatibilityTests.Run();
 await NativeContractTests.RunAsync();
 await AudioTrackSelectionTests.RunAsync();
+await DownloadSelectionTests.RunAsync();
+await DownloadSelectionTests.RunNativeMediaAsync();
+await AppUpdateInstallerTests.RunAsync();
+await AppUpdateClientTests.RunAsync();
 await PreviewSchedulingTests.RunAsync();
 await PreviewGalleryTests.RunAsync();
 await PreviewOutputLimitTests.RunAsync();

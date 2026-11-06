@@ -8,7 +8,7 @@
 
 ## Основные части
 
-Приложение работает в одном процессе `VideoDownloader.exe`. Превью, проверка
+Основной процесс приложения — `VideoDownloader.exe`. Превью, проверка
 коллекции и скачивание вызывают отдельные процессы `yt-dlp.exe`; получение
 метаданных само по себе не скачивает видео. FFmpeg используется для обработки
 медиа и, при необходимости, преобразования обложки.
@@ -55,7 +55,52 @@ flowchart TB
 | Общий приём новинок после проверки | [SubscriptionController.QueueOffer.cs](../../src/VideoDownloader/UI/Controllers/SubscriptionController.QueueOffer.cs) |
 | Сведения о выбранном видео подписки | [SubscriptionPreviewController.cs](../../src/VideoDownloader/UI/Controllers/SubscriptionPreviewController.cs) |
 | Загрузка и публикация | [DownloadCoordinator.cs](../../src/VideoDownloader/Downloads/DownloadCoordinator.cs), [OwnedFiles.cs](../../src/VideoDownloader/Downloads/OwnedFiles.cs) |
+| Формат и фрагмент отдельного URL | [DownloadSelection.cs](../../src/VideoDownloader/Downloads/DownloadSelection.cs), [MediaSelectionDialog.cs](../../src/VideoDownloader/UI/Views/MediaSelectionDialog.cs) |
 | Деревья процессов Windows | [ManagedChildProcess.cs](../../src/VideoDownloader/Infrastructure/Windows/ManagedChildProcess.cs) |
+| Обновление Windows-пакета | [AppUpdateClient.cs](../../src/VideoDownloader/Updates/AppUpdateClient.cs), [AppUpdatePackage.cs](../../src/VideoDownloader/Updates/AppUpdatePackage.cs), [AppUpdateInstaller.cs](../../src/VideoDownloader/Updates/AppUpdateInstaller.cs), [AppUpdateBootstrap.cs](../../src/VideoDownloader/Updates/AppUpdateBootstrap.cs) |
+
+## Обновление Windows-приложения
+
+Проверка стабильного GitHub Latest выполняется в фоне при запуске и вручную;
+она не устанавливает обновление. `AppUpdateClient` принимает только более новую
+версию официального репозитория, проверяет SHA-256 ZIP из `SHA256SUMS.txt` до
+распаковки. `AppUpdatePackage` проверяет корневой `windows-package.json`,
+полноту, размеры и хеши файлов. Stage отделён от установленной папки; ссылки,
+reparse points, выход за каталог и неожиданные файлы отклоняются. Лимиты сети
+и архива перечислены в [контракте выпуска](releases.md#встроенное-обновление-windows).
+
+`NativeWindow.AppUpdate` допускает установку только в состоянии покоя:
+завершены работники, Start, проверки подписок, операции зависимостей,
+восстановление и очистка; checkpoint доступен для записи. После подготовки
+сохраняется checkpoint, прекращается ingress и выполняется обычное закрытие.
+Отказ финального сохранения не передаёт управление установщику.
+
+`AppUpdateBootstrap` запускает временную копию автономного EXE после закрытия
+окна. Помощник ждёт завершения исходного PID с тем же временем запуска,
+захватывает singleton mutex и вызывает `AppUpdateInstaller`. Это внутренний
+handoff. До изменения установленного комплекта создаётся и проверяется полная
+копия фактических байтов прежних собственных файлов, в том числе изменённого
+`yt-dlp.exe`. Durable-запись `.video-downloader-update.json` в папке приложения
+связывает установку с собственными stage/backup. Каждая замена выполняется
+атомарным переименованием временного файла в каталоге назначения; EXE заменяется
+после остальных файлов, а манифест — последним. Посторонние файлы не
+перезаписываются. Пользовательский профиль, cookies, загрузки и внешние
+FFmpeg/ffprobe не входят в эту замену.
+
+При ошибке замен восстанавливается прежний комплект. После аварийного
+завершения следующий startup под singleton проверяет указатель до создания
+WPF-окна, preview и чтения/сохранения профиля. Внутренний recovery helper ждёт
+завершения запустившего его процесса, восстанавливает старые файлы из проверенной
+копии, EXE и манифест, затем перезапускает приложение. Незавершённый rollback
+сохраняет указатель и backup в `%TEMP%\VideoDownloaderUpdates` для повторного
+восстановления или ручной помощи; повреждённые recovery-данные останавливают
+запуск. Первый переход с `v2.0.38` и старых пакетов без `windows-package.json`
+выполняется вручную полным ZIP. Механизм относится только к Windows.
+
+После обычного запуска фоновая очистка с задержкой две секунды осматривает
+до 32 собственных каталогов обновления. Удаляются только завершённые Applied /
+RolledBack без pending-указателя и живого helper; незавершённые, неизвестные
+или перенаправленные каталоги сохраняются.
 
 ## Журнал и трассировка прогресса
 
@@ -147,8 +192,8 @@ flowchart TD
     Valid -->|"Да"| Publish["Публикация в OutputRoot без перезаписи существующих файлов"]
     Valid -->|"Нет"| Failed
     Publish --> Completed["Completed: 100%, готовый результат и список OwnedPaths"]
-    Completed --> History["Добавить исходный URL в историю успехов"]
-    Completed --> Subscription["Согласовать материалы подписок с успехом"]
+    Completed -->|"Полный материал"| History["Добавить исходный URL в историю успехов"]
+    Completed -->|"Полный материал"| Subscription["Согласовать материалы подписок с успехом"]
     Completed --> Checkpoint["Сохранить строку и настройки в session.json"]
     Running -->|"Временная ошибка, повторы ещё доступны"| RetryDownload["Задержка 5, 10 или 20 секунд"]
     RetryDownload --> Running
@@ -247,6 +292,41 @@ flowchart TD
 различие следует из [построения аргументов загрузки](../../src/VideoDownloader/Downloads/YtDlpArguments.cs)
 и [сканера подписок](../../src/VideoDownloader/Subscriptions/SubscriptionScanner.cs).
 
+### Формат и фрагмент отдельного URL
+
+`DownloadItem.Selection` хранит желаемые параметры следующей попытки: точный URL,
+необязательные `DownloadSection`, основной `MediaFormat`, отдельный аудиоформат
+и известную длительность. При Start координатор фиксирует неизменяемый снимок.
+`CompletedSelection` описывает опубликованный результат, поэтому изменение
+следующей попытки не меняет готовый файл, его `OwnedPaths` или прежнюю историю.
+Отсутствующие поля старого checkpoint означают полный материал и автоматический
+выбор. Обычный Start не перезапускает Completed; для него нужен явный Retry.
+
+Каталог реальных форматов поступает из существующего metadata request
+`PreviewService`, без второго процесса для выбора. Он содержит до 1024 последних
+пригодных уникальных ID с разрешением, FPS, кодеками, языком, HDR и размером из `filesize`
+либо `filesize_approx`; отсутствие размера не превращается в ноль. DRM и
+непригодные записи исключаются. При усечении `FormatsTruncated` сообщает UI о
+скрытых ранних форматах: число показанных не выдаётся за полный список. Каталог
+учитывается в общем бюджете кеша 64 МиБ. Коллекция не предоставляет ID первого элемента
+для выбора всей задачи. `RequestFormats` через того же работника один раз
+дополняет прежний кеш версии получения 3 без каталога; обычный TTL обложек не
+сбрасывается ради открытия окна.
+
+Ручной выбор передаёт точные ID без quality/codec fallback. Видео без звука
+требует отдельного audio-only; muxed-поток не принимает второе аудио.
+`AudioTrack` должен быть `Default`, а MP3-only требует audio-only основной поток.
+Несовместимость выбранных кодеков с MP4/WebM отклоняется до запуска; Auto/MKV
+сохраняют возможность выбрать эти потоки без автоматического перекодирования.
+Временный повтор сохраняет снимок ID и диапазона.
+
+`DownloadSection` проверяет конечные неотрицательные секунды, `end > start`
+и `end <= duration`, когда длительность известна. Аргументы
+`--download-sections` и `--force-keyframes-at-cuts` передаются FFmpeg через
+yt-dlp. Успешный фрагмент проходит обычную проверку и публикацию, получает
+Completed и собственные пути, но не пополняет историю полного URL и не
+переводит материал подписки в Processed.
+
 ## Перенос очереди Windows ↔ Android
 
 Обе платформы обмениваются отдельным пакетом с URL и названиями. Windows-сессия
@@ -272,7 +352,8 @@ flowchart TD
 сохраняют точную строку URL и первую запись при дублях. Сжатие и разбор выполняются
 в фоне; чтение ограничено до завершения распаковки. Неизвестная версия не
 передаётся обычному парсеру ссылок. Статусы, подписки, история, пути и cookies не
-становятся частью пакета; обычный импорт TXT и URL-ярлыков сохраняется.
+становятся частью пакета; выбранные Windows-форматы и фрагменты также остаются
+локальными. Обычный импорт TXT и URL-ярлыков сохраняется.
 
 Реализации: [C# PortableQueueCodec](../../src/VideoDownloader/Persistence/PortableQueue.cs)
 и [Kotlin PortableQueue](../../android/core/src/main/kotlin/ru/bespalov/video/core/PortableQueue.kt).

@@ -55,7 +55,22 @@ try {
             }
             if (Test-Path -LiteralPath $output) { Remove-Item -LiteralPath $output -Recurse -Force }
             Invoke-DotNet -Arguments @('publish', $project, '-c', $Configuration, '-r', 'win-x64', '--self-contained', 'true',
-                "-p:Version=$Version", '-p:PublishSingleFile=true', '-p:EnableCompressionInSingleFile=true', '-o', $output)
+                "-p:Version=$Version", '-p:PublishSingleFile=true', '-p:EnableCompressionInSingleFile=true',
+                '-p:IncludeNativeLibrariesForSelfExtract=true', '-o', $output)
+            # The updater owns precisely these package files, never user data or
+            # independently installed FFmpeg. The enclosing ZIP checksum also
+            # authenticates this manifest; it does not list/hash itself.
+            $packageFiles = @(
+                Get-ChildItem -LiteralPath $output -Recurse -File | Sort-Object FullName | ForEach-Object {
+                    [ordered]@{
+                        path = [IO.Path]::GetRelativePath($output, $_.FullName).Replace('\', '/')
+                        size = $_.Length
+                        sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+                    }
+                }
+            )
+            [ordered]@{ schema = 1; version = $Version; files = $packageFiles } |
+                ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $output 'windows-package.json') -Encoding utf8
             & (Join-Path $PSScriptRoot 'verify-package.ps1') -Directory $output -Version $Version
             $archive = Resolve-ProjectPath $ArchivePath
             $checksums = Resolve-ProjectPath $ChecksumPath

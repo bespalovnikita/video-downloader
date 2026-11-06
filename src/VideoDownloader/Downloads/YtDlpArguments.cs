@@ -5,7 +5,7 @@ namespace VideoDownloader.Native;
 /// <summary>Builds the request passed to a download child, including quality fallbacks.</summary>
 internal sealed class YtDlpArguments(DownloadOptions options)
 {
-    internal IEnumerable<string> QualityLevels() => options.Quality switch
+    internal IEnumerable<string> QualityLevels(DownloadSelection? selection=null) => selection?.Format is not null ? ["manual"] : options.Quality switch
     {
         "2160"=>["2160","1440","1080","720"],
         "1440"=>["1440","1080","720"],
@@ -14,9 +14,10 @@ internal sealed class YtDlpArguments(DownloadOptions options)
         _=>["best"]
     };
 
-    internal IEnumerable<string> Build(string url,string stage,string quality)
+    internal IEnumerable<string> Build(string url,string stage,string quality,DownloadSelection? selection=null)
     {
-        string? format=AudioTrackSelection.FormatSelector(options,quality);
+        selection?.Validate(url,options);
+        string? format=selection?.FormatSelector??AudioTrackSelection.FormatSelector(options,quality);
         string[] standard=["--ignore-config","--encoding","utf-8","--newline","--progress","--no-color","--no-quiet",
             "--impersonate","chrome","-N",options.FragmentCount.ToString(CultureInfo.InvariantCulture),
             "-o",Path.Combine(stage,options.FilenameTemplate),
@@ -36,6 +37,8 @@ internal sealed class YtDlpArguments(DownloadOptions options)
         if (File.Exists(options.Cookies)) args.AddRange(["--cookies",options.Cookies]);
         if (options.RateLimit.Length>0 && options.RateLimit!="Unlimited") args.AddRange(["--limit-rate",options.RateLimit]);
         if (options.Sponsor) args.AddRange(["--sponsorblock-remove","sponsor"]);
+        if(selection?.Section is {} section)
+            args.AddRange(["--download-sections",section.Argument,"--force-keyframes-at-cuts"]);
         if (format!=null) args.AddRange(["-f",format]);
         if (options.AudioOnly) args.AddRange(["-x","--audio-format","mp3"]);
         else

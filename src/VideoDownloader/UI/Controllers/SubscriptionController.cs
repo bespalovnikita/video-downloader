@@ -60,6 +60,7 @@ internal sealed partial class SubscriptionController : IDisposable
     private DataGrid Sources => Control<DataGrid>("SubscriptionGrid");
     private DataGrid Inbox => Control<DataGrid>("SubscriptionInboxGrid");
     private bool Busy => _mutation || _finalizingCheck || _cancellation!=null || _checkProgress.IsActive;
+    internal bool HasActiveWork=>Busy;
 
     internal void Open()
     {
