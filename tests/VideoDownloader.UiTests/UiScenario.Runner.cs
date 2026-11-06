@@ -193,7 +193,9 @@ internal sealed partial class UiScenario
 
             Stage("testing pending removal until worker cleanup acknowledgement");
             var pending=new DownloadItem{Url="https://example.com/cancel-before-start"};
-            ((System.Collections.ObjectModel.ObservableCollection<DownloadItem>)queue.ItemsSource).Add(pending);
+            // The grid presents a filtered view; queue mutation belongs to the
+            // actual session collection, while assertions below inspect the UI.
+            controller.SessionState.Queue.Add(pending);
             Action<DownloadItem> notify=controller.Subject.OnRowChanged;
             var cancelSession=new DownloadCoordinator("must-not-launch",new AppPersistence(Path.Combine(root,"cancel-profile")),
                 new DownloadOptions{Output=Path.Combine(root,"cancel-output"),Threads="1"},notify,_=>{});
@@ -202,12 +204,11 @@ internal sealed partial class UiScenario
                 cancelSession.Add(pending);controller.SessionState.AttachCoordinator(cancelSession);
                 const string deferredUrl="https://example.com/subscription-next-start";
                 var accepted=controller.QueueSubscriptionUrls([deferredUrl],"subscription-test","123");
-                var deferred=((System.Collections.ObjectModel.ObservableCollection<DownloadItem>)queue.ItemsSource)
-                    .Single(row=>row.Url==deferredUrl);
+                var deferred=controller.SessionState.Queue.Single(row=>row.Url==deferredUrl);
                 Require(accepted.SequenceEqual(new[]{deferredUrl}) && deferred.DeferredToNextStart &&
                     deferred.Status=="Queued" && deferred.SubscriptionId=="subscription-test" && deferred.SubscriptionName=="123" && cancelSession.Outstanding==1,
                     "Subscription import must stay queued until Start without entering the active coordinator");
-                ((System.Collections.ObjectModel.ObservableCollection<DownloadItem>)queue.ItemsSource).Remove(deferred);
+                controller.SessionState.Queue.Remove(deferred);
                 queue.SelectedItem=pending;remove.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                 Require(queue.Items.Contains(pending) && pending.PendingRemoval && !pending.AttemptFinished,
                     "Remove must retain the row while cancellation is unacknowledged");
