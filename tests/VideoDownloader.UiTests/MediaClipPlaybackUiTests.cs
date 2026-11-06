@@ -73,6 +73,16 @@ internal sealed partial class UiScenario
                 native.UnloadedBehavior==MediaState.Manual && native.Source is null,
                 "Production playback must provide a real unmuted MediaElement whose graph is explicitly released.");
             dialog.Close();dialog=null;
+            // Exercise the actual native graph, rather than only injected events.
+            // A missing local source must report failure even without an audio
+            // endpoint. Source-only + Manual/Closed never attempts this open.
+            using(var nativePlayer=new WpfMediaClipPlayer())
+            {
+                bool nativeFailed=false;nativePlayer.Failed+=()=>nativeFailed=true;
+                nativePlayer.Open(new Uri(Path.Combine(root,"missing-native-clip.mp4"),UriKind.Absolute));
+                PumpUntil(()=>nativeFailed,"The real manual MediaElement never opened its source and raised MediaFailed; preroll must start before waiting for MediaOpened.");
+                nativePlayer.Clear();Require(((MediaElement)nativePlayer.View).Source is null,"The actual failed native graph must release its source.");
+            }
 
             var player=new ClipUiPlayer();dialog=Open(player);
             var startBox=Control<TextBox>(dialog,"MediaSectionStartBox");var endBox=Control<TextBox>(dialog,"MediaSectionEndBox");

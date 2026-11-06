@@ -39,6 +39,9 @@ internal sealed class WpfMediaClipPlayer:IMediaClipPlayer
         if(_disposed)throw new ObjectDisposedException(nameof(WpfMediaClipPlayer));
         if(!source.IsFile)throw new ArgumentException("Playback requires a prepared local clip.",nameof(source));
         Clear();_media.Source=source;
+        // Manual MediaElement remains Closed after Source alone. Preroll the
+        // graph so MediaOpened/MediaFailed can arrive before the dialog plays.
+        _media.Pause();
     }
     public void Play()=>_media.Play();
     public void Pause()=>_media.Pause();
