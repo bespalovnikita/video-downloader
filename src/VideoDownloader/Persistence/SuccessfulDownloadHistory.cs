@@ -6,7 +6,12 @@ namespace VideoDownloader.Native;
 /// <summary>Owns the append-only successful-download history and its cross-process lock.</summary>
 internal sealed class SuccessfulDownloadHistory
 {
+    private const int MaxRecordBytes=1024*1024;
+    private const int MaxPaths=1024;
+    private const int MaxMetadataCharacters=16*1024;
+    private static readonly UTF8Encoding StrictUtf8=new(false,true);
     private readonly string _path;
+    private (long Length,DateTime LastWrite)? _validated;
 
     internal SuccessfulDownloadHistory(string path) => _path = path;
 
@@ -27,35 +32,144 @@ internal sealed class SuccessfulDownloadHistory
     public Dictionary<string,DateTimeOffset?> ReadHistory() => WithHistoryLock(() =>
     {
         var seen = new Dictionary<string,DateTimeOffset?>(StringComparer.Ordinal);
-        if (!File.Exists(_path)) return seen;
-        int line=0;
-        foreach (var raw in File.ReadLines(_path,Encoding.UTF8))
+        foreach(var entry in ReadEntries(CancellationToken.None))
         {
-            line++;
-            if (string.IsNullOrWhiteSpace(raw)) continue;
-            try
-            {
-                using var doc=JsonDocument.Parse(raw);
-                var item=doc.RootElement;
-                if (item.GetProperty("Version").GetInt32()!=1) throw new InvalidDataException("Bad version");
-                var url=item.GetProperty("Url").GetString() ?? "";
-                if (!AppPersistence.ValidUrl(url)) throw new InvalidDataException("Invalid URL");
-                DateTimeOffset? timestamp=null;
-                if (item.TryGetProperty("CompletedAtUtc",out var at) && at.ValueKind==JsonValueKind.String)
-                    timestamp=DateTimeOffset.Parse(at.GetString()!,System.Globalization.CultureInfo.InvariantCulture);
-                if (!seen.TryGetValue(url,out var previous) ||
-                    timestamp.HasValue && (!previous.HasValue || timestamp.Value>previous.Value))
-                    seen[url]=timestamp;
-            }
-            catch(Exception e) { throw new InvalidDataException($"Damaged download history at line {line}. No changes made.",e); }
+            if(!seen.TryGetValue(entry.Url,out var previous) ||
+                entry.CompletedAtUtc.HasValue && (!previous.HasValue || entry.CompletedAtUtc.Value>previous.Value))
+                seen[entry.Url]=entry.CompletedAtUtc;
         }
+        _validated=Stamp();
         return seen;
     });
-    public void AppendSuccess(string url)
+
+    public DownloadHistoryLibrary ReadLibrary(string query,int limit,CancellationToken cancellationToken)=>WithHistoryLock(()=>
+    {
+        if(query.Length>4096)throw new ArgumentException("History search is too long.",nameof(query));
+        if(limit is <1 or >10000)throw new ArgumentOutOfRangeException(nameof(limit));
+        const int characterBudget=8*1024*1024;
+        var retained=new Queue<DownloadHistoryEntry>();
+        long total=0,matches=0,characters=0;
+        query=query.Trim();
+        foreach(var entry in ReadEntries(cancellationToken))
+        {
+            total++;
+            if(!entry.Matches(query))continue;
+            matches++;
+            retained.Enqueue(entry);characters+=Size(entry);
+            while(retained.Count>limit || characters>characterBudget)
+                characters-=Size(retained.Dequeue());
+        }
+        _validated=Stamp();
+        return new DownloadHistoryLibrary(retained.Reverse().ToArray(),total,matches);
+    });
+
+    private static long Size(DownloadHistoryEntry entry)=>entry.Url.Length+entry.Title.Length+entry.Source.Length+
+        entry.OutputPaths.Sum(path=>(long)path.Length+32)+128;
+
+    private IEnumerable<DownloadHistoryEntry> ReadEntries(CancellationToken cancellationToken)
+    {
+        using var input=OpenExisting();
+        if(input is null)yield break;
+        using var line=new MemoryStream();
+        byte[] buffer=new byte[8192];
+        long number=1;
+        int count;
+        while((count=input.Read(buffer))!=0)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            for(int index=0;index<count;index++)
+            {
+                if(buffer[index]==10)
+                {
+                    var entry=ParseLine(line,number++);
+                    line.SetLength(0);line.Position=0;
+                    if(entry is not null)yield return entry;
+                }
+                else
+                {
+                    if(line.Length>=MaxRecordBytes)throw Damaged(number,new InvalidDataException("History record exceeds 1 MiB."));
+                    line.WriteByte(buffer[index]);
+                }
+            }
+        }
+        if(line.Length>0 && ParseLine(line,number) is {} tail)yield return tail;
+    }
+    private FileStream? OpenExisting()
+    {
+        try {return new FileStream(_path,FileMode.Open,FileAccess.Read,FileShare.ReadWrite|FileShare.Delete);}
+        catch(FileNotFoundException){return null;}
+        catch(DirectoryNotFoundException){return null;}
+    }
+    private static InvalidDataException Damaged(long number,Exception cause)=>
+        new($"Damaged download history at line {number}. No changes made.",cause);
+    private static DownloadHistoryEntry? ParseLine(MemoryStream bytes,long number)
+    {
+        try
+        {
+            string raw=StrictUtf8.GetString(bytes.GetBuffer(),0,checked((int)bytes.Length));
+            if(number==1)raw=raw.TrimStart('\uFEFF');
+            if(string.IsNullOrWhiteSpace(raw))return null;
+            using var doc=JsonDocument.Parse(raw,new JsonDocumentOptions{MaxDepth=16});
+            var item=doc.RootElement;
+            if(item.GetProperty("Version").GetInt32()!=1)throw new InvalidDataException("Bad version");
+            string url=item.GetProperty("Url").GetString()??"";
+            if(!AppPersistence.ValidUrl(url))throw new InvalidDataException("Invalid URL");
+            DateTimeOffset? timestamp=null;
+            if(item.TryGetProperty("CompletedAtUtc",out var at) && at.ValueKind==JsonValueKind.String)
+                timestamp=DateTimeOffset.Parse(at.GetString()!,System.Globalization.CultureInfo.InvariantCulture);
+            string Text(string name,int max)
+            {
+                if(!item.TryGetProperty(name,out var value) || value.ValueKind==JsonValueKind.Null)return "";
+                if(value.ValueKind!=JsonValueKind.String || value.GetString()!.Length>max)throw new InvalidDataException("Invalid history metadata.");
+                return value.GetString()!;
+            }
+            var paths=new List<string>();
+            if(item.TryGetProperty("OutputPaths",out var stored) && stored.ValueKind!=JsonValueKind.Null)
+            {
+                if(stored.ValueKind!=JsonValueKind.Array || stored.GetArrayLength()>MaxPaths)throw new InvalidDataException("Invalid history paths.");
+                foreach(var path in stored.EnumerateArray())
+                {
+                    if(path.ValueKind!=JsonValueKind.String || path.GetString()!.Length>32768)throw new InvalidDataException("Invalid history path.");
+                    paths.Add(path.GetString()!);
+                }
+            }
+            bool truncated=false;
+            if(item.TryGetProperty("OutputPathsTruncated",out var flag))
+            {
+                if(flag.ValueKind is not (JsonValueKind.True or JsonValueKind.False))throw new InvalidDataException("Invalid history path flag.");
+                truncated=flag.GetBoolean();
+            }
+            return new(number,url,timestamp,Text("Title",4096),Text("Source",1024),paths.ToArray(),truncated);
+        }
+        catch(Exception error) when(error is not OperationCanceledException){throw Damaged(number,error);}
+    }
+    private (long Length,DateTime LastWrite)? Stamp()
+    {
+        var file=new FileInfo(_path);
+        try {return (file.Length,file.LastWriteTimeUtc);}
+        catch(FileNotFoundException){return null;}
+        catch(DirectoryNotFoundException){return null;}
+    }
+    public void AppendSuccess(string url,string title="",string source="",IEnumerable<string>? outputPaths=null)
     {
         if (!AppPersistence.ValidUrl(url)) throw new ArgumentException("Cannot record a non-HTTP URL.",nameof(url));
+        title=Truncate(title,4096);source=Truncate(source,1024);
+        var paths=new List<string>();
+        int characters=title.Length+source.Length;bool truncated=false;
+        foreach(string path in outputPaths??[])
+        {
+            if(paths.Count>=MaxPaths || path.Length>32768 || characters+path.Length>MaxMetadataCharacters)
+            {truncated=true;continue;}
+            paths.Add(path);characters+=path.Length;
+        }
         WithHistoryLock(()=>
         {
+            var stamp=Stamp();
+            if(_validated!=stamp)
+            {
+                foreach(var _ in ReadEntries(CancellationToken.None)) { }
+                _validated=stamp;
+            }
             bool separator=false;
             if (File.Exists(_path))
             {
@@ -66,15 +180,23 @@ internal sealed class SuccessfulDownloadHistory
                     separator=existing.ReadByte() is not (10 or 13);
                 }
             }
-            // The mutex is reentrant. Validate before changing an unterminated
-            // tail, preserving corrupt/truncated history byte for byte.
-            if (separator) ReadHistory();
-            var obj=new {Version=1,Url=url,CompletedAtUtc=DateTime.UtcNow.ToString("O")};
+            var obj=new {Version=1,Url=url,CompletedAtUtc=DateTime.UtcNow.ToString("O"),
+                Title=title,Source=source,OutputPaths=paths,OutputPathsTruncated=truncated};
             var data=Encoding.UTF8.GetBytes((separator?"\n":"")+JsonSerializer.Serialize(obj,AppPersistence.Json)+"\n");
-            using var stream=new FileStream(_path,FileMode.Append,FileAccess.Write,FileShare.Read);
-            stream.Write(data);
-            stream.Flush(true);
+            if(data.Length>MaxRecordBytes)throw new InvalidDataException("History record exceeds 1 MiB.");
+            using(var stream=new FileStream(_path,FileMode.Append,FileAccess.Write,FileShare.Read))
+            {
+                stream.Write(data);
+                stream.Flush(true);
+            }
+            _validated=Stamp();
             return 0;
         });
+    }
+    private static string Truncate(string value,int limit)
+    {
+        if(value.Length<=limit)return value;
+        if(char.IsHighSurrogate(value[limit-1]))limit--;
+        return value[..limit];
     }
 }

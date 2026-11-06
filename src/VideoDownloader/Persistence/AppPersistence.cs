@@ -131,4 +131,16 @@ public sealed class AppPersistence
 
     public Dictionary<string,DateTimeOffset?> ReadHistory() => _history.ReadHistory();
     public void AppendSuccess(string url) => _history.AppendSuccess(url);
+    public DownloadHistoryLibrary ReadHistoryLibrary(string query="",int limit=5000,CancellationToken cancellationToken=default)=>
+        _history.ReadLibrary(query,limit,cancellationToken);
+    public void AppendSuccess(DownloadItem item)
+    {
+        if(item.IsPartialResult)return;
+        if(item.Status!="Completed" || string.IsNullOrEmpty(item.Path) || !item.OwnedPaths.Contains(item.Path,StringComparer.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Only a confirmed published result can be added to the history library.");
+        string source=item.SubscriptionName;
+        if(source.Length==0 && Uri.TryCreate(item.Url,UriKind.Absolute,out var address))source=address.Host;
+        var media=item.OwnedPaths.Where(HistoryFileAccess.IsSupportedMediaPath).Prepend(item.Path).Distinct(StringComparer.OrdinalIgnoreCase);
+        _history.AppendSuccess(item.Url,item.Title,source,media);
+    }
 }
