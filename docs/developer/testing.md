@@ -77,6 +77,8 @@ dotnet run --no-build --configuration Release --project tests/VideoDownloader.Te
 | Реальный HTTP Range для кадров, области cookies/заголовков, лимиты и отмена соединений | [MediaFrameProxyTests](../../tests/VideoDownloader.Tests/MediaFrameProxyTests.cs) |
 | Настоящий поиск кадра FFmpeg, конечная граница, приватный кеш источников и освобождение работника | [MediaFrameServiceTests](../../tests/VideoDownloader.Tests/MediaFrameServiceTests.cs) |
 | Кадры HLS/DASH, init/byte ranges, шифрование TS, выбор времени и запрет обхода сетевого лимита | [MediaManifestFrameTests](../../tests/VideoDownloader.Tests/MediaManifestFrameTests.cs) |
+| Настоящие короткие progressive/HLS/DASH AV-клипы, раздельный звук, PCM RMS, поиск, лимиты и владение кешем | [MediaClipServiceTests](../../tests/VideoDownloader.Tests/MediaClipServiceTests.cs) |
+| Реальный MediaElement, кнопки воспроизведения/паузы/стопа/поиска, события, поздние ответы и освобождение Source | [MediaClipPlaybackUiTests](../../tests/VideoDownloader.UiTests/MediaClipPlaybackUiTests.cs) |
 | Стабильный Release, SHA-256 ZIP, отмена тела HTTP-ответа, таймаут и ожидание исходного процесса | [AppUpdateClientTests](../../tests/VideoDownloader.Tests/AppUpdateClientTests.cs) |
 | Владение файлами пакета, чужие коллизии, ZIP traversal, откат и восстановление после убийства установщика | [AppUpdateInstallerTests](../../tests/VideoDownloader.Tests/AppUpdateInstallerTests.cs) |
 | Настоящие кнопки обновления, занятость, повторная проверка очистки перед handoff и отмена при Dispose | [AppUpdateUiTests](../../tests/VideoDownloader.UiTests/AppUpdateUiTests.cs) |
@@ -191,3 +193,5 @@ adb devices
 | [Android Kotlin build](../../.github/workflows/android.yml) | `workflow_call` из общего CI, отдельный ручной запуск | `VideoDownloader-Android-debug` после успешных device-тестов; `Android-test-reports` независимо от итога, если отчёты созданы |
 
 Пропущенный `release` job в PR и ручном общем workflow — штатное поведение: публикация разрешена только на push в `main`. Отсутствие CI у Markdown PR возможно из-за `paths`, а не из-за сбоя сборки. Перед merge документации проверь каждый изменённый относительный путь, переход к заголовку и отрисовку всех изменённых Mermaid-схем.
+
+`MediaClipServiceTests` декодирует фактический звук FFmpeg в PCM и проверяет длительность и ненулевой RMS; это подтверждает аудиодорожку подготовленного клипа. WPF-тесты отдельно проверяют настоящий MediaElement и реальные контролы с управляемыми событиями транспорта. Наличие физического аудиоустройства или слышимость динамиков Windows CI эти проверки не подтверждают.

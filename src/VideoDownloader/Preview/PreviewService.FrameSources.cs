@@ -56,7 +56,7 @@ public sealed partial class PreviewService
 
     private bool FrameSourceNeeded(string url)
     {
-        lock(_gate)return _frameRequests.TryGetValue(url,out var requests) && requests.Any(request=>!request.Completion.Task.IsCompleted);
+        lock(_gate)return _frameRequests.TryGetValue(url,out var requests) && requests.Any(request=>!request.Completion.Task.IsCompleted) || ClipSourceNeeded(url);
     }
     private static string CookieContext(string path)
     {
@@ -189,6 +189,7 @@ public sealed partial class PreviewService
                 if(requests.Count==0)_frameRequests.Remove(url);
             }
         }
+        CaptureClipSources(url,item,collection,cookieFile,extractionCookieContext);
     }
     private static long PreviewRank(MediaFrameSource source)
     {
@@ -197,18 +198,21 @@ public sealed partial class PreviewService
         int height=source.Height;
         return (height is >=240 and <=720?0L:1_000_000)+Math.Abs((height>0?height:10000)-360)*1000L+(long)source.Fps;
     }
-    private static MediaFrameSource? ReadFrameSource(JsonElement format,JsonElement root,string cookieFile,string context)
+    private static MediaFrameSource? ReadFrameSource(JsonElement format,JsonElement root,string cookieFile,string context,bool allowAudio=false)
     {
         if(format.ValueKind!=JsonValueKind.Object)return null;
         string id=Str(format,"format_id"),address=Str(format,"url"),extension=Str(format,"ext"),protocol=Str(format,"protocol");
-        string codec=Str(format,"vcodec");
+        string codec=Str(format,"vcodec"),audioCodec=Str(format,"acodec"),language=Str(format,"language");
+        if(language.Length>128 || language.Any(char.IsControl))return null;
+        bool audioExtension=extension.ToLowerInvariant() is "m4a" or "mp3" or "aac" or "opus" or "ogg" or "flac" or "wav";
+        bool hasVideo=codec!="none" && !audioExtension,hasAudio=audioCodec!="none" && (audioCodec.Length>0 || audioExtension || codec.Length==0);
         // Automatic preview sources may use opaque extractor IDs (for example
         // DASH "video=..."). They never enter a selector or process argument;
         // public/manual IDs keep the stricter existing validator above.
-        if(id.Length is 0 or >256 || id.Any(char.IsControl) || codec=="none" ||
+        if(id.Length is 0 or >256 || id.Any(char.IsControl) || (!hasVideo && (!allowAudio || !hasAudio)) ||
             address.Length>8192 || !Uri.TryCreate(address,UriKind.Absolute,out var uri) || uri.Scheme is not ("http" or "https") ||
             uri.UserInfo.Length>0 || protocol is not ("" or "http" or "https" or "m3u8" or "m3u8_native" or "http_dash_segments" or "dash") ||
-            extension.ToLowerInvariant() is not ("mp4" or "m4v" or "mov" or "webm" or "mkv") ||
+            extension.ToLowerInvariant() is not ("mp4" or "m4v" or "mov" or "webm" or "mkv") && !(allowAudio && audioExtension) ||
             format.TryGetProperty("has_drm",out var drm) && drm.ValueKind is not (JsonValueKind.Null or JsonValueKind.False))return null;
         double width=Number(format,"width"),height=Number(format,"height"),fps=Number(format,"fps"),duration=Number(root,"duration");
         if(!double.IsFinite(width) || !double.IsFinite(height) || width<0 || height<0 || width>131072 || height>131072 ||
@@ -273,7 +277,8 @@ public sealed partial class PreviewService
             if(fragments.Count<2)return null;
         }
         return new(uri,id,headers,cookies,cookieFile,context,fps,double.IsFinite(duration) && duration>0?duration:null,(int)width,(int)height,
-            protocol,manifest,fragments,extension);
+            protocol,manifest,fragments,extension,hasVideo,hasAudio,language,
+            Regex.IsMatch(Str(format,"format_note"),@"(?:^original$|\(original\))",RegexOptions.IgnoreCase|RegexOptions.CultureInvariant),audioCodec.Length>0);
     }
     private void FailFrameSourceRequests(string url,Exception error,string? cookieContext)
     {
@@ -285,21 +290,24 @@ public sealed partial class PreviewService
                 requests.RemoveAll(request=>request.Completion.Task.IsCompleted);
                 if(requests.Count==0)_frameRequests.Remove(url);
             }
+        FailClipSources(url,error,cookieContext);
     }
     private void FinishFrameSourceIteration(string url)
     {
         lock(_gate)
         {
             _known.Remove(url);_formatsRequested.Remove(url);
+            bool pendingClip=PruneClipWaiters(url);
             if(_frameRequests.TryGetValue(url,out var requests))
             {
                 requests.RemoveAll(request=>request.Completion.Task.IsCompleted);
                 if(requests.Count==0)_frameRequests.Remove(url);
-                else if(Volatile.Read(ref _disposed)==0)
+                else pendingClip=true;
+            }
+            if(pendingClip && Volatile.Read(ref _disposed)==0)
                 {
                     _known.Add(url);_pending.Insert(0,url);_signal.Release();
                 }
-            }
         }
     }
     private void CancelFrameSources()
@@ -309,6 +317,7 @@ public sealed partial class PreviewService
             foreach(var requests in _frameRequests.Values)
                 foreach(var request in requests)request.Completion.TrySetCanceled();
             _frameRequests.Clear();_frameSources.Clear();
+            CancelClipSources();
         }
     }
 }

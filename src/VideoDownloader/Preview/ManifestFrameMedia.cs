@@ -10,7 +10,7 @@ using System.Xml.Linq;
 namespace VideoDownloader.Native;
 
 internal sealed record PreparedManifestMedia(byte[]? Bytes,string Demuxer,string ContentType,double StartSeconds,
-    long DownloadedBytes,Uri? DirectAddress=null);
+    long DownloadedBytes,Uri? DirectAddress=null,double? EndSeconds=null);
 
 /// <summary>
 /// Resolves manifests inside the application and materializes only the small
@@ -27,7 +27,7 @@ internal static partial class ManifestFrameMedia
     private sealed record Plan(List<Segment> Segments,string? Container=null,Uri? Direct=null,double DirectStart=0);
 
     internal static async Task<PreparedManifestMedia> PrepareAsync(MediaFrameSource source,double seconds,
-        CookieContainer cookies,CancellationToken token,long maxBytes=MediaFrameService.MaxMediaBytes)
+        CookieContainer cookies,CancellationToken token,long maxBytes=MediaFrameService.MaxMediaBytes,double? endSeconds=null)
     {
         using var fetch=new Fetcher(source,cookies,token,maxBytes);
         Plan plan;
@@ -46,7 +46,7 @@ internal static partial class ManifestFrameMedia
         else
         {
             var manifest=await fetch.GetAsync(new(source.ManifestAddress??source.Address),MaxManifestBytes).ConfigureAwait(false);
-            plan=Dash(manifest.Bytes,manifest.Address,source,seconds);
+            plan=Dash(manifest.Bytes,manifest.Address,source,seconds,endSeconds);
         }
         if(plan.Direct is {} direct)
             return new(null,"mov","video/mp4",plan.DirectStart,fetch.ReceivedBytes,direct);
@@ -57,11 +57,23 @@ internal static partial class ManifestFrameMedia
         if(target<0)throw Unsupported("Выбранное время не попало в доступные сегменты видео.");
         var selected=plan.Segments[target];
         int first=target,last=Math.Min(plan.Segments.Count-1,target+1);
+        if(endSeconds is {} end)
+        {
+            int final=plan.Segments.FindIndex(segment=>end-.0001>=segment.Start && end-.0001<segment.Start+segment.Duration);
+            if(final<target)throw Unsupported("Фрагмент выходит за доступные сегменты этого периода.");
+            last=final;
+            for(int index=target;index<=last;index++)
+                if(plan.Segments[index].Group!=selected.Group || plan.Segments[index].Init!=selected.Init ||
+                    index>target && Math.Abs(plan.Segments[index].Start-plan.Segments[index-1].Start-plan.Segments[index-1].Duration)>.01)
+                    throw Unsupported("Предпросмотр не может пересекать разрыв временной шкалы.");
+        }
         while(first>0 && target-first<2 && plan.Segments[first-1].Group==selected.Group && plan.Segments[first-1].Init==selected.Init)first--;
         if(plan.Segments[last].Group!=selected.Group || plan.Segments[last].Init!=selected.Init)last=target;
         using var output=new MemoryStream();
         var keys=new Dictionary<string,byte[]>(StringComparer.Ordinal);
         string? container=plan.Container;
+        try
+        {
         if(selected.Init is {} initialization)
         {
             var initialized=await fetch.GetAsync(initialization,(int)Math.Min(maxBytes,int.MaxValue)).ConfigureAwait(false);
@@ -96,15 +108,17 @@ internal static partial class ManifestFrameMedia
             if(output.Length+bytes.Length>maxBytes)throw Unsupported("Сегменты кадра превышают ограничение объёма.");
             output.Write(bytes);
         }
-        foreach(var key in keys.Values)CryptographicOperations.ZeroMemory(key);
-        return new(output.ToArray(),container!,container=="mpegts"?"video/mp2t":container=="matroska"?"video/webm":"video/mp4",
-            plan.Segments[first].Start,fetch.ReceivedBytes);
+        return new(output.ToArray(),container!,container=="mpegts"?"video/mp2t":container=="matroska"?"video/webm":container=="aac"?"audio/aac":"video/mp4",
+            plan.Segments[first].Start,fetch.ReceivedBytes,EndSeconds:plan.Segments[last].Start+plan.Segments[last].Duration);
+        }
+        finally{foreach(var key in keys.Values)CryptographicOperations.ZeroMemory(key);}
     }
 
     private static string SourceContainer(MediaFrameSource source)=>source.Extension=="webm" || source.Address.AbsolutePath.EndsWith(".webm",StringComparison.OrdinalIgnoreCase)?"matroska":"mov";
     private static string DetectContainer(byte[] bytes)
     {
         if(IsTransportStream(bytes))return "mpegts";
+        if(IsAac(bytes))return "aac";
         if(bytes.Length>=4 && bytes.AsSpan(0,4).SequenceEqual(new byte[]{0x1a,0x45,0xdf,0xa3}))return "matroska";
         if(bytes.Length>=8 && new[]{"ftyp","styp","moof","sidx","emsg"}.Any(atom=>bytes.AsSpan(4,4).SequenceEqual(Encoding.ASCII.GetBytes(atom))))return "mov";
         throw Unsupported("Сегмент не содержит поддерживаемое двоичное видео.");
@@ -114,12 +128,15 @@ internal static partial class ManifestFrameMedia
         if(bytes.Length<4)throw Unsupported("Пустой или повреждённый видеосегмент.");
         bool valid=container switch {
             "mpegts"=>IsTransportStream(bytes),
+            "aac"=>IsAac(bytes),
             "mov"=>bytes.Length>=8 && new[]{"ftyp","styp","moof","moov","sidx","emsg","free"}.Any(atom=>bytes.AsSpan(4,4).SequenceEqual(Encoding.ASCII.GetBytes(atom))),
             "matroska"=>bytes.AsSpan(0,4).SequenceEqual(initialization?new byte[]{0x1a,0x45,0xdf,0xa3}:new byte[]{0x1f,0x43,0xb6,0x75}) ||
                 bytes.AsSpan(0,4).SequenceEqual(new byte[]{0x1a,0x45,0xdf,0xa3}),
             _=>false};
         if(!valid)throw Unsupported("Вместо видеосегмента источник вернул неподдерживаемые данные.");
     }
+    private static bool IsAac(byte[] bytes)=>bytes.Length>=3 &&
+        (bytes[0]==0xff && (bytes[1]&0xf6)==0xf0 || bytes.AsSpan(0,3).SequenceEqual("ID3"u8));
     private static bool IsTransportStream(byte[] bytes)
     {
         for(int offset=0;offset<=Math.Min(8192,bytes.Length-188);offset++)
@@ -254,7 +271,7 @@ internal static partial class ManifestFrameMedia
 
     // DASH parsing and the transport live below; neither exposes a remote URI
     // to the decoder or writes a manifest/credential to persistent storage.
-    private static Plan Dash(byte[] bytes,Uri address,MediaFrameSource source,double seconds)=>DashPlan.Parse(bytes,address,source,seconds);
+    private static Plan Dash(byte[] bytes,Uri address,MediaFrameSource source,double seconds,double? endSeconds)=>DashPlan.Parse(bytes,address,source,seconds,endSeconds);
     private sealed class Fetcher:IDisposable
     {
         private readonly MediaFrameSource _source;

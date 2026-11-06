@@ -15,7 +15,8 @@ public sealed record MediaFrameResult(string Url,double RequestedSeconds,double?
 
 internal sealed record MediaFrameSource(Uri Address,string FormatId,IReadOnlyDictionary<string,string> Headers,
     string Cookies,string CookieFile,string CookieContext,double Fps,double? Duration,int Width,int Height,
-    string Protocol="",Uri? ManifestAddress=null,IReadOnlyList<MediaFrameFragment>? Fragments=null,string Extension="")
+    string Protocol="",Uri? ManifestAddress=null,IReadOnlyList<MediaFrameFragment>? Fragments=null,string Extension="",
+    bool HasVideo=true,bool HasAudio=false,string Language="",bool IsOriginalAudio=false,bool AudioKnown=true)
 {
     internal bool IsHls=>Protocol is "m3u8" or "m3u8_native" || Address.AbsolutePath.EndsWith(".m3u8",StringComparison.OrdinalIgnoreCase);
     internal bool IsDash=>Protocol is "http_dash_segments" or "dash" && (ManifestAddress is not null || Fragments is {Count:>0}) ||

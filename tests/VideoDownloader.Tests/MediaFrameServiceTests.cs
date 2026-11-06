@@ -34,16 +34,20 @@ internal static class MediaFrameServiceTests
         {
             Console.Error.WriteLine("ERROR: HTTP Error 403: Forbidden");Environment.ExitCode=1;return true;
         }
-        Console.WriteLine(JsonSerializer.Serialize(new {
-            id="frame-fixture",title="Frame fixture",duration=4,extractor="fixture",
-            http_headers=new Dictionary<string,string> { ["Authorization"]="Bearer HEADER_"+control.Context,["User-Agent"]="VD-FrameFixture" },
-            formats=new object[] {
+        object[] formats=new object[] {
                 new {format_id="v1",url=control.MediaUrl,protocol="http",ext="mp4",vcodec="avc1",acodec="none",width=160,height=90,fps=10,
                     cookies="session=SESSION_"+control.Context+"; Domain=127.0.0.1; Path=/media/"},
                 new {format_id="a1",url=control.MediaUrl,protocol="http",ext="m4a",vcodec="none",acodec="aac"},
                 new {format_id="hls",url=control.MediaUrl+"/playlist.m3u8",protocol="m3u8_native",ext="mp4",vcodec="avc1",acodec="aac"},
                 new {format_id="drm",url=control.MediaUrl,protocol="http",ext="mp4",vcodec="avc1",acodec="none",has_drm=true},
-            }
+        };
+        if(name=="many")formats=new object[]{new {format_id="a-ru",url=control.MediaUrl,protocol="http",ext="m4a",vcodec="none",acodec="aac",language="ru",format_note="original"}}
+            .Concat(Enumerable.Range(0,200).Select(index=>(object)new {format_id="v"+index.ToString("D3",CultureInfo.InvariantCulture),url=control.MediaUrl,protocol="http",ext="mp4",vcodec="avc1",acodec="none",width=160,height=90,fps=10}))
+            .Append(new {format_id="a-en",url=control.MediaUrl,protocol="http",ext="m4a",vcodec="none",acodec="aac",language="en"}).ToArray();
+        Console.WriteLine(JsonSerializer.Serialize(new {
+            id="frame-fixture",title="Frame fixture",duration=4,extractor="fixture",
+            http_headers=new Dictionary<string,string> { ["Authorization"]="Bearer HEADER_"+control.Context,["User-Agent"]="VD-FrameFixture" },
+            formats
         }));
         return true;
     }
@@ -54,6 +58,7 @@ internal static class MediaFrameServiceTests
         try
         {
             await CoalescedSourcesAndPrivacy(Path.Combine(root,"sources"));
+            await ClipSourceRetention(Path.Combine(root,"many"));
             await CookieContextHandoff(Path.Combine(root,"context-success"),false);
             await CookieContextHandoff(Path.Combine(root,"context-failure"),true);
             await CookieContextHandoff(Path.Combine(root,"context-same-path"),false,samePath:true);
@@ -82,11 +87,17 @@ internal static class MediaFrameServiceTests
         using var cancelled=new CancellationTokenSource();
         var discarded=previews.GetFrameSourceAsync(Prefix+"coalesced","v1",cancelled.Token);
         var tasks=Enumerable.Range(0,12).Select(_=>previews.GetFrameSourceAsync(Prefix+"coalesced","v1",CancellationToken.None)).ToArray();
+        var clipTasks=Enumerable.Range(0,12).Select(_=>previews.GetClipSourcesAsync(new(Prefix+"coalesced",0,2,"v1","a1"),CancellationToken.None)).ToArray();
+        var cancelledClip=previews.GetClipSourcesAsync(new(Prefix+"coalesced",0,2,"v1","a1"),cancelled.Token);
         await Until(()=>File.Exists(Path.Combine(root,"started-A")),"The shared metadata child did not start");
         cancelled.Cancel();
         await RefusesCancellation(discarded);
+        await RefusesCancellation(cancelledClip);
         File.WriteAllText(Path.Combine(root,"release-A"),"");
         var sources=await Task.WhenAll(tasks).WaitAsync(TimeSpan.FromSeconds(10));
+        var clipSources=await Task.WhenAll(clipTasks).WaitAsync(TimeSpan.FromSeconds(10));
+        Require(clipSources.All(source=>source.Video?.Headers["Authorization"]=="Bearer HEADER_A" && source.Audio?.Headers["Authorization"]=="Bearer HEADER_A"),
+            "Video/audio snapshots must share the same single metadata worker and authentication context as concurrent frame waiters");
         Require(sources.All(source=>source.Headers["Authorization"]=="Bearer HEADER_A") && File.ReadAllLines(Path.Combine(root,"coalesced.calls")).Length==1,
             "Concurrent frame requests must share the sole metadata job while another cancelled waiter stays isolated");
         _=await previews.GetFrameSourceAsync(Prefix+"coalesced","v1",CancellationToken.None);
@@ -111,6 +122,25 @@ internal static class MediaFrameServiceTests
             !stored.Contains("127.0.0.1:1",StringComparison.Ordinal) && !string.Join("\n",logs).Contains("HEADER_A",StringComparison.Ordinal),
             "Signed media URLs, authorization and cookies must remain outside the persistent preview cache and diagnostics");
     }
+    private static async Task ClipSourceRetention(string root)
+    {
+        string cookie=CookieFile(new(root,"http://127.0.0.1:1/media/many.mp4","M"),"cookies.txt");
+        await using var owned=Own(new PreviewService(TestExecutable(),new AppPersistence(Path.Combine(root,"profile")),()=>cookie,_=>{},_=>{}),root);
+        var previews=owned.Service;string url=Prefix+"many";
+        _=await previews.GetFrameSourceAsync(url,"v199",CancellationToken.None);
+        await Until(()=>Directory.EnumerateFiles(Path.Combine(root,"profile","preview-cache"),"*.json").Any(),"The initial bounded source cache was not populated");
+        var chosen=await previews.GetClipSourcesAsync(new(url,0,2,"v000","a-ru"),CancellationToken.None);
+        Require(chosen.Video?.FormatId=="v000" && chosen.Audio?.FormatId=="a-ru" && File.ReadAllLines(Path.Combine(root,"many.calls")).Length==2,
+            "An early manual ID evicted from128 private descriptors must refetch and retain its exact video/audio formats");
+        var language=await previews.GetClipSourcesAsync(new(url,0,2,AudioTrack:"Languages",AudioLanguages:"ru,en"),CancellationToken.None);
+        Require(language.Audio?.FormatId=="a-ru","A pending first-language request must retain its early audio descriptor");
+        var original=await previews.GetClipSourcesAsync(new(url,0,2,AudioTrack:"Original"),CancellationToken.None);
+        Require(original.Audio?.FormatId=="a-ru","An original-track request must retain the explicitly marked original source");
+        _=await Refuses(()=>previews.GetClipSourcesAsync(new(url,0,2,"missing"),CancellationToken.None));
+        int count=File.ReadAllLines(Path.Combine(root,"many.calls")).Length;
+        _=await Refuses(()=>previews.GetClipSourcesAsync(new(url,0,2,"missing"),CancellationToken.None));
+        Require(File.ReadAllLines(Path.Combine(root,"many.calls")).Length==count,"Known unavailable exact clip IDs must reuse their bounded negative result");
+    }
     private static async Task CookieContextHandoff(string root,bool failFirst,bool samePath=false)
     {
         string a=CookieFile(new(root,"http://127.0.0.1:1/media/a.mp4","A",Hold:true,Fail:failFirst),"a.txt");
@@ -119,17 +149,22 @@ internal static class MediaFrameServiceTests
         await using var owned=Own(new PreviewService(TestExecutable(),new AppPersistence(Path.Combine(root,"profile")),()=>Volatile.Read(ref current),_=>{},_=>{}),root);
         var previews=owned.Service;
         var first=previews.GetFrameSourceAsync(Prefix+"handoff","v1",CancellationToken.None);
+        var firstClip=previews.GetClipSourcesAsync(new(Prefix+"handoff",0,2,"v1","a1"),CancellationToken.None);
         await Until(()=>File.Exists(Path.Combine(root,"started-A")),"Cookie-A extraction did not start");
         if(samePath)_=CookieFile(new(root,"http://127.0.0.1:1/media/b.mp4","B",Hold:true),"a.txt");
         Volatile.Write(ref current,b);
         var second=previews.GetFrameSourceAsync(Prefix+"handoff","v1",CancellationToken.None);
+        var secondClip=previews.GetClipSourcesAsync(new(Prefix+"handoff",0,2,"v1","a1"),CancellationToken.None);
         File.WriteAllText(Path.Combine(root,"release-A"),"");
-        if(failFirst)_=await Refuses(()=>first);
+        if(failFirst){_=await Refuses(()=>first);_=await Refuses(()=>firstClip);}
         else Require((await first.WaitAsync(TimeSpan.FromSeconds(10))).Headers["Authorization"]=="Bearer HEADER_A","Cookie-A waiter must retain its source context");
+        if(!failFirst){var firstSources=await firstClip;Require(firstSources.Video?.Headers["Authorization"]=="Bearer HEADER_A" && firstSources.Audio?.Headers["Authorization"]=="Bearer HEADER_A","The original clip snapshot must not switch to a newer cookie context");}
         await Until(()=>File.Exists(Path.Combine(root,"started-B")),"A changed cookie context must requeue its own extraction even after the old context fails");
-        Require(!second.IsCompleted,"Completing or failing extraction A must never complete a waiter for cookie context B");
+        Require(!second.IsCompleted && !secondClip.IsCompleted,"Completing or failing extraction A must never complete a waiter for cookie context B");
         File.WriteAllText(Path.Combine(root,"release-B"),"");
         var resolved=await second.WaitAsync(TimeSpan.FromSeconds(10));
+        var resolvedClip=await secondClip.WaitAsync(TimeSpan.FromSeconds(10));
+        Require(resolvedClip.Video?.Headers["Authorization"]=="Bearer HEADER_B" && resolvedClip.Audio?.Headers["Authorization"]=="Bearer HEADER_B","A replacement cookie context must return a consistent video/audio snapshot");
         Require(resolved.Headers["Authorization"]=="Bearer HEADER_B" && resolved.Address.AbsolutePath=="/media/b.mp4" &&
             File.ReadAllLines(Path.Combine(root,"handoff.calls")).SequenceEqual(new[]{"A","B"}),
             "The replacement context must resolve exactly its own authenticated stream through the same worker");

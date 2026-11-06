@@ -21,6 +21,7 @@ internal sealed class BoundedMediaProxy : IAsyncDisposable
     private readonly IReadOnlyDictionary<string,string> _headers;
     private readonly CookieContainer _cookies;
     private readonly long _maxBytes;
+    private readonly bool _allowAudio;
     private readonly TcpListener _listener=new(IPAddress.Loopback,0);
     private readonly CancellationTokenSource _stop;
     private readonly CancellationTokenSource _failed=new();
@@ -45,21 +46,21 @@ internal sealed class BoundedMediaProxy : IAsyncDisposable
     internal CancellationToken FailureToken { get; }
     internal long ReceivedBytes=>Interlocked.Read(ref _received);
 
-    internal BoundedMediaProxy(byte[] media,string contentType,CancellationToken cancellationToken)
-        :this(ValidateCompiled(media,contentType),new Dictionary<string,string>(),new CookieContainer(),
-            cancellationToken,64L*1024*1024)
+    internal BoundedMediaProxy(byte[] media,string contentType,CancellationToken cancellationToken,long maxCompiledBytes=16L*1024*1024)
+        :this(ValidateCompiled(media,contentType,maxCompiledBytes),new Dictionary<string,string>(),new CookieContainer(),
+            cancellationToken,Math.Max(64L*1024*1024,maxCompiledBytes*4),allowAudio:true)
     {
         _buffer=media;_bufferType=contentType;
     }
-    private static Uri ValidateCompiled(byte[] media,string contentType)
+    private static Uri ValidateCompiled(byte[] media,string contentType,long maximum)
     {
-        if(media.Length is <=0 or >16*1024*1024)throw new ArgumentException("Invalid compiled frame media size.",nameof(media));
-        if(contentType is not ("video/mp4" or "video/mp2t" or "video/webm"))throw new ArgumentException("Invalid compiled frame media type.",nameof(contentType));
+        if(maximum is <=0 or >64L*1024*1024 || media.Length<=0 || media.Length>maximum)throw new ArgumentException("Invalid compiled frame media size.",nameof(media));
+        if(contentType is not ("video/mp4" or "video/mp2t" or "video/webm" or "audio/aac"))throw new ArgumentException("Invalid compiled frame media type.",nameof(contentType));
         return new Uri("http://127.0.0.1/compiled-media");
     }
 
     internal BoundedMediaProxy(Uri mediaUrl,IReadOnlyDictionary<string,string> headers,CookieContainer cookies,
-        CancellationToken cancellationToken,long maxBytes=16L*1024*1024,Uri? originalHeaderOrigin=null)
+        CancellationToken cancellationToken,long maxBytes=16L*1024*1024,Uri? originalHeaderOrigin=null,bool allowAudio=false)
     {
         ArgumentNullException.ThrowIfNull(mediaUrl);
         ArgumentNullException.ThrowIfNull(headers);
@@ -83,7 +84,7 @@ internal sealed class BoundedMediaProxy : IAsyncDisposable
             if(headerCharacters>32*1024)throw new ArgumentException("Media request headers exceed their size limit.",nameof(headers));
             if(!BlockedHeader(name))accepted[name]=value;
         }
-        _source=mediaUrl;_headerOrigin=originalHeaderOrigin;_headers=accepted;_cookies=cookies;_maxBytes=maxBytes;
+        _source=mediaUrl;_headerOrigin=originalHeaderOrigin;_headers=accepted;_cookies=cookies;_maxBytes=maxBytes;_allowAudio=allowAudio;
         FailureToken=_failed.Token;
         _stop=CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         _http=new HttpClient(new SocketsHttpHandler {
@@ -231,7 +232,7 @@ internal sealed class BoundedMediaProxy : IAsyncDisposable
         throw new IOException("The media stream redirected too many times.");
     }
 
-    private static void ValidateResponse(Request request,HttpResponseMessage response)
+    private void ValidateResponse(Request request,HttpResponseMessage response)
     {
         if(!response.IsSuccessStatusCode)throw new IOException("Media frame HTTP "+((int)response.StatusCode).ToString(CultureInfo.InvariantCulture)+".");
         var requested=request.Range?.Ranges.Single();
@@ -248,7 +249,7 @@ internal sealed class BoundedMediaProxy : IAsyncDisposable
         string type=response.Content.Headers.ContentType?.MediaType?.ToLowerInvariant()??"";
         if(type.Contains("mpegurl",StringComparison.Ordinal) || type.Contains("dash",StringComparison.Ordinal) ||
             type.Contains("xml",StringComparison.Ordinal) || type.Contains("json",StringComparison.Ordinal) ||
-            type.StartsWith("text/",StringComparison.Ordinal) || type.StartsWith("audio/",StringComparison.Ordinal))
+            type.StartsWith("text/",StringComparison.Ordinal) || !_allowAudio && type.StartsWith("audio/",StringComparison.Ordinal))
             throw new IOException("This stream does not support progressive video frame preview.");
         if(response.Content.Headers.ContentEncoding.Any(encoding=>!encoding.Equals("identity",StringComparison.OrdinalIgnoreCase)))
             throw new IOException("Encoded media responses do not support bounded frame seeking.");
