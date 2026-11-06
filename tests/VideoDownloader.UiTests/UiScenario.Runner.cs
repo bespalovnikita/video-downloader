@@ -52,6 +52,8 @@ internal sealed partial class UiScenario
             UiScenario.TestAudioTrackSettings(root);
             Stage("testing actual per-URL formats, fragments and restored selections");
             UiScenario.TestMediaSelection(root);
+            Stage("testing multiple fragment drafts, ordering and whole-batch selection persistence");
+            UiScenario.TestMultipleFragments(root);
             Stage("testing fragment start/end frame cards, cancellation and optional failures");
             UiScenario.TestMediaSectionFrames(root);
             Stage("testing draggable fragment timeline, frame steps and synchronized range");

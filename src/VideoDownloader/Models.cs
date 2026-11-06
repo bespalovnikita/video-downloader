@@ -69,7 +69,7 @@ public sealed class DownloadItem : INotifyPropertyChanged
     // global settings or part of the portable queue exchange format.
     public DownloadSelection? Selection { get=>_selection; set {_selection=value;Changed();} }
     public DownloadSelection? CompletedSelection { get; set; }
-    [JsonIgnore] public bool IsPartialResult=>CompletedSelection?.Section is not null;
+    [JsonIgnore] public bool IsPartialResult=>CompletedSelection?.IsPartial==true;
     // Captured when a subscription creates this queue row. Renaming the source
     // later must not redirect an already accepted download or its cleanup.
     public string SubscriptionId { get; set; } = "";

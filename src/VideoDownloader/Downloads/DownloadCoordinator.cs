@@ -267,12 +267,28 @@ public sealed class DownloadCoordinator : IAsyncDisposable
         item.RunDir=_stageRoot;item.StageDir=stage;item.OutputRoot=outputRoot;
         _changed(item);
         string mediaPath="";
+        var reportedMedia=new ConcurrentQueue<string>();
         var streamed=new Dictionary<string,long>(StringComparer.Ordinal);
         long transferred=0;
         var progressTrace=new DownloadProgressTrace();
         var progressPlan=new DownloadProgressPlan();
+        var fragmentPlans=new Dictionary<int,DownloadProgressPlan>();
+        var fragmentPercent=new Dictionary<int,double>();
         int launch=0;
         var selection=_selections.GetValueOrDefault(item.Url);
+        int selectedFragments=selection?.EffectiveSections.Count??0;
+        int FragmentIndex(double? start,double? end)
+        {
+            if(selectedFragments<2 || start is null || end is null)return Math.Min(reportedMedia.Count,Math.Max(0,selectedFragments-1));
+            for(int index=0;index<selectedFragments;index++)
+            {
+                var range=selection!.EffectiveSections[index];
+                if(Math.Abs(start.Value-range.StartSeconds)<.00001 && Math.Abs(end.Value-range.EndSeconds)<.00001)return index;
+            }
+            return Math.Min(reportedMedia.Count,selectedFragments-1);
+        }
+        DownloadProgressPlan FragmentPlan(int index)
+        {if(!fragmentPlans.TryGetValue(index,out var plan))fragmentPlans[index]=plan=new DownloadProgressPlan();return plan;}
         string[] qualities=_arguments.QualityLevels(selection).ToArray();
         try
         {
@@ -292,7 +308,11 @@ public sealed class DownloadCoordinator : IAsyncDisposable
                     // A failed earlier invocation must never lend its final
                     // media marker to a later zero-exit invocation.
                     mediaPath="";
+                    reportedMedia.Clear();
                     progressPlan.Reset();
+                    fragmentPlans.Clear();
+                    fragmentPercent.Clear();
+                    if(selectedFragments>1)streamed.Clear();
                     bool postprocessing=false;
                     Trace(item,JournalLevel.Information,"attempt_start",$"attempt={attempt+1} invocation={launch} quality={DownloadProgressTrace.Quoted(q)} previous_shown_pct={DownloadProgressTrace.Number(previousShown)} transferred={transferred}");
                     var errors=new ConcurrentQueue<string>();
@@ -308,9 +328,20 @@ public sealed class DownloadCoordinator : IAsyncDisposable
                                 Trace(item,JournalLevel.Information,"title",$"attempt={attempt+1} stream={source} title={DownloadProgressTrace.Quoted(title.Value)}");break;
                             case YtDlpOutputEvent.MediaPath media:
                                 mediaPath=media.Value;
+                                reportedMedia.Enqueue(media.Value);
+                                if(selectedFragments>1)
+                                {
+                                    // A partial batch must not be mixed with a
+                                    // new quality or automatic full-transfer retry.
+                                    postprocessing=true;
+                                    item.Progress=Math.Min(99,reportedMedia.Count*100d/selectedFragments);
+                                    _changed(item);
+                                }
                                 Trace(item,JournalLevel.Information,"media_reported",$"attempt={attempt+1} stream={source}");break;
                             case YtDlpOutputEvent.Plan plan:
-                                lock(streamed)progressPlan.Begin(plan);
+                                lock(streamed)
+                                    if(selectedFragments>1)FragmentPlan(FragmentIndex(plan.SectionStart,plan.SectionEnd)).Begin(plan);
+                                    else progressPlan.Begin(plan);
                                 Trace(item,JournalLevel.Information,"download_plan",$"attempt={attempt+1} components={plan.FormatIds.Count} media_index={plan.MediaIndex} media_count={plan.MediaCount}");
                                 break;
                             case YtDlpOutputEvent.Progress progress:
@@ -318,16 +349,25 @@ public sealed class DownloadCoordinator : IAsyncDisposable
                                 // tasks. Progress samples must not race each other.
                                 lock(streamed)
                                 {
-                                    streamed.TryGetValue(progress.Component,out long previous);
+                                    int fragment=FragmentIndex(progress.SectionStart,progress.SectionEnd);
+                                    string component=selectedFragments>1?fragment.ToString(CultureInfo.InvariantCulture)+":"+progress.Component:progress.Component;
+                                    streamed.TryGetValue(component,out long previous);
                                     long bytes=Math.Max(0,progress.DownloadedBytes);
                                     // A retry can reset a component counter. Keep
                                     // its new baseline and count the retried bytes;
                                     // identical final samples still contribute zero.
                                     transferred+=bytes<previous ? bytes : bytes-previous;
-                                    streamed[progress.Component]=bytes;
-                                    var display=progressPlan.Observe(progress,item.Progress);
-                                    item.Progress=display.Percent;
-                                    item.ProgressDetail=display.Detail;
+                                    streamed[component]=bytes;
+                                    item.TransferredBytes=transferred;
+                                    // Separate pipe readers may deliver a final sample of
+                                    // an earlier range after its media marker. Count its
+                                    // bytes, but never turn it into the next range's UI.
+                                    if(selectedFragments>1 && fragment<reportedMedia.Count)break;
+                                    var display=(selectedFragments>1?FragmentPlan(fragment):progressPlan).Observe(progress,
+                                        selectedFragments>1?fragmentPercent.GetValueOrDefault(fragment):item.Progress);
+                                    if(selectedFragments>1)fragmentPercent[fragment]=display.Percent;
+                                    item.Progress=selectedFragments>1?Math.Min(99,(fragment+display.Percent/100)*100/selectedFragments):display.Percent;
+                                    item.ProgressDetail=(selectedFragments>1?$"Фрагмент {fragment+1}/{selectedFragments} · ":"")+display.Detail;
                                     item.Speed=progress.Speed;
                                     item.Downloaded=DownloadFormat.Bytes(bytes)+(progress.TotalBytes>0 ? " / "+DownloadFormat.Bytes(progress.TotalBytes) : "");
                                     item.ETA=progress.Eta;item.TransferredBytes=transferred;
@@ -366,10 +406,33 @@ public sealed class DownloadCoordinator : IAsyncDisposable
                         if (string.IsNullOrWhiteSpace(mediaPath))
                             return new DownloadResult(false,false,"",[],
                                 "yt-dlp finished without reporting a downloaded media file.",transferred);
-                        if(!_options.AudioOnly && _options.Container!="Auto" &&
-                            !Path.GetExtension(mediaPath).Equals("."+_options.Container,StringComparison.OrdinalIgnoreCase))
-                            return new DownloadResult(false,false,"",[],
-                                "yt-dlp did not produce the requested container: "+_options.Container,transferred);
+                        var media=reportedMedia.ToArray();
+                        if(selectedFragments>1)
+                        {
+                            var comparer=OperatingSystem.IsWindows()?StringComparer.OrdinalIgnoreCase:StringComparer.Ordinal;
+                            if(media.Length!=selectedFragments || media.Select(Path.GetFullPath).Distinct(comparer).Count()!=selectedFragments)
+                                return new DownloadResult(false,false,"",[],"yt-dlp did not produce every selected fragment as a separate media file.",transferred);
+                            var reported=new HashSet<string>(media.Select(Path.GetFullPath),comparer);
+                            string[] mediaExtensions=[".mp4",".m4v",".mov",".webm",".mkv",".mka",".mp3",".m4a",".aac",".wav",".flac",".opus",".ogg",".avi",".flv",".ts",".mpeg",".mpg",".3gp"];
+                            foreach(string directory in Directory.EnumerateDirectories(stage,"*",SearchOption.AllDirectories))
+                                if((File.GetAttributes(directory)&FileAttributes.ReparsePoint)!=0)
+                                    throw new IOException("Staging contains a symlink directory.");
+                            if(Directory.EnumerateFiles(stage,"*",SearchOption.AllDirectories).Any(path=>
+                                mediaExtensions.Contains(Path.GetExtension(path),StringComparer.OrdinalIgnoreCase) && !reported.Contains(Path.GetFullPath(path))))
+                                return new DownloadResult(false,false,"",[],"Staging contains media outside the complete selected-fragment manifest.",transferred);
+                            mediaPath=media[0];
+                        }
+                        foreach(string path in media)
+                        {
+                            if(!OwnedFiles.Inside(stage,path))
+                                return new DownloadResult(false,false,"",[],"Reported media escaped the owned staging directory.",transferred);
+                            OwnedFiles.RegularOrAbsent(path);
+                            if(!File.Exists(path) || new FileInfo(path).Length==0)
+                                return new DownloadResult(false,false,"",[],"A reported media file is absent or empty.",transferred);
+                            if(!_options.AudioOnly && _options.Container!="Auto" &&
+                                !Path.GetExtension(path).Equals("."+_options.Container,StringComparison.OrdinalIgnoreCase))
+                                return new DownloadResult(false,false,"",[],"yt-dlp did not produce the requested container: "+_options.Container,transferred);
+                        }
                         // Publication updates the row's manifest after each move,
                         // so even a failed rollback retains exact cleanup paths.
                         item.State="Publishing";item.Speed="";item.ETA="";_changed(item);

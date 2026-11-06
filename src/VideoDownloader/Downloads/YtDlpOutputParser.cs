@@ -8,7 +8,11 @@ internal abstract record YtDlpOutputEvent
 {
     internal sealed record Title(string Value) : YtDlpOutputEvent;
     internal sealed record MediaPath(string Value) : YtDlpOutputEvent;
-    internal sealed record Plan(string MediaId,IReadOnlyList<string> FormatIds,int MediaIndex,int MediaCount) : YtDlpOutputEvent;
+    internal sealed record Plan(string MediaId,IReadOnlyList<string> FormatIds,int MediaIndex,int MediaCount) : YtDlpOutputEvent
+    {
+        internal double? SectionStart {get;init;}
+        internal double? SectionEnd {get;init;}
+    }
     internal sealed record Progress(double Percent,string Speed,string Eta,long DownloadedBytes,long TotalBytes,string Component)
         : YtDlpOutputEvent
     {
@@ -16,6 +20,8 @@ internal abstract record YtDlpOutputEvent
         internal string RawPercent { get; init; } = "";
         internal string VideoCodec { get; init; } = "";
         internal string AudioCodec { get; init; } = "";
+        internal double? SectionStart {get;init;}
+        internal double? SectionEnd {get;init;}
     }
     internal sealed record Diagnostic(string? Error,bool Merging) : YtDlpOutputEvent
     {
@@ -36,7 +42,7 @@ internal static class YtDlpOutputParser
             return ParsePlan(line[12..]);
         if (line.StartsWith("__VD_PROGRESS__|",StringComparison.Ordinal))
         {
-            var segments=line.Split('|',9);
+            var segments=line.Split('|',11);
             if (segments.Length<7) return null;
             var percentText=Regex.Replace(segments[1],@"[\x1B\[][0-9;]*m","").Replace("%","").Trim();
             bool percentKnown=double.TryParse(percentText,NumberStyles.Float,CultureInfo.InvariantCulture,out double pct)
@@ -46,7 +52,9 @@ internal static class YtDlpOutputParser
             long.TryParse(segments[5],NumberStyles.Integer,CultureInfo.InvariantCulture,out long total);
             return new YtDlpOutputEvent.Progress(pct,segments[2].Trim(),segments[3].Trim(),bytes,total,segments[6])
                 { PercentKnown=percentKnown, RawPercent=percentText,
-                    VideoCodec=segments.Length>7 ? segments[7] : "", AudioCodec=segments.Length>8 ? segments[8] : "" };
+                    VideoCodec=segments.Length>7 ? segments[7] : "", AudioCodec=segments.Length>8 ? segments[8] : "",
+                    SectionStart=segments.Length>9?SectionNumber(segments[9]):null,
+                    SectionEnd=segments.Length>10?SectionNumber(segments[10]):null };
         }
         bool diagnostic=line.StartsWith("ERROR:",StringComparison.OrdinalIgnoreCase)
             || line.StartsWith("WARNING:",StringComparison.OrdinalIgnoreCase)
@@ -65,7 +73,7 @@ internal static class YtDlpOutputParser
             var root=document.RootElement;
             if(root.ValueKind!=JsonValueKind.Object)return null;
             string Text(string name)=>root.TryGetProperty(name,out var value) && value.ValueKind==JsonValueKind.String ? value.GetString()??"" : "";
-            int Number(string name)=>root.TryGetProperty(name,out var value) && value.TryGetInt32(out int number) && number>0 ? number : 0;
+            int Number(string name)=>root.TryGetProperty(name,out var value) && value.ValueKind==JsonValueKind.Number && value.TryGetInt32(out int number) && number>0 ? number : 0;
             var formats=new List<string>();
             if(root.TryGetProperty("requested_formats.:.format_id",out var parts) && parts.ValueKind==JsonValueKind.Array)
                 foreach(var part in parts.EnumerateArray().Take(32))
@@ -73,11 +81,14 @@ internal static class YtDlpOutputParser
             if(formats.Count==0 && Text("format_id") is {Length:>0} format)formats.Add(format);
             int index=Number("playlist_autonumber"), count=Number("n_entries");
             if(index>count){index=0;count=0;}
-            return new YtDlpOutputEvent.Plan(Text("id"),formats,index,count);
+            double? Section(string name)=>root.TryGetProperty(name,out var value) && value.ValueKind==JsonValueKind.Number && value.TryGetDouble(out double number) && double.IsFinite(number) && number>=0?number:null;
+            return new YtDlpOutputEvent.Plan(Text("id"),formats,index,count){SectionStart=Section("section_start"),SectionEnd=Section("section_end")};
         }
         catch(JsonException){return null;}
         catch(InvalidOperationException){return null;}
     }
+    private static double? SectionNumber(string text)=>double.TryParse(text,NumberStyles.Float,CultureInfo.InvariantCulture,out double number) &&
+        double.IsFinite(number) && number>=0?number:null;
 
     internal static bool IsPostprocessing(string line)=>
         Regex.IsMatch(line,@"^\[(?:Merger|VideoRemuxer|VideoConvertor|ExtractAudio|Metadata|EmbedSubtitle|EmbedThumbnail|ModifyChapters|ThumbnailsConvertor|Fixup[^\]]*)\]|^ERROR:\s*(?:Postprocessing:|ffmpeg\b|ffprobe\b)",RegexOptions.IgnoreCase|RegexOptions.CultureInvariant);

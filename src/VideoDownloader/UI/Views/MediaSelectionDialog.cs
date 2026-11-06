@@ -105,6 +105,7 @@ internal sealed partial class MediaSelectionDialog : Window
         var endPanel=new StackPanel{Margin=new Thickness(6,0,0,0)};
         endPanel.Children.Add(Note("Конец"));_end=Named("MediaSectionEndBox",new TextBox{ToolTip="Например: 00:05:40"});endPanel.Children.Add(_end);
         Grid.SetColumn(endPanel,1);range.Children.Add(startPanel);range.Children.Add(endPanel);body.Children.Add(range);
+        InitializeSectionList(body,range,row.Selection);
         InitializeTimeline(body);
         InitializeFramePreviews(body,framePreview);
         InitializePlayback(body,clipPreview,clipPlayer);
@@ -114,8 +115,8 @@ internal sealed partial class MediaSelectionDialog : Window
         var initial=row.Selection;
         _wantedPrimary=initial?.Format?.Id??"";_wantedAudio=initial?.AudioFormat?.Id??"";
         _mode.SelectedIndex=initial?.Format==null?0:1;
-        _start.Text=initial?.Section is {} section?DownloadSection.FormatTimestamp(section.StartSeconds):"";
-        _end.Text=initial?.Section is {} endSection?DownloadSection.FormatTimestamp(endSection.EndSeconds):"";
+        _start.Text=initial?.EffectiveSections.FirstOrDefault() is {} section?DownloadSection.FormatTimestamp(section.StartSeconds):"";
+        _end.Text=initial?.EffectiveSections.FirstOrDefault() is {} endSection?DownloadSection.FormatTimestamp(endSection.EndSeconds):"";
         PopulateFormats([]);
         _mode.SelectionChanged+=(_,_)=>RefreshEnabled();
         _primary.SelectionChanged+=(_,_)=>{if(!_loading)_wantedPrimary=(_primary.SelectedItem as FormatChoice)?.Id??"";};
@@ -158,6 +159,7 @@ internal sealed partial class MediaSelectionDialog : Window
         _primary.IsEnabled=_audio.IsEnabled=_editable && _mode.SelectedIndex==1;
         _start.IsEnabled=_end.IsEnabled=_editable;
         _applyButton.IsEnabled=_resetButton.IsEnabled=_editable;
+        RefreshSectionControls();
     }
 
     internal void ReceiveMetadata(PreviewData data)
@@ -208,8 +210,9 @@ internal sealed partial class MediaSelectionDialog : Window
         _error.Text="";
         if(!_editable){_error.Text="Эта строка недоступна для изменения.";return;}
         double? duration=_metadata is {Duration:>0} data && double.IsFinite(data.Duration)?data.Duration:null;
-        if(!DownloadSection.TryParse(_start.Text,_end.Text,duration,out var section,out string error))
+        if(!TryReadSections(duration,out var sections,out string error))
         {_error.Text=error;return;}
+        var section=sections.FirstOrDefault();
         bool manual=_mode.SelectedIndex==1;
         if((manual || section!=null) && _metadata?.FormatsLoaded!=true)
         {_error.Text="Дождитесь получения метаданных выбранного материала.";return;}
@@ -228,7 +231,8 @@ internal sealed partial class MediaSelectionDialog : Window
                 audio=choice.Format;
             }
         }
-        var selection=manual || section!=null ? new DownloadSelection(Row.Url,section,primary,audio,duration) : null;
+        var selection=manual || section!=null ? new DownloadSelection(Row.Url,section,primary,audio,duration)
+            {Sections=sections.Length>1?new DownloadSectionSet(sections):null} : null;
         if(selection!=null && !selection.TryValidate(Row.Url,_options(),out error)){_error.Text=error;return;}
         Commit(selection);
     }

@@ -82,8 +82,16 @@ public sealed record DownloadSection(double StartSeconds,double EndSeconds)
 public sealed record DownloadSelection(string Url,DownloadSection? Section=null,MediaFormat? Format=null,
     MediaFormat? AudioFormat=null,double? DurationSeconds=null)
 {
+    // Old snapshots continue to use Section. Multiple outputs keep their first
+    // range there too, while the immutable array owns the complete plan.
+    public DownloadSectionSet? Sections { get; init; }
+    [JsonIgnore] public IReadOnlyList<DownloadSection> EffectiveSections=>Sections is not null?Sections:Section is {} single?new[]{single}:Array.Empty<DownloadSection>();
+    [JsonIgnore] public bool IsPartial=>Sections is not null || Section is not null;
     [JsonIgnore] public string Summary=>(Format is null?"Автоматический формат":Format.Id+(AudioFormat is null?"":" + "+AudioFormat.Id))+
-        (Section is null?" · Полностью":" · "+DownloadSection.FormatTimestamp(Section.StartSeconds)+" — "+DownloadSection.FormatTimestamp(Section.EndSeconds));
+        (EffectiveSections.Count==0?" · Полностью":EffectiveSections.Count==1?" · "+RangeSummary(EffectiveSections[0]):
+            $" · Фрагментов: {EffectiveSections.Count} · "+string.Join("; ",EffectiveSections.Take(3).Select(RangeSummary))+
+            (EffectiveSections.Count>3?"; …":""));
+    private static string RangeSummary(DownloadSection range)=>DownloadSection.FormatTimestamp(range.StartSeconds)+" — "+DownloadSection.FormatTimestamp(range.EndSeconds);
     public bool TryValidate(string url,DownloadOptions options,out string error)
     {
         try {Validate(url,options);error="";return true;}
@@ -106,6 +114,10 @@ public sealed record DownloadSelection(string Url,DownloadSection? Section=null,
         if(DurationSeconds is {} duration && (!double.IsFinite(duration) || duration<=0 || duration>=TimeSpan.MaxValue.TotalSeconds))
             throw new ArgumentException("Некорректная длительность исходного видео.");
         Section?.Validate(DurationSeconds);
+        Sections?.Validate(DurationSeconds);
+        if(Sections is not null && Section is not null &&
+            (Math.Round(Section.StartSeconds,3)!=Sections[0].StartSeconds || Math.Round(Section.EndSeconds,3)!=Sections[0].EndSeconds))
+            throw new ArgumentException("Первый фрагмент не совпадает с сохранённым диапазоном.");
         if(Format is null)
         {
             if(AudioFormat is not null)throw new ArgumentException("Сначала выберите основной формат.");
