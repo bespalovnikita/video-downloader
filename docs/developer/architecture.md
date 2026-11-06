@@ -50,6 +50,7 @@ flowchart TB
 | Импорт и буфер обмена | [InputIngressController.cs](../../src/VideoDownloader/UI/Controllers/InputIngressController.cs) |
 | Связывание UI и команд | [NativeWindow.cs](../../src/VideoDownloader/UI/Views/NativeWindow.cs) |
 | Очередь и статистика сессии | [QueueSessionController.cs](../../src/VideoDownloader/UI/Controllers/QueueSessionController.cs) |
+| Поиск и фильтры представления очереди | [QueueFilterController.cs](../../src/VideoDownloader/UI/Controllers/QueueFilterController.cs), [NativeWindow.QueueFilters.cs](../../src/VideoDownloader/UI/Views/NativeWindow.QueueFilters.cs) |
 | Превью | [PreviewController.cs](../../src/VideoDownloader/UI/Controllers/PreviewController.cs), [PreviewService.cs](../../src/VideoDownloader/Preview/PreviewService.cs) |
 | Ручные проверки подписок | [SubscriptionController.cs](../../src/VideoDownloader/UI/Controllers/SubscriptionController.cs), [SubscriptionScanner.cs](../../src/VideoDownloader/Subscriptions/SubscriptionScanner.cs) |
 | Общий приём новинок после проверки | [SubscriptionController.QueueOffer.cs](../../src/VideoDownloader/UI/Controllers/SubscriptionController.QueueOffer.cs) |
@@ -150,6 +151,25 @@ fragment и поля авторизации. Сообщения журнала �
 Общая шкала зависит также от числа заданий текущей сессии.
 
 Профили, сохранение и получение диагностического участка описаны в [руководстве по журналу](../user/windows-logging.md).
+
+## Представление очереди Windows
+
+`QueueFilterController` предоставляет Windows-таблице собственный `ListCollectionView`
+над исходной `QueueSessionController.Queue`. Текст, статус и точный SubscriptionId
+задают только predicate представления: порядок, состав и выполнение исходной очереди
+не меняются. Представление сохраняет исходные объекты строк: один точный URL,
+неизменяемый план фрагментов в пользовательском порядке и владение всеми готовыми
+результатами остаются у той же строки. Изменения названия/статуса обновляют видимость через один отложенный
+Dispatcher-вызов. Коллекционные подписки обрабатываются по добавленным/удалённым
+строкам, без полного обхода очереди на каждом добавлении.
+
+При обновлении вида контроллер сохраняет только видимое выделение и подавляет
+повторный вызов preview для тех же строк. Фильтр не создаёт metadata/HTTP-запросов.
+Выбранные действия берут снимок видимых выделенных ссылок; глобальные Start,
+Retry failed, Clear и экспорт по-прежнему читают исходную коллекцию. Подтверждение
+Clear фиксирует полный снимок, поэтому позднее поступившая ссылка не удаляется.
+Перестановка строк при активном фильтре запрещена. Поиск и фильтры не записываются
+в checkpoint и освобождают обработчики при Dispose.
 
 ## Идентичность ссылки
 

@@ -94,7 +94,7 @@ public sealed partial class NativeWindow
             if(_checkpointReadOnly)throw new IOException("Не удалось сохранить импортированную очередь.");
             foreach(var row in added)RequestRowPreview(row);
             foreach(var row in SessionState.Queue)_preview.RefreshKnownTitle(row);
-            T("ClipboardHint").Text=$"Добавлено {added.Count} из {entries.Count} ссылок; существующие строки сохранены. Загрузка начнётся по Start.";
+            T("ClipboardHint").Text=$"Добавлено {added.Count} из {entries.Count} ссылок; существующие строки сохранены. Загрузка начнётся по Start."+QueueFilterIngressHint;
         }
         catch(Exception error) when(error is IOException or InvalidDataException or ArgumentException or InvalidOperationException or UnauthorizedAccessException)
         {

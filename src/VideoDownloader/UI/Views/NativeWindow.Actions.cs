@@ -119,14 +119,15 @@ public sealed partial class NativeWindow
                 else AddUrls(ReadInputFile(picker.FileName));
             }
         };
-        F<Button>("RemoveQueueButton").Click+=(_,_)=>RemoveRows(Q.SelectedItems.Cast<DownloadItem>().ToArray());
+        F<Button>("RemoveQueueButton").Click+=(_,_)=>RemoveRows(SelectedVisibleQueueRows());
         F<Button>("SubscriptionsButton").Click+=(_,_)=>OpenSubscriptions();
         F<Button>("ClearQueueButton").Click+=(_,_)=>
         {
             if (SessionState.Coordinator?.IsRunning==true)return;
-            if (SessionState.Queue.Count>0 && MessageBox.Show(_window,"Clear queue? This removes entries, not downloaded files.",
-                    "Clear queue",MessageBoxButton.YesNo,MessageBoxImage.Question)==MessageBoxResult.Yes)
-            { ClearRows(); }
+            var candidates=SessionState.Queue.ToArray();
+            if(candidates.Length>0 && ConfirmClearEntireQueue(candidates) && !_closing && !_disposed &&
+                !_appUpdateHandoff && SessionState.Coordinator?.IsRunning!=true)
+            {ClearRows(candidates);}
         };
         F<Button>("MoveUpButton").Click+=(_,_)=>{if(Q.SelectedItem is DownloadItem item)MoveItem(item,SessionState.Queue.IndexOf(item)-1);};
         F<Button>("MoveDownButton").Click+=(_,_)=>{if(Q.SelectedItem is DownloadItem item)MoveItem(item,SessionState.Queue.IndexOf(item)+1);};
@@ -163,8 +164,8 @@ public sealed partial class NativeWindow
         F<Button>("OpenUrlButton").Click+=(_,_)=>{if(D.SelectedItem is DownloadItem row)OpenUrl(row.Url);};
         Q.KeyDown+=(_,e)=>
         {
-            if (e.Key==Key.Delete){RemoveRows(Q.SelectedItems.Cast<DownloadItem>().ToArray());e.Handled=true;}
-            else if(e.Key==Key.C && Keyboard.Modifiers==ModifierKeys.Control && Q.SelectedItem is DownloadItem row)
+            if (e.Key==Key.Delete){RemoveRows(SelectedVisibleQueueRows());e.Handled=true;}
+            else if(e.Key==Key.C && Keyboard.Modifiers==ModifierKeys.Control && Q.SelectedItem is DownloadItem row && IsVisibleQueueRow(row))
             {Clipboard.SetText(row.Url);e.Handled=true;}
         };
         SetupContextMenus();
@@ -176,13 +177,23 @@ public sealed partial class NativeWindow
         void QueueAction(string title,Action<DownloadItem> callback)
         {
             var entry=new MenuItem{Header=title};
-            entry.Click+=(_,_)=>{if(Q.SelectedItem is DownloadItem row)callback(row);};
+            entry.Click+=(_,_)=>{if(Q.SelectedItem is DownloadItem row && IsVisibleQueueRow(row))callback(row);};
+            queueMenu.Opened+=(_,_)=>entry.IsEnabled=Q.SelectedItem is DownloadItem row && IsVisibleQueueRow(row);
             queueMenu.Items.Add(entry);
         }
         QueueAction("Open URL",row=>OpenUrl(row.Url));
         QueueAction("Copy URL",row=>Clipboard.SetText(row.Url));
-        QueueAction("Download selected",row=>{_ = StartAsync([row]);});
-        QueueAction("Remove",row=>RemoveRows([row]));
+        var downloadSelected=new MenuItem{Header=ErrorMessages.Text("Скачать выбранные строки","Download selected rows")};
+        downloadSelected.Click+=(_,_)=>{var rows=SelectedVisibleQueueRows();if(rows.Length>0)_ = StartAsync(rows);};
+        queueMenu.Items.Add(downloadSelected);
+        var removeSelected=new MenuItem{Header=ErrorMessages.Text("Удалить выбранные строки","Remove selected rows")};
+        removeSelected.Click+=(_,_)=>RemoveRows(SelectedVisibleQueueRows());queueMenu.Items.Add(removeSelected);
+        queueMenu.Opened+=(_,_)=>
+        {
+            bool selected=HasVisibleQueueSelection;
+            downloadSelected.IsEnabled=selected && SessionState.Coordinator?.IsRunning!=true;
+            removeSelected.IsEnabled=selected;
+        };
         Q.ContextMenu=queueMenu;
 
         var downloadMenu=new ContextMenu();
@@ -293,6 +304,7 @@ public sealed partial class NativeWindow
         DisposeSubscriptions();
         FlushJournal();
         _disposed=true;
+        _queueFilters?.Dispose();
         DisposeMediaSelection();
         DisposeAppUpdates();
         _tick.Stop();_ingress.Dispose();

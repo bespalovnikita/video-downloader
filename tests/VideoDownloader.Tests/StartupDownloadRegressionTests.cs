@@ -32,6 +32,13 @@ internal static class StartupDownloadRegressionTests
             Thread.Sleep(Timeout.Infinite);return true;
         }
         if(args.LastOrDefault()?.StartsWith(Prefix,StringComparison.Ordinal)!=true) return false;
+        if(args.Contains("--dump-single-json",StringComparer.Ordinal))
+        {
+            Require(args.Contains("--skip-download",StringComparer.Ordinal),"Startup metadata fixture must not download media");
+            Console.WriteLine(JsonSerializer.Serialize(new {title="Startup fixture "+new Uri(args[^1]).AbsolutePath,
+                duration=10,extractor="startup-fixture",formats=Array.Empty<object>()}));
+            return true;
+        }
         string? timerGate=Environment.GetEnvironmentVariable("VD_NATIVE_SESSION_TIMER_GATE");
         if(args[^1].EndsWith("timer-slow",StringComparison.Ordinal) && !string.IsNullOrEmpty(timerGate))
         {
