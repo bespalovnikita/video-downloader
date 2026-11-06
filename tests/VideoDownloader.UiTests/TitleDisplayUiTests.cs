@@ -11,6 +11,16 @@ namespace VideoDownloader.UiTests;
 
 internal sealed partial class UiScenario
 {
+    private static void SeedTitlePreviewCache(AppPersistence storage,PreviewData data)
+    {
+        string file=Path.Combine(storage.PreviewDir,
+            Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(data.Url))).ToLowerInvariant()+".json");
+        AppPersistence.AtomicWrite(file,JsonSerializer.Serialize(new {
+            CacheVersion=1,PreviewFetchVersion=3,data.Url,data.Title,data.SavedAtUtc,data.Uploader,data.PlaylistTitle,data.Duration,
+            data.Extractor,data.MaxHeight,data.MaxFps,data.Codecs,data.DynamicRange,data.ThumbnailBase64
+        },AppPersistence.Json));
+    }
+
     // Metadata is supplied directly or through a fresh local cache entry. This
     // exercises rendered WPF bindings without starting another preview worker.
     public void TestTitleDisplay(string testRoot)
@@ -97,15 +107,7 @@ internal sealed partial class UiScenario
         var unknown=new DownloadItem{Url=prefix+"unknown",Title=" \t "};
         var cached=new DownloadItem{Url=prefix+"cached"};
         PreviewData Metadata(string url,string title)=>new(url,title,"","",0,"",0,0,"","","",DateTime.UtcNow);
-        void SeedCache(PreviewData data)
-        {
-            string file=Path.Combine(_storage.PreviewDir,
-                Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(data.Url))).ToLowerInvariant()+".json");
-            AppPersistence.AtomicWrite(file,JsonSerializer.Serialize(new {
-                CacheVersion=1,PreviewFetchVersion=3,data.Url,data.Title,data.SavedAtUtc,data.Uploader,data.PlaylistTitle,data.Duration,
-                data.Extractor,data.MaxHeight,data.MaxFps,data.Codecs,data.DynamicRange,data.ThumbnailBase64
-            },AppPersistence.Json));
-        }
+        void SeedCache(PreviewData data)=>SeedTitlePreviewCache(_storage,data);
         try
         {
             // Exercise the actual entry routes with fresh local cache records.

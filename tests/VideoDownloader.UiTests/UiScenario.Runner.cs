@@ -88,6 +88,12 @@ internal sealed partial class UiScenario
                 if(!condition) throw new InvalidOperationException("WPF UI parity test failed: "+error);
             }
 
+            // This Add/binding scenario uses known local metadata. Unseeded
+            // public URLs would occupy the sole preview worker ahead of the
+            // following disk-cache test for up to 30 seconds each. Cold ingress
+            // is already exercised above against a controlled metadata fixture.
+            foreach(string fixtureUrl in new[]{"https://example.com/one","https://example.com/two"})
+                SeedTitlePreviewCache(controller._storage,new PreviewData(fixtureUrl,"","","",0,"",0,0,"","","",DateTime.UtcNow));
             urlField.Text="https://example.com/one https://example.com/two";
             add.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             Stage("Add clicked");
