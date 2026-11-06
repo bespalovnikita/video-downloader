@@ -73,16 +73,20 @@ internal static class YtDlpOutputParser
             var root=document.RootElement;
             if(root.ValueKind!=JsonValueKind.Object)return null;
             string Text(string name)=>root.TryGetProperty(name,out var value) && value.ValueKind==JsonValueKind.String ? value.GetString()??"" : "";
-            int Number(string name)=>root.TryGetProperty(name,out var value) && value.ValueKind==JsonValueKind.Number && value.TryGetInt32(out int number) && number>0 ? number : 0;
+            // Null is an unknown count in real extractor plans. Other wrong
+            // types invalidate the optional plan instead of inventing zero.
+            int Number(string name)=>root.TryGetProperty(name,out var value) && value.ValueKind!=JsonValueKind.Null && value.TryGetInt32(out int number) && number>0 ? number : 0;
             var formats=new List<string>();
             if(root.TryGetProperty("requested_formats.:.format_id",out var parts) && parts.ValueKind==JsonValueKind.Array)
                 foreach(var part in parts.EnumerateArray().Take(32))
                     if(part.ValueKind==JsonValueKind.String && part.GetString() is {Length:>0} id && !formats.Contains(id,StringComparer.Ordinal))formats.Add(id);
             if(formats.Count==0 && Text("format_id") is {Length:>0} format)formats.Add(format);
+            string mediaId=Text("id");
+            if(mediaId.Length==0 && formats.Count==0)return null;
             int index=Number("playlist_autonumber"), count=Number("n_entries");
             if(index>count){index=0;count=0;}
             double? Section(string name)=>root.TryGetProperty(name,out var value) && value.ValueKind==JsonValueKind.Number && value.TryGetDouble(out double number) && double.IsFinite(number) && number>=0?number:null;
-            return new YtDlpOutputEvent.Plan(Text("id"),formats,index,count){SectionStart=Section("section_start"),SectionEnd=Section("section_end")};
+            return new YtDlpOutputEvent.Plan(mediaId,formats,index,count){SectionStart=Section("section_start"),SectionEnd=Section("section_end")};
         }
         catch(JsonException){return null;}
         catch(InvalidOperationException){return null;}
