@@ -69,6 +69,9 @@ dotnet run --no-build --configuration Release --project tests/VideoDownloader.Te
 | Языки звука, оригинальная дорожка, отсутствие подстановки и настройки UI | [AudioTrackSelectionTests](../../tests/VideoDownloader.Tests/AudioTrackSelectionTests.cs), [AudioTrackUiTests](../../tests/VideoDownloader.UiTests/AudioTrackUiTests.cs) |
 | Диапазон времени, каталог реальных форматов, снимок попытки, строгие ID и временные повторы | [DownloadSelectionTests](../../tests/VideoDownloader.Tests/DownloadSelectionTests.cs) |
 | Окно форматов/фрагмента, точный URL, холодные метаданные, восстановление выбора и защита готового результата | [MediaSelectionUiTests](../../tests/VideoDownloader.UiTests/MediaSelectionUiTests.cs) |
+| Две карточки кадров фрагмента, задержка ввода, отмена и отбрасывание позднего ответа | [MediaSectionFrameUiTests](../../tests/VideoDownloader.UiTests/MediaSectionFrameUiTests.cs) |
+| Реальный HTTP Range для кадров, области cookies/заголовков, лимиты и отмена соединений | [MediaFrameProxyTests](../../tests/VideoDownloader.Tests/MediaFrameProxyTests.cs) |
+| Настоящий поиск кадра FFmpeg, конечная граница, приватный кеш источников и освобождение работника | [MediaFrameServiceTests](../../tests/VideoDownloader.Tests/MediaFrameServiceTests.cs) |
 | Стабильный Release, SHA-256 ZIP, отмена тела HTTP-ответа, таймаут и ожидание исходного процесса | [AppUpdateClientTests](../../tests/VideoDownloader.Tests/AppUpdateClientTests.cs) |
 | Владение файлами пакета, чужие коллизии, ZIP traversal, откат и восстановление после убийства установщика | [AppUpdateInstallerTests](../../tests/VideoDownloader.Tests/AppUpdateInstallerTests.cs) |
 | Настоящие кнопки обновления, занятость, повторная проверка очистки перед handoff и отмена при Dispose | [AppUpdateUiTests](../../tests/VideoDownloader.UiTests/AppUpdateUiTests.cs) |
@@ -89,6 +92,27 @@ dotnet run --no-build --configuration Release --project tests/VideoDownloader.Te
 Проверки обновления используют изолированные пакеты и HTTP-ответы. Установщик должен сохранить посторонние FFmpeg/cookies/загрузки, отклонить понижение версии и пакет без манифеста, восстановить прежние байты после ошибки и сохранить backup при отказе отката. Дочерний установщик действительно завершается принудительно в трёх точках транзакции; повторно открытый указатель и backup должны восстановить прежние байты. Настоящие Windows sharing locks и NTFS junction проверяются на Windows; запуск переносимого подмножества на Linux их не заменяет. После изменения упаковки отдельно выполняй `-Task Publish` и smoke опубликованного helper, включая проверку `windows-package.json` и хешей файлов.
 
 `AppUpdateUiTests` нажимает реальные WPF-кнопки с управляемым сервисом обновления и наблюдаемым handoff: он не устанавливает Release поверх тестового приложения. Сетевые проверки, замена файлов и rollback покрываются отдельными клиентскими и установочными сценариями. `MediaSelectionUiTests` проверяет отображаемые ячейки реальных метаданных, ошибки диапазона, URL-область открытого окна, сохранение checkpoint и неизменность ранее опубликованного результата.
+
+`MediaSectionFrameUiTests` использует настоящее WPF-окно и управляемый источник
+PNG: проверяет пиксели двух `Image`, подписи времени, независимые поля,
+задержку 350 мс, отмену и ответы в обратном порядке, смену выбранного формата,
+пустой/непригодный ввод, коллекцию, read-only и закрытие. Ошибка кадра должна
+оставлять доступным применение пригодного диапазона. Этот сценарий проверяет
+отображение и владение UI-запросами; поиск кадра FFmpeg и HTTP-передачу нужно
+подтверждать отдельной интеграцией.
+
+`MediaFrameProxyTests` запускает настоящие loopback HTTP-серверы: сверяет Range и
+байты ответа, домен/путь/Secure cookies, очистку приватных заголовков при смене
+origin, предел передачи и запросов. Сервер, игнорирующий ненулевой Range, должен
+быть отклонён до чтения тела. Отмена закрывает соединения и дожидается всех
+обработчиков, сохраняя возможность следующего запроса.
+
+`MediaFrameServiceTests` создаёт настоящее красно-синее видео FFmpeg, получает
+кадры через HTTP Range и проверяет их пиксели, включая конец на длительности.
+Metadata-фикстура проверяет общий процесс, смену cookies и отсутствие подписанных
+адресов/секретов в дисковом кеше. Интеграция также проверяет замаскированный
+манифест без вторичных запросов, отмену/таймаут реального потока и успешный
+следующий кадр на том же работнике без записи истории.
 
 ## Коллектор и общие фикстуры
 
