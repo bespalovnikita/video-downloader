@@ -9,8 +9,9 @@ using Color=System.Windows.Media.Color;
 namespace VideoDownloader.Native;
 
 // Edits a single captured row. Metadata is supplied by the main preview owner;
-// this view never reads disk, creates a worker or starts a download.
-internal sealed class MediaSelectionDialog : Window
+// Frame extraction is delegated to the shared background owner. This view
+// never reads disk or starts a queue download.
+internal sealed partial class MediaSelectionDialog : Window
 {
     private readonly Func<DownloadOptions> _options;
     private readonly Func<DownloadSelection?,string?> _apply;
@@ -35,7 +36,8 @@ internal sealed class MediaSelectionDialog : Window
     internal DownloadItem Row { get; }
 
     internal MediaSelectionDialog(Window owner,DownloadItem row,Func<DownloadOptions> options,
-        Func<DownloadSelection?,string?> apply)
+        Func<DownloadSelection?,string?> apply,
+        Func<MediaFrameRequest,CancellationToken,Task<MediaFrameResult>>? framePreview=null)
     {
         Row=row;_options=options;_apply=apply;
         Name="MediaSelectionDialog";Title="Формат и фрагмент";Owner=owner;
@@ -102,6 +104,7 @@ internal sealed class MediaSelectionDialog : Window
         var endPanel=new StackPanel{Margin=new Thickness(6,0,0,0)};
         endPanel.Children.Add(Note("Конец"));_end=Named("MediaSectionEndBox",new TextBox{ToolTip="Например: 00:05:40"});endPanel.Children.Add(_end);
         Grid.SetColumn(endPanel,1);range.Children.Add(startPanel);range.Children.Add(endPanel);body.Children.Add(range);
+        InitializeFramePreviews(body,framePreview);
         _error=Named("MediaSelectionError",new TextBlock{Foreground=Brushes.Salmon,TextWrapping=TextWrapping.Wrap,Margin=new Thickness(0,8,0,0)});
         body.Children.Add(_error);
 
@@ -119,6 +122,7 @@ internal sealed class MediaSelectionDialog : Window
         close.Click+=(_,_)=>Close();
         PreviewKeyDown+=(_,e)=>{if(e.Key==System.Windows.Input.Key.Escape){e.Handled=true;Close();}};
         RefreshEnabled();
+        RefreshFrameState();
     }
 
     private T Named<T>(string name,T control) where T:FrameworkElement
@@ -139,6 +143,7 @@ internal sealed class MediaSelectionDialog : Window
         _editable=editable;
         _editState.Text=editable?"":"Изменение недоступно: строка выполняется, удаляется либо файл настроек защищён от записи.";
         RefreshEnabled();
+        RefreshFrameState();
     }
     private void RefreshEnabled()
     {
@@ -165,6 +170,7 @@ internal sealed class MediaSelectionDialog : Window
             _catalog.ItemsSource=data.Formats.Select(format=>new FormatRow(format)).ToArray();
             PopulateFormats(data.Formats);
         }
+        RefreshFrameState();
     }
     internal void ReceiveMetadataFailure(string error)
     {
