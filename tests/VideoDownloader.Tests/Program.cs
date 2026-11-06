@@ -13,6 +13,7 @@ await HistoryLibraryTests.RunAsync();
 PortableQueueTests.Run();
 await GuiInstanceTests.RunAsync();
 await QueueSessionControllerTests.RunAsync();
+await DiskSpaceTests.RunAsync();
 var applicationAssembly=typeof(NativeWindow).Assembly;
 if(applicationAssembly.GetTypes().Any(type=>type.Name.Contains("SelfTest",StringComparison.Ordinal) || type.Name=="UiScenario") ||
     typeof(NativeWindow).GetMethods(System.Reflection.BindingFlags.Public|System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance)

@@ -276,6 +276,7 @@ public sealed partial class NativeWindow
         // only after the final ownership/status checkpoint has been written.
         e.Cancel=true;
         _closing=true;
+        DisposeDiskSpace();
         DisposeSubscriptions();
         SessionState.MarkStopping();
         _tick.Stop();_ingress.Stop();
@@ -305,6 +306,7 @@ public sealed partial class NativeWindow
         FlushJournal();
         _disposed=true;
         _queueFilters?.Dispose();
+        DisposeDiskSpace();
         DisposeMediaSelection();
         DisposeHistory();
         DisposeAppUpdates();
