@@ -53,12 +53,25 @@ pwsh -NoProfile -File .\scripts\build.ps1 -Task Publish
 
 `Publish` проверяет состав и версию пакета, но сам не запускает тесты. Он пересоздаёт `dist/native`; не храни там загрузки и свои файлы. Тестовые классы и переключатели запуска сценариев не должны попадать в приложение.
 
+После `Test` и `Publish` проверь настоящий автономный helper и перезапуск опубликованного приложения:
+
+```powershell
+dotnet run --no-build --configuration Release --project tests/VideoDownloader.Tests -- --published-app-update-smoke dist/native
+```
+
+В Windows CI эта команда выполняется отдельным шагом **Verify portable updater handoff and restart** после `Publish`. [AppUpdateBootstrapTests](../../tests/VideoDownloader.Tests/AppUpdateBootstrapTests.cs) копирует опубликованный пакет в изолированную установку, запускает временный EXE без соседних DLL, проверяет ожидание исходного процесса, применение пакета, настоящее WPF-окно после перезапуска и сохранность профиля/посторонних файлов.
+
 ## Где искать Windows-регрессии
 
 | Поведение | Основные тесты |
 | --- | --- |
 | Аргументы yt-dlp, обработка процесса, финальный файл и отмена | [NativeContractTests](../../tests/VideoDownloader.Tests/NativeContractTests.cs), [LifecycleRegressionTests](../../tests/VideoDownloader.Tests/LifecycleRegressionTests.cs), [ReviewRegressionTests](../../tests/VideoDownloader.Tests/ReviewRegressionTests.cs) |
 | Языки звука, оригинальная дорожка, отсутствие подстановки и настройки UI | [AudioTrackSelectionTests](../../tests/VideoDownloader.Tests/AudioTrackSelectionTests.cs), [AudioTrackUiTests](../../tests/VideoDownloader.UiTests/AudioTrackUiTests.cs) |
+| Диапазон времени, каталог реальных форматов, снимок попытки, строгие ID и временные повторы | [DownloadSelectionTests](../../tests/VideoDownloader.Tests/DownloadSelectionTests.cs) |
+| Окно форматов/фрагмента, точный URL, холодные метаданные, восстановление выбора и защита готового результата | [MediaSelectionUiTests](../../tests/VideoDownloader.UiTests/MediaSelectionUiTests.cs) |
+| Стабильный Release, SHA-256 ZIP, отмена тела HTTP-ответа, таймаут и ожидание исходного процесса | [AppUpdateClientTests](../../tests/VideoDownloader.Tests/AppUpdateClientTests.cs) |
+| Владение файлами пакета, чужие коллизии, ZIP traversal, откат и восстановление после убийства установщика | [AppUpdateInstallerTests](../../tests/VideoDownloader.Tests/AppUpdateInstallerTests.cs) |
+| Настоящие кнопки обновления, занятость, повторная проверка очистки перед handoff и отмена при Dispose | [AppUpdateUiTests](../../tests/VideoDownloader.UiTests/AppUpdateUiTests.cs) |
 | Атомарная замена checkpoint, временные и постоянные Windows-блокировки | [AtomicWriteTests](../../tests/VideoDownloader.Tests/AtomicWriteTests.cs) |
 | Чтение старых checkpoint и результатов | [LegacyCompatibilityTests](../../tests/VideoDownloader.Tests/LegacyCompatibilityTests.cs), [legacy fixtures](../../tests/fixtures/legacy/) |
 | Источники, окно новинок, полный fallback, RSS и состояния | [SubscriptionScannerTests](../../tests/VideoDownloader.Tests/SubscriptionScannerTests.cs), [SubscriptionStoreTests](../../tests/VideoDownloader.Tests/SubscriptionStoreTests.cs) |
@@ -70,6 +83,12 @@ pwsh -NoProfile -File .\scripts\build.ps1 -Task Publish
 | Перенос очереди | [PortableQueueTests](../../tests/VideoDownloader.Tests/PortableQueueTests.cs), [PortableQueueUiTests](../../tests/VideoDownloader.UiTests/PortableQueueUiTests.cs) |
 
 Тесты используют изолированные профили, loopback-серверы и фиксированные данные. Отдельные интеграционные сценарии запускают настоящие yt-dlp и медиа-инструменты. Успех на офлайн-фикстурах не подтверждает доступ к живому сайту: такую проверку описывай отдельно с URL, временем, версией движка и результатом.
+
+`DownloadSelectionTests` проверяет не только построение строк: собственный процесс принимает реальные аргументы, а упакованный yt-dlp разрешает точные ID по офлайн-метаданным. Проверяются обновление старого preview-кеша через одного работника, сохранение выбора в checkpoint, отсутствие quality fallback ручного выбора и сохранение диапазона/ID при временном повторе. Реальное медиа с локального HTTP-сервера проходит FFmpeg и публикацию: фрагмент остаётся Completed с собственными файлами, но не пополняет историю полного URL.
+
+Проверки обновления используют изолированные пакеты и HTTP-ответы. Установщик должен сохранить посторонние FFmpeg/cookies/загрузки, отклонить понижение версии и пакет без манифеста, восстановить прежние байты после ошибки и сохранить backup при отказе отката. Дочерний установщик действительно завершается принудительно в трёх точках транзакции; повторно открытый указатель и backup должны восстановить прежние байты. Настоящие Windows sharing locks и NTFS junction проверяются на Windows; запуск переносимого подмножества на Linux их не заменяет. После изменения упаковки отдельно выполняй `-Task Publish` и smoke опубликованного helper, включая проверку `windows-package.json` и хешей файлов.
+
+`AppUpdateUiTests` нажимает реальные WPF-кнопки с управляемым сервисом обновления и наблюдаемым handoff: он не устанавливает Release поверх тестового приложения. Сетевые проверки, замена файлов и rollback покрываются отдельными клиентскими и установочными сценариями. `MediaSelectionUiTests` проверяет отображаемые ячейки реальных метаданных, ошибки диапазона, URL-область открытого окна, сохранение checkpoint и неизменность ранее опубликованного результата.
 
 ## Коллектор и общие фикстуры
 
