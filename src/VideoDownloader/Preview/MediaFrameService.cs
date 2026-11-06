@@ -14,7 +14,14 @@ public sealed record MediaFrameResult(string Url,double RequestedSeconds,double?
 }
 
 internal sealed record MediaFrameSource(Uri Address,string FormatId,IReadOnlyDictionary<string,string> Headers,
-    string Cookies,string CookieFile,string CookieContext,double Fps,double? Duration,int Width,int Height);
+    string Cookies,string CookieFile,string CookieContext,double Fps,double? Duration,int Width,int Height,
+    string Protocol="",Uri? ManifestAddress=null,IReadOnlyList<MediaFrameFragment>? Fragments=null,string Extension="")
+{
+    internal bool IsHls=>Protocol is "m3u8" or "m3u8_native" || Address.AbsolutePath.EndsWith(".m3u8",StringComparison.OrdinalIgnoreCase);
+    internal bool IsDash=>Protocol is "http_dash_segments" or "dash" && (ManifestAddress is not null || Fragments is {Count:>0}) ||
+        Address.AbsolutePath.EndsWith(".mpd",StringComparison.OrdinalIgnoreCase);
+}
+internal sealed record MediaFrameFragment(Uri Address,double? Duration,long? RangeStart=null,long? RangeEnd=null);
 
 internal sealed class MediaFrameUnavailableException(string message):IOException(message);
 
@@ -25,7 +32,7 @@ internal sealed class MediaFrameService:IDisposable
     internal const int MaxErrorBytes=128*1024;
     internal const long MaxMediaBytes=16L*1024*1024;
     internal static readonly TimeSpan RequestTimeout=TimeSpan.FromSeconds(30);
-    private readonly PreviewService _previews;
+    private readonly Func<MediaFrameRequest,CancellationToken,Task<MediaFrameSource>> _source;
     private readonly string _ffmpeg;
     private readonly TimeSpan _timeout;
     private readonly SemaphoreSlim _worker=new(1,1);
@@ -33,8 +40,11 @@ internal sealed class MediaFrameService:IDisposable
     private int _disposed;
 
     internal MediaFrameService(PreviewService previews,string? ffmpegPath=null,TimeSpan? requestTimeout=null)
+        :this((request,token)=>previews.GetFrameSourceAsync(request.Url,request.VideoFormatId,token),ffmpegPath,requestTimeout) { }
+    internal MediaFrameService(Func<MediaFrameRequest,CancellationToken,Task<MediaFrameSource>> source,
+        string? ffmpegPath=null,TimeSpan? requestTimeout=null)
     {
-        _previews=previews;
+        _source=source;
         _ffmpeg=ffmpegPath??DependencyCenter.Executable(OperatingSystem.IsWindows()?"ffmpeg.exe":"ffmpeg");
         _timeout=requestTimeout??RequestTimeout;
         if(_timeout<=TimeSpan.Zero)throw new ArgumentOutOfRangeException(nameof(requestTimeout));
@@ -58,20 +68,44 @@ internal sealed class MediaFrameService:IDisposable
             if(Volatile.Read(ref _disposed)!=0)throw new OperationCanceledException(_stop.Token);
             if(!File.Exists(_ffmpeg))return Failure("Для кадров нужен FFmpeg. Установите его в разделе зависимостей.");
             await _worker.WaitAsync(deadline.Token).ConfigureAwait(false);entered=true;
-            var source=await _previews.GetFrameSourceAsync(request.Url,request.VideoFormatId,deadline.Token).ConfigureAwait(false);
+            var source=await _source(request,deadline.Token).ConfigureAwait(false);
             double? known=request.DurationSeconds??source.Duration;
             if(known is {} maximum && request.Seconds>maximum)
                 return Failure("Выбранное время выходит за длительность материала.");
             double seek=request.IsEnd?Math.Max(0,request.Seconds-(source.Fps>0?1/source.Fps:.05)):request.Seconds;
             var cookies=await MediaFrameCookies.CreateAsync(source,deadline.Token).ConfigureAwait(false);
-            await using var proxy=new BoundedMediaProxy(source.Address,source.Headers,cookies,deadline.Token,MaxMediaBytes);
+            PreparedManifestMedia? prepared=null;
+            if(source.IsHls || source.IsDash)
+                prepared=await ManifestFrameMedia.PrepareAsync(source,seek,cookies,deadline.Token,MaxMediaBytes).ConfigureAwait(false);
+            await using var proxy=prepared is null
+                ?new BoundedMediaProxy(source.Address,source.Headers,cookies,deadline.Token,MaxMediaBytes)
+                :prepared.DirectAddress is {} direct
+                    ?new BoundedMediaProxy(direct,source.Headers,cookies,deadline.Token,MaxMediaBytes-prepared.DownloadedBytes)
+                    :new BoundedMediaProxy(prepared.Bytes!,prepared.ContentType,deadline.Token);
             using var decode=CancellationTokenSource.CreateLinkedTokenSource(deadline.Token,proxy.FailureToken);
             var start=new ProcessStartInfo(_ffmpeg){UseShellExecute=false,CreateNoWindow=true,
                 RedirectStandardOutput=true,RedirectStandardError=true};
             foreach(string argument in new[]{"-hide_banner","-loglevel","error","-nostdin","-max_alloc","67108864",
                 "-threads","2","-filter_threads","1","-protocol_whitelist","http,tcp","-format_whitelist","mov,matroska,webm",
-                "-rw_timeout","5000000","-probesize","2097152","-analyzeduration","3000000","-max_pixels","16777216",
-                "-ss",seek.ToString("0.######",CultureInfo.InvariantCulture),"-i",proxy.Address.AbsoluteUri,
+                "-rw_timeout","5000000","-probesize","2097152","-analyzeduration","3000000","-max_pixels","16777216"})
+                start.ArgumentList.Add(argument);
+            if(prepared is {Bytes:not null})
+            {
+                // Only compiled binary media reaches FFmpeg. A fixed demuxer
+                // prevents a disguised nested playlist from escaping the relay.
+                start.ArgumentList[start.ArgumentList.IndexOf("mov,matroska,webm")]=prepared.Demuxer;
+                start.ArgumentList.Add("-f");start.ArgumentList.Add(prepared.Demuxer);
+                if(prepared.Demuxer=="mov")
+                {start.ArgumentList.Add("-enable_drefs");start.ArgumentList.Add("0");start.ArgumentList.Add("-use_absolute_path");start.ArgumentList.Add("0");}
+                start.ArgumentList.Add("-i");start.ArgumentList.Add(proxy.Address.AbsoluteUri);
+                start.ArgumentList.Add("-ss");start.ArgumentList.Add(Math.Max(0,seek-prepared.StartSeconds).ToString("0.######",CultureInfo.InvariantCulture));
+            }
+            else
+            {
+                start.ArgumentList.Add("-ss");start.ArgumentList.Add(Math.Max(0,seek-(prepared?.StartSeconds??0)).ToString("0.######",CultureInfo.InvariantCulture));
+                start.ArgumentList.Add("-i");start.ArgumentList.Add(proxy.Address.AbsoluteUri);
+            }
+            foreach(string argument in new[]{
                 "-map","0:v:0","-frames:v","1","-an","-sn","-dn","-vf",
                 "scale='min(640,iw)':'min(360,ih)':force_original_aspect_ratio=decrease","-c:v","png","-threads","1","-f","image2pipe","pipe:1"})
                 start.ArgumentList.Add(argument);
@@ -119,8 +153,8 @@ internal static class MediaFrameCookies
     internal static async Task<CookieContainer> CreateAsync(MediaFrameSource source,CancellationToken token)
     {
         var jar=new CookieContainer(512,128,8192);
-        // yt-dlp saves its updated jar on exit. Read only cookies scoped to this
-        // actual media URL; never turn the site's complete jar into a raw header.
+        // Keep the imported jar private so a manifest may redirect to its CDN.
+        // Every resource request selects only its own domain/path/Secure cookies.
         if(source.CookieFile.Length>0 && File.Exists(source.CookieFile))
         {
             using var input=new FileStream(source.CookieFile,FileMode.Open,FileAccess.Read,FileShare.ReadWrite|FileShare.Delete,
@@ -146,7 +180,9 @@ internal static class MediaFrameCookies
                 if(fields[4].Length==0)fields[4]="0";
                 if(!long.TryParse(fields[4],NumberStyles.Integer,CultureInfo.InvariantCulture,out long expires))continue;
                 if(expires!=0 && expires<=DateTimeOffset.UtcNow.ToUnixTimeSeconds())continue;
-                Add(jar,source.Address,fields[5],fields[6],fields[0],fields[2],fields[1].Equals("TRUE",StringComparison.OrdinalIgnoreCase),
+                var cookieScope=Scope(fields[0],fields[2],fields[3].Equals("TRUE",StringComparison.OrdinalIgnoreCase));
+                if(cookieScope is null)continue;
+                Add(jar,cookieScope,fields[5],fields[6],fields[0],fields[2],fields[1].Equals("TRUE",StringComparison.OrdinalIgnoreCase),
                     fields[3].Equals("TRUE",StringComparison.OrdinalIgnoreCase));
             }
         }
@@ -161,7 +197,7 @@ internal static class MediaFrameCookies
         void Flush()
         {
             if(name is not null && value is not null && domain is not null)
-                Add(jar,address,name,value,domain,path??"/",domain.StartsWith('.'),secure);
+                if(Scope(domain,path??"/",secure) is {} scope)Add(jar,scope,name,value,domain,path??"/",domain.StartsWith('.'),secure);
         }
         foreach(string part in Split(text))
         {
@@ -178,6 +214,11 @@ internal static class MediaFrameCookies
             }
         }
         Flush();
+    }
+    private static Uri? Scope(string domain,string path,bool secure)
+    {
+        try{return new UriBuilder(secure?"https":"http",domain.TrimStart('.')){Path=path.Length>0?path:"/"}.Uri;}
+        catch(UriFormatException){return null;}
     }
     private static IEnumerable<string> Split(string text)
     {

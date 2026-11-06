@@ -24,6 +24,7 @@ await DownloadSelectionTests.RunNativeMediaAsync();
 FragmentTimelineTests.Run();
 await MediaFrameProxyTests.RunAsync();
 await MediaFrameServiceTests.RunAsync();
+await MediaManifestFrameTests.RunAsync();
 await AppUpdateInstallerTests.RunAsync();
 await AppUpdateClientTests.RunAsync();
 await PreviewSchedulingTests.RunAsync();
