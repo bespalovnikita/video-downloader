@@ -158,21 +158,23 @@ public static class DiskSpaceEstimator
                 approximate=true;
                 if(selection.DurationSeconds is {} duration && double.IsFinite(duration) && duration>0)
                 {
-                    double sum=0;
+                    decimal fraction=0;
                     foreach(var range in ranges)
                     {
                         if(!double.IsFinite(range.StartSeconds) || !double.IsFinite(range.EndSeconds) ||
                             range.StartSeconds<0 || range.EndSeconds<=range.StartSeconds || range.EndSeconds>duration)
-                        {sum=duration;break;}
-                        sum+=range.EndSeconds-range.StartSeconds;
+                            fraction+=1;
+                        else fraction+=(decimal)((range.EndSeconds-range.StartSeconds)/duration);
                     }
-                    bytes*=Math.Clamp((decimal)(sum/duration),0m,1m);
+                    bytes*=fraction;
                 }
-                // Unknown source duration keeps the full-stream estimate. It
-                // must not turn an unknown fraction into a falsely tiny number.
+                // Every range publishes its own file. Without source duration,
+                // reserve one full stream per range rather than invent a ratio.
+                else bytes*=ranges.Count;
             }
-            if(first)total=Math.Min(long.MaxValue,total+decimal.Ceiling(bytes));
-            reserved=Math.Min(long.MaxValue,reserved+decimal.Ceiling(bytes)*Math.Clamp(candidate.ReservedCopies,1,4));
+            bytes=Math.Min(long.MaxValue,decimal.Ceiling(bytes));
+            if(first)total=Math.Min(long.MaxValue,total+bytes);
+            reserved=Math.Min(long.MaxValue,reserved+bytes*Math.Clamp(candidate.ReservedCopies,1,4));
         }
         long known=(long)total;
         // Callers reserve input+merge copies on the actual temporary volume and

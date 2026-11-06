@@ -33,9 +33,16 @@ internal static class DiskSpaceTests
             "A real immutable multi-fragment selection reserves the sum of all ranges rather than only its legacy first section");
         var capturedRanges=DiskSpaceEstimator.Estimate(Copies(multipleSelection,multipleSelection.EffectiveSections));
         Require(capturedRanges==multiple,"Explicit UI-captured ranges and direct selection estimates must agree");
+        DownloadSection[] twoFullRanges=[new(0,100),new(0,100)];
+        var repeated=DiskSpaceEstimator.Estimate(Copies(selection,twoFullRanges));
+        Require(repeated.KnownPayloadBytes==8000 && repeated.RequiredBytes==24000 && repeated.Approximate,
+            "The captured-ranges contract sums independent output files without capping their total at one source");
         var noDuration=DiskSpaceEstimator.Estimate(Copies(selection with {Section=new(0,10),DurationSeconds=null}));
         Require(noDuration.KnownPayloadBytes==4000 && noDuration.Approximate,
             "An unknown total duration must not invent a tiny fraction of a known full stream");
+        var multipleNoDuration=DiskSpaceEstimator.Estimate(Copies(multipleSelection with {DurationSeconds=null}));
+        Require(multipleNoDuration.KnownPayloadBytes==8000 && multipleNoDuration.RequiredBytes==24000 && multipleNoDuration.Approximate,
+            "A real multi-fragment selection with unknown duration reserves a full stream for every output range");
         var missing=DiskSpaceEstimator.Estimate(Copies(null));
         Require(missing.KnownPayloadBytes==0 && missing.RequiredBytes==0 && missing.UnknownItems==1 && !missing.HasKnownSize,
             "An automatic format's unknown size is one unknown URL, not a zero-sized download");
@@ -44,10 +51,19 @@ internal static class DiskSpaceTests
         var partial=DiskSpaceEstimator.Estimate(Copies(audioUnknown));
         Require(partial.KnownPayloadBytes==3000 && partial.RequiredBytes==9000 && partial.UnknownItems==1,
             "A missing audio size keeps both the known lower bound and the unknown item");
-        var huge=selection with {Format=Format("huge",long.MaxValue),AudioFormat=Format("other",long.MaxValue)};
+        var huge=selection with {Format=Format("huge",long.MaxValue) with {AudioCodec="none"},
+            AudioFormat=Format("other",long.MaxValue) with {VideoCodec="none"}};
         var saturated=DiskSpaceEstimator.Estimate(Copies(huge));
         Require(saturated.KnownPayloadBytes==long.MaxValue && saturated.RequiredBytes==long.MaxValue,
             "Large extractor sizes must saturate instead of overflowing to a negative reserve");
+        var largestPlan=huge with {DurationSeconds=null,Sections=new DownloadSectionSet(
+            Enumerable.Range(0,DownloadSectionSet.MaximumCount).Select(index=>new DownloadSection(index*2,index*2+1)))};
+        largestPlan.Validate(url,new DownloadOptions());
+        var saturatedPlan=DiskSpaceEstimator.Estimate(Copies(largestPlan));
+        var saturatedRepeated=DiskSpaceEstimator.Estimate(Copies(huge,twoFullRanges));
+        Require(saturatedPlan.KnownPayloadBytes==long.MaxValue && saturatedPlan.RequiredBytes==long.MaxValue &&
+            saturatedRepeated.KnownPayloadBytes==long.MaxValue && saturatedRepeated.RequiredBytes==long.MaxValue,
+            "Maximum actual ranges and repeated full-range snapshots with huge video/audio sizes must saturate before converting to long");
         var empty=DiskSpaceEstimator.Estimate([new("","output",null,ProbeOnly:true)]);
         Require(empty.UnknownItems==0 && empty.RequiredBytes==0,"Checking an empty destination must not invent an unknown queue row");
     }
