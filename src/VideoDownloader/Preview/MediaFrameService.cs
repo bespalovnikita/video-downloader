@@ -80,7 +80,7 @@ internal sealed class MediaFrameService:IDisposable
             await using var proxy=prepared is null
                 ?new BoundedMediaProxy(source.Address,source.Headers,cookies,deadline.Token,MaxMediaBytes)
                 :prepared.DirectAddress is {} direct
-                    ?new BoundedMediaProxy(direct,source.Headers,cookies,deadline.Token,MaxMediaBytes-prepared.DownloadedBytes)
+                    ?new BoundedMediaProxy(direct,source.Headers,cookies,deadline.Token,MaxMediaBytes-prepared.DownloadedBytes,source.ManifestAddress??source.Address)
                     :new BoundedMediaProxy(prepared.Bytes!,prepared.ContentType,deadline.Token);
             using var decode=CancellationTokenSource.CreateLinkedTokenSource(deadline.Token,proxy.FailureToken);
             var start=new ProcessStartInfo(_ffmpeg){UseShellExecute=false,CreateNoWindow=true,

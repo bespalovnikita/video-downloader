@@ -35,7 +35,8 @@ internal static class MediaManifestFrameTests
             File.WriteAllText(info,new Uri(origin.Address,"key.bin").AbsoluteUri+Environment.NewLine+key+Environment.NewLine+"00000000000000000000000000000001"+Environment.NewLine);
             await Hls(ffmpeg,video,root,"encrypted",false,info);
 
-            var headers=new Dictionary<string,string>{{"Authorization","Bearer MANIFEST_PRIVATE"},{"X-Secret","SEGMENT_PRIVATE"}};
+            var headers=new Dictionary<string,string>{{"Authorization","Bearer MANIFEST_PRIVATE"},{"X-Secret","SEGMENT_PRIVATE"},
+                {"User-Agent","VD-ManifestFixture"},{"Referer","https://source.invalid/private?token=REFERER_PRIVATE"}};
             var cookie=Path.Combine(root,"cookies.txt");
             File.WriteAllText(cookie,"# Netscape HTTP Cookie File\n127.0.0.1\tFALSE\t/\tFALSE\t0\tmedia\tCOOKIE_PRIVATE\nlocalhost\tFALSE\t/\tFALSE\t0\tcdn\tCDN_PRIVATE\n");
             MediaFrameSource Source(string path,string protocol,string id="0",string extension="mp4")=>new(new Uri(origin.Address,path),id,headers,"",cookie,"fixture",10,8,160,90,protocol,new Uri(origin.Address,path),Extension:extension);
@@ -87,8 +88,22 @@ internal static class MediaManifestFrameTests
             Require((await frames.GetFrameAsync(new("https://manifest-frame.invalid/cdn",7,DurationSeconds:8),CancellationToken.None)).Success,"HLS variants on a different origin must remain usable with their scoped cookies");
         var cdnRequests=origin.Requests.Skip(before).Where(request=>request.Contains("Host: localhost",StringComparison.OrdinalIgnoreCase)).ToArray();
         Require(cdnRequests.Length>0 && cdnRequests.All(request=>request.Contains("cdn=CDN_PRIVATE",StringComparison.Ordinal) &&
-            !request.Contains("MANIFEST_PRIVATE",StringComparison.Ordinal) && !request.Contains("SEGMENT_PRIVATE",StringComparison.Ordinal) && !request.Contains("COOKIE_PRIVATE",StringComparison.Ordinal)),
+            request.Contains("User-Agent: VD-ManifestFixture",StringComparison.OrdinalIgnoreCase) &&
+            !request.Contains("MANIFEST_PRIVATE",StringComparison.Ordinal) && !request.Contains("SEGMENT_PRIVATE",StringComparison.Ordinal) &&
+            !request.Contains("REFERER_PRIVATE",StringComparison.Ordinal) && !request.Contains("COOKIE_PRIVATE",StringComparison.Ordinal)),
             "Manifest subresources on another origin must strip private headers and select only that origin's cookies");
+        int beforeDash=origin.Requests.Count;
+        File.WriteAllText(Path.Combine(root,"base-cdn.mpd"),"<MPD xmlns='urn:mpeg:dash:schema:mpd:2011' type='static' mediaPresentationDuration='PT8S'><Period><AdaptationSet mimeType='video/mp4'><Representation id='0' width='160' height='90'><BaseURL>"+
+            new Uri(alternate,"source.mp4").AbsoluteUri+"</BaseURL><SegmentBase indexRange='0-100'/></Representation></AdaptationSet></Period></MPD>");
+        var dashCdn=constant with{Address=new Uri(origin.Address,"base-cdn.mpd"),ManifestAddress=new Uri(origin.Address,"base-cdn.mpd")};
+        using(var frames=new MediaFrameService((_,_)=>Task.FromResult(dashCdn),ffmpeg))
+            Require((await frames.GetFrameAsync(new("https://manifest-frame.invalid/dash-cdn",7,DurationSeconds:8),CancellationToken.None)).Success,"DASH SegmentBase on another origin must remain usable through the bounded relay");
+        var dashCdnRequests=origin.Requests.Skip(beforeDash).Where(request=>request.Contains("Host: localhost",StringComparison.OrdinalIgnoreCase)).ToArray();
+        Require(dashCdnRequests.Length>0 && dashCdnRequests.All(request=>request.Contains("cdn=CDN_PRIVATE",StringComparison.Ordinal) &&
+            request.Contains("User-Agent: VD-ManifestFixture",StringComparison.OrdinalIgnoreCase) &&
+            !request.Contains("MANIFEST_PRIVATE",StringComparison.Ordinal) && !request.Contains("SEGMENT_PRIVATE",StringComparison.Ordinal) &&
+            !request.Contains("REFERER_PRIVATE",StringComparison.Ordinal) && !request.Contains("COOKIE_PRIVATE",StringComparison.Ordinal)),
+            "DASH direct-media handoff must preserve the original MPD header origin instead of authorizing the CDN with source secrets");
     }
     private static async Task Hls(string ffmpeg,string video,string root,string name,bool fragmented,string? keyInfo=null)
     {

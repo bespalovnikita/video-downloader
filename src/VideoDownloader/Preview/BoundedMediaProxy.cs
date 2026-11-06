@@ -17,6 +17,7 @@ internal sealed class BoundedMediaProxy : IAsyncDisposable
     private const int MaxRequests=64;
     private const int MaxClients=16;
     private readonly Uri _source;
+    private readonly Uri _headerOrigin;
     private readonly IReadOnlyDictionary<string,string> _headers;
     private readonly CookieContainer _cookies;
     private readonly long _maxBytes;
@@ -58,12 +59,17 @@ internal sealed class BoundedMediaProxy : IAsyncDisposable
     }
 
     internal BoundedMediaProxy(Uri mediaUrl,IReadOnlyDictionary<string,string> headers,CookieContainer cookies,
-        CancellationToken cancellationToken,long maxBytes=16L*1024*1024)
+        CancellationToken cancellationToken,long maxBytes=16L*1024*1024,Uri? originalHeaderOrigin=null)
     {
         ArgumentNullException.ThrowIfNull(mediaUrl);
         ArgumentNullException.ThrowIfNull(headers);
         ArgumentNullException.ThrowIfNull(cookies);
         ValidateUrl(mediaUrl);
+        originalHeaderOrigin??=mediaUrl;
+        if(!originalHeaderOrigin.IsAbsoluteUri || originalHeaderOrigin.Scheme is not ("http" or "https") ||
+            originalHeaderOrigin.UserInfo.Length>0 || string.IsNullOrWhiteSpace(originalHeaderOrigin.Host) ||
+            originalHeaderOrigin.Scheme=="https" && mediaUrl.Scheme!="https")
+            throw new ArgumentException("Invalid media header origin.",nameof(originalHeaderOrigin));
         if(maxBytes<=0)throw new ArgumentOutOfRangeException(nameof(maxBytes));
         if(headers.Count>64)throw new ArgumentException("Too many media request headers.",nameof(headers));
         var accepted=new Dictionary<string,string>(StringComparer.OrdinalIgnoreCase);
@@ -77,7 +83,7 @@ internal sealed class BoundedMediaProxy : IAsyncDisposable
             if(headerCharacters>32*1024)throw new ArgumentException("Media request headers exceed their size limit.",nameof(headers));
             if(!BlockedHeader(name))accepted[name]=value;
         }
-        _source=mediaUrl;_headers=accepted;_cookies=cookies;_maxBytes=maxBytes;
+        _source=mediaUrl;_headerOrigin=originalHeaderOrigin;_headers=accepted;_cookies=cookies;_maxBytes=maxBytes;
         FailureToken=_failed.Token;
         _stop=CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         _http=new HttpClient(new SocketsHttpHandler {
@@ -193,7 +199,7 @@ internal sealed class BoundedMediaProxy : IAsyncDisposable
     private async Task<HttpResponseMessage> SendAsync(Request incoming)
     {
         Uri target=_source;
-        bool publicHeadersOnly=false;
+        bool publicHeadersOnly=!SameOrigin(_headerOrigin,target);
         for(int redirect=0;redirect<=3;redirect++)
         {
             using var request=new HttpRequestMessage(incoming.Head?HttpMethod.Head:HttpMethod.Get,target);
@@ -217,7 +223,7 @@ internal sealed class BoundedMediaProxy : IAsyncDisposable
                 Uri next=location.IsAbsoluteUri?location:new Uri(target,location);
                 try{ValidateUrl(next);}catch(ArgumentException){throw new IOException("The media stream redirected to an unsupported destination.");}
                 if(target.Scheme=="https" && next.Scheme!="https")throw new IOException("The media stream redirected to an insecure destination.");
-                publicHeadersOnly|=!SameOrigin(_source,next);
+                publicHeadersOnly|=!SameOrigin(_headerOrigin,next);
                 target=next;
             }
             finally {response.Dispose();}
