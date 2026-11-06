@@ -78,6 +78,10 @@ internal sealed partial class UiScenario
             subject.Reindex();
             PumpUntil(()=>urls.All(url=>ready.Contains(url) && subject.Preview.GetCached(url)?.ThumbnailBase64.Length>0),
                 "Cold metadata and actual HTTP thumbnails must finish before testing network-free filters");
+            // A real selection reapplies its cached metadata to the row. Do it
+            // before assigning the controlled titles used by the search test.
+            queue.SelectedItem=rows[0];
+            PumpUntil(()=>subject.Preview.SelectedUrl==rows[0].Url,"Selecting a cached row must still show its preview");
             rows[0].Title="Север — Ёжик один";rows[1].Title="Север — Вторая серия";
             rows[2].Title="Южный берег";rows[3].Title="Архив";
             DownloadSection[] plannedRanges=[new(5,7),new(1,2)];
@@ -96,8 +100,6 @@ internal sealed partial class UiScenario
             int processes=File.ReadAllLines(calls).Length,http=thumbnails.Requests;
             Require(queue.ItemsSource is ListCollectionView && queue.Items.Count==4 && count.Text=="Показано 4 из 4",
                 "The actual grid must use a view of all underlying rows and display visible/total counts");
-            queue.SelectedItem=rows[0];
-            PumpUntil(()=>subject.Preview.SelectedUrl==rows[0].Url,"Selecting a cached row must still show its preview");
             search.Focus();search.Text="ёжик";
             PumpUntil(()=>queue.Items.Count==1,"Unicode title search must filter the real grid");
             Require(ReferenceEquals(queue.Items[0],rows[0]) && ReferenceEquals(queue.SelectedItem,rows[0]) &&
@@ -154,6 +156,9 @@ internal sealed partial class UiScenario
                 "Typing, resetting, status/subscription filters and selection restoration must not launch metadata or HTTP requests");
 
             queue.SelectedItems.Add(rows[0]);queue.SelectedItems.Add(rows[1]);
+            // Establish the controlled title after the actual selection path,
+            // which may restore the fixture's cached title before filtering.
+            rows[0].Title="Север — Ёжик один";
             search.Text="ёжик";PumpUntil(()=>queue.Items.Count==1,"The remove test must hide one selected row");
             Click(window,"RemoveQueueButton");
             Require(!subject.SessionState.Queue.Contains(rows[0]) && subject.SessionState.Queue.Contains(rows[1]) &&
