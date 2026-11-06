@@ -89,6 +89,7 @@ public sealed partial class NativeWindow : IDisposable
         InitializeJournalControls();
         InitializeMediaSelectionControls();
         InitializeQueueFilters();
+        InitializeHistoryControls();
         K("ShowVideoTitlesCheck").Checked+=(_,_)=>SaveCheckpoint();
         K("ShowVideoTitlesCheck").Unchecked+=(_,_)=>SaveCheckpoint();
         _tick.Tick+=(_,_)=>Tick();

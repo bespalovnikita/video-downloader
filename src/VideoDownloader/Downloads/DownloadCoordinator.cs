@@ -188,7 +188,7 @@ public sealed class DownloadCoordinator : IAsyncDisposable
                         item.CompletedSelection=_selections.GetValueOrDefault(item.Url);
                         item.Status="Completed";item.State="Done";
                         item.Progress=100;item.Speed="";item.ETA="";
-                        try { if(!item.IsPartialResult)_data.AppendSuccess(item.Url); }
+                        try { if(!item.IsPartialResult)_data.AppendSuccess(item); }
                         catch(Exception e) { _log($"WARNING: Could not append successful URL to history: {e.Message}"); }
                         Interlocked.Increment(ref _completed);
                         WriteResult("success",$"{item.Url} | {item.Path}");

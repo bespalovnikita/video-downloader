@@ -306,6 +306,7 @@ public sealed partial class NativeWindow
         _disposed=true;
         _queueFilters?.Dispose();
         DisposeMediaSelection();
+        DisposeHistory();
         DisposeAppUpdates();
         _tick.Stop();_ingress.Dispose();
         SessionState.Coordinator?.Stop();

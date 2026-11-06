@@ -755,7 +755,7 @@ flowchart TD
 | --- | --- | --- |
 | `session.json` | `NativeWindow` через `AppPersistence`: очередь, настройки, результаты и контекст очистки | `AppPersistence.Restore` при запуске; UI восстанавливает настройки и предлагает вернуть очередь |
 | `subscriptions.json` | `SubscriptionController` через `SubscriptionStore`: источники, материалы, имена, состояния и подтверждения уведомлений | Проверка, окно подписок, принятие URL в очередь и восстановление недостающих названий |
-| `successful-downloads.jsonl` | `DownloadCoordinator` через `AppPersistence.AppendSuccess` и `SuccessfulDownloadHistory` после успешной загрузки | Диалог повтора перед Start/Retry/live Add; согласование подписок с общей историей |
+| `successful-downloads.jsonl` | `DownloadCoordinator` через `AppPersistence.AppendSuccess(item)` и `SuccessfulDownloadHistory` после подтверждённой публикации полного материала | Диалог повтора перед Start/Retry/live Add, окно истории и согласование подписок с общей историей |
 | `preview-cache\<SHA-256 URL>.json` | `PreviewService` после получения метаданных | Предварительное получение названий, выбор строки и повторный запуск; TTL 72 часа |
 | `VideoDownloader-<дата-время>-success.txt` и `-error.txt` | `DownloadCoordinator` в базовой папке вывода текущей сессии | Пользовательский журнал итогов; он не заменяет постоянную историю JSONL |
 | Staging в `%TEMP%` | Работник отдельной попытки загрузки | Публикация и безопасная очистка; пути незавершённой попытки сохраняются в `session.json` |
@@ -789,6 +789,16 @@ mutex. **Общей транзакции сразу между тремя фай
 существующий медиафайл в неуспешную загрузку. При следующих действиях подписки
 согласуются с доступной общей историей; это не основание игнорировать сообщения
 об ошибках сохранения.
+
+### Библиотека истории Windows
+
+`SuccessfulDownloadHistory` сохраняет append-only события `Version=1`; новые optional-поля `Title`, `Source`, `OutputPaths` и `OutputPathsTruncated` не меняют идентичность URL и чтение старых событий без этих полей. `ReadHistory` по-прежнему возвращает последнее известное время успеха для каждого точного URL. `ReadHistoryLibrary` возвращает отдельные попытки, читает весь файл с отменой и отбирает последние совпадения в ограниченной памяти. Каждая JSONL-строка ограничена 1 МиБ до декодирования UTF-8. Изменившийся файл полностью проверяется до append; повреждённое содержимое не исправляется и не дополняется.
+
+Единственный hook координатора остаётся внутри подтверждённой ветки завершения: после назначения опубликованных `Path`/`OwnedPaths`, статуса Completed и снимка выбора вызывается `AppendSuccess(item)`. Частичный результат не становится полным успехом. Метаданные записывают известное название, имя подписки либо host источника и ограниченный список медиафайлов, без sidecars и без переноса права удаления.
+
+`NativeWindow.History` владеет немодальным окном [DownloadHistoryWindow](../../src/VideoDownloader/UI/Views/DownloadHistoryWindow.cs). Загрузка и поиск истории выполняются вне Dispatcher с задержкой ввода 300 мс и поколением запроса; закрытие отменяет чтение и файловые проверки. Окно не имеет команды очистки истории или запуска загрузки, не читает и не сохраняет checkpoint.
+
+[HistoryFileAccess](../../src/VideoDownloader/Persistence/HistoryFileAccess.cs) различает Present/Missing/Unavailable/Unsafe/Unknown. Отсутствие подтверждается `FileNotFoundException`/`DirectoryNotFoundException`, а не `File.Exists == false`; отказ, ошибка или таймаут остаются неизвестным доступом. Общий semaphore ограничивает четыре синхронных OS-проверки даже после отмены ожидания или повторного открытия окна. Timeout не освобождает слот до окончания самой OS-операции. Явное открытие проверяет локальный абсолютный путь, тип медиа и доступность; executable/shortcut/URI/reparse не передаются shell. Проверки не удаляют результат и не стирают факт прежнего успеха.
 
 Исходники хранения: [AppPersistence](../../src/VideoDownloader/Persistence/AppPersistence.cs),
 [SuccessfulDownloadHistory](../../src/VideoDownloader/Persistence/SuccessfulDownloadHistory.cs),

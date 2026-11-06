@@ -137,7 +137,7 @@ internal static class MultipleFragmentTests
             }
             else Require(row.Status=="Failed" && row.OwnedPaths.Count==0 && Directory.GetFiles(output).Where(path=>Path.GetExtension(path)!=".txt").SequenceEqual(new[]{sentinel}),
                 "Missing/duplicate markers, wrong containers and incomplete batches must publish none of their outputs: "+mode+" "+row.RawError);
-            Require(File.ReadAllText(sentinel)=="FOREIGN FILE" && data.ReadHistory().Count==0,
+            Require(File.ReadAllText(sentinel)=="FOREIGN FILE" && data.ReadHistory().Count==0 && data.ReadHistoryLibrary().Entries.Count==0,
                 "A batch must preserve unrelated existing media and never mark the full URL downloaded");
         }
         string cancelOutput=Path.Combine(root,"cancel-output");Directory.CreateDirectory(cancelOutput);
@@ -150,7 +150,7 @@ internal static class MultipleFragmentTests
             engine.Cancel(cancelled);await run.WaitAsync(TimeSpan.FromSeconds(10));
         }
         Require(cancelled.Status=="Interrupted" && cancelled.State=="Cancelled" && Directory.GetFiles(cancelOutput).Length==0 &&
-            cancelData.ReadHistory().Count==0 && cancelled.StageDir.Length==0,"Cancelling after one staged fragment must join the child and clean the complete private batch");
+            cancelData.ReadHistory().Count==0 && cancelData.ReadHistoryLibrary().Entries.Count==0 && cancelled.StageDir.Length==0,"Cancelling after one staged fragment must join the child and clean the complete private batch");
     }
     private static async Task ActualMedia(string root)
     {
@@ -187,7 +187,7 @@ internal static class MultipleFragmentTests
             Require(pixel.Length==3 && (blue?pixel[2]>200 && pixel[0]<80:pixel[0]>200 && pixel[2]<80),
                 "The actual selected time ranges must contain the expected blue/red source frames");
         }
-        Require(data.ReadHistory().Count==0 && File.ReadAllText(sentinel)=="KEEP","A real multi-clip result must preserve foreign files and full-video history");
+        Require(data.ReadHistory().Count==0 && data.ReadHistoryLibrary().Entries.Count==0 && File.ReadAllText(sentinel)=="KEEP","A real multi-clip result must preserve foreign files and full-video history, including its searchable library");
         var options=new DownloadOptions{Output=output};data.Save(new[]{row},options);
         Require(data.Restore()!.Queue.Single().CompletedSelection==row.CompletedSelection,"The complete published plan must survive restart");
 

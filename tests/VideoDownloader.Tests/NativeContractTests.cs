@@ -72,6 +72,10 @@ internal static class NativeContractTests
             }
             Require(row.Status == "Completed" && File.Exists(row.Path) && data.ReadHistory().ContainsKey(row.Url),
                 "Argument fixture must complete actual worker, publication and history: " + name + " / " + row.RawError);
+            var history=data.ReadHistoryLibrary().Entries.Single();
+            Require(history.Url==row.Url && history.Title=="Contract fixture" && history.Title==row.Title && history.CompletedAtUtc.HasValue &&
+                history.OutputPaths.Contains(row.Path) && history.Source==new Uri(row.Url).Host,
+                "A confirmed real worker result must record its actual published path/title/source for the library");
             return File.ReadAllLines(Path.Combine(root, name + ".jsonl"))
                 .Select(line => JsonSerializer.Deserialize<string[]>(line)!).ToArray();
         }

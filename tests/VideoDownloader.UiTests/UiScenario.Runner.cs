@@ -60,6 +60,8 @@ internal sealed partial class UiScenario
             UiScenario.TestFragmentTimeline(root);
             Stage("testing short video/audio clip controls, source positions and playback lifetime");
             UiScenario.TestMediaClipPlayback(root);
+            Stage("testing searchable history, safe explicit file actions and background availability");
+            UiScenario.TestHistoryLibrary(root);
             Stage("testing app update controls, idle handoff and checkpoint safety");
             UiScenario.TestAppUpdateControls(root);
             Stage("testing completed queue playback and finished session clock");

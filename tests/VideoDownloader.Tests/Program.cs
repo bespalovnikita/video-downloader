@@ -9,6 +9,7 @@ ErrorMessagesTests.Run();
 JournalSanitizerTests.Run();
 await JournalTests.RunAsync();
 await AtomicWriteTests.RunAsync();
+await HistoryLibraryTests.RunAsync();
 PortableQueueTests.Run();
 await GuiInstanceTests.RunAsync();
 await QueueSessionControllerTests.RunAsync();

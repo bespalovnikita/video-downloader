@@ -503,7 +503,11 @@
                         <RowDefinition Height="3*"/>
                     </Grid.RowDefinitions>
 
-                    <TextBlock Grid.Row="0" Text="Downloads" Style="{StaticResource SectionTitle}"/>
+                    <DockPanel Grid.Row="0">
+                        <Button x:Name="OpenHistoryButton" Content="История…" DockPanel.Dock="Right" Margin="8,0,0,6"
+                                ToolTip="Найти подтверждённые загрузки и проверить сохранённые файлы"/>
+                        <TextBlock Text="Downloads" Style="{StaticResource SectionTitle}"/>
+                    </DockPanel>
 
                     <DataGrid x:Name="DownloadGrid" Grid.Row="1" SelectionMode="Single" Tag="{Binding IsChecked, ElementName=ShowVideoTitlesCheck}">
                         <DataGrid.Columns>
