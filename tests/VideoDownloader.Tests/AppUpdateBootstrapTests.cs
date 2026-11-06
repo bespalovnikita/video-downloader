@@ -125,7 +125,29 @@ internal static class AppUpdateBootstrapTests
                     finally {process.Dispose();}
                 }
             prepared?.Dispose();
-            if(Directory.Exists(root))Directory.Delete(root,true);
+            await DeleteFixtureDirectoryAsync(root);
+        }
+    }
+    private static async Task DeleteFixtureDirectoryAsync(string root)
+    {
+        // All fixture-owned processes have exited and their handles have been
+        // disposed above. Windows can still briefly retain an executable image
+        // or antivirus handle. Retry only transient Windows file-access errors
+        // on this fixture's private directory; a permanent error still fails CI.
+        var watch=Stopwatch.StartNew();
+        for(int attempt=0;;attempt++)
+        {
+            try
+            {
+                if(Directory.Exists(root))Directory.Delete(root,true);
+                return;
+            }
+            catch(Exception error) when(OperatingSystem.IsWindows() && attempt<50 &&
+                watch.Elapsed<TimeSpan.FromSeconds(5) && (error is IOException or UnauthorizedAccessException) &&
+                (error.HResult&0xffff) is 5 or 32 or 33)
+            {
+                await Task.Delay(100);
+            }
         }
     }
     private static async Task Until(Func<bool> condition,CancellationToken cancel,string message)
