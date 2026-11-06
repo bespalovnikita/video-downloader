@@ -110,8 +110,18 @@ internal static class MediaManifestFrameTests
         var arguments=new List<string>{"-hide_banner","-loglevel","error","-nostdin","-i",video,"-c","copy","-f","hls","-hls_time","2","-hls_playlist_type","vod"};
         if(fragmented){arguments.AddRange(new[]{"-hls_segment_type","fmp4","-hls_fmp4_init_filename",name+"-init.mp4"});}
         if(keyInfo is not null)arguments.AddRange(new[]{"-hls_key_info_file",keyInfo});
-        arguments.AddRange(new[]{"-hls_segment_filename",Path.Combine(root,name+"-%02d."+(fragmented?"m4s":"ts")),Path.Combine(root,name+".m3u8")});
-        await Tool(ffmpeg,arguments);
+        // Keep muxer URLs independent of native path separators (notably Windows drive paths).
+        arguments.AddRange(new[]{"-hls_segment_filename",name+"-%02d."+(fragmented?"m4s":"ts"),name+".m3u8"});
+        await Tool(ffmpeg,arguments,root);
+        foreach(string line in File.ReadLines(Path.Combine(root,name+".m3u8")))
+        {
+            string? resource=line.StartsWith("#EXT-X-MAP:URI=\"",StringComparison.Ordinal)
+                ?line.Split('"')[1]:line.Length>0 && line[0]!='#'?line:null;
+            if(resource is null)continue;
+            Require(!resource.Contains('\\') && !Uri.TryCreate(resource,UriKind.Absolute,out _) &&
+                Path.GetFileName(resource)==resource && File.Exists(Path.Combine(root,resource)),
+                "Generated HLS resource must be a relative URL beside its playlist: "+resource);
+        }
     }
     private static async Task SegmentList(string ffmpeg,string root,Origin origin,MediaFrameSource source,
         IReadOnlyDictionary<string,string> headers,string cookie)
@@ -192,9 +202,10 @@ internal static class MediaManifestFrameTests
         string path=Path.Combine(root,name.Replace('/','-')+".png");await File.WriteAllBytesAsync(path,png);
         return await Tool(ffmpeg,new[]{"-hide_banner","-loglevel","error","-nostdin","-i",path,"-vf","scale=1:1","-f","rawvideo","-pix_fmt","rgb24","pipe:1"});
     }
-    private static async Task<byte[]> Tool(string executable,IEnumerable<string> arguments)
+    private static async Task<byte[]> Tool(string executable,IEnumerable<string> arguments,string? workingDirectory=null)
     {
         var start=new ProcessStartInfo(executable){UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true};
+        if(workingDirectory is not null)start.WorkingDirectory=workingDirectory;
         foreach(string argument in arguments)start.ArgumentList.Add(argument);
         using var child=ManagedChildProcess.Start(start);using var deadline=new CancellationTokenSource(TimeSpan.FromSeconds(30));
         var result=await BoundedProcessOutput.ReadAsync(child,1024*1024,128*1024,deadline.Token);
