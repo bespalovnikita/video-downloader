@@ -1,7 +1,9 @@
+using System.Diagnostics;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Markup;
 using System.Windows.Media;
+using System.Windows.Threading;
 using System.Xml;
 using ListBox=System.Windows.Controls.ListBox;
 
@@ -16,6 +18,15 @@ internal sealed partial class UiScenario
         static T Control<T>(Window window,string name) where T:class=>(T)(window.FindName(name)
             ??throw new InvalidOperationException("Missing actual multi-fragment control: "+name));
         static void Click(Window window,string name)=>Control<Button>(window,name).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        static void PumpUntil(Func<bool> ready,string message)
+        {
+            if(ready())return;
+            var frame=new DispatcherFrame();var watch=Stopwatch.StartNew();
+            var timer=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(15)};
+            timer.Tick+=(_,_)=>{if(ready() || watch.Elapsed>TimeSpan.FromSeconds(5))frame.Continue=false;};
+            timer.Start();try{Dispatcher.PushFrame(frame);}finally{timer.Stop();}
+            Require(ready(),message);
+        }
         static IEnumerable<TextBlock> Texts(DependencyObject item)
         {
             if(item is TextBlock text)yield return text;
@@ -32,13 +43,16 @@ internal sealed partial class UiScenario
         using var input=File.OpenRead(Path.Combine(AppContext.BaseDirectory,"ui","MainWindow.xaml"));
         using var reader=XmlReader.Create(input);var owner=(Window)XamlReader.Load(reader);
         MediaSelectionDialog? dialog=null;
+        ClipUiPlayer? player=null;var playbackCalls=new List<ClipUiCall>();
         int applied=0;
         string? Apply(DownloadSelection? selection)
         {row.Selection=selection;storage.Save(new[]{row},options);applied++;return null;}
         MediaSelectionDialog Open()
         {
+            player=new ClipUiPlayer();
             var editor=new MediaSelectionDialog(owner,row,()=>options,Apply,
-                (request,_)=>Task.FromResult(new MediaFrameResult(request.Url,request.Seconds,null,[],"Optional fixture frame unavailable")));
+                (request,_)=>Task.FromResult(new MediaFrameResult(request.Url,request.Seconds,null,[],"Optional fixture frame unavailable")),
+                (request,token)=>{var call=new ClipUiCall(request,token);playbackCalls.Add(call);return call.Completion.Task;},player);
             editor.Show();editor.ReceiveMetadata(new PreviewData(row.Url,row.Title,"fixture","",12,"fixture",360,25,"H264","SDR","",DateTime.UtcNow)
                 {FormatsLoaded=true});return editor;
         }
@@ -61,6 +75,30 @@ internal sealed partial class UiScenario
             Click(dialog,"MoveMediaSectionUpButton");
             Require(list.SelectedIndex==0 && start.Text=="5" && end.Text=="7","Reordering must preserve selection and the current range's editor");
             list.SelectedIndex=1;Require(start.Text=="1" && end.Text=="2","Selecting another range must update the existing time/frame editor");
+            Click(dialog,"PreviewMediaClipStartButton");var pending=playbackCalls.Single();
+            Require(pending.Request.StartSeconds==1 && pending.Request.EndSeconds==2,
+                "Playback must request the currently selected draft rather than the first range in the list");
+            list.SelectedIndex=0;
+            Require(pending.Token.IsCancellationRequested && row.Selection is null && applied==0,
+                "Switching the selected draft must cancel pending playback without applying the download plan");
+            string stalePath=Path.Combine(root,"stale-preview.mp4");File.WriteAllText(stalePath,"late owned preview");
+            pending.Success(new(stalePath,1,2,true,true,()=>File.Delete(stalePath)));
+            PumpUntil(()=>!File.Exists(stalePath),"The previous draft's late preview must be disposed without attaching to the player");
+            Require(player!.Source is null,"The late previous range must never replace the selected draft's player");
+            Click(dialog,"PreviewMediaClipStartButton");var prepared=playbackCalls.Last();
+            Require(prepared.Request.StartSeconds==5 && prepared.Request.EndSeconds==7,
+                "The newly selected draft must supply both source boundaries to playback");
+            string previewPath=Path.Combine(root,"selected-preview.mp4");File.WriteAllText(previewPath,"prepared owned preview");
+            prepared.Success(new(previewPath,5,7,true,true,()=>
+            {
+                Require(player!.Source is null,"Switching ranges must detach the native graph before deleting its prepared file");
+                File.Delete(previewPath);
+            }));
+            PumpUntil(()=>player!.Source?.LocalPath==previewPath,"The current draft's prepared preview must attach to its player");
+            player.RaiseOpened();list.SelectedIndex=1;
+            Require(player.Source is null && !File.Exists(previewPath) && row.Selection is null && applied==0 &&
+                row.CompletedSelection==prior && row.OwnedPaths.SequenceEqual(new[]{completed}),
+                "Switching away from a playing draft must release its preview while preserving the unapplied plan and published result");
             var timeline=Control<FragmentTimeline>(dialog,"MediaSectionTimeline");
             Require(timeline.StartSeconds==1 && timeline.EndSeconds==2,"Selecting a range must synchronize the existing timeline");
             Click(dialog,"MediaSectionEndNextFrameButton");
@@ -101,6 +139,6 @@ internal sealed partial class UiScenario
             dialog=null;
             Console.WriteLine("PASS: real WPF multi-range list, draft text/selection/order, overlap validation, checkpoint, Completed ownership and readonly guards");
         }
-        finally{dialog?.Close();if(owner.IsVisible)owner.Close();}
+        finally{dialog?.Close();foreach(var call in playbackCalls)call.Completion.TrySetCanceled();if(owner.IsVisible)owner.Close();}
     }
 }
