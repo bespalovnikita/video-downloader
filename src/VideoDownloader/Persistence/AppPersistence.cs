@@ -42,6 +42,12 @@ public sealed class AppPersistence
             if (row.SubscriptionId is null || row.SubscriptionName is null ||
                 (row.SubscriptionName.Length>0 && !SubscriptionNames.IsValid(row.SubscriptionName)))
                 throw new InvalidDataException("Invalid subscription folder in session checkpoint.");
+            try
+            {
+                row.Selection?.ValidatePersisted(row.Url);
+                row.CompletedSelection?.ValidatePersisted(row.Url);
+            }
+            catch(ArgumentException error){throw new InvalidDataException("Invalid format or section in session checkpoint.",error);}
         }
         LegacySessionReader.Reconcile(session);
         foreach (var row in session.Queue)

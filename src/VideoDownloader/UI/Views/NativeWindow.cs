@@ -30,6 +30,7 @@ public sealed partial class NativeWindow : IDisposable
     private bool _disposed;
     private bool _closing;
     private bool _closeReady;
+    private bool _startingSession;
     private string _lastSavedSnapshot="";
     private DownloadItem? _dragged;
     private System.Windows.Point _dragPoint;
@@ -55,7 +56,8 @@ public sealed partial class NativeWindow : IDisposable
 
     // The isolated UI test uses a metadata fixture process through the same
     // production worker. Normal startup always resolves the packaged yt-dlp.
-    internal NativeWindow(Window window,AppPersistence? persistence,string ytDlpExecutable)
+    internal NativeWindow(Window window,AppPersistence? persistence,string ytDlpExecutable,
+        IAppUpdateService? updateService=null,bool? automaticUpdates=null)
     {
         _window=window;
         _storage=persistence??new AppPersistence();
@@ -85,11 +87,16 @@ public sealed partial class NativeWindow : IDisposable
         BindActions();
         C("AudioTrackCombo").SelectionChanged+=(_,_)=>B("AudioLanguagesBox").IsEnabled=AudioTrackSelection.ToId(Pick(C("AudioTrackCombo")))=="Languages";
         InitializeJournalControls();
+        InitializeMediaSelectionControls();
         K("ShowVideoTitlesCheck").Checked+=(_,_)=>SaveCheckpoint();
         K("ShowVideoTitlesCheck").Unchecked+=(_,_)=>SaveCheckpoint();
         _tick.Tick+=(_,_)=>Tick();
         _window.Closing+=OnClosing;
-        Q.SelectionChanged+=(_,_)=>{ if(Q.SelectedItem is DownloadItem item)ShowPreview(item.Url); };
+        Q.SelectionChanged+=(_,_)=>
+        {
+            if(Q.SelectedItem is DownloadItem item)ShowPreview(item.Url);
+            RefreshMediaSelectionState();
+        };
         D.SelectionChanged+=(_,_)=>SetDownloadActions();
         Q.PreviewMouseLeftButtonDown+=(_,e)=>
         {
@@ -124,6 +131,7 @@ public sealed partial class NativeWindow : IDisposable
         SessionState.SetOptions(ReadOptions());
         Reindex();
         RefreshDependencyLabel();
+        InitializeAppUpdates(updateService,automatic:automaticUpdates??(persistence is null));
         UpdateState();
         FlushJournal();
         _tick.Start();_ingress.Start();
@@ -175,13 +183,15 @@ public sealed partial class NativeWindow : IDisposable
             T("HeaderStatus").Foreground=Brushes.LightGray;
         }
         if(metrics.ActiveChanged) { Q.Items.Refresh(); D.Items.Refresh(); }
+        RefreshMediaSelectionState();
+        RefreshAppUpdateControls();
     }
     internal void OnRowChanged(DownloadItem item)
     {
         _=Dispatcher.BeginInvoke(()=>
         {
             if (_disposed) return;
-            if (item.Status=="Completed" && item.AttemptFinished && item.CleanupError.Length==0)
+            if (item.Status=="Completed" && item.AttemptFinished && item.CleanupError.Length==0 && !item.IsPartialResult)
                 RecordSubscriptionSuccess(item.Url);
             if (!SessionState.Queue.Contains(item)) return;
             if (item.PendingRemoval && item.AttemptFinished && item.CleanupError.Length==0)
@@ -306,7 +316,7 @@ public sealed partial class NativeWindow : IDisposable
             var fingerprint=System.Text.Json.JsonSerializer.Serialize(SessionState.Queue.Select(i=>new{
                 i.Url,i.Title,i.Status,i.Path,i.Order,i.OwnedPaths,i.OutputRoot,i.RunDir,i.StageDir,
                 i.CleanupPaths,i.CleanupError,i.PendingRemoval,i.AttemptFinished,i.DeferredToNextStart,
-                i.SubscriptionId,i.SubscriptionName
+                i.SubscriptionId,i.SubscriptionName,i.Selection,i.CompletedSelection
             }),AppPersistence.Json)+
                 ":"+System.Text.Json.JsonSerializer.Serialize(ReadOptions(),AppPersistence.Json)+":"+SessionState.Queue.Count;
             if (fingerprint==_lastSavedSnapshot) return;
@@ -356,13 +366,14 @@ public sealed partial class NativeWindow : IDisposable
                 ErrorMessages.Text("Ошибка истории","History error"),MessageBoxButton.OK,MessageBoxImage.Warning);
             return null;
         }
-        int total=candidate.Count(x=>history.ContainsKey(x.Url)),index=0;
+        int total=candidate.Count(x=>x.Selection?.Section is null && history.ContainsKey(x.Url)),index=0;
         var approved=new List<DownloadItem>();
         var rejected=new List<DownloadItem>();
         DuplicateChoice? all=null;
         foreach(var item in candidate)
         {
-            if(!history.TryGetValue(item.Url,out var when)){approved.Add(item);continue;}
+            if(item.Selection?.Section is not null || !history.TryGetValue(item.Url,out var when))
+            {approved.Add(item);continue;}
             index++;
             var choice=all??AskDuplicate(item.Url,when,index,total);
             if (choice==DuplicateChoice.Cancel) return null;
@@ -387,7 +398,7 @@ public sealed partial class NativeWindow : IDisposable
     private static IReadOnlyList<string> ParseUrls(string text)=>InputIngressController.ParseUrls(text);
     internal void AddUrls(IEnumerable<string> urls,bool clipboard=false,bool selectNew=false)
     {
-        if (_closing || _disposed) return;
+        if (_closing || _disposed || _appUpdateHandoff) return;
         var rows=urls.Where(AppPersistence.ValidUrl).Distinct(StringComparer.Ordinal)
             .Where(url=>!SessionState.Queue.Any(i=>string.Equals(i.Url,url,StringComparison.Ordinal)))
             .Select(url=>new DownloadItem{Url=url}).ToList();
@@ -402,7 +413,7 @@ public sealed partial class NativeWindow : IDisposable
         }
         // A modal duplicate dialog pumps the dispatcher: IPC/clipboard may
         // have added these URLs, completed the session, or closed the window.
-        if (_closing || _disposed) return;
+        if (_closing || _disposed || _appUpdateHandoff) return;
         var added=new List<DownloadItem>();
         foreach(var row in rows)
         {
@@ -427,6 +438,13 @@ public sealed partial class NativeWindow : IDisposable
     private void PollClipboard()=>_ingress.PollClipboard();
     private async Task StartAsync(IEnumerable<DownloadItem>? custom=null)
     {
+        if(_closing || _disposed || _startingSession || _appUpdateHandoff)return;
+        _startingSession=true;
+        try { await StartSessionCoreAsync(custom); }
+        finally { _startingSession=false;UpdateState(); }
+    }
+    private async Task StartSessionCoreAsync(IEnumerable<DownloadItem>? custom)
+    {
         if (_closing || _disposed) return;
         if (_legacyEngineBlocked)
         {
@@ -440,9 +458,11 @@ public sealed partial class NativeWindow : IDisposable
         var pending=(custom??SessionState.Queue.Where(i=>i.Status!="Completed")).Where(i=>i.CanResume).Distinct().ToList();
         if(pending.Count==0)return;
         var options=ReadOptions();
+        var requested=pending.ToDictionary(row=>row,row=>(row.Url,row.Selection));
         try
         {
             AudioTrackSelection.Validate(options);
+            foreach(var row in pending)row.Selection?.Validate(row.Url,options);
             DependencyCenter.ValidateDownloadTools(_ytDlp);
             if(!string.IsNullOrWhiteSpace(options.Cookies)&&!File.Exists(options.Cookies))
                 throw new FileNotFoundException("Cookie file is missing.",options.Cookies);
@@ -450,6 +470,10 @@ public sealed partial class NativeWindow : IDisposable
             OwnedFiles.ValidateTemplate(options.FilenameTemplate);
             var approved=ConfirmDuplicates(pending,true);
             if(approved==null||approved.Count==0)return;
+            if(_closing || _disposed || _appUpdateHandoff)return;
+            if(approved.Any(row=>!string.Equals(row.Url,requested[row].Url,StringComparison.Ordinal) ||
+                row.Selection!=requested[row].Selection))
+                throw new InvalidOperationException("Параметры задания изменились во время подтверждения. Повторите Start.");
             options.PinOutputDirectory();
             OwnedFiles.NoReparseAncestors(Path.Combine(options.OutputDirectory,"__validation__"));
             var outputRoots=approved.ToDictionary(row=>row,row=>
@@ -557,6 +581,9 @@ public sealed partial class NativeWindow : IDisposable
     {
         if(SessionState.Move(item,index))Reindex();
     }
-    public void ReceiveArguments(IEnumerable<string> args)=>_ingress.ReceiveArguments(args);
+    public void ReceiveArguments(IEnumerable<string> args)
+    {
+        if(!_closing && !_disposed && !_appUpdateHandoff)_ingress.ReceiveArguments(args);
+    }
     private static IReadOnlyList<string> ReadInputFile(string file)=>InputIngressController.ReadInputFile(file);
 }

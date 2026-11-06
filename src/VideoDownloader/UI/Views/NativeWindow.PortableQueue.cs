@@ -51,7 +51,7 @@ public sealed partial class NativeWindow
         try
         {
             string text=await Task.Run(()=>PortableQueueCodec.Encode(entries));
-            if(_closing || _disposed)return;
+            if(_closing || _disposed || _appUpdateHandoff)return;
             if(file!=null)
             {
                 await Task.Run(()=>WritePortableQueueFile(file,text));
@@ -82,7 +82,7 @@ public sealed partial class NativeWindow
         await _portableIngressGate.WaitAsync();
         try
         {
-            if(_closing || _disposed)return;
+            if(_closing || _disposed || _appUpdateHandoff)return;
             if(_checkpointReadOnly || _legacyEngineBlocked)
                 throw new InvalidOperationException("Очередь недоступна для сохранения. Сначала устрани ошибку восстановления или заверши прежний движок.");
             var entries=await Task.Run(decode);

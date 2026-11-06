@@ -14,21 +14,30 @@ public static class Program
     [STAThread]
     public static void Main(string[] args)
     {
+        if(AppUpdateBootstrap.TryRun(args))return;
         string? directory=Environment.GetEnvironmentVariable("VD_DATA_DIRECTORY");
         if(string.IsNullOrWhiteSpace(directory))RunGui(args);
         else
         {
             directory=Path.GetFullPath(directory);
-            string identity=Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(directory.TrimEnd(Path.DirectorySeparatorChar).ToUpperInvariant())));
-            RunGui(args,new AppPersistence(directory),"VideoDownloader.Native.Profile."+identity);
+            RunGui(args,new AppPersistence(directory),ProfileInstanceName(directory));
         }
+    }
+
+    internal static string ProfileInstanceName(string directory)
+    {
+        directory=Path.GetFullPath(directory);
+        string identity=Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(directory.TrimEnd(Path.DirectorySeparatorChar).ToUpperInvariant())));
+        return "VideoDownloader.Native.Profile."+identity;
     }
 
     // Tests exercise the same singleton and GUI startup with isolated data/names.
     internal static void RunGui(string[] args,AppPersistence? persistence=null,string? instanceName=null)
     {
         string pipeName=instanceName??PipeName;
-        using var singleton=new Mutex(true,instanceName==null?@"Local\VideoDownloader.Native.Gui":@"Local\"+instanceName,out bool isFirst);
+        using var singleton=new Mutex(false,instanceName==null?@"Local\VideoDownloader.Native.Gui":@"Local\"+instanceName);
+        bool isFirst;
+        try {isFirst=singleton.WaitOne(0);}catch(AbandonedMutexException){isFirst=true;}
         if(!isFirst)
         {
             try
@@ -44,6 +53,18 @@ public static class Program
             }
             return;
         }
+        try
+        {
+            if(AppUpdateBootstrap.TryStartRecovery(AppContext.BaseDirectory,instanceName is null?@"Local\VideoDownloader.Native.Gui":@"Local\"+instanceName))
+            {singleton.ReleaseMutex();return;}
+        }
+        catch(Exception error)
+        {
+            System.Windows.Forms.MessageBox.Show(ExceptionDetails(error),"Video Downloader update recovery",
+                System.Windows.Forms.MessageBoxButtons.OK,System.Windows.Forms.MessageBoxIcon.Warning);
+            singleton.ReleaseMutex();return;
+        }
+        AppUpdateBootstrap.ScheduleCompletedCleanup();
         var app=new Application { ShutdownMode=ShutdownMode.OnMainWindowClose };
         app.DispatcherUnhandledException+=(sender,eventArgs)=>
         {
@@ -75,6 +96,7 @@ public static class Program
             pipeStop?.Cancel();
             ui?.Dispose();
             try { singleton.ReleaseMutex(); }catch(ApplicationException){}
+            ui?.LaunchPendingAppUpdate(instanceName==null?@"Local\VideoDownloader.Native.Gui":@"Local\"+instanceName);
         }
     }
     private static string ExceptionDetails(Exception error) => ErrorMessages.IsRussian

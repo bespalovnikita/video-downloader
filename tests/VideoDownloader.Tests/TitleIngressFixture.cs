@@ -35,10 +35,20 @@ internal static class TitleIngressFixture
             Console.Error.WriteLine("Cold subscription fixture metadata unavailable");
             Environment.ExitCode=7;
         }
-        else Console.WriteLine(JsonSerializer.Serialize(new {
-            title,uploader="Cold metadata fixture",duration=42,
-            thumbnail=Environment.GetEnvironmentVariable("VD_NATIVE_TITLE_FIXTURE_THUMBNAIL")??""
-        }));
+        else
+        {
+            bool alternate=url=="https://title-ingress.invalid/video?token=AbC";
+            object[] formats=alternate
+                ? [new {format_id="248",ext="webm",width=1920,height=1080,fps=60,vcodec="vp9",acodec="none",dynamic_range="HDR10",filesize_approx=4096L},
+                   new {format_id="251",ext="webm",vcodec="none",acodec="opus",language="en"}]
+                : [new {format_id="137",ext="mp4",width=1920,height=1080,fps=30,vcodec="avc1.640028",acodec="none",dynamic_range="SDR",filesize=2048L},
+                   new {format_id="140",ext="m4a",vcodec="none",acodec="mp4a.40.2",language="ru"},
+                   new {format_id="22",ext="mp4",width=1280,height=720,fps=30,vcodec="avc1.64001f",acodec="mp4a.40.2",filesize_approx=8192L}];
+            Console.WriteLine(JsonSerializer.Serialize(new {
+                title,uploader="Cold metadata fixture",duration=42,formats,
+                thumbnail=Environment.GetEnvironmentVariable("VD_NATIVE_TITLE_FIXTURE_THUMBNAIL")??""
+            }));
+        }
         return true;
     }
 }

@@ -103,6 +103,12 @@ internal sealed class PreviewController : IDisposable
         if(!_disposed && AppPersistence.ValidUrl(url))_service.Request(url,priority);
     }
 
+    // The format editor uses this same worker to enrich legacy preview caches.
+    internal void RequestFormats(string url)
+    {
+        if(!_disposed && AppPersistence.ValidUrl(url))_service.RequestFormats(url);
+    }
+
     private void Notify<T>(T? listeners,Action<T> invoke) where T:Delegate
     {
         if(listeners==null)return;

@@ -8,6 +8,7 @@ namespace VideoDownloader.Native;
 
 public sealed partial class NativeWindow
 {
+    private bool _dependencyOperationRunning;
     private static void OpenFile(string path)
     {
         if(File.Exists(path)) Process.Start(new ProcessStartInfo(path){UseShellExecute=true});
@@ -217,6 +218,9 @@ public sealed partial class NativeWindow
     private void RefreshDependencyLabel()=>T("DependencyStatus").Text=DependencyCenter.Inspect();
     private async Task DependencyOperation(string progress,Func<CancellationToken,Task<string>> task)
     {
+        if(_closing || _disposed || _appUpdateHandoff || _dependencyOperationRunning)return;
+        _dependencyOperationRunning=true;
+        RefreshAppUpdateControls();
         T("DependencyStatus").Text=progress;
         F<Button>("UpdateYtDlpButton").IsEnabled=false;
         F<Button>("InstallFfmpegButton").IsEnabled=false;
@@ -233,9 +237,11 @@ public sealed partial class NativeWindow
         }
         finally
         {
+            _dependencyOperationRunning=false;
             F<Button>("UpdateYtDlpButton").IsEnabled=true;
             F<Button>("InstallFfmpegButton").IsEnabled=true;
             RefreshDependencyLabel();
+            RefreshAppUpdateControls();
         }
     }
     private async void OnClosing(object? sender,System.ComponentModel.CancelEventArgs e)
@@ -287,6 +293,8 @@ public sealed partial class NativeWindow
         DisposeSubscriptions();
         FlushJournal();
         _disposed=true;
+        DisposeMediaSelection();
+        DisposeAppUpdates();
         _tick.Stop();_ingress.Dispose();
         SessionState.Coordinator?.Stop();
         _preview.Dispose();

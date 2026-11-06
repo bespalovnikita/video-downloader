@@ -19,6 +19,7 @@ public sealed class DownloadItem : INotifyPropertyChanged
     private string _slot = "";
     private string _url = "";
     private string _progressDetail = "";
+    private DownloadSelection? _selection;
     public event PropertyChangedEventHandler? PropertyChanged;
     private void Changed([CallerMemberName] string? name = null)
     {
@@ -64,6 +65,11 @@ public sealed class DownloadItem : INotifyPropertyChanged
     };
     [JsonIgnore] public string StateToolTip => ErrorMessage.Length==0 ? StateLabel : StateLabel+Environment.NewLine+ErrorMessage;
     public string Slot { get => _slot; set { _slot = value; Changed(); } }
+    // Format IDs are meaningful only for this exact URL, and never become
+    // global settings or part of the portable queue exchange format.
+    public DownloadSelection? Selection { get=>_selection; set {_selection=value;Changed();} }
+    public DownloadSelection? CompletedSelection { get; set; }
+    [JsonIgnore] public bool IsPartialResult=>CompletedSelection?.Section is not null;
     // Captured when a subscription creates this queue row. Renaming the source
     // later must not redirect an already accepted download or its cleanup.
     public string SubscriptionId { get; set; } = "";
@@ -120,6 +126,7 @@ public sealed class DownloadOptions
     [JsonIgnore] public string OutputDirectory => PinnedOutputDirectory ??
         (Archive ? System.IO.Path.Combine(Output, DateTime.Now.ToString("yyyy-MM-dd")) : Output);
     public void PinOutputDirectory() => PinnedOutputDirectory=System.IO.Path.GetFullPath(OutputDirectory);
+    public DownloadOptions Snapshot() => (DownloadOptions)MemberwiseClone();
 }
 
 public sealed class SessionSnapshot
@@ -141,6 +148,10 @@ public sealed record PreviewData(string Url, string Title, string Uploader, stri
     // Keep the original single cover and constructor compatible with old
     // cache records and callers; the gallery is additive.
     public string[] ThumbnailsBase64 { get; init; } = [];
+    public MediaFormat[] Formats { get; init; } = [];
+    public bool FormatsTruncated { get; init; }
+    public bool FormatsLoaded { get; init; }
+    public bool IsCollection { get; init; }
 }
 public static class DownloadFormat
 {

@@ -50,6 +50,10 @@ internal sealed partial class UiScenario
             UiScenario.TestFilenameTemplateHelp(root);
             Stage("testing audio-track controls and saved settings");
             UiScenario.TestAudioTrackSettings(root);
+            Stage("testing actual per-URL formats, fragments and restored selections");
+            UiScenario.TestMediaSelection(root);
+            Stage("testing app update controls, idle handoff and checkpoint safety");
+            UiScenario.TestAppUpdateControls(root);
             Stage("testing completed queue playback and finished session clock");
             UiScenario.TestQueuePlaybackAndTimer(root);
             Stage("testing duplicate-history dialog choices");
