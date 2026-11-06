@@ -5,6 +5,7 @@ using System.IO;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Xml.Linq;
 using VideoDownloader.Native;
 
@@ -25,9 +26,11 @@ internal static class MediaManifestFrameTests
             await Hls(ffmpeg,video,root,"vod",false);
             await Hls(ffmpeg,video,root,"cmaf",true);
             await Tool(ffmpeg,new[]{"-hide_banner","-loglevel","error","-nostdin","-i",video,"-map","0:v","-map","0:a","-c","copy",
-                "-f","dash","-seg_duration","2","-use_timeline","1","-use_template","1",Path.Combine(root,"dash.mpd")});
+                "-f","dash","-seg_duration","2","-use_timeline","1","-use_template","1","dash.mpd"},root);
+            ValidateDashResources(root,"dash.mpd");
             await Tool(ffmpeg,new[]{"-hide_banner","-loglevel","error","-nostdin","-i",video,"-map","0:v","-an","-c:v","libvpx-vp9","-deadline","realtime","-cpu-used","8",
-                "-g","20","-f","dash","-seg_duration","2","-use_timeline","1","-use_template","1",Path.Combine(root,"webm.mpd")});
+                "-g","20","-f","dash","-seg_duration","2","-use_timeline","1","-use_template","1","webm.mpd"},root);
+            ValidateDashResources(root,"webm.mpd");
             await using var origin=new Origin(root);
             File.WriteAllText(Path.Combine(root,"master.m3u8"),"#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=100000,RESOLUTION=160x90,CODECS=\"avc1.42c00a,mp4a.40.2\"\nvod.m3u8\n");
             string key=Path.Combine(root,"key.bin");File.WriteAllBytes(key,Enumerable.Range(1,16).Select(value=>(byte)value).ToArray());
@@ -118,11 +121,36 @@ internal static class MediaManifestFrameTests
             string? resource=line.StartsWith("#EXT-X-MAP:URI=\"",StringComparison.Ordinal)
                 ?line.Split('"')[1]:line.Length>0 && line[0]!='#'?line:null;
             if(resource is null)continue;
-            Require(!resource.Contains('\\') && !Uri.TryCreate(resource,UriKind.Absolute,out _) &&
-                Path.GetFileName(resource)==resource && File.Exists(Path.Combine(root,resource)),
-                "Generated HLS resource must be a relative URL beside its playlist: "+resource);
+            RequireGeneratedResource(root,resource);
         }
     }
+    private static void ValidateDashResources(string root,string manifest)
+    {
+        var document=XDocument.Load(Path.Combine(root,manifest));
+        foreach(var representation in document.Descendants().Where(element=>element.Name.LocalName=="Representation"))
+        {
+            string id=representation.Attribute("id")!.Value;
+            var template=representation.Elements().Single(element=>element.Name.LocalName=="SegmentTemplate");
+            RequireGeneratedResource(root,template.Attribute("initialization")!.Value.Replace("$RepresentationID$",id,StringComparison.Ordinal));
+            string media=template.Attribute("media")!.Value.Replace("$RepresentationID$",id,StringComparison.Ordinal);
+            long number=(long?)template.Attribute("startNumber")??1;
+            foreach(var segment in template.Descendants().Where(element=>element.Name.LocalName=="S"))
+            {
+                long repeat=(long?)segment.Attribute("r")??0;
+                Require(repeat is >=0 and <100,"Generated DASH timeline must have bounded explicit repeats");
+                for(long index=0;index<=repeat;index++,number++)
+                {
+                    string resource=Regex.Replace(media,@"\$Number(?:%0([0-9]{1,2})d)?\$",match=>number.ToString(
+                        match.Groups[1].Success?"D"+match.Groups[1].Value:"D",CultureInfo.InvariantCulture));
+                    RequireGeneratedResource(root,resource);
+                }
+            }
+        }
+    }
+    private static void RequireGeneratedResource(string root,string resource)=>Require(
+        !resource.Contains('\\') && !resource.Contains('$') && !Uri.TryCreate(resource,UriKind.Absolute,out _) &&
+        Path.GetFileName(resource)==resource && File.Exists(Path.Combine(root,resource)),
+        "Generated manifest resource must be a relative URL beside its manifest: "+resource);
     private static async Task SegmentList(string ffmpeg,string root,Origin origin,MediaFrameSource source,
         IReadOnlyDictionary<string,string> headers,string cookie)
     {
