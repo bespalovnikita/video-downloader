@@ -12,7 +12,7 @@ internal static partial class ManifestFrameMedia
     {
         private sealed record Representation(XElement Element,IReadOnlyList<XElement> Chain,Uri Address,string Id,long Bandwidth,
             int Width,int Height,string Mime);
-        internal static Plan Parse(byte[] bytes,Uri address,MediaFrameSource source,double seconds)
+        internal static Plan Parse(byte[] bytes,Uri address,MediaFrameSource source,double seconds,double? endSeconds)
         {
             XDocument document;
             try
@@ -49,7 +49,7 @@ internal static partial class ManifestFrameMedia
             {
                 string kind=adaptation.Attribute("contentType")?.Value??"";
                 string mime=adaptation.Attribute("mimeType")?.Value??"";
-                if(kind=="audio" || mime.StartsWith("audio/",StringComparison.OrdinalIgnoreCase))continue;
+                if(source.HasVideo && (kind=="audio" || mime.StartsWith("audio/",StringComparison.OrdinalIgnoreCase)))continue;
                 Uri adaptationBase=Base(periodBase,adaptation);
                 foreach(var representation in Children(adaptation,"Representation"))
                 {
@@ -58,9 +58,10 @@ internal static partial class ManifestFrameMedia
                     string content=representation.Attribute("contentType")?.Value??kind;
                     string codecs=representation.Attribute("codecs")?.Value??adaptation.Attribute("codecs")?.Value??"";
                     int width=Int(representation,"width",Int(adaptation,"width",0)),height=Int(representation,"height",Int(adaptation,"height",0));
-                    if(content=="audio" || type.StartsWith("audio/",StringComparison.OrdinalIgnoreCase) ||
-                        content!="video" && !type.StartsWith("video/",StringComparison.OrdinalIgnoreCase) && width==0 && height==0 &&
-                        !Regex.IsMatch(codecs,@"(?:avc|hev|hvc|av01|vp0|vp9)",RegexOptions.IgnoreCase|RegexOptions.CultureInvariant))continue;
+                    bool isAudio=content=="audio" || type.StartsWith("audio/",StringComparison.OrdinalIgnoreCase) ||
+                        Regex.IsMatch(codecs,@"(?:mp4a|opus|vorbis)",RegexOptions.IgnoreCase|RegexOptions.CultureInvariant) && width==0 && height==0;
+                    if(source.HasVideo?isAudio || content!="video" && !type.StartsWith("video/",StringComparison.OrdinalIgnoreCase) && width==0 && height==0 &&
+                        !Regex.IsMatch(codecs,@"(?:avc|hev|hvc|av01|vp0|vp9)",RegexOptions.IgnoreCase|RegexOptions.CultureInvariant):!isAudio)continue;
                     var chain=new[]{mpd,selected,adaptation,representation};
                     if(chain.Any(element=>Children(element,"ContentProtection").Any()))continue;
                     string id=representation.Attribute("id")?.Value??"";
@@ -82,7 +83,7 @@ internal static partial class ManifestFrameMedia
             }
             string container=chosen.Mime.Contains("webm",StringComparison.OrdinalIgnoreCase) || chosen.Address.AbsolutePath.EndsWith(".webm",StringComparison.OrdinalIgnoreCase)?"matroska":"mov";
             var template=Inherited(chosen.Chain,"SegmentTemplate");
-            if(template is not null)return FromTemplate(template,chosen,source,seconds,periodStart,periodDuration,container);
+            if(template is not null)return FromTemplate(template,chosen,source,seconds,endSeconds,periodStart,periodDuration,container);
             var list=Inherited(chosen.Chain,"SegmentList");
             if(list is not null)return FromList(list,chosen,periodStart,periodDuration,container);
             // SegmentBase is a single seekable media resource; its index stays
@@ -125,7 +126,7 @@ internal static partial class ManifestFrameMedia
             }
             return result;
         }
-        private static Plan FromTemplate(XElement template,Representation representation,MediaFrameSource source,double seconds,
+        private static Plan FromTemplate(XElement template,Representation representation,MediaFrameSource source,double seconds,double? endSeconds,
             double periodStart,double? periodDuration,string container)
         {
             long scale=Long(template.Attribute("timescale")?.Value,1),startNumber=Long(template.Attribute("startNumber")?.Value,1),offset=Long(template.Attribute("presentationTimeOffset")?.Value,0);
@@ -157,12 +158,15 @@ internal static partial class ManifestFrameMedia
                     if(count<=0 || count>10000000)throw Unsupported("Некорректное число сегментов DASH.");
                     double relative=(seconds-periodStart)*scale+offset;
                     long target=(long)Math.Floor((relative-time)/duration);
-                    long first=Math.Max(0,target-2),last=Math.Min(count-1,target+1);
+                    long final=(long)Math.Floor((((endSeconds??seconds)-.0001-periodStart)*scale+offset-time)/duration);
+                    long first=Math.Max(0,target-2),last=Math.Min(count-1,Math.Max(target+1,final));
+                    if(last-first>MaxSegments)throw Unsupported("Слишком много сегментов фрагмента DASH.");
                     for(long step=first;step<=last;step++)
                     {
                         long at=checked(time+step*duration),sequence=checked(number+step);
                         double begin=periodStart+(at-offset)/(double)scale;
                         if(begin<0 && begin+duration/(double)scale<=0)continue;
+                        if(segments.Count>=64)throw Unsupported("Окно DASH требует слишком много сетевых обращений.");
                         segments.Add(new(new(Resolve(representation.Address,Expand(media,representation,sequence,at))),begin,duration/(double)scale,init));
                     }
                     time=checked(time+count*duration);number=checked(number+count);
@@ -174,9 +178,12 @@ internal static partial class ManifestFrameMedia
                 long count=(long)Math.Ceiling(periodDuration.Value*scale/duration);
                 if(count<=0 || count>10000000)throw Unsupported("Некорректное число сегментов DASH.");
                 long target=(long)Math.Floor((seconds-periodStart)*scale/duration);
-                for(long index=Math.Max(0,target-2);index<=Math.Min(count-1,target+1);index++)
+                long last=Math.Min(count-1,Math.Max(target+1,(long)Math.Floor(((endSeconds??seconds)-.0001-periodStart)*scale/duration)));
+                if(last-Math.Max(0,target-2)>MaxSegments)throw Unsupported("Слишком много сегментов фрагмента DASH.");
+                for(long index=Math.Max(0,target-2);index<=last;index++)
                 {
                     long at=checked(index*duration),number=checked(startNumber+index);
+                    if(segments.Count>=64)throw Unsupported("Окно DASH требует слишком много сетевых обращений.");
                     segments.Add(new(new(Resolve(representation.Address,Expand(media,representation,number,at))),periodStart+at/(double)scale,
                         Math.Min(duration/(double)scale,periodDuration.Value-at/(double)scale),init));
                 }

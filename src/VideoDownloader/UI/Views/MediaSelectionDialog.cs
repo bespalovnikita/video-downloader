@@ -37,7 +37,8 @@ internal sealed partial class MediaSelectionDialog : Window
 
     internal MediaSelectionDialog(Window owner,DownloadItem row,Func<DownloadOptions> options,
         Func<DownloadSelection?,string?> apply,
-        Func<MediaFrameRequest,CancellationToken,Task<MediaFrameResult>>? framePreview=null)
+        Func<MediaFrameRequest,CancellationToken,Task<MediaFrameResult>>? framePreview=null,
+        Func<MediaClipRequest,CancellationToken,Task<MediaClipResult>>? clipPreview=null,IMediaClipPlayer? clipPlayer=null)
     {
         Row=row;_options=options;_apply=apply;
         Name="MediaSelectionDialog";Title="Формат и фрагмент";Owner=owner;
@@ -106,6 +107,7 @@ internal sealed partial class MediaSelectionDialog : Window
         Grid.SetColumn(endPanel,1);range.Children.Add(startPanel);range.Children.Add(endPanel);body.Children.Add(range);
         InitializeTimeline(body);
         InitializeFramePreviews(body,framePreview);
+        InitializePlayback(body,clipPreview,clipPlayer);
         _error=Named("MediaSelectionError",new TextBlock{Foreground=Brushes.Salmon,TextWrapping=TextWrapping.Wrap,Margin=new Thickness(0,8,0,0)});
         body.Children.Add(_error);
 
@@ -125,6 +127,7 @@ internal sealed partial class MediaSelectionDialog : Window
         RefreshEnabled();
         RefreshFrameState();
         RefreshTimelineState();
+        RefreshPlaybackState();
     }
 
     private T Named<T>(string name,T control) where T:FrameworkElement
@@ -147,6 +150,7 @@ internal sealed partial class MediaSelectionDialog : Window
         RefreshEnabled();
         RefreshFrameState();
         RefreshTimelineState();
+        RefreshPlaybackState();
     }
     private void RefreshEnabled()
     {
@@ -175,6 +179,7 @@ internal sealed partial class MediaSelectionDialog : Window
         }
         RefreshFrameState();
         RefreshTimelineState();
+        RefreshPlaybackState();
     }
     internal void ReceiveMetadataFailure(string error)
     {
