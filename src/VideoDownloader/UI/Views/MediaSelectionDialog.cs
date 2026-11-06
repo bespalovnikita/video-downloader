@@ -104,6 +104,7 @@ internal sealed partial class MediaSelectionDialog : Window
         var endPanel=new StackPanel{Margin=new Thickness(6,0,0,0)};
         endPanel.Children.Add(Note("Конец"));_end=Named("MediaSectionEndBox",new TextBox{ToolTip="Например: 00:05:40"});endPanel.Children.Add(_end);
         Grid.SetColumn(endPanel,1);range.Children.Add(startPanel);range.Children.Add(endPanel);body.Children.Add(range);
+        InitializeTimeline(body);
         InitializeFramePreviews(body,framePreview);
         _error=Named("MediaSelectionError",new TextBlock{Foreground=Brushes.Salmon,TextWrapping=TextWrapping.Wrap,Margin=new Thickness(0,8,0,0)});
         body.Children.Add(_error);
@@ -123,6 +124,7 @@ internal sealed partial class MediaSelectionDialog : Window
         PreviewKeyDown+=(_,e)=>{if(e.Key==System.Windows.Input.Key.Escape){e.Handled=true;Close();}};
         RefreshEnabled();
         RefreshFrameState();
+        RefreshTimelineState();
     }
 
     private T Named<T>(string name,T control) where T:FrameworkElement
@@ -144,6 +146,7 @@ internal sealed partial class MediaSelectionDialog : Window
         _editState.Text=editable?"":"Изменение недоступно: строка выполняется, удаляется либо файл настроек защищён от записи.";
         RefreshEnabled();
         RefreshFrameState();
+        RefreshTimelineState();
     }
     private void RefreshEnabled()
     {
@@ -171,6 +174,7 @@ internal sealed partial class MediaSelectionDialog : Window
             PopulateFormats(data.Formats);
         }
         RefreshFrameState();
+        RefreshTimelineState();
     }
     internal void ReceiveMetadataFailure(string error)
     {

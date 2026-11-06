@@ -54,6 +54,8 @@ internal sealed partial class UiScenario
             UiScenario.TestMediaSelection(root);
             Stage("testing fragment start/end frame cards, cancellation and optional failures");
             UiScenario.TestMediaSectionFrames(root);
+            Stage("testing draggable fragment timeline, frame steps and synchronized range");
+            UiScenario.TestFragmentTimeline(root);
             Stage("testing app update controls, idle handoff and checkpoint safety");
             UiScenario.TestAppUpdateControls(root);
             Stage("testing completed queue playback and finished session clock");

@@ -55,7 +55,7 @@ flowchart TB
 | Общий приём новинок после проверки | [SubscriptionController.QueueOffer.cs](../../src/VideoDownloader/UI/Controllers/SubscriptionController.QueueOffer.cs) |
 | Сведения о выбранном видео подписки | [SubscriptionPreviewController.cs](../../src/VideoDownloader/UI/Controllers/SubscriptionPreviewController.cs) |
 | Загрузка и публикация | [DownloadCoordinator.cs](../../src/VideoDownloader/Downloads/DownloadCoordinator.cs), [OwnedFiles.cs](../../src/VideoDownloader/Downloads/OwnedFiles.cs) |
-| Формат и фрагмент отдельного URL | [DownloadSelection.cs](../../src/VideoDownloader/Downloads/DownloadSelection.cs), [MediaSelectionDialog.cs](../../src/VideoDownloader/UI/Views/MediaSelectionDialog.cs) |
+| Формат и фрагмент отдельного URL | [DownloadSelection.cs](../../src/VideoDownloader/Downloads/DownloadSelection.cs), [MediaSelectionDialog.cs](../../src/VideoDownloader/UI/Views/MediaSelectionDialog.cs), [FragmentTimeline.cs](../../src/VideoDownloader/UI/Views/FragmentTimeline.cs) |
 | Деревья процессов Windows | [ManagedChildProcess.cs](../../src/VideoDownloader/Infrastructure/Windows/ManagedChildProcess.cs) |
 | Обновление Windows-пакета | [AppUpdateClient.cs](../../src/VideoDownloader/Updates/AppUpdateClient.cs), [AppUpdatePackage.cs](../../src/VideoDownloader/Updates/AppUpdatePackage.cs), [AppUpdateInstaller.cs](../../src/VideoDownloader/Updates/AppUpdateInstaller.cs), [AppUpdateBootstrap.cs](../../src/VideoDownloader/Updates/AppUpdateBootstrap.cs) |
 
@@ -328,6 +328,10 @@ Completed и собственные пути, но не пополняет ис�
 переводит материал подписки в Processed.
 
 #### Кадры начала и конца фрагмента
+
+[MediaSelectionDialog.Timeline.cs](../../src/VideoDownloader/UI/Views/MediaSelectionDialog.Timeline.cs) связывает существующие локальные поля начала/конца с двумя ручками [FragmentTimeline](../../src/VideoDownloader/UI/Views/FragmentTimeline.cs). Контрол только вычисляет диапазон, рисует шкалу и обрабатывает WPF Drag/Key-события; он не читает диск, не получает метаданные и не применяет выбор к строке. Изменение ручки переписывает оба поля, а обычный `TextChanged` обновляет прежние карточки кадров. Обратная синхронизация не порождает рекурсивные события диапазона. Так же можно редактировать текущий выбранный диапазон без зависимости шкалы от формата хранения `Selection`.
+
+[FragmentTimelineTiming](../../src/VideoDownloader/Downloads/FragmentTimelineTiming.cs) сохраняет миллисекундную точность и привязывает шаг к индексу кадра при известном FPS, чтобы дробные 29.97 FPS не накапливали ошибку округления. Источник FPS — точный выбранный видеоформат либо единственное общее значение всех пригодных видеоформатов; иначе UI явно использует 0.1 секунды. Шкала требует известной длительности, но валидные введённые поля можно пошагово уточнять и без неё. Read-only, коллекция и закрытие повторно проверяются в обработчиках, а не только свойством `IsEnabled`; `Apply` остаётся единственной границей изменения строки и checkpoint.
 
 [MediaSelectionDialog.Frames.cs](../../src/VideoDownloader/UI/Views/MediaSelectionDialog.Frames.cs)
 держит две независимые карточки для захваченного точного URL строки. После
