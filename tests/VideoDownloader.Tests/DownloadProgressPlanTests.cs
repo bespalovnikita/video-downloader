@@ -25,7 +25,8 @@ internal static class DownloadProgressPlanTests
         Require(progress.Observe(Sample("second:single",100),0).Percent==49.5,"Known collection progress must not hit 100 after its second of four items");
         progress.Reset();
         Require(progress.Observe(Sample("next:single",20),99).Percent==20,"A new attempt without a plan must discard the previous plan and keep its real reset");
-        foreach(string bad in new[]{"not-json","[]","{\"n_entries\":\"bad\"}","{\"n_entries\":null}"})
+        foreach(string bad in new[]{"not-json","[]","{\"n_entries\":\"bad\"}","{\"n_entries\":null}",
+            "{\"id\":\"test\",\"format_id\":\"v\",\"n_entries\":\"bad\"}"})
             Require(YtDlpOutputParser.Parse("__VD_PLAN__:"+bad)==null,"Malformed optional plans must not break a download: "+bad);
         foreach(string diagnostic in new[]{"[Merger] Merging formats", "[VideoRemuxer] Remuxing", "[FixupM4a] Correcting container", "ERROR: Postprocessing: connection reset", "ERROR: ffmpeg exited with code 1"})
             Require(YtDlpOutputParser.Parse(diagnostic) is YtDlpOutputEvent.Diagnostic{Postprocessing:true},"Postprocessing failure must be distinguished from transfer failure: "+diagnostic);

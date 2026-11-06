@@ -366,13 +366,13 @@ public sealed partial class NativeWindow : IDisposable
                 ErrorMessages.Text("Ошибка истории","History error"),MessageBoxButton.OK,MessageBoxImage.Warning);
             return null;
         }
-        int total=candidate.Count(x=>x.Selection?.Section is null && history.ContainsKey(x.Url)),index=0;
+        int total=candidate.Count(x=>x.Selection?.IsPartial!=true && history.ContainsKey(x.Url)),index=0;
         var approved=new List<DownloadItem>();
         var rejected=new List<DownloadItem>();
         DuplicateChoice? all=null;
         foreach(var item in candidate)
         {
-            if(item.Selection?.Section is not null || !history.TryGetValue(item.Url,out var when))
+            if(item.Selection?.IsPartial==true || !history.TryGetValue(item.Url,out var when))
             {approved.Add(item);continue;}
             index++;
             var choice=all??AskDuplicate(item.Url,when,index,total);

@@ -20,12 +20,15 @@ internal sealed class YtDlpArguments(DownloadOptions options)
         string? format=selection?.FormatSelector??AudioTrackSelection.FormatSelector(options,quality);
         string[] standard=["--ignore-config","--encoding","utf-8","--newline","--progress","--no-color","--no-quiet",
             "--impersonate","chrome","-N",options.FragmentCount.ToString(CultureInfo.InvariantCulture),
-            "-o",Path.Combine(stage,options.FilenameTemplate),
-            "--progress-template","download:__VD_PROGRESS__|%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s|%(progress.downloaded_bytes)s|%(progress.total_bytes,progress.total_bytes_estimate)s|%(info.id)s:%(info.format_id)s|%(info.vcodec)s|%(info.acodec)s",
+            "-o",Path.Combine(stage,OutputTemplate(selection)),
+            "--progress-template","download:__VD_PROGRESS__|%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s|%(progress.downloaded_bytes)s|%(progress.total_bytes,progress.total_bytes_estimate)s|%(info.id)s:%(info.format_id)s|%(info.vcodec)s|%(info.acodec)s"+
+                (selection?.EffectiveSections.Count is >1?"|%(info.section_start)s|%(info.section_end)s":""),
             "--print","before_dl:__VD_TITLE__:%(title)s",
             // Keep only IDs/counts: a complete requested_formats dump includes
             // signed media URLs and is unsuitable for diagnostic retention.
-            "--print","before_dl:__VD_PLAN__:%(.{id,format_id,requested_formats.:.format_id,playlist_autonumber,n_entries})j",
+            "--print",selection?.EffectiveSections.Count is >1?
+                "before_dl:__VD_PLAN__:%(.{id,format_id,requested_formats.:.format_id,playlist_autonumber,n_entries,section_start,section_end})j":
+                "before_dl:__VD_PLAN__:%(.{id,format_id,requested_formats.:.format_id,playlist_autonumber,n_entries})j",
             "--print","after_move:__VD_FILE__:%(filepath)s"];
         var args=new List<string>(standard);
         string ffmpeg=DependencyCenter.Executable("ffmpeg.exe");
@@ -37,8 +40,11 @@ internal sealed class YtDlpArguments(DownloadOptions options)
         if (File.Exists(options.Cookies)) args.AddRange(["--cookies",options.Cookies]);
         if (options.RateLimit.Length>0 && options.RateLimit!="Unlimited") args.AddRange(["--limit-rate",options.RateLimit]);
         if (options.Sponsor) args.AddRange(["--sponsorblock-remove","sponsor"]);
-        if(selection?.Section is {} section)
-            args.AddRange(["--download-sections",section.Argument,"--force-keyframes-at-cuts"]);
+        if(selection?.IsPartial==true)
+        {
+            foreach(var section in selection.EffectiveSections)args.AddRange(["--download-sections",section.Argument]);
+            args.Add("--force-keyframes-at-cuts");
+        }
         if (format!=null) args.AddRange(["-f",format]);
         if (options.AudioOnly) args.AddRange(["-x","--audio-format","mp3"]);
         else
@@ -58,5 +64,14 @@ internal sealed class YtDlpArguments(DownloadOptions options)
         if (options.EmbedChapters) args.Add("--embed-chapters");
         args.Add(url);
         return args;
+    }
+    private string OutputTemplate(DownloadSelection? selection)
+    {
+        if(selection?.EffectiveSections.Count is not >1)return options.FilenameTemplate;
+        // Numeric ranges have no section_number in yt-dlp. A millisecond prefix
+        // gives each output and its sidecars a unique name without changing a
+        // user's filename template or allowing a later range to reuse a file.
+        string prefix="fragment-%(section_start*1000+0.5)013d-%(section_end*1000+0.5)013dms ";
+        return Path.Combine(Path.GetDirectoryName(options.FilenameTemplate)??"",prefix+Path.GetFileName(options.FilenameTemplate));
     }
 }

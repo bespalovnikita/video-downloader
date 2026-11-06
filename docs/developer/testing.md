@@ -70,6 +70,8 @@ dotnet run --no-build --configuration Release --project tests/VideoDownloader.Te
 | Аргументы yt-dlp, обработка процесса, финальный файл и отмена | [NativeContractTests](../../tests/VideoDownloader.Tests/NativeContractTests.cs), [LifecycleRegressionTests](../../tests/VideoDownloader.Tests/LifecycleRegressionTests.cs), [ReviewRegressionTests](../../tests/VideoDownloader.Tests/ReviewRegressionTests.cs) |
 | Языки звука, оригинальная дорожка, отсутствие подстановки и настройки UI | [AudioTrackSelectionTests](../../tests/VideoDownloader.Tests/AudioTrackSelectionTests.cs), [AudioTrackUiTests](../../tests/VideoDownloader.UiTests/AudioTrackUiTests.cs) |
 | Диапазон времени, каталог реальных форматов, снимок попытки, строгие ID и временные повторы | [DownloadSelectionTests](../../tests/VideoDownloader.Tests/DownloadSelectionTests.cs) |
+| Несколько диапазонов одного URL, неизменяемый снимок, полнота batch и реальные отдельные отрывки | [MultipleFragmentTests](../../tests/VideoDownloader.Tests/MultipleFragmentTests.cs) |
+| Список фрагментов, редактирование, порядок, перекрытия и сохранность Completed через WPF | [MultipleFragmentUiTests](../../tests/VideoDownloader.UiTests/MultipleFragmentUiTests.cs) |
 | Окно форматов/фрагмента, точный URL, холодные метаданные, восстановление выбора и защита готового результата | [MediaSelectionUiTests](../../tests/VideoDownloader.UiTests/MediaSelectionUiTests.cs) |
 | Две карточки кадров фрагмента, задержка ввода, отмена и отбрасывание позднего ответа | [MediaSectionFrameUiTests](../../tests/VideoDownloader.UiTests/MediaSectionFrameUiTests.cs) |
 | Дробный FPS без дрейфа, миллисекундная граница длительности и ограничение шага | [FragmentTimelineTests](../../tests/VideoDownloader.Tests/FragmentTimelineTests.cs) |
@@ -95,6 +97,18 @@ dotnet run --no-build --configuration Release --project tests/VideoDownloader.Te
 Тесты используют изолированные профили, loopback-серверы и фиксированные данные. Отдельные интеграционные сценарии запускают настоящие yt-dlp и медиа-инструменты. Успех на офлайн-фикстурах не подтверждает доступ к живому сайту: такую проверку описывай отдельно с URL, временем, версией движка и результатом.
 
 `DownloadSelectionTests` проверяет не только построение строк: собственный процесс принимает реальные аргументы, а упакованный yt-dlp разрешает точные ID по офлайн-метаданным. Проверяются обновление старого preview-кеша через одного работника, сохранение выбора в checkpoint, отсутствие quality fallback ручного выбора и сохранение диапазона/ID при временном повторе. Реальное медиа с локального HTTP-сервера проходит FFmpeg и публикацию: фрагмент остаётся Completed с собственными файлами, но не пополняет историю полного URL.
+
+`MultipleFragmentTests` передаёт реальному дочернему процессу несколько диапазонов,
+меняет план после admission и проверяет сохранённый снимок. Неполные/повторённые
+маркеры, неверный контейнер и ошибка после первого отрывка не разрешают публикацию
+или повтор всего transfer. Отмена убирает частичный staging. Настоящие yt-dlp,
+FFmpeg и ffprobe на loopback-видео подтверждают два различных по цвету отрывка,
+отдельные длительности/видео/аудио, пользовательский порядок и точное владение.
+Явный повтор с изменённым диапазоном сохраняет байты прежних результатов и
+публикует новый набор с отдельным владением и проверенной длительностью.
+`MultipleFragmentUiTests` открывает настоящий диалог и проверяет добавление,
+правку, перестановку, удаление, перекрытия, синхронизацию выбранной строки со шкалой, отмену подготовки и освобождение проигрываемого предпросмотра при смене диапазона, checkpoint и read-only guards без
+запуска очереди или потери прежнего Completed-файла.
 
 Проверки обновления используют изолированные пакеты и HTTP-ответы. Установщик должен сохранить посторонние FFmpeg/cookies/загрузки, отклонить понижение версии и пакет без манифеста, восстановить прежние байты после ошибки и сохранить backup при отказе отката. Дочерний установщик действительно завершается принудительно в трёх точках транзакции; повторно открытый указатель и backup должны восстановить прежние байты. Настоящие Windows sharing locks и NTFS junction проверяются на Windows; запуск переносимого подмножества на Linux их не заменяет. После изменения упаковки отдельно выполняй `-Task Publish` и smoke опубликованного helper, включая проверку `windows-package.json` и хешей файлов.
 
