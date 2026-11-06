@@ -108,8 +108,12 @@ function Test-VdLatestPromotion {
 }
 
 function Invoke-VdGhApi {
-    param([string]$Method = 'GET', [string]$Path, [AllowNull()][object]$Body, [switch]$Paginate)
+    param([string]$Method = 'GET', [string]$Path, [AllowNull()][object]$Body, [switch]$Paginate, [switch]$AllowMissing)
+    # Exit codes are checked below so an expected missing ID can be retried
+    # even when the caller enables PowerShell's native-command error preference.
+    $PSNativeCommandUseErrorActionPreference = $false
     $arguments = @('api', '--method', $Method, $Path)
+    if ($Method -ceq 'GET') { $arguments += @('--header', 'Cache-Control: no-cache', '--header', 'Pragma: no-cache') }
     if ($Paginate) { $arguments += @('--paginate', '--slurp') }
     $temporary = $null
     try {
@@ -119,8 +123,17 @@ function Invoke-VdGhApi {
             $arguments += @('--input', $temporary)
         }
         $response = @(& gh @arguments)
-        if ($LASTEXITCODE -ne 0) { throw "GitHub API request failed: $Method $Path" }
-        return ($response -join "`n" | ConvertFrom-Json -Depth 30)
+        $exitCode = $LASTEXITCODE
+        $json = $null
+        try { $json = $response -join "`n" | ConvertFrom-Json -Depth 30 }
+        catch { if ($exitCode -eq 0) { throw } }
+        if ($exitCode -ne 0) {
+            $status = if ($null -ne $json) { $json.PSObject.Properties['status'] } else { $null }
+            if ($AllowMissing -and $null -ne $status -and [string]$status.Value -ceq '404') { return $null }
+            throw "GitHub API request failed: $Method $Path"
+        }
+        if ($AllowMissing -and $null -eq $json) { throw 'GitHub returned an empty release snapshot instead of a confirmed 404.' }
+        return $json
     } finally {
         if ($temporary) { Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue }
     }
@@ -144,6 +157,11 @@ function Invoke-VdGitHubReleaseTransport {
                 body = "$($notes.body)`n`n$($Data.Marker)"
             }
         }
+        'Get' {
+            $id = [string]$Data.Id
+            if ($id -notmatch '^[1-9][0-9]{0,18}$') { throw 'Invalid release ID.' }
+            Invoke-VdGhApi -Path "repos/$repository/releases/$id" -AllowMissing
+        }
         'Upload' {
             & gh release upload $Data.Tag "$($Data.Path)#$($Data.Label)" --clobber --repo $repository
             if ($LASTEXITCODE -ne 0) { throw "Release asset upload failed: $($Data.Name)" }
@@ -165,6 +183,24 @@ function Get-VdMatchingRelease {
     return $null
 }
 
+function Get-VdReleaseSnapshot {
+    param([string]$Repository, [object]$Id, [scriptblock]$Transport, [scriptblock]$Delay)
+    $number = [string]$Id
+    if ($number -notmatch '^[1-9][0-9]{0,18}$') { throw 'GitHub did not return a valid release ID.' }
+    # The collection endpoint can briefly omit a freshly created draft. Read
+    # its stable ID instead; retry only a missing snapshot, never bad ownership
+    # or an API/authentication failure. No write is retried here.
+    for ($attempt = 0; $attempt -lt 5; $attempt++) {
+        $snapshot = & $Transport 'Get' @{ Repository = $Repository; Id = $number }
+        if ($null -ne $snapshot) {
+            if ([string]$snapshot.id -cne $number) { throw 'GitHub returned a different release ID; it will not be changed.' }
+            return $snapshot
+        }
+        if ($attempt -lt 4) { $null = & $Delay (250 * [math]::Pow(2, $attempt)) }
+    }
+    throw 'The owned release is not visible by ID after five reads.'
+}
+
 function Invoke-VdReleasePublication {
     [CmdletBinding()]
     param(
@@ -174,7 +210,8 @@ function Invoke-VdReleasePublication {
         [Parameter(Mandatory)][string]$AssetDirectory,
         [Parameter(Mandatory)][scriptblock]$ResolveTag,
         [Parameter(Mandatory)][scriptblock]$IsAncestor,
-        [scriptblock]$Transport = ${function:Invoke-VdGitHubReleaseTransport}
+        [scriptblock]$Transport = ${function:Invoke-VdGitHubReleaseTransport},
+        [scriptblock]$Delay = { param([int]$Milliseconds) Start-Sleep -Milliseconds $Milliseconds }
     )
     $releases = @(& $Transport 'List' @{ Repository = $Repository })
     $release = Get-VdMatchingRelease -Releases $releases -Tag $Tag
@@ -196,12 +233,14 @@ function Invoke-VdReleasePublication {
     }
     if ($disposition -ceq 'Create') {
         $marker = Get-VdReleaseOwnershipMarker -Repository $Repository -Tag $Tag -CommitSha $CommitSha
-        $null = & $Transport 'Create' @{ Repository = $Repository; Tag = $Tag; CommitSha = $CommitSha; Marker = $marker }
+        $release = & $Transport 'Create' @{ Repository = $Repository; Tag = $Tag; CommitSha = $CommitSha; Marker = $marker }
+        $createdState = Get-VdReleaseDisposition -Repository $Repository -Tag $Tag -CommitSha $CommitSha -Release $release -TagSha $tagSha
+        if ($createdState -cne 'Resume') { throw 'GitHub did not create the expected owned draft.' }
     }
     # Re-read ownership immediately before clobbering any assets. No published
     # release or unrelated draft is ever an upload target, including on retry.
-    $releases = @(& $Transport 'List' @{ Repository = $Repository })
-    $release = Get-VdMatchingRelease -Releases $releases -Tag $Tag
+    $releaseId = $release.id
+    $release = Get-VdReleaseSnapshot -Repository $Repository -Id $releaseId -Transport $Transport -Delay $Delay
     $disposition = Get-VdReleaseDisposition -Repository $Repository -Tag $Tag -CommitSha $CommitSha -Release $release -TagSha $tagSha
     if ($disposition -cne 'Resume') { throw 'The owned draft disappeared or changed before upload.' }
     foreach ($asset in $script:Assets) {
@@ -210,14 +249,13 @@ function Invoke-VdReleasePublication {
             Path = $localAssets[$asset.Name].Path; Label = $asset.Label
         }
     }
-    $releases = @(& $Transport 'List' @{ Repository = $Repository })
-    $release = Get-VdMatchingRelease -Releases $releases -Tag $Tag
+    $release = Get-VdReleaseSnapshot -Repository $Repository -Id $releaseId -Transport $Transport -Delay $Delay
     $disposition = Get-VdReleaseDisposition -Repository $Repository -Tag $Tag -CommitSha $CommitSha -Release $release -TagSha $tagSha -CompleteDraft -LocalAssets $localAssets
     if ($disposition -cne 'Resume') { throw 'The owned draft changed before publication.' }
+    $releases = @(& $Transport 'List' @{ Repository = $Repository })
     $makeLatest = Test-VdLatestPromotion -Tag $Tag -CommitSha $CommitSha -Releases $releases -ResolveTag $ResolveTag -IsAncestor $IsAncestor
     $null = & $Transport 'Publish' @{ Repository = $Repository; Id = $release.id; MakeLatest = $makeLatest }
-    $releases = @(& $Transport 'List' @{ Repository = $Repository })
-    $release = Get-VdMatchingRelease -Releases $releases -Tag $Tag
+    $release = Get-VdReleaseSnapshot -Repository $Repository -Id $releaseId -Transport $Transport -Delay $Delay
     $tagSha = & $ResolveTag $Tag $true
     $disposition = Get-VdReleaseDisposition -Repository $Repository -Tag $Tag -CommitSha $CommitSha -Release $release -TagSha $tagSha
     if ($disposition -cne 'Published') { throw 'GitHub did not publish the complete release.' }

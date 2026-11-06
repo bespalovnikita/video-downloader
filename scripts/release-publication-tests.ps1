@@ -43,6 +43,13 @@ function New-ReleasePublicationFixture {
         StarterUploadName = $null
         WrongDigestName = $null
         FailAfterCreate = $false
+        HideCreatedFromList = $false
+        CreatedId = $null
+        GetCalls = 0
+        MissingGetReads = 0
+        FailGetCall = 0
+        OverrideRead = $null
+        Delays = [Collections.Generic.List[int]]::new()
         NextId = 1
         Latest = $null
     }
@@ -52,7 +59,7 @@ function New-ReleasePublicationFixture {
             'List' {
                 $state.ListCalls++
                 if ($state.ListCalls -eq $state.FailListCall) { throw 'Simulated GitHub list API failure.' }
-                return $state.Releases.ToArray()
+                return @($state.Releases | Where-Object { -not $state.HideCreatedFromList -or $_.id -ne $state.CreatedId })
             }
             'Create' {
                 $state.Mutations.Add([pscustomobject]@{ Operation = 'Create'; Tag = $Data.Tag })
@@ -66,11 +73,23 @@ function New-ReleasePublicationFixture {
                     assets = @()
                 }
                 $state.Releases.Add($release)
+                $state.CreatedId = $release.id
                 if ($state.FailAfterCreate) {
                     $state.FailAfterCreate = $false
                     throw 'Simulated disconnect after draft creation.'
                 }
                 return $release
+            }
+            'Get' {
+                $state.GetCalls++
+                if ($state.GetCalls -eq $state.FailGetCall) { throw 'Simulated GitHub detail API failure.' }
+                if ($state.MissingGetReads -gt 0) { $state.MissingGetReads--; return $null }
+                $release = if ($null -ne $state.OverrideRead) { $state.OverrideRead } else {
+                    @($state.Releases | Where-Object { [string]$_.id -ceq [string]$Data.Id })[0]
+                }
+                # Real API responses are snapshots, not references that mutate
+                # when a later upload or publish updates the fixture's server.
+                return ($release | ConvertTo-Json -Depth 20 | ConvertFrom-Json -Depth 20)
             }
             'Upload' {
                 $release = @($state.Releases | Where-Object { $_.tag_name -ceq $Data.Tag })[0]
@@ -102,6 +121,7 @@ function New-ReleasePublicationFixture {
             default { throw "Unexpected test operation: $Operation" }
         }
     }.GetNewClosure()
+    $delay = { param([int]$Milliseconds) $state.Delays.Add($Milliseconds) }.GetNewClosure()
     $resolveTag = {
         param([string]$Name, [bool]$Refresh)
         if ($state.Tags.ContainsKey($Name)) { return $state.Tags[$Name] }
@@ -111,7 +131,7 @@ function New-ReleasePublicationFixture {
         param([string]$Older, [string]$Newer)
         return $Older -ceq $Newer -or $state.Ancestors.Contains("$Older>$Newer")
     }.GetNewClosure()
-    return @{ State = $state; Transport = $transport; ResolveTag = $resolveTag; IsAncestor = $isAncestor }
+    return @{ State = $state; Transport = $transport; ResolveTag = $resolveTag; IsAncestor = $isAncestor; Delay = $delay }
 }
 
 function New-TestRelease {
@@ -149,7 +169,7 @@ function Invoke-TestReleasePublication {
         [string]$Assets = $assetDirectory
     )
     return Invoke-VdReleasePublication -Repository $repository -Tag $Tag -CommitSha $CommitSha -AssetDirectory $Assets `
-        -Transport $Fixture.Transport -ResolveTag $Fixture.ResolveTag -IsAncestor $Fixture.IsAncestor
+        -Transport $Fixture.Transport -ResolveTag $Fixture.ResolveTag -IsAncestor $Fixture.IsAncestor -Delay $Fixture.Delay
 }
 
 function Assert-NoReleaseMutation {
@@ -157,10 +177,100 @@ function Assert-NoReleaseMutation {
     Assert-ReleasePublication ($Fixture.State.Mutations.Count -eq 0) 'A protected or invalid release was changed.'
 }
 
+function Test-ReleaseGhTransport {
+    # Exercise production argument construction and JSON parsing, not only the
+    # injectable publication state machine. No network or token is required.
+    $prior = Get-Item Function:global:gh -ErrorAction SilentlyContinue
+    $global:VdReleaseGhProbe = @{
+        Replies = [Collections.Generic.Queue[object]]::new()
+        Calls = [Collections.Generic.List[object]]::new()
+    }
+    function global:gh {
+        $arguments = @($args)
+        $global:VdReleaseGhProbe.Calls.Add($arguments)
+        $reply = $global:VdReleaseGhProbe.Replies.Dequeue()
+        $global:LASTEXITCODE = $reply.ExitCode
+        return $reply.Json
+    }
+    try {
+        $draft = New-TestRelease
+        $old = New-TestRelease -Tag 'v2.0.35' -CommitSha $shaOther -Draft $false -Complete
+        $page = ConvertTo-Json -InputObject @($old, $draft) -Depth 20 -Compress
+        $global:VdReleaseGhProbe.Replies.Enqueue(@{ ExitCode = 0; Json = "[$page]" })
+        $listed = @(Invoke-VdGitHubReleaseTransport 'List' @{ Repository = $repository })
+        Assert-ReleasePublication ($listed.Count -eq 2 -and (Get-VdMatchingRelease -Releases $listed -Tag $tagA).id -eq 100) 'Paginated gh JSON did not preserve the draft release.'
+
+        $global:VdReleaseGhProbe.Replies.Enqueue(@{ ExitCode = 0; Json = ($draft | ConvertTo-Json -Depth 20 -Compress) })
+        $read = Invoke-VdGitHubReleaseTransport 'Get' @{ Repository = $repository; Id = 100 }
+        Assert-ReleasePublication ($read.id -eq 100 -and $read.draft) 'The production transport did not parse a direct release snapshot.'
+        $arguments = $global:VdReleaseGhProbe.Calls[1]
+        Assert-ReleasePublication ($arguments -ccontains "repos/$repository/releases/100" -and
+            $arguments -ccontains 'Cache-Control: no-cache' -and $arguments -ccontains 'Pragma: no-cache') 'A direct ownership read used a cached collection or omitted cache controls.'
+
+        $global:VdReleaseGhProbe.Replies.Enqueue(@{ ExitCode = 1; Json = '{"message":"Not Found","status":"404"}' })
+        $missing = Invoke-VdGitHubReleaseTransport 'Get' @{ Repository = $repository; Id = 100 }
+        Assert-ReleasePublication ($null -eq $missing) 'A missing ID snapshot must be distinguishable from an API failure.'
+        $global:VdReleaseGhProbe.Replies.Enqueue(@{ ExitCode = 0; Json = 'null' })
+        Assert-ReleasePublicationFailure { Invoke-VdGitHubReleaseTransport 'Get' @{ Repository = $repository; Id = 100 } } 'empty release snapshot'
+        $global:VdReleaseGhProbe.Replies.Enqueue(@{ ExitCode = 1; Json = '{"message":"private-fixture","status":"403"}' })
+        Assert-ReleasePublicationFailure { Invoke-VdGitHubReleaseTransport 'Get' @{ Repository = $repository; Id = 100 } } 'GitHub API request failed: GET'
+        Assert-ReleasePublication ($global:VdReleaseGhProbe.Replies.Count -eq 0) 'The transport performed an unexpected request.'
+    } finally {
+        Remove-Item Function:global:gh -Force
+        if ($null -ne $prior) { Set-Item Function:global:gh $prior.ScriptBlock }
+        Remove-Variable VdReleaseGhProbe -Scope Global
+        $global:LASTEXITCODE = 0
+    }
+}
+
 try {
     $null = New-Item -ItemType Directory -Path $assetDirectory -Force
     foreach ($name in $assetNames) {
         Set-Content -LiteralPath (Join-Path $assetDirectory $name) -Value "Local release test fixture: $name" -Encoding utf8
+    }
+    Test-ReleaseGhTransport
+    $script:caseCount++
+
+    # A newly created draft can be absent from the collection's read replica.
+    # Its returned ID must be used for ownership/assets/publication checks.
+    $fixture = New-ReleasePublicationFixture
+    $fixture.State.HideCreatedFromList = $true
+    $result = Invoke-TestReleasePublication $fixture
+    Assert-ReleasePublication ($result.Status -ceq 'Published' -and $fixture.State.GetCalls -eq 3) 'A stale release collection still requires a manual workflow retry.'
+    Assert-ReleasePublication (@($fixture.State.Mutations | Where-Object Operation -eq 'Create').Count -eq 1) 'Collection lag caused duplicate draft creation.'
+    Assert-ReleasePublication ($fixture.State.Releases[0].assets.Count -eq $assetNames.Count -and $fixture.State.Delays.Count -eq 0) 'A visible ID snapshot was not published with all assets immediately.'
+    $script:caseCount++
+
+    $fixture = New-ReleasePublicationFixture
+    $fixture.State.MissingGetReads = 2
+    $result = Invoke-TestReleasePublication $fixture
+    Assert-ReleasePublication ($result.Status -ceq 'Published' -and $fixture.State.GetCalls -eq 5 -and
+        ($fixture.State.Delays -join ',') -ceq '250,500') 'A briefly missing ID snapshot must use bounded backoff and recover without retrying writes.'
+    Assert-ReleasePublication (@($fixture.State.Mutations | Where-Object Operation -eq 'Create').Count -eq 1) 'ID lookup retries created a second draft.'
+    $script:caseCount++
+
+    $fixture = New-ReleasePublicationFixture
+    $fixture.State.MissingGetReads = 50
+    Assert-ReleasePublicationFailure { Invoke-TestReleasePublication $fixture } 'not visible by ID after five reads'
+    Assert-ReleasePublication ($fixture.State.GetCalls -eq 5 -and ($fixture.State.Delays -join ',') -ceq '250,500,1000,2000') 'A missing ID snapshot exceeded its retry budget.'
+    Assert-ReleasePublication ($fixture.State.Mutations.Count -eq 1 -and $fixture.State.Mutations[0].Operation -ceq 'Create' -and
+        $fixture.State.Releases[0].assets.Count -eq 0) 'Missing ownership evidence allowed asset upload or publication.'
+    $script:caseCount++
+
+    foreach ($badRead in @('WrongId', 'WrongOwner', 'WrongTarget', 'ApiFailure')) {
+        $fixture = New-ReleasePublicationFixture
+        $fixture.State.Releases.Add((New-TestRelease))
+        $changed = New-TestRelease
+        switch ($badRead) {
+            'WrongId' { $changed.id = 101; $fixture.State.OverrideRead = $changed }
+            'WrongOwner' { $changed.body = 'Foreign draft'; $fixture.State.OverrideRead = $changed }
+            'WrongTarget' { $changed.target_commitish = $shaOther; $fixture.State.OverrideRead = $changed }
+            'ApiFailure' { $fixture.State.FailGetCall = 1 }
+        }
+        Assert-ReleasePublicationFailure { Invoke-TestReleasePublication $fixture } 'different release ID|not owned|different tag|detail API failure'
+        Assert-NoReleaseMutation $fixture
+        Assert-ReleasePublication ($fixture.State.GetCalls -eq 1 -and $fixture.State.Delays.Count -eq 0) 'Ownership or API failures were retried as missing releases.'
+        $script:caseCount++
     }
 
     # A runner can disappear after draft creation or during --clobber. Retry
