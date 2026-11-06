@@ -78,10 +78,36 @@ internal sealed partial class UiScenario
             // endpoint. Source-only + Manual/Closed never attempts this open.
             using(var nativePlayer=new WpfMediaClipPlayer())
             {
-                bool nativeFailed=false;nativePlayer.Failed+=()=>nativeFailed=true;
-                nativePlayer.Open(new Uri(Path.Combine(root,"missing-native-clip.mp4"),UriKind.Absolute));
-                PumpUntil(()=>nativeFailed,"The real manual MediaElement never opened its source and raised MediaFailed; preroll must start before waiting for MediaOpened.");
-                nativePlayer.Clear();Require(((MediaElement)nativePlayer.View).Source is null,"The actual failed native graph must release its source.");
+                var nativeView=(MediaElement)nativePlayer.View;
+                var nativeHost=new Window{Owner=owner,Content=nativeView,Width=320,Height=260,
+                    ShowInTaskbar=false,ShowActivated=false,Title="Native clip playback fixture"};
+                bool nativeFailed=false,rendered=false;nativePlayer.Failed+=()=>nativeFailed=true;
+                EventHandler onRendering=(_,_)=>
+                {
+                    if(nativeView.IsLoaded && PresentationSource.FromVisual(nativeView) is not null)rendered=true;
+                };
+                System.Windows.Media.CompositionTarget.Rendering+=onRendering;
+                try
+                {
+                    // Match the production player's live visual/presentation
+                    // connection before asking its native graph to open media.
+                    nativeHost.Show();nativeHost.UpdateLayout();
+                    PumpUntil(()=>nativeView.IsLoaded && PresentationSource.FromVisual(nativeView) is not null && rendered,
+                        "The real MediaElement must load and render inside its shown fixture window before opening media.");
+                    nativePlayer.Open(new Uri(Path.Combine(root,"missing-native-clip.mp4"),UriKind.Absolute));
+                    PumpUntil(()=>nativeFailed,"The real manual MediaElement never opened its source and raised MediaFailed; preroll must start before waiting for MediaOpened.");
+                    nativePlayer.Clear();Require(nativeView.Source is null,"The actual failed native graph must release its source.");
+                }
+                finally
+                {
+                    System.Windows.Media.CompositionTarget.Rendering-=onRendering;
+                    try{nativePlayer.Clear();}
+                    finally
+                    {
+                        try{nativeHost.Content=null;}
+                        finally{nativeHost.Close();}
+                    }
+                }
             }
 
             var player=new ClipUiPlayer();dialog=Open(player);
