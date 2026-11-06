@@ -57,6 +57,15 @@ internal static class HistoryLibraryTests
         byte[] before=File.ReadAllBytes(data.HistoryPath);data.AppendSuccess(partial);
         Require(File.ReadAllBytes(data.HistoryPath).SequenceEqual(before) && !data.ReadHistory().ContainsKey(partial.Url),
             "A partial result must never be promoted to full-URL successful history");
+        var batch=Completed(root,"https://history.invalid/multiple","Two published fragments");
+        string second=Path.Combine(root,"second-fragment.mp4");File.WriteAllText(second,"second published fragment");batch.OwnedPaths.Add(second);
+        batch.CompletedSelection=new DownloadSelection(batch.Url)
+            {Sections=new DownloadSectionSet(new[]{new DownloadSection(5,7),new DownloadSection(1,2.5)})};
+        var owned=batch.OwnedPaths.ToArray();data.AppendSuccess(batch);
+        Require(batch.CompletedSelection.Section is null && batch.IsPartialResult &&
+            File.ReadAllBytes(data.HistoryPath).SequenceEqual(before) && !data.ReadHistory().ContainsKey(batch.Url) &&
+            data.ReadHistoryLibrary("Two published fragments").Entries.Count==0 && batch.OwnedPaths.SequenceEqual(owned) && owned.All(File.Exists),
+            "A confirmed multi-output result with only Sections must preserve both owned files and remain absent from full-video history and its library");
         var invalid=Completed(root,"https://history.invalid/unconfirmed","Not done");invalid.Status="Running";
         Refuses(()=>data.AppendSuccess(invalid),"Unconfirmed jobs must not create a successful event");
         for(int index=0;index<20;index++)data.AppendSuccess(Completed(root,"https://history.invalid/row-"+index,"Новый "+index));
