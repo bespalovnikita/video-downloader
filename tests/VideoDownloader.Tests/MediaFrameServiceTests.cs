@@ -91,7 +91,7 @@ internal static class MediaFrameServiceTests
             "Concurrent frame requests must share the sole metadata job while another cancelled waiter stays isolated");
         _=await previews.GetFrameSourceAsync(Prefix+"coalesced","v1",CancellationToken.None);
         Require(File.ReadAllLines(Path.Combine(root,"coalesced.calls")).Length==1,"Fresh memory sources must not trigger another extraction");
-        foreach(string unsupported in new[]{"a1","hls","drm"})
+        foreach(string unsupported in new[]{"a1","drm"})
         {
             var error=await Refuses(()=>previews.GetFrameSourceAsync(Prefix+"coalesced",unsupported,CancellationToken.None));
             Require(error is MediaFrameUnavailableException,"Unsupported audio/manifest/DRM formats must give an honest no-frame result");

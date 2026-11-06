@@ -52,7 +52,7 @@ public sealed partial class PreviewService
         return await completion.Task.ConfigureAwait(false);
     }
     private static MediaFrameUnavailableException UnsupportedFrameSource()=>new(
-        "Кадр недоступен: нужен прямой HTTP(S) видеопоток MP4/WebM/MKV. Коллекции, аудио, DRM, live и манифесты не поддерживаются.");
+        "Кадр недоступен: нужен HTTP(S) видеопоток MP4/WebM, HLS или статический DASH. Коллекции, аудио, DRM и live не поддерживаются.");
 
     private bool FrameSourceNeeded(string url)
     {
@@ -110,7 +110,9 @@ public sealed partial class PreviewService
         MediaFrameSource? automatic=null;
         long characters=0;
         long Size(MediaFrameSource source)=>source.Address.AbsoluteUri.Length+source.Cookies.Length+source.CookieFile.Length+
-            source.CookieContext.Length+source.FormatId.Length+source.Headers.Sum(header=>(long)header.Key.Length+header.Value.Length)+256;
+            source.CookieContext.Length+source.FormatId.Length+source.Protocol.Length+(source.ManifestAddress?.AbsoluteUri.Length??0)+
+            source.Extension.Length+(source.Fragments?.Sum(fragment=>(long)fragment.Address.AbsoluteUri.Length+64)??0)+
+            source.Headers.Sum(header=>(long)header.Key.Length+header.Value.Length)+256;
         void Keep(MediaFrameSource source)
         {
             if(retained.ContainsKey(source.FormatId))return;
@@ -200,11 +202,13 @@ public sealed partial class PreviewService
         if(format.ValueKind!=JsonValueKind.Object)return null;
         string id=Str(format,"format_id"),address=Str(format,"url"),extension=Str(format,"ext"),protocol=Str(format,"protocol");
         string codec=Str(format,"vcodec");
-        if(!Regex.IsMatch(id,@"\A[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}\z",RegexOptions.CultureInvariant) || codec=="none" ||
+        // Automatic preview sources may use opaque extractor IDs (for example
+        // DASH "video=..."). They never enter a selector or process argument;
+        // public/manual IDs keep the stricter existing validator above.
+        if(id.Length is 0 or >256 || id.Any(char.IsControl) || codec=="none" ||
             address.Length>8192 || !Uri.TryCreate(address,UriKind.Absolute,out var uri) || uri.Scheme is not ("http" or "https") ||
-            uri.UserInfo.Length>0 || protocol is not ("" or "http" or "https") ||
+            uri.UserInfo.Length>0 || protocol is not ("" or "http" or "https" or "m3u8" or "m3u8_native" or "http_dash_segments" or "dash") ||
             extension.ToLowerInvariant() is not ("mp4" or "m4v" or "mov" or "webm" or "mkv") ||
-            Path.GetExtension(uri.AbsolutePath).ToLowerInvariant() is ".m3u8" or ".mpd" ||
             format.TryGetProperty("has_drm",out var drm) && drm.ValueKind is not (JsonValueKind.Null or JsonValueKind.False))return null;
         double width=Number(format,"width"),height=Number(format,"height"),fps=Number(format,"fps"),duration=Number(root,"duration");
         if(!double.IsFinite(width) || !double.IsFinite(height) || width<0 || height<0 || width>131072 || height>131072 ||
@@ -229,7 +233,47 @@ public sealed partial class PreviewService
         string cookies=Str(format,"cookies");
         if(cookies.Length==0)cookies=Str(root,"cookies");
         if(cookies.Length>64*1024 || cookies.Any(char.IsControl))return null;
-        return new(uri,id,headers,cookies,cookieFile,context,fps,double.IsFinite(duration) && duration>0?duration:null,(int)width,(int)height);
+        Uri? manifest=null;
+        string manifestText=Str(format,"manifest_url");
+        if(manifestText.Length>0 && (!Uri.TryCreate(manifestText,UriKind.Absolute,out manifest) ||
+            manifest.Scheme is not ("http" or "https") || manifest.UserInfo.Length>0 || manifestText.Length>8192))return null;
+        if(protocol is "m3u8" or "m3u8_native")manifest=uri;
+        if(protocol is "http_dash_segments" or "dash" && manifest is null && uri.AbsolutePath.EndsWith(".mpd",StringComparison.OrdinalIgnoreCase))manifest=uri;
+        List<MediaFrameFragment>? fragments=null;
+        if(protocol is "http_dash_segments" or "dash" && manifest is null &&
+            format.TryGetProperty("fragments",out var parts) && parts.ValueKind==JsonValueKind.Array && parts.GetArrayLength()<=10000)
+        {
+            fragments=[];
+            Uri basis=uri;
+            string fragmentBase=Str(format,"fragment_base_url");
+            if(fragmentBase.Length>0)
+            {if(!Uri.TryCreate(fragmentBase,UriKind.Absolute,out var parsedBase))return null;basis=parsedBase;}
+            long chars=0;
+            foreach(var part in parts.EnumerateArray())
+            {
+                string addressPart=Str(part,"url");
+                if(addressPart.Length==0)addressPart=Str(part,"path");
+                if(addressPart.Length==0 || !Uri.TryCreate(basis,addressPart,out var fragment) ||
+                    fragment.Scheme is not ("http" or "https") || fragment.UserInfo.Length>0 || fragment.AbsoluteUri.Length>8192)return null;
+                double length=Number(part,"duration");
+                long? first=null,last=null;
+                string range=Str(part,"range");
+                if(range.Length>0)
+                {
+                    var match=Regex.Match(range,@"\A([0-9]+)-([0-9]+)\z",RegexOptions.CultureInvariant);
+                    if(!match.Success || !long.TryParse(match.Groups[1].Value,out long from) ||
+                        !long.TryParse(match.Groups[2].Value,out long to) || to<from)return null;
+                    first=from;last=to;
+                }
+                if(fragments.Count>0 && (!double.IsFinite(length) || length<=0))return null;
+                fragments.Add(new(fragment,length>0?length:null,first,last));
+                chars+=fragment.AbsoluteUri.Length+64;
+                if(chars>128*1024)return null;
+            }
+            if(fragments.Count<2)return null;
+        }
+        return new(uri,id,headers,cookies,cookieFile,context,fps,double.IsFinite(duration) && duration>0?duration:null,(int)width,(int)height,
+            protocol,manifest,fragments,extension);
     }
     private void FailFrameSourceRequests(string url,Exception error,string? cookieContext)
     {

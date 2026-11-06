@@ -76,6 +76,7 @@ dotnet run --no-build --configuration Release --project tests/VideoDownloader.Te
 | Перетаскивание ручек шкалы, клавиатура, поля/кадры, выбранная длительность и read-only | [FragmentTimelineUiTests](../../tests/VideoDownloader.UiTests/FragmentTimelineUiTests.cs) |
 | Реальный HTTP Range для кадров, области cookies/заголовков, лимиты и отмена соединений | [MediaFrameProxyTests](../../tests/VideoDownloader.Tests/MediaFrameProxyTests.cs) |
 | Настоящий поиск кадра FFmpeg, конечная граница, приватный кеш источников и освобождение работника | [MediaFrameServiceTests](../../tests/VideoDownloader.Tests/MediaFrameServiceTests.cs) |
+| Кадры HLS/DASH, init/byte ranges, шифрование TS, выбор времени и запрет обхода сетевого лимита | [MediaManifestFrameTests](../../tests/VideoDownloader.Tests/MediaManifestFrameTests.cs) |
 | Стабильный Release, SHA-256 ZIP, отмена тела HTTP-ответа, таймаут и ожидание исходного процесса | [AppUpdateClientTests](../../tests/VideoDownloader.Tests/AppUpdateClientTests.cs) |
 | Владение файлами пакета, чужие коллизии, ZIP traversal, откат и восстановление после убийства установщика | [AppUpdateInstallerTests](../../tests/VideoDownloader.Tests/AppUpdateInstallerTests.cs) |
 | Настоящие кнопки обновления, занятость, повторная проверка очистки перед handoff и отмена при Dispose | [AppUpdateUiTests](../../tests/VideoDownloader.UiTests/AppUpdateUiTests.cs) |
@@ -117,6 +118,15 @@ Metadata-фикстура проверяет общий процесс, смен
 адресов/секретов в дисковом кеше. Интеграция также проверяет замаскированный
 манифест без вторичных запросов, отмену/таймаут реального потока и успешный
 следующий кадр на том же работнике без записи истории.
+
+`MediaManifestFrameTests` создаёт настоящее видео со звуком и разными цветами,
+упаковывает его в HLS TS/fMP4/AES-128 и DASH MP4/WebM. Настоящий FFmpeg
+проверяет красный/синий/конечный кадр. Дополнительно проверяются master,
+SegmentTimeline, duration/Number, SegmentList/init byte ranges, SegmentBase,
+переход на другой origin с cookies без приватных заголовков, общий byte cap,
+отмена зависшего сегмента, запрет file-URI/XXE/live и замаскированного
+вложенного плейлиста без вторичного запроса. Отдельный проход использует
+настоящий упакованный yt-dlp для HLS/DASH, а не только подготовленный DTO.
 
 ## Коллектор и общие фикстуры
 

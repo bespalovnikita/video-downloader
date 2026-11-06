@@ -17,6 +17,7 @@ internal sealed class BoundedMediaProxy : IAsyncDisposable
     private const int MaxRequests=64;
     private const int MaxClients=16;
     private readonly Uri _source;
+    private readonly Uri _headerOrigin;
     private readonly IReadOnlyDictionary<string,string> _headers;
     private readonly CookieContainer _cookies;
     private readonly long _maxBytes;
@@ -36,19 +37,39 @@ internal sealed class BoundedMediaProxy : IAsyncDisposable
     private long _received;
     private int _sequence;
     private int _requests;
+    private byte[]? _buffer;
+    private string _bufferType="application/octet-stream";
 
     internal Uri Address { get; }
     internal Exception? Failure=>Volatile.Read(ref _failure);
     internal CancellationToken FailureToken { get; }
     internal long ReceivedBytes=>Interlocked.Read(ref _received);
 
+    internal BoundedMediaProxy(byte[] media,string contentType,CancellationToken cancellationToken)
+        :this(ValidateCompiled(media,contentType),new Dictionary<string,string>(),new CookieContainer(),
+            cancellationToken,64L*1024*1024)
+    {
+        _buffer=media;_bufferType=contentType;
+    }
+    private static Uri ValidateCompiled(byte[] media,string contentType)
+    {
+        if(media.Length is <=0 or >16*1024*1024)throw new ArgumentException("Invalid compiled frame media size.",nameof(media));
+        if(contentType is not ("video/mp4" or "video/mp2t" or "video/webm"))throw new ArgumentException("Invalid compiled frame media type.",nameof(contentType));
+        return new Uri("http://127.0.0.1/compiled-media");
+    }
+
     internal BoundedMediaProxy(Uri mediaUrl,IReadOnlyDictionary<string,string> headers,CookieContainer cookies,
-        CancellationToken cancellationToken,long maxBytes=16L*1024*1024)
+        CancellationToken cancellationToken,long maxBytes=16L*1024*1024,Uri? originalHeaderOrigin=null)
     {
         ArgumentNullException.ThrowIfNull(mediaUrl);
         ArgumentNullException.ThrowIfNull(headers);
         ArgumentNullException.ThrowIfNull(cookies);
         ValidateUrl(mediaUrl);
+        originalHeaderOrigin??=mediaUrl;
+        if(!originalHeaderOrigin.IsAbsoluteUri || originalHeaderOrigin.Scheme is not ("http" or "https") ||
+            originalHeaderOrigin.UserInfo.Length>0 || string.IsNullOrWhiteSpace(originalHeaderOrigin.Host) ||
+            originalHeaderOrigin.Scheme=="https" && mediaUrl.Scheme!="https")
+            throw new ArgumentException("Invalid media header origin.",nameof(originalHeaderOrigin));
         if(maxBytes<=0)throw new ArgumentOutOfRangeException(nameof(maxBytes));
         if(headers.Count>64)throw new ArgumentException("Too many media request headers.",nameof(headers));
         var accepted=new Dictionary<string,string>(StringComparer.OrdinalIgnoreCase);
@@ -62,7 +83,7 @@ internal sealed class BoundedMediaProxy : IAsyncDisposable
             if(headerCharacters>32*1024)throw new ArgumentException("Media request headers exceed their size limit.",nameof(headers));
             if(!BlockedHeader(name))accepted[name]=value;
         }
-        _source=mediaUrl;_headers=accepted;_cookies=cookies;_maxBytes=maxBytes;
+        _source=mediaUrl;_headerOrigin=originalHeaderOrigin;_headers=accepted;_cookies=cookies;_maxBytes=maxBytes;
         FailureToken=_failed.Token;
         _stop=CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         _http=new HttpClient(new SocketsHttpHandler {
@@ -178,7 +199,7 @@ internal sealed class BoundedMediaProxy : IAsyncDisposable
     private async Task<HttpResponseMessage> SendAsync(Request incoming)
     {
         Uri target=_source;
-        bool publicHeadersOnly=false;
+        bool publicHeadersOnly=!SameOrigin(_headerOrigin,target);
         for(int redirect=0;redirect<=3;redirect++)
         {
             using var request=new HttpRequestMessage(incoming.Head?HttpMethod.Head:HttpMethod.Get,target);
@@ -187,6 +208,7 @@ internal sealed class BoundedMediaProxy : IAsyncDisposable
             foreach(var (name,value) in _headers)
                 if(!publicHeadersOnly || PublicRedirectHeader(name))request.Headers.TryAddWithoutValidation(name,value);
             string cookie=_cookies.GetCookieHeader(target);
+            if(cookie.Length>32*1024)throw new IOException("The media cookie header exceeds its size limit.");
             if(cookie.Length>0)request.Headers.TryAddWithoutValidation("Cookie",cookie);
             var response=await _http.SendAsync(request,HttpCompletionOption.ResponseHeadersRead,_stop.Token).ConfigureAwait(false);
             if(response.Headers.TryGetValues("Set-Cookie",out var receivedCookies))
@@ -201,7 +223,7 @@ internal sealed class BoundedMediaProxy : IAsyncDisposable
                 Uri next=location.IsAbsoluteUri?location:new Uri(target,location);
                 try{ValidateUrl(next);}catch(ArgumentException){throw new IOException("The media stream redirected to an unsupported destination.");}
                 if(target.Scheme=="https" && next.Scheme!="https")throw new IOException("The media stream redirected to an insecure destination.");
-                publicHeadersOnly|=!SameOrigin(_source,next);
+                publicHeadersOnly|=!SameOrigin(_headerOrigin,next);
                 target=next;
             }
             finally {response.Dispose();}
@@ -241,6 +263,8 @@ internal sealed class BoundedMediaProxy : IAsyncDisposable
                 using var stream=client.GetStream();
                 var request=await ReadRequestAsync(stream).ConfigureAwait(false);
                 if(request is null)return;
+                if(_buffer is {} buffered)
+                {await SendBufferAsync(stream,request,buffered).ConfigureAwait(false);return;}
                 using var response=await SendAsync(request).ConfigureAwait(false);
                 ValidateResponse(request,response);
                 var headers=new StringBuilder("HTTP/1.1 ").Append((int)response.StatusCode).Append(" Media\r\nConnection: close\r\nCache-Control: no-store\r\n");
@@ -273,6 +297,22 @@ internal sealed class BoundedMediaProxy : IAsyncDisposable
             catch(Exception error) when(!_stop.IsCancellationRequested)
             {Fail(new IOException("The media stream could not provide this frame ("+error.GetType().Name+")."));}
         }
+    }
+
+    private async Task SendBufferAsync(NetworkStream stream,Request request,byte[] media)
+    {
+        var range=request.Range?.Ranges.Single();
+        long first=range?.From??0,last=Math.Min(range?.To??media.Length-1,media.Length-1);
+        if(first>=media.Length || first>last){await ErrorAsync(stream,416).ConfigureAwait(false);return;}
+        long length=last-first+1;
+        int status=range is null?200:206;
+        var headers=new StringBuilder("HTTP/1.1 ").Append(status).Append(" Media\r\nConnection: close\r\nCache-Control: no-store\r\nAccept-Ranges: bytes\r\nContent-Length: ")
+            .Append(length.ToString(CultureInfo.InvariantCulture)).Append("\r\nContent-Type: ").Append(_bufferType).Append("\r\n");
+        if(range is not null)headers.Append("Content-Range: bytes ").Append(first).Append('-').Append(last).Append('/').Append(media.Length).Append("\r\n");
+        headers.Append("\r\n");
+        if(!await WriteAsync(stream,Encoding.ASCII.GetBytes(headers.ToString())).ConfigureAwait(false) || request.Head)return;
+        if(Interlocked.Add(ref _received,length)>_maxBytes)throw new IOException("The frame decoder read too much compiled media.");
+        await WriteAsync(stream,media.AsMemory((int)first,(int)length)).ConfigureAwait(false);
     }
 
     private async Task<bool> WriteAsync(NetworkStream stream,ReadOnlyMemory<byte> bytes)
