@@ -40,6 +40,7 @@ public sealed record DownloadSection(double StartSeconds,double EndSeconds)
         try {section=new(first,last);section.Validate(duration);return true;}
         catch(ArgumentException exception){section=null;error=exception.Message;return false;}
     }
+    internal static bool TryParseTimestamp(string? text,out double seconds)=>TrySeconds(text?.Trim(),out seconds);
     private static bool TrySeconds(string? text,out double seconds)
     {
         seconds=0;

@@ -17,6 +17,7 @@ internal sealed class PreviewController : IDisposable
     private readonly Action _save;
     private readonly Action<string> _log;
     private readonly PreviewService _service;
+    private readonly MediaFrameService _frames;
     private readonly TextBox _cookiesBox;
     private readonly TextBlock _title;
     private readonly TextBlock _metadata;
@@ -83,6 +84,7 @@ internal sealed class PreviewController : IDisposable
             message=>Dispatch(()=>_log(message)),
             failed:(url,error)=>Dispatch(()=>ReceiveFailure(url,error)),
             updated:data=>Dispatch(()=>ReceiveReady(data,false)));
+        _frames=new MediaFrameService(_service);
     }
 
     private void CookiesChanged(object sender,TextChangedEventArgs e)=>
@@ -95,6 +97,7 @@ internal sealed class PreviewController : IDisposable
     }
 
     internal PreviewData? GetCached(string url)=>_service.Peek(url);
+    internal Task<MediaFrameResult> GetFrameAsync(MediaFrameRequest request,CancellationToken token)=>_frames.GetFrameAsync(request,token);
 
     // Other views share the same worker/cache without changing this panel's
     // selection. Metadata callbacks are delivered on the owning dispatcher.
@@ -355,6 +358,6 @@ internal sealed class PreviewController : IDisposable
         _gallery.Clear();_decoded.Clear();
         Changed=null;Failed=null;
         _cookiesBox.TextChanged-=CookiesChanged;
-        _service.Dispose();
+        _frames.Dispose();_service.Dispose();
     }
 }

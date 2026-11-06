@@ -7,7 +7,7 @@ using System.Text.Json;
 
 namespace VideoDownloader.Native;
 
-public sealed class PreviewService : IDisposable
+public sealed partial class PreviewService : IDisposable
 {
     internal const int MaxImages=15;
     internal const int MaxImageBytes=2_000_000;
@@ -45,6 +45,9 @@ public sealed class PreviewService : IDisposable
     private readonly TimeSpan _thumbnailTimeout;
     private readonly string? _ffmpegOverride;
     private readonly Task _worker;
+    // Allows lifecycle owners to await the same worker after Dispose has
+    // requested cancellation, without blocking a WPF dispatcher in Dispose.
+    internal Task Completion=>_worker;
     public PreviewService(string exe,AppPersistence data,Func<string> cookiePath,Action<PreviewData> ready,Action<string> log,
         TimeSpan? requestTimeout=null,TimeSpan? thumbnailTimeout=null,string? ffmpegPath=null,
         Action<string,string>? failed=null,Func<byte[],bool>? thumbnailValidator=null,Action<PreviewData>? updated=null)
@@ -210,7 +213,7 @@ public sealed class PreviewService : IDisposable
                 if (priority && _pending.Remove(url)) _pending.Insert(0,url);
                 return;
             }
-            if(cached!=null && (!_formatsRequested.Contains(url) || cached.FormatsLoaded) &&
+            if(cached!=null && !FrameSourceNeeded(url) && (!_formatsRequested.Contains(url) || cached.FormatsLoaded) &&
                 _fetchVersions.GetValueOrDefault(url)>=3 && !ThumbnailFailureExpired(cached) &&
                 !(cached.ThumbnailBase64.Length==0 && _thumbnailErrors.TryGetValue(url,out string? error) && NeedsConverter(error)))
             {_formatsRequested.Remove(url);return;}
@@ -235,13 +238,14 @@ public sealed class PreviewService : IDisposable
                 url=_pending[0];_pending.RemoveAt(0);
                 requireFormats=_formatsRequested.Remove(url);
             }
+            string? frameExtractionContext=null;
             try
             {
                 var cached=Get(url);
                 // A missing candidate is a valid cached result, but a failed
                 // image request must not suppress the cover for all 72 hours.
                 // Retry only on another request after the bounded cooldown.
-                if(cached!=null && (!requireFormats || cached.FormatsLoaded) &&
+                if(cached!=null && !FrameSourceNeeded(url) && (!requireFormats || cached.FormatsLoaded) &&
                     _fetchVersions.GetValueOrDefault(url)>=3 && !ThumbnailFailureExpired(cached))
                 {
                     if(!_stop.IsCancellationRequested)_ready(cached);
@@ -257,7 +261,7 @@ public sealed class PreviewService : IDisposable
                     data=RetainKnownData(data);
                     CacheInMemory(data);
                     _updated?.Invoke(data);
-                }).ConfigureAwait(false);
+                },context=>frameExtractionContext=context).ConfigureAwait(false);
                 var data=RetainKnownData(fetched.Data);
                 if(data.ThumbnailBase64.Length==0 && !string.IsNullOrWhiteSpace(fetched.ThumbnailError))
                     data=data with {SavedAtUtc=DateTime.UtcNow};
@@ -282,6 +286,7 @@ public sealed class PreviewService : IDisposable
             catch(OperationCanceledException) when (_stop.IsCancellationRequested){break;}
             catch(OperationCanceledException)
             {
+                FailFrameSourceRequests(url,new MediaFrameUnavailableException("Время получения источника кадра истекло."),frameExtractionContext);
                 Log("Preview timed out for "+DiagnosticField(url)+": stage=metadata timeout_ms="+
                     _requestTimeout.TotalMilliseconds.ToString("0",CultureInfo.InvariantCulture));
                 if(Peek(url) is {} prior)_ready(prior);
@@ -289,6 +294,7 @@ public sealed class PreviewService : IDisposable
             }
             catch(Exception e)
             {
+                FailFrameSourceRequests(url,new MediaFrameUnavailableException("Не удалось получить источник кадра."),frameExtractionContext);
                 Log("Preview unavailable for "+DiagnosticField(url)+": stage=metadata "+ErrorDetails(e));
                 if(!_stop.IsCancellationRequested)
                 {
@@ -296,7 +302,7 @@ public sealed class PreviewService : IDisposable
                     else _failed?.Invoke(url,e.Message);
                 }
             }
-            finally { lock(_gate) { _known.Remove(url);_formatsRequested.Remove(url); } }
+            finally { FinishFrameSourceIteration(url); }
         }
     }
     private static string Str(JsonElement json,string name)
@@ -334,7 +340,8 @@ public sealed class PreviewService : IDisposable
             (expected?.ToString(CultureInfo.InvariantCulture)??"unknown")+" gallery_received_bytes="+galleryReceived+" "+ErrorDetails(error)+
             Environment.NewLine+"video="+DiagnosticField(video)+Environment.NewLine+"image="+DiagnosticField(image));
     }
-    private async Task<(PreviewData Data,string ThumbnailError)> FetchAsync(string url,CancellationToken token,Action<PreviewData> publish)
+    private async Task<(PreviewData Data,string ThumbnailError)> FetchAsync(string url,CancellationToken token,Action<PreviewData> publish,
+        Action<string>? extractionStarted=null)
     {
         token.ThrowIfCancellationRequested();
         var psi=new ProcessStartInfo(_exe) {
@@ -345,6 +352,8 @@ public sealed class PreviewService : IDisposable
         foreach(string arg in new[]{"--ignore-config","--dump-single-json","--skip-download","--no-warnings","--playlist-items","1","--encoding","utf-8","--impersonate","chrome"})
             psi.ArgumentList.Add(arg);
         string cookie=_cookiePath();
+        string frameCookieContext=CookieContext(cookie);
+        extractionStarted?.Invoke(frameCookieContext);
         if (File.Exists(cookie)) { psi.ArgumentList.Add("--cookies");psi.ArgumentList.Add(cookie); }
         psi.ArgumentList.Add(url);
         using var child=ManagedChildProcess.Start(psi);
@@ -364,6 +373,7 @@ public sealed class PreviewService : IDisposable
         if (j.TryGetProperty("entries",out var entries) && entries.ValueKind==JsonValueKind.Array &&
             entries.GetArrayLength()>0 && !j.TryGetProperty("formats",out _))
         { playlist=Str(j,"title");j=entries[0]; }
+        CaptureFrameSources(url,j,isCollection,cookie,frameCookieContext);
         int maxHeight=0;double maxFps=0;
         var codecs=new HashSet<string>(StringComparer.Ordinal);
         var ranges=new HashSet<string>(StringComparer.Ordinal);
@@ -587,6 +597,7 @@ public sealed class PreviewService : IDisposable
         {
             if(Interlocked.Exchange(ref _disposed,1)!=0)return;
             _stop.Cancel();
+            CancelFrameSources();
             // The worker is still allowed to observe cancellation. Do not dispose
             // the semaphore/HTTP client underneath an in-flight prefetch.
             _signal.Release();
