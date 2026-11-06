@@ -97,12 +97,18 @@ internal sealed partial class UiScenario
 
             var failed=new DownloadItem{Url="https://startup-download.invalid/wrong-container"};
             subject.SessionState.TryAdd(failed);subject.Reindex();
+            var completedStart=subject.SessionState.StartedAt;
             Click(window,"StartButton");
+            PumpUntil(()=>subject.SessionState.StartedAt!=completedStart,
+                "A new Start must finish its asynchronous preflight before beginning a fresh session");
             Require(subject.SessionState.Elapsed<TimeSpan.FromSeconds(1),"A new Start must reset the previous duration");
             PumpUntil(()=>failed.Status=="Failed" && subject.SessionState.Coordinator==null,
                 "A container failure must finish normally without a start-error dialog");
             RequireFrozen("Failure completion");
+            var failedStart=subject.SessionState.StartedAt;
             Click(window,"RetryFailedButton");
+            PumpUntil(()=>subject.SessionState.StartedAt!=failedStart,
+                "Retry failed must finish its asynchronous preflight before beginning another session");
             Require(subject.SessionState.Elapsed<TimeSpan.FromSeconds(1),"Retry failed must begin a fresh session clock");
             PumpUntil(()=>failed.Status=="Failed" && subject.SessionState.Coordinator==null,"Retry must also terminate");
             RequireFrozen("Retried failure");

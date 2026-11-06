@@ -113,6 +113,18 @@ internal sealed partial class UiScenario
             Stop(subject,window);
             Require(!File.Exists(storage.HistoryPath),"Stopping before a verified result must not record a successful URL");
 
+            // A preflight is not a new session. Cancelling after a prior run
+            // must preserve that run's frozen clock as well as its media.
+            var stoppedStart=subject.SessionState.StartedAt;
+            var stoppedElapsed=subject.SessionState.Elapsed;
+            respond=dialog=>Click(dialog,"CancelDiskSpaceStartButton");
+            Click(window,"StartButton");
+            PumpUntil(()=>dialogs==4 && Control<Button>(window,"StartButton").IsEnabled,
+                "A retry's low-space preflight must permit Cancel before admitting a new session");
+            Require(subject.SessionState.Coordinator is null && subject.SessionState.StartedAt==stoppedStart &&
+                subject.SessionState.Elapsed==stoppedElapsed && File.Exists(kept),
+                "Cancelling preflight must preserve the previous session's frozen clock and published media");
+
             // A fresh session starts with room. A later low measurement warns
             // once without stopping or restarting that already running session.
             provider.Free=100L*1024*1024*1024;
