@@ -76,6 +76,8 @@ dotnet run --no-build --configuration Release --project tests/VideoDownloader.Te
 | Две карточки кадров фрагмента, задержка ввода, отмена и отбрасывание позднего ответа | [MediaSectionFrameUiTests](../../tests/VideoDownloader.UiTests/MediaSectionFrameUiTests.cs) |
 | Дробный FPS без дрейфа, миллисекундная граница длительности и ограничение шага | [FragmentTimelineTests](../../tests/VideoDownloader.Tests/FragmentTimelineTests.cs) |
 | Перетаскивание ручек шкалы, клавиатура, поля/кадры, выбранная длительность и read-only | [FragmentTimelineUiTests](../../tests/VideoDownloader.UiTests/FragmentTimelineUiTests.cs) |
+| Библиотека истории: совместимые события, поиск по всему файлу, повреждение/append и ограниченные проверки доступности | [HistoryLibraryTests](../../tests/VideoDownloader.Tests/HistoryLibraryTests.cs), confirmed worker metadata в [NativeContractTests](../../tests/VideoDownloader.Tests/NativeContractTests.cs) |
+| Настоящее окно истории: поиск, legacy-пути, явное открытие, недоступный диск, закрытие без изменений данных | [HistoryLibraryUiTests](../../tests/VideoDownloader.UiTests/HistoryLibraryUiTests.cs) |
 | Реальный HTTP Range для кадров, области cookies/заголовков, лимиты и отмена соединений | [MediaFrameProxyTests](../../tests/VideoDownloader.Tests/MediaFrameProxyTests.cs) |
 | Настоящий поиск кадра FFmpeg, конечная граница, приватный кеш источников и освобождение работника | [MediaFrameServiceTests](../../tests/VideoDownloader.Tests/MediaFrameServiceTests.cs) |
 | Кадры HLS/DASH, init/byte ranges, шифрование TS, выбор времени и запрет обхода сетевого лимита | [MediaManifestFrameTests](../../tests/VideoDownloader.Tests/MediaManifestFrameTests.cs) |
