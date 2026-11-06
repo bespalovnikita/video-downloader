@@ -57,7 +57,7 @@ public sealed partial class NativeWindow : IDisposable
     // The isolated UI test uses a metadata fixture process through the same
     // production worker. Normal startup always resolves the packaged yt-dlp.
     internal NativeWindow(Window window,AppPersistence? persistence,string ytDlpExecutable,
-        IAppUpdateService? updateService=null,bool? automaticUpdates=null)
+        IAppUpdateService? updateService=null,bool? automaticUpdates=null,IDiskSpaceProvider? diskSpaceProvider=null)
     {
         _window=window;
         _storage=persistence??new AppPersistence();
@@ -134,6 +134,7 @@ public sealed partial class NativeWindow : IDisposable
         Reindex();
         RefreshDependencyLabel();
         InitializeAppUpdates(updateService,automatic:automaticUpdates??(persistence is null));
+        InitializeDiskSpace(diskSpaceProvider);
         UpdateState();
         FlushJournal();
         _tick.Start();_ingress.Start();
@@ -161,7 +162,7 @@ public sealed partial class NativeWindow : IDisposable
         string title=SessionState.StartedAt.HasValue
             ? DownloadFormat.Tray(metrics.Successful,metrics.Left,metrics.Failed,metrics.Speed,running,paused) : "Video Downloader | Ready";
         _lifecycle.UpdateStatus(title);
-        F<Button>("StartButton").IsEnabled=!running && SessionState.Queue.Any(x=>x.Status!="Completed" && x.CanResume);
+        F<Button>("StartButton").IsEnabled=!running && !_startingSession && SessionState.Queue.Any(x=>x.Status!="Completed" && x.CanResume);
         F<Button>("StopButton").IsEnabled=running;
         F<Button>("PauseButton").IsEnabled=running;
         F<Button>("PauseButton").Content=paused?"Resume":"Pause";
@@ -189,6 +190,7 @@ public sealed partial class NativeWindow : IDisposable
         RefreshQueueFilterActions();
         RefreshMediaSelectionState();
         RefreshAppUpdateControls();
+        PollDiskSpace();
     }
     internal void OnRowChanged(DownloadItem item)
     {
@@ -486,6 +488,7 @@ public sealed partial class NativeWindow : IDisposable
                 OwnedFiles.NoReparseAncestors(Path.Combine(output,"__validation__"));
                 return output;
             });
+            if(!await ConfirmDiskSpaceBeforeStartAsync(approved,options,outputRoots))return;
             Directory.CreateDirectory(options.OutputDirectory);
             SessionState.SetOptions(options);
             // Validate retained staging before resetting any attempt or ownership.

@@ -64,6 +64,8 @@ internal sealed partial class UiScenario
             UiScenario.TestHistoryLibrary(root);
             Stage("testing app update controls, idle handoff and checkpoint safety");
             UiScenario.TestAppUpdateControls(root);
+            Stage("testing free disk space, pre-start consent and live warnings");
+            UiScenario.TestDiskSpaceControls(root);
             Stage("testing completed queue playback and finished session clock");
             UiScenario.TestQueuePlaybackAndTimer(root);
             Stage("testing queue search/status/subscription views and scoped actions while active");

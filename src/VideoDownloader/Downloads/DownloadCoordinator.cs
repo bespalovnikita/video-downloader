@@ -29,6 +29,7 @@ public sealed class DownloadCoordinator : IAsyncDisposable
     private long _traceSequence;
     public string TraceSessionId { get; }=Guid.NewGuid().ToString("N")[..8];
     private readonly string _stageRoot=Path.Combine(Path.GetTempPath(),"vd-native-"+Guid.NewGuid().ToString("N"));
+    internal string StagingDirectory=>_stageRoot;
     private readonly WindowsDownloadPause _pause=new();
     private readonly YtDlpArguments _arguments;
     private readonly object _completionGate=new();
