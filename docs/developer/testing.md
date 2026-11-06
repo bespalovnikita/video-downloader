@@ -72,6 +72,8 @@ dotnet run --no-build --configuration Release --project tests/VideoDownloader.Te
 | Диапазон времени, каталог реальных форматов, снимок попытки, строгие ID и временные повторы | [DownloadSelectionTests](../../tests/VideoDownloader.Tests/DownloadSelectionTests.cs) |
 | Окно форматов/фрагмента, точный URL, холодные метаданные, восстановление выбора и защита готового результата | [MediaSelectionUiTests](../../tests/VideoDownloader.UiTests/MediaSelectionUiTests.cs) |
 | Две карточки кадров фрагмента, задержка ввода, отмена и отбрасывание позднего ответа | [MediaSectionFrameUiTests](../../tests/VideoDownloader.UiTests/MediaSectionFrameUiTests.cs) |
+| Дробный FPS без дрейфа, миллисекундная граница длительности и ограничение шага | [FragmentTimelineTests](../../tests/VideoDownloader.Tests/FragmentTimelineTests.cs) |
+| Перетаскивание ручек шкалы, клавиатура, поля/кадры, выбранная длительность и read-only | [FragmentTimelineUiTests](../../tests/VideoDownloader.UiTests/FragmentTimelineUiTests.cs) |
 | Реальный HTTP Range для кадров, области cookies/заголовков, лимиты и отмена соединений | [MediaFrameProxyTests](../../tests/VideoDownloader.Tests/MediaFrameProxyTests.cs) |
 | Настоящий поиск кадра FFmpeg, конечная граница, приватный кеш источников и освобождение работника | [MediaFrameServiceTests](../../tests/VideoDownloader.Tests/MediaFrameServiceTests.cs) |
 | Стабильный Release, SHA-256 ZIP, отмена тела HTTP-ответа, таймаут и ожидание исходного процесса | [AppUpdateClientTests](../../tests/VideoDownloader.Tests/AppUpdateClientTests.cs) |
