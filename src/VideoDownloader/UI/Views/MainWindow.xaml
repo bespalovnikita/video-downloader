@@ -405,6 +405,7 @@
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
                         <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
@@ -437,7 +438,26 @@
                         <Button x:Name="OpenOutputDirectoryButton" Content="📂 Открыть папку загрузок" ToolTip="Открыть настроенную папку назначения в Проводнике"/>
                     </WrapPanel>
 
-                    <DataGrid x:Name="QueueGrid" Grid.Row="3" AllowDrop="True" Tag="{Binding IsChecked, ElementName=ShowVideoTitlesCheck}">
+                    <StackPanel Grid.Row="3" Margin="0,0,0,8">
+                        <DockPanel Margin="0,0,0,4">
+                            <Button x:Name="ResetQueueFiltersButton" Content="Сбросить фильтры" DockPanel.Dock="Right" Padding="7,3"/>
+                            <TextBlock Text="Поиск в очереди" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}"/>
+                        </DockPanel>
+                        <TextBox x:Name="QueueSearchBox" MaxLength="2048" Margin="0,0,0,5"
+                                 AutomationProperties.Name="Поиск по названию или URL"
+                                 ToolTip="Поиск по названию или части URL без изменения очереди. Ctrl+F — перейти к поиску; Esc — сбросить фильтры."/>
+                        <Grid Margin="0,0,0,4">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                            <ComboBox x:Name="QueueStatusFilter" Margin="0,0,3,0" MinWidth="100"
+                                      AutomationProperties.Name="Статус очереди" ToolTip="Фильтр отображаемых строк по статусу"/>
+                            <ComboBox x:Name="QueueSubscriptionFilter" Grid.Column="1" Margin="3,0,0,0" MinWidth="120"
+                                      AutomationProperties.Name="Подписка очереди" ToolTip="Фильтр по подписке, закреплённой за заданием"/>
+                        </Grid>
+                        <TextBlock x:Name="QueueFilterScopeHint" Style="{StaticResource MutedText}" TextWrapping="Wrap"/>
+                    </StackPanel>
+
+                    <Grid Grid.Row="4">
+                    <DataGrid x:Name="QueueGrid" AllowDrop="True" Tag="{Binding IsChecked, ElementName=ShowVideoTitlesCheck}">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="#" Binding="{Binding Order}" Width="38" ElementStyle="{StaticResource GridTextStyle}"/>
                             <DataGridTemplateColumn Header="Видео / прогресс" Width="*" MinWidth="185">
@@ -454,8 +474,12 @@
                             <DataGridTextColumn Header="Подписка / папка" Binding="{Binding SubscriptionName}" Width="120" ElementStyle="{StaticResource GridTextStyle}"/>
                         </DataGrid.Columns>
                     </DataGrid>
+                    <TextBlock x:Name="QueueEmptyFilterHint" Visibility="Collapsed" HorizontalAlignment="Center" VerticalAlignment="Center"
+                               Margin="18" TextWrapping="Wrap" TextAlignment="Center" Foreground="{StaticResource MutedBrush}"
+                               IsHitTestVisible="False"/>
+                    </Grid>
 
-                    <StackPanel Grid.Row="4" Margin="0,10,0,0">
+                    <StackPanel Grid.Row="5" Margin="0,10,0,0">
                         <CheckBox x:Name="ShowVideoTitlesCheck" Content="Показывать названия видео вместо URL" IsChecked="False"
                                   ToolTip="Переключает очередь и список загрузок. Пока название недоступно, отображается URL. Исходная ссылка доступна в подсказке и меню строки."/>
                         <CheckBox x:Name="WatchClipboardCheck" Content="Watch clipboard and auto-add URLs"/>

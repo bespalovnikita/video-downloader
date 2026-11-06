@@ -64,6 +64,8 @@ internal sealed partial class UiScenario
             UiScenario.TestAppUpdateControls(root);
             Stage("testing completed queue playback and finished session clock");
             UiScenario.TestQueuePlaybackAndTimer(root);
+            Stage("testing queue search/status/subscription views and scoped actions while active");
+            UiScenario.TestQueueFilters(root);
             Stage("testing duplicate-history dialog choices");
             UiScenario.TestDuplicateHistoryChoices(root);
             Stage("testing portable queue clipboard and file transfer");

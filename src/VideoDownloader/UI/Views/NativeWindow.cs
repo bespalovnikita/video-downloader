@@ -88,13 +88,14 @@ public sealed partial class NativeWindow : IDisposable
         C("AudioTrackCombo").SelectionChanged+=(_,_)=>B("AudioLanguagesBox").IsEnabled=AudioTrackSelection.ToId(Pick(C("AudioTrackCombo")))=="Languages";
         InitializeJournalControls();
         InitializeMediaSelectionControls();
+        InitializeQueueFilters();
         K("ShowVideoTitlesCheck").Checked+=(_,_)=>SaveCheckpoint();
         K("ShowVideoTitlesCheck").Unchecked+=(_,_)=>SaveCheckpoint();
         _tick.Tick+=(_,_)=>Tick();
         _window.Closing+=OnClosing;
         Q.SelectionChanged+=(_,_)=>
         {
-            if(Q.SelectedItem is DownloadItem item)ShowPreview(item.Url);
+            if(!QueueFilterRefreshing && Q.SelectedItem is DownloadItem item)ShowPreview(item.Url);
             RefreshMediaSelectionState();
         };
         D.SelectionChanged+=(_,_)=>SetDownloadActions();
@@ -105,7 +106,7 @@ public sealed partial class NativeWindow : IDisposable
         };
         Q.MouseMove+=(_,e)=>
         {
-            if (SessionState.Coordinator?.IsRunning==true || _dragged==null || e.LeftButton!=MouseButtonState.Pressed) return;
+            if (SessionState.Coordinator?.IsRunning==true || QueueFiltersActive || _dragged==null || e.LeftButton!=MouseButtonState.Pressed) return;
             if ((e.GetPosition(Q)-_dragPoint).Length>8)
             {
                 try { DragDrop.DoDragDrop(Q,_dragged,DragDropEffects.Move); }
@@ -114,7 +115,7 @@ public sealed partial class NativeWindow : IDisposable
         };
         Q.Drop+=(_,e)=>
         {
-            if (SessionState.Coordinator?.IsRunning==true) return;
+            if (SessionState.Coordinator?.IsRunning==true || QueueFiltersActive) return;
             if (e.Data.GetDataPresent(typeof(DownloadItem)) && e.Data.GetData(typeof(DownloadItem)) is DownloadItem item)
             {
                 // Selection normally remains on the dragged item. Resolve the
@@ -182,7 +183,9 @@ public sealed partial class NativeWindow : IDisposable
             T("HeaderStatus").Text="● Ready";
             T("HeaderStatus").Foreground=Brushes.LightGray;
         }
-        if(metrics.ActiveChanged) { Q.Items.Refresh(); D.Items.Refresh(); }
+        if(metrics.ActiveChanged) { RefreshQueueView(); D.Items.Refresh(); }
+        _queueFilters?.RefreshSummary();
+        RefreshQueueFilterActions();
         RefreshMediaSelectionState();
         RefreshAppUpdateControls();
     }
@@ -391,8 +394,8 @@ public sealed partial class NativeWindow : IDisposable
     }
     internal void Reindex()
     {
-        int n=SessionState.Reindex();
-        T("QueueCount").Text=n+" URLs";
+        SessionState.Reindex();
+        RefreshQueueView(true);
         UpdateState();SaveCheckpoint();
     }
     private static IReadOnlyList<string> ParseUrls(string text)=>InputIngressController.ParseUrls(text);
@@ -431,7 +434,7 @@ public sealed partial class NativeWindow : IDisposable
             ShowPreview(added[0].Url);
         }
         Reindex();
-        T("ClipboardHint").Text=added.Count+" URL(s) added.";
+        T("ClipboardHint").Text=QueueAddedHint(added.Count);
     }
     private void RequestRowPreview(DownloadItem row,bool priority=false)=>_preview.RequestRow(row,priority);
     private void ShowPreview(string url)=>_preview.Show(url);
@@ -567,11 +570,11 @@ public sealed partial class NativeWindow : IDisposable
     {
         SessionState.Forget(row);
     }
-    private void ClearRows()
+    private void ClearRows(IReadOnlyCollection<DownloadItem> candidates)
     {
-        foreach(var row in SessionState.Queue.ToArray())
-            if (row.CanResume && row.StageDir.Length==0 && row.CleanupPaths.Count==0) ForgetRow(row);
-        if (SessionState.Queue.Count>0)
+        foreach(var row in candidates)
+            if (SessionState.Queue.Contains(row) && row.CanResume && row.StageDir.Length==0 && row.CleanupPaths.Count==0) ForgetRow(row);
+        if(candidates.Any(SessionState.Queue.Contains))
             MessageBox.Show(_window,ErrorMessages.Text("Задачи, ожидающие очистки, сохранены. Нажмите Remove для повторной попытки.",
                 "Downloads awaiting cleanup were kept. Use Remove to retry."),
                 ErrorMessages.Text("Ожидается очистка","Cleanup pending"),MessageBoxButton.OK,MessageBoxImage.Warning);
@@ -579,7 +582,7 @@ public sealed partial class NativeWindow : IDisposable
     }
     private void MoveItem(DownloadItem item,int index)
     {
-        if(SessionState.Move(item,index))Reindex();
+        if(!QueueFiltersActive && SessionState.Move(item,index))Reindex();
     }
     public void ReceiveArguments(IEnumerable<string> args)
     {

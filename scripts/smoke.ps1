@@ -4,7 +4,8 @@ $root = Split-Path -Parent $PSScriptRoot
 $xamlFiles = @{
     'MainWindow.xaml' = @('QueueGrid','DownloadGrid','PasteClipboardButton','PauseButton','CodecCombo','ContainerCombo',
         'WriteSubsCheck','FilenameTemplateBox','FilenameTemplateLabel','FilenameTemplateHelpButton','DependencyStatus','OpenOutputDirectoryButton','OpenAppSettingsButton','ShowVideoTitlesCheck',
-        'MediaSelectionButton','MediaSelectionSummary','CheckAppUpdateButton','InstallAppUpdateButton','AppUpdateStatusText')
+        'MediaSelectionButton','MediaSelectionSummary','CheckAppUpdateButton','InstallAppUpdateButton','AppUpdateStatusText',
+        'QueueSearchBox','QueueStatusFilter','QueueSubscriptionFilter','ResetQueueFiltersButton','QueueEmptyFilterHint','QueueFilterScopeHint')
     'DuplicateDownloadDialog.xaml' = @('YesButton','NoButton','YesAllButton','NoAllButton','CancelButton','DuplicateUrl')
     'SubscriptionsWindow.xaml' = @('SubscriptionGrid','SubscriptionInboxGrid','SubscriptionCheckProgressPanel',
         'SubscriptionCheckOverallProgress','SubscriptionCheckActivityProgress','CancelSubscriptionCheckButton','QueueSubscriptionItemsButton','FullSubscriptionCheck',
