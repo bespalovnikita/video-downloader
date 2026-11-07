@@ -52,6 +52,7 @@ public sealed partial class NativeWindow
         var declined=selected.Except(approved).ToArray();
         var ready=new List<DownloadItem>();
         var expected=SessionState.Coordinator;
+        long stopVersion=SessionState.StopVersion;
         var restartOptions=(expected?.IsRunning==true?SessionState.Options:ReadOptions()).Snapshot();
         await RunQueueItemActionAsync(async()=>
         {
@@ -115,6 +116,11 @@ public sealed partial class NativeWindow
         if(ready.Count==0 || _closing || _disposed || _appUpdateHandoff || _checkpointReadOnly || RejectProfileBackupMutation())return;
         ready=ready.Where(row=>SessionState.Queue.Contains(row) && row.CanResume && row.Status=="Queued").ToList();
         foreach(var row in ready)RequestRowPreview(row,true);
+        if(SessionState.StopVersion!=stopVersion)
+        {
+            foreach(var row in ready)row.DeferredToNextStart=true;
+            UpdateState();SaveCheckpoint();return;
+        }
         if(expected?.IsRunning==true && ReferenceEquals(expected,SessionState.Coordinator))
         {
             int deferred=0;
@@ -141,6 +147,11 @@ public sealed partial class NativeWindow
             // Let the previous Start's dispatcher continuation finish its
             // teardown when resetting the last active task ended that session.
             await System.Windows.Threading.Dispatcher.Yield(DispatcherPriority.Background);
+            if(SessionState.StopVersion!=stopVersion)
+            {
+                foreach(var row in ready)row.DeferredToNextStart=true;
+                SaveCheckpoint();return;
+            }
             if(!QueueItemActionsBlocked())await StartWithConfirmationAsync(ready,ready.ToHashSet(),restartOptions);
         }
         else

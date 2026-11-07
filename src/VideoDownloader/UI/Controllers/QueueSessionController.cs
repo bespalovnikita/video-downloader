@@ -26,6 +26,7 @@ internal sealed class QueueSessionController
     internal TimeSpan Elapsed=>_elapsedAtStop+(_clockRunning
         ? _timeProvider.GetElapsedTime(_startedTimestamp) : TimeSpan.Zero);
     internal bool Stopping { get; private set; }
+    internal long StopVersion { get; private set; }
     internal IReadOnlyCollection<string> Urls=>_urls;
 
     internal void SetOptions(DownloadOptions options)=>Options=options;
@@ -199,7 +200,7 @@ internal sealed class QueueSessionController
         _elapsedAtStop=Elapsed;_clockRunning=false;
         Coordinator=null;
     }
-    internal void MarkStopping()=>Stopping=true;
+    internal void MarkStopping(){Stopping=true;StopVersion++;}
     internal void Stop()
     {
         MarkStopping();Coordinator?.Stop();

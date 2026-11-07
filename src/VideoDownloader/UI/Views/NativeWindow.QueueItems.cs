@@ -12,7 +12,7 @@ public sealed partial class NativeWindow
     private bool QueueItemActionsBlocked(bool ownOperation=false)=>_disposed || _closing || _appUpdateHandoff ||
         _restoringSession || _checkpointReadOnly || _legacyEngineBlocked || _dependencyOperationRunning ||
         _profileBackupBusy || _profileBackupRecoveryRequired || _profileBackupReplaying ||
-        (_startingSession && SessionState.Coordinator?.IsRunning!=true) || (_queueItemActionBusy && !ownOperation);
+        (_startingSession && SessionState.Coordinator?.IsRunning!=true && !ownOperation) || (_queueItemActionBusy && !ownOperation);
 
     private bool CanSkipQueueItem(DownloadItem row)=>SessionState.Queue.Contains(row) && row.CanResume &&
         row.Status is not ("Completed" or "Skipped");
