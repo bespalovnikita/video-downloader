@@ -10,7 +10,7 @@ public sealed class SubscriptionStore
     private static readonly JsonSerializerOptions Json = new() { WriteIndented = false };
     private static readonly string[] DefinitionProperties =
     ["Id", "Url", "Title", "ShortName", "FeedUrl", "DownloadExisting", "Initialized", "Paused",
-     "LastAttemptUtc", "LastSuccessUtc", "LastError", "LastWarning"];
+     "LastAttemptUtc", "LastSuccessUtc", "LastError", "LastWarning", "ScheduleEnabled", "ScheduleIntervalMinutes"];
     private static readonly string[] ItemProperties =
     ["SubscriptionId", "Url", "Title", "State", "DiscoveredAtUtc", "InitialQueuePending", "SuccessAttributed",
      "DuplicateSubscriptionId", "DuplicateNotified"];
@@ -46,7 +46,16 @@ public sealed class SubscriptionStore
     }
 
     public SubscriptionSnapshot ApplyScan(string id, SubscriptionScan scan, IEnumerable<string> successfulUrls,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) => ApplyScanCore(id,scan,successfulUrls,cancellationToken,null);
+
+    internal SubscriptionSnapshot ApplyScheduledScan(SubscriptionDefinition captured,SubscriptionScan scan,
+        IEnumerable<string> successfulUrls,CancellationToken cancellationToken) =>
+        ApplyScanCore(captured.Id,scan,successfulUrls,cancellationToken,source=>
+            source.Initialized && source.ScheduleEnabled && !source.Paused && source.Url==captured.Url &&
+            source.FeedUrl==captured.FeedUrl && source.ScheduleIntervalMinutes==captured.ScheduleIntervalMinutes);
+
+    private SubscriptionSnapshot ApplyScanCore(string id,SubscriptionScan scan,IEnumerable<string> successfulUrls,
+        CancellationToken cancellationToken,Func<SubscriptionDefinition,bool>? accept)
     {
         cancellationToken.ThrowIfCancellationRequested();
         ArgumentNullException.ThrowIfNull(scan);
@@ -68,6 +77,8 @@ public sealed class SubscriptionStore
         return Update(snapshot =>
         {
             var source = Find(snapshot, id);
+            if(accept is not null && !accept(source))
+                throw new OperationCanceledException("Параметры проверки по расписанию изменились.",cancellationToken);
             if (scan.Scope == SubscriptionScanScope.RecentWindow)
             {
                 var knownUrls = snapshot.Items.Where(item => item.SubscriptionId == id)
@@ -159,11 +170,39 @@ public sealed class SubscriptionStore
         });
     }
 
+    internal DateTimeOffset? RecordScheduledFailure(SubscriptionDefinition captured,string error,CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(error);
+        return Locked(()=>
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var snapshot=ReadCore();
+            var source=snapshot.Subscriptions.FirstOrDefault(source=>source.Id==captured.Id);
+            if(source is null || !source.ScheduleEnabled || !source.Initialized || source.Paused ||
+                source.Url!=captured.Url || source.FeedUrl!=captured.FeedUrl ||
+                source.ScheduleIntervalMinutes!=captured.ScheduleIntervalMinutes)return source?.LastAttemptUtc;
+            source.LastAttemptUtc=DateTimeOffset.UtcNow;source.LastError=error;
+            Validate(snapshot);WriteCore(snapshot,cancellationToken);return source.LastAttemptUtc;
+        },cancellationToken);
+    }
+
     public void SetPaused(string id, bool paused) => Update(snapshot =>
     {
         Find(snapshot, id).Paused = paused;
         return 0;
     });
+
+    public void SetSchedule(string id,bool enabled,int intervalMinutes)
+    {
+        if(intervalMinutes<SubscriptionSchedulePlanner.MinIntervalMinutes || intervalMinutes>SubscriptionSchedulePlanner.MaxIntervalMinutes)
+            throw new ArgumentOutOfRangeException(nameof(intervalMinutes),"Интервал проверки должен быть от 5 до 10080 минут.");
+        Update(snapshot=>
+        {
+            var source=Find(snapshot,id);
+            if(enabled && !source.Initialized)throw new InvalidOperationException("Сначала выполните первую полную проверку вручную.");
+            source.ScheduleEnabled=enabled;source.ScheduleIntervalMinutes=intervalMinutes;return 0;
+        });
+    }
 
     public void SetShortName(string id, string name)
     {
@@ -366,7 +405,8 @@ public sealed class SubscriptionStore
                 var items = root.GetProperty("Items");
                 if (sources.ValueKind != JsonValueKind.Array || items.ValueKind != JsonValueKind.Array)
                     throw new InvalidDataException("Ожидались списки подписок и материалов.");
-                foreach (var source in sources.EnumerateArray()) RequireProperties(source, DefinitionProperties, ["ShortName"]);
+                foreach (var source in sources.EnumerateArray()) RequireProperties(source, DefinitionProperties,
+                    ["ShortName","ScheduleEnabled","ScheduleIntervalMinutes"]);
                 foreach (var item in items.EnumerateArray()) RequireProperties(item, ItemProperties);
                 var snapshot = root.Deserialize<SubscriptionSnapshot>(Json)
                     ?? throw new InvalidDataException("Пустой файл подписок.");
@@ -402,7 +442,9 @@ public sealed class SubscriptionStore
             if (source is null || string.IsNullOrWhiteSpace(source.Id) || !ids.Add(source.Id) ||
                 source.Title is null || source.ShortName is null ||
                 (source.ShortName.Length > 0 && !SubscriptionNames.IsValid(source.ShortName)) ||
-                source.LastError is null || source.LastWarning is null)
+                source.LastError is null || source.LastWarning is null ||
+                source.ScheduleIntervalMinutes<SubscriptionSchedulePlanner.MinIntervalMinutes ||
+                source.ScheduleIntervalMinutes>SubscriptionSchedulePlanner.MaxIntervalMinutes)
                 throw new InvalidDataException("Повторяющаяся или повреждённая подписка.");
             RequireUrl(source.Url);
             RequireOptionalUrl(source.FeedUrl);

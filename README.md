@@ -3,7 +3,7 @@
 [![Сборка Windows](https://github.com/bespalovnikita/video-downloader/actions/workflows/native-windows.yml/badge.svg)](https://github.com/bespalovnikita/video-downloader/actions/workflows/native-windows.yml)
 [![Сборка Android](https://github.com/bespalovnikita/video-downloader/actions/workflows/android.yml/badge.svg)](https://github.com/bespalovnikita/video-downloader/actions/workflows/android.yml)
 
-Приложение для скачивания видео и аудио с очередью, историей, превью и ручными подписками. Доступны два клиента: **Windows 10/11 x64** на C# / .NET 8 / WPF и **Android 8.0+** на Kotlin / Jetpack Compose. Оба используют yt-dlp; набор возможностей различается.
+Приложение для скачивания видео и аудио с очередью, историей, превью и подписками. Доступны два клиента: **Windows 10/11 x64** на C# / .NET 8 / WPF и **Android 8.0+** на Kotlin / Jetpack Compose. Оба используют yt-dlp; набор возможностей различается.
 
 **[Скачать Windows и Android](https://github.com/bespalovnikita/video-downloader/releases/latest)** · **[Установить Android](docs/user/android.md)** · **[Вся документация на русском](docs/README.md)**
 
@@ -56,7 +56,7 @@
 
 <a id="подписки-на-каналы-и-плейлисты"></a>
 
-Подписки проверяются вручную. RSS дополняет названия материалов, подтверждённых коллекцией через yt-dlp. Приём материалов в очередь и **Start** — отдельные действия. Для отдельной задачи на каждый ролик плейлист импортируется через подписку; прямой URL плейлиста в основной очереди остаётся одной задачей.
+Подписки проверяются вручную; в Windows можно включить [проверки по интервалу](docs/user/windows-reference.md#проверки-по-интервалу), пока приложение открыто или работает в трее. RSS дополняет названия материалов, подтверждённых коллекцией через yt-dlp. Приём материалов в очередь и **Start** — отдельные действия. Для отдельной задачи на каждый ролик плейлист импортируется через подписку; прямой URL плейлиста в основной очереди остаётся одной задачей.
 
 <a id="основные-возможности"></a>
 <a id="профили-загрузки"></a>
