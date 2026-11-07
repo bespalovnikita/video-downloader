@@ -145,7 +145,12 @@ internal sealed class MediaClipService:IDisposable
                 {
                     filters.Add("[0:v:0]trim=start="+Number(inputs[0].FilterSeek)+":duration="+Number(length)+",setpts=PTS-STARTPTS,scale=w='min(640,iw)':h='min(360,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2[v]");
                 }
-                if(hasAudio)filters.Add("["+audioIndex+":a:0]atrim=start="+Number(inputs[audioIndex].FilterSeek)+":duration="+Number(length)+",asetpts=PTS-STARTPTS[a]");
+                // Keep the same requested source origin as the video. A late
+                // audio track must keep its leading gap instead of moving its
+                // first audible sample to the start of the clip. first_pts
+                // pads that gap with real silence without stretching its tail.
+                if(hasAudio)filters.Add("["+audioIndex+":a:0]atrim=start="+Number(inputs[audioIndex].FilterSeek)+":duration="+Number(length)+
+                    ",asetpts=PTS-"+Number(inputs[audioIndex].FilterSeek)+"/TB,aresample=48000:first_pts=0[a]");
                 Add(start,"-filter_complex",string.Join(';',filters));
                 if(hasVideo)Add(start,"-map","[v]","-c:v","libx264","-preset","veryfast","-crf","28","-pix_fmt","yuv420p","-threads","2");
                 else Add(start,"-vn");

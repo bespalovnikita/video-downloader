@@ -41,6 +41,10 @@ internal static class MediaWaveformServiceTests
                 "-c:a","aac","-b:a","128k","-movflags","+faststart","high-frequency.m4a"]);
             await Tool(ffmpeg,root,["-f","lavfi","-i","sine=frequency=440:sample_rate=48000:duration=4",
                 "-af","pan=stereo|c0=c0|c1=-1*c0","-c:a","aac","-b:a","128k","-movflags","+faststart","opposite-phase.m4a"]);
+            await Tool(ffmpeg,root,["-f","lavfi","-i","color=c=blue:s=160x90:r=10:d=24",
+                "-itsoffset","5","-f","lavfi","-i","sine=frequency=440:sample_rate=48000:duration=19",
+                "-map","0:v","-map","1:a","-c:v","libx264","-preset","ultrafast","-g","20","-pix_fmt","yuv420p",
+                "-c:a","aac","-movflags","+faststart","delayed.mp4"]);
             await using var origin=new Origin(root);
             var storage=new AppPersistence(Path.Combine(root,"profile"));
             string foreign=Path.Combine(root,"foreign-user-file.mp4");File.WriteAllText(foreign,"FOREIGN USER FILE");
@@ -92,6 +96,20 @@ internal static class MediaWaveformServiceTests
                 Require(result.Success && Mean(result.Waveform!,.5,3.5)>.02,
                     "Audible high frequencies and opposite-phase stereo must not disappear through downsampling/downmix: "+file+" "+result.Error);
             }
+            foreach(bool separateAudio in new[]{false,true})
+            {
+                using var clips=new MediaClipService((_,_)=>Task.FromResult(separateAudio?
+                    new MediaClipSources(Source("silent.mp4",audio:false),Source("delayed.mp4",video:false)):
+                    new MediaClipSources(Source("delayed.mp4"),null)),storage.PreviewDir,ffmpeg,ffprobe);
+                using var waveforms=new MediaWaveformService(clips,ffmpeg);
+                foreach(double boundary in new[]{7.5,9.5})
+                {
+                    var result=await waveforms.GetWaveformAsync(new(new("https://wave.invalid/delayed",boundary,20,DurationSeconds:24),false),CancellationToken.None);
+                    Require(result.Success && result.Waveform!.StartSeconds==boundary-7.5 &&
+                        Mean(result.Waveform,3,4.5)<.004 && Mean(result.Waveform,5.5,7)>.02 && Mean(result.Waveform,12,14)>.02,
+                        "A delayed audio track must retain its source-time leading silence and later sound for muxed/separate inputs and nonzero seeks: "+separateAudio+" "+boundary+" "+result.Error);
+                }
+            }
             using(var clips=new MediaClipService((_,_)=>Task.FromResult(new MediaClipSources(Source("silent.mp4",audio:false),null)),storage.PreviewDir,ffmpeg,ffprobe))
             using(var waveforms=new MediaWaveformService(clips,ffmpeg))
             {
@@ -110,7 +128,7 @@ internal static class MediaWaveformServiceTests
             await CancellationAndLimits(root,ffmpeg);
             Require(File.ReadAllText(foreign)=="FOREIGN USER FILE" && storage.ReadHistory().Count==0,
                 "Waveform preparation must preserve user media, the queue and full-download history.");
-            Console.WriteLine("PASS: actual waveform PCM silence/levels, source times, direct extractor, audio-only/absent audio, bounded output, joined cancellation and cache ownership");
+            Console.WriteLine("PASS: actual waveform PCM silence/levels, delayed audio source times, direct extractor, audio-only/absent audio, bounded output, joined cancellation and cache ownership");
         }
         finally {Directory.Delete(root,true);}
     }
