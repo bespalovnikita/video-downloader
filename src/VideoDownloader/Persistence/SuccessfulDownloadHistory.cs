@@ -66,17 +66,33 @@ internal sealed class SuccessfulDownloadHistory
     private static long Size(DownloadHistoryEntry entry)=>entry.Url.Length+entry.Title.Length+entry.Source.Length+
         entry.OutputPaths.Sum(path=>(long)path.Length+32)+128;
 
-    private IEnumerable<DownloadHistoryEntry> ReadEntries(CancellationToken cancellationToken)
+    internal IReadOnlyList<DownloadHistoryEntry> ReadBackup(CancellationToken cancellationToken)=>WithHistoryLock(() =>
+    {
+        var latest=new Dictionary<string,DownloadHistoryEntry>(StringComparer.Ordinal);long characters=0;
+        foreach(var entry in ReadEntries(cancellationToken,ProfileBackupTransaction.MaxProfileBytes))
+        {
+            if(latest.TryGetValue(entry.Url,out var old) && old.CompletedAtUtc.HasValue &&
+                (!entry.CompletedAtUtc.HasValue || old.CompletedAtUtc.Value>entry.CompletedAtUtc.Value))continue;
+            characters-=old is null?0:(long)old.Url.Length+old.Title.Length+old.Source.Length;
+            var retained=entry with {OutputPaths=Array.Empty<string>(),OutputPathsTruncated=false};
+            latest[entry.Url]=retained;characters+=(long)retained.Url.Length+retained.Title.Length+retained.Source.Length;
+            if(latest.Count>WindowsProfileBackup.MaxRecords || characters>WindowsProfileBackup.MaxPayloadBytes)
+                throw new InvalidDataException("История превышает предел резервной копии: 100 000 URL или 32 МиБ метаданных.");
+        }
+        return latest.Values.ToArray();
+    });
+    private IEnumerable<DownloadHistoryEntry> ReadEntries(CancellationToken cancellationToken,long maxBytes=long.MaxValue)
     {
         using var input=OpenExisting();
         if(input is null)yield break;
         using var line=new MemoryStream();
         byte[] buffer=new byte[8192];
         long number=1;
-        int count;
+        int count;long totalBytes=0;
         while((count=input.Read(buffer))!=0)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            totalBytes+=count;if(totalBytes>maxBytes)throw new InvalidDataException("История превышает предел чтения резервной копии.");
             for(int index=0;index<count;index++)
             {
                 if(buffer[index]==10)

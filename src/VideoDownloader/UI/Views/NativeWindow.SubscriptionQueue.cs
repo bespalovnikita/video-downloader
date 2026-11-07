@@ -12,7 +12,7 @@ public sealed partial class NativeWindow
     internal IReadOnlyList<string> QueueSubscriptionUrls(IEnumerable<string> urls,string subscriptionId,string subscriptionName,
         IReadOnlyDictionary<string,string>? titles)
     {
-        if (_closing || _disposed) return [];
+        if (_closing || _disposed || RejectProfileBackupMutation()) return [];
         if (_checkpointReadOnly || _legacyEngineBlocked)
             throw new InvalidOperationException("Очередь недоступна для сохранения. Сначала устраните ошибку восстановления или завершите прежний движок.");
         if ((subscriptionId.Length==0)!=(subscriptionName.Length==0) ||
@@ -33,7 +33,7 @@ public sealed partial class NativeWindow
             .Select(url=>new DownloadItem{Url=url,Title=discoveredTitles.GetValueOrDefault(url,""),
                 SubscriptionId=subscriptionId,SubscriptionName=subscriptionName}).ToList();
         var approved=ConfirmDuplicates(candidates,false);
-        if (approved==null) return [];
+        if (approved==null || RejectProfileBackupMutation()) return [];
         foreach (var row in approved)
         {
             // A modal duplicate prompt may have let another UI action add it.

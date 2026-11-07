@@ -14,6 +14,7 @@
 - **Первый запуск:** [Windows](user/windows.md) · [Android](user/android.md).
 - **Четыре основных сценария Windows:** [YouTube-видео](user/windows.md#youtube-video), [плейлист](user/windows.md#youtube-playlist), [подписка](user/windows.md#subscriptions), [RSS](user/windows.md#rss).
 - **Перенос и доступ к сайтам:** [очередь между устройствами](user/queue-transfer.md) · [cookies из браузера](user/cookies.md).
+- **Резервная копия профиля:** [Windows `.vdbackup`](user/windows-backup.md) · [Android](user/troubleshooting.md#android-backup).
 - **Диагностика:** [решение проблем](user/troubleshooting.md) · [профили журнала Windows](user/windows-logging.md).
 - **Своя сборка:** [Windows](developer/windows-build.md) · [Android APK](developer/android-build.md).
 - **Внутреннее устройство:** [архитектура и диаграммы](developer/architecture.md) · [проверки](developer/testing.md) · [релизы](developer/releases.md).

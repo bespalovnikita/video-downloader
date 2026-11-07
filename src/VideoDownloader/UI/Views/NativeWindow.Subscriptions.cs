@@ -11,7 +11,7 @@ public sealed partial class NativeWindow
 
     private void OpenSubscriptions()
     {
-        if(!_disposed)Subscriptions.Open();
+        if(!_disposed && !RejectProfileBackupMutation())Subscriptions.Open();
     }
     private void DisposeSubscriptions()
     {

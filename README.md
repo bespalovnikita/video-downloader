@@ -50,6 +50,7 @@
 | Следить за каналом или плейлистом | [Создать подписку и проверить новые материалы](docs/user/windows.md#subscriptions) |
 | Использовать RSS/Atom | [Добавить ленту к подписке](docs/user/windows.md#rss) |
 | Перенести очередь между Windows и Android | [Буфер обмена и файл `.vdqueue`](docs/user/queue-transfer.md) |
+| Перенести настройки, подписки и историю Windows | [Резервная копия `.vdbackup`](docs/user/windows-backup.md) |
 | Загрузить cookies из браузера | [Получение и подключение cookies](docs/user/cookies.md) |
 | Разобраться с ошибкой | [Решение проблем](docs/user/troubleshooting.md) и [журнал Windows](docs/user/windows-logging.md) |
 | Собрать приложение самостоятельно | [Windows](docs/developer/windows-build.md) · [Android APK](docs/developer/android-build.md) |

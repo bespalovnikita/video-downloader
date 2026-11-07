@@ -2,6 +2,7 @@ using System.IO;
 using System.Text.Json;
 using VideoDownloader.Native;
 
+if (ProfileBackupTests.TryRunFixture(args)) return;
 if (JobDiagnosticsTests.TryRunFixture(args)) return;
 if (MediaWaveformServiceTests.TryRunFixture(args)) return;
 if (FragmentMergeTests.TryRunFixture(args) || MultipleFragmentTests.TryRunFixture(args)) return;
@@ -12,6 +13,7 @@ JournalSanitizerTests.Run();
 await JournalTests.RunAsync();
 await JobDiagnosticsTests.RunAsync();
 await AtomicWriteTests.RunAsync();
+await ProfileBackupTests.RunAsync();
 await HistoryLibraryTests.RunAsync();
 PortableQueueTests.Run();
 await GuiInstanceTests.RunAsync();

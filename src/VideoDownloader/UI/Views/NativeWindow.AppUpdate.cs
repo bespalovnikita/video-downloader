@@ -33,7 +33,7 @@ public sealed partial class NativeWindow
     }
     private bool CanInstallAppUpdate()=>!_disposed && !_closing && !_appUpdateHandoff && !_restoringSession &&
         !_checkpointReadOnly && !_legacyEngineBlocked && !_startingSession && !_dependencyOperationRunning && !HasJobDiagnosticWork &&
-        _window.IsEnabled && _mediaSelectionDialog is null && _subscriptions?.HasActiveWork!=true &&
+        !_profileBackupBusy && !_profileBackupRecoveryRequired && _window.IsEnabled && _mediaSelectionDialog is null && _subscriptions?.HasActiveWork!=true &&
         _subscriptions?.IsSchedulingSuspended!=true && SessionState.Coordinator?.IsRunning!=true &&
         SessionState.RunningTask?.IsCompleted!=false &&
         !SessionState.Queue.Concat(SessionState.Downloads).Any(row=>row.Status=="Running" || row.PendingRemoval ||
@@ -48,7 +48,7 @@ public sealed partial class NativeWindow
     }
     private async Task CheckAppUpdateAsync(bool automatic)
     {
-        if(_appUpdateBusy || _appUpdateService is null || _appUpdateStop is null || _closing || _disposed)return;
+        if(_appUpdateBusy || _appUpdateService is null || _appUpdateStop is null || _closing || _disposed || RejectProfileBackupMutation())return;
         int generation=_appUpdateGeneration;var cancel=_appUpdateStop.Token;var service=_appUpdateService;
         _appUpdateBusy=true;_appUpdateStatus=ErrorMessages.Text("Проверка новой версии…","Checking for a new version…");RefreshAppUpdateControls();
         try
