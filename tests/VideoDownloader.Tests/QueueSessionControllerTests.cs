@@ -17,6 +17,8 @@ internal static class QueueSessionControllerTests
         {
             await TestElapsedClock(root);
             TestPortablePersistenceBounds(root,options);
+            TestOrdinaryPersistenceBounds(root,options);
+            TestExpandedRecovery(root);
             var old=new DownloadItem{Url="https://queue-owner.invalid/old",Status="Completed"};
             var current=new DownloadItem{Url="https://queue-owner.invalid/Video"};
             var differentCase=new DownloadItem{Url="https://queue-owner.invalid/video"};
@@ -148,6 +150,90 @@ internal static class QueueSessionControllerTests
         Require(File.ReadAllBytes(data.SessionPath).SequenceEqual(previous) && data.Restore()!.Queue.Count==1,
             "Rejected byte and count boundaries leave the existing session readable and unchanged");
         Console.WriteLine("PASS: portable queue preflight bounds the full checkpoint before any title, queue or disk mutation");
+    }
+
+    private static void TestOrdinaryPersistenceBounds(string root,DownloadOptions options)
+    {
+        var data=new AppPersistence(Path.Combine(root,"ordinary-bounds"));
+        var owner=new QueueSessionController();owner.SetOptions(options);
+        string media=Path.Combine(root,"publication-sentinel.mp4");File.WriteAllText(media,"owned media");
+        var existing=new DownloadItem{Url="https://capacity.invalid/Video?x=%2f",Status="Completed",State="Done",Progress=100,
+            Order=7,Path=media,OwnedPaths=[media],OutputRoot=root,AttemptFinished=true,
+            Selection=new DownloadSelection("https://capacity.invalid/Video?x=%2f",new DownloadSection(1,2))};
+        owner.TryAdd(existing);existing.Order=7;
+        data.Save(owner.Queue,options);data.AppendSuccess(existing.Url);
+        byte[] previous=File.ReadAllBytes(data.SessionPath),history=File.ReadAllBytes(data.HistoryPath);
+        int notifications=0;owner.Queue.CollectionChanged+=(_,_)=>notifications++;
+        var batch=Enumerable.Range(0,35_000).Select(index=>new DownloadItem{Url=$"https://capacity.invalid/{index:D6}"}).ToArray();
+        Refuses(()=>owner.AddBatch(batch,options),"A short-ASCII ordinary batch must fail before adding an unsavable queue");
+        Require(owner.Queue.Count==1 && ReferenceEquals(owner.Queue[0],existing) && existing.Order==7 && notifications==0 &&
+            existing.Status=="Completed" && existing.Selection!.Section!.StartSeconds==1 && existing.OwnedPaths.SequenceEqual(new[]{media}) &&
+            File.ReadAllText(media)=="owned media" && File.ReadAllBytes(data.SessionPath).SequenceEqual(previous) &&
+            File.ReadAllBytes(data.HistoryPath).SequenceEqual(history),
+            "Rejected ordinary batch must preserve live order, selection, ownership, history, checkpoint bytes and every collection notification");
+
+        string title=new('Ж',3_000_000);
+        Refuses(()=>owner.TryAdd(new DownloadItem{Url="https://capacity.invalid/unicode",Title=title}),
+            "A single Add must guard escaped UTF-8 title bytes too");
+        var oversizedOptions=options.Snapshot();oversizedOptions.FilenameTemplate=title;
+        Refuses(()=>owner.AddBatch([new DownloadItem{Url="https://capacity.invalid/options"}],oversizedOptions),
+            "Prospective admission must include the supplied current UI options");
+        Refuses(()=>owner.AddBatch([],options,new Dictionary<DownloadItem,string>{{existing,title}}),
+            "Title enrichment must be rejected without changing a known live row");
+        Require(existing.Title=="" && existing.Order==7 && notifications==0 && owner.Queue.Count==1 &&
+            File.ReadAllBytes(data.SessionPath).SequenceEqual(previous),"All byte failures must remain atomic");
+
+        // This is deliberately one batch: no full serialization per URL. It
+        // verifies the real large-input path and its final persisted ordering.
+        var clock=System.Diagnostics.Stopwatch.StartNew();
+        var accepted=owner.AddBatch(batch.Take(20_000),options);clock.Stop();
+        Require(accepted.Count==20_000 && owner.Queue.Count==20_001 && owner.Queue[0].Order==1 && owner.Queue[^1].Order==20_001,
+            "A savable large ordinary batch commits once after checking its final contiguous Order");
+        var exact=owner.AddBatch([new DownloadItem{Url=existing.Url},new DownloadItem{Url="https://capacity.invalid/video?x=%2F"}],options);
+        Require(exact.Count==1 && exact[0].Url=="https://capacity.invalid/video?x=%2F",
+            "Batch admission must deduplicate exact URLs and preserve case/percent spelling");
+        data.Save(owner.Queue,options);
+        Require(data.Restore()!.Queue.Count==20_002 && File.ReadAllBytes(data.HistoryPath).SequenceEqual(history),
+            "Accepted ordinary batch must remain restorable without changing successful history");
+        Console.WriteLine($"PASS: ordinary batch and single Add preflight complete UTF-8 persistence bytes before any queue, title, order or disk mutation; 20000-row batch {clock.Elapsed.TotalMilliseconds:F1} ms (one run, no WPF)");
+    }
+
+    private static void TestExpandedRecovery(string root)
+    {
+        foreach(bool legacy in new[]{false,true})
+        {
+            var fixture=QueueCapacityRecoveryFixture.Create(Path.Combine(root,"expanded-"+legacy),legacy);
+            var data=fixture.Storage;
+            Require(fixture.Checkpoint.Length==AppPersistence.MaxCheckpointBytes-128,"The old-format fixture is a valid input within 128 bytes of the reader limit");
+            var recovered=data.Restore()!;
+            var owner=new QueueSessionController();owner.RestoreValidated(recovered.Queue);
+            Require(owner.Queue.SequenceEqual(recovered.Queue) && owner.Queue.Any(row=>row.Url==fixture.PaddedUrl &&
+                row.Status=="Queued" && row.OutputRoot==Path.GetFullPath(recovered.Settings.Output) && row.AttemptFinished),
+                "Validated old rows remain visible with recovered output roots and attempts even when their expanded writer snapshot does not fit");
+            Refuses(()=>AppPersistence.ValidateCanSave(owner.Queue,recovered.Settings),"The near-cap old input must expand beyond the current writer budget");
+            Refuses(()=>data.Save(owner.Queue,recovered.Settings),"An expanded recovery cannot overwrite its original durable checkpoint");
+            Require(File.ReadAllBytes(data.SessionPath).SequenceEqual(fixture.Checkpoint),"Recovery admission preserves every original checkpoint byte");
+            if(legacy)
+            {
+                var cleanup=owner.Queue.Single(row=>row.Url=="https://legacy.example/cleanup-event");
+                Require(cleanup.PendingRemoval && cleanup.AttemptFinished && cleanup.CleanupError=="Locked file from Result" &&
+                    cleanup.OutputRoot==fixture.OriginalOutput && cleanup.OwnedPaths.SequenceEqual(new[]{fixture.EventMedia}) &&
+                    cleanup.CleanupPaths.SequenceEqual(new[]{fixture.EventMedia}),"Legacy Result ownership and cleanup remain accessible after over-cap recovery");
+                var unowned=owner.Queue.Single(row=>row.Url=="https://legacy.example/unowned-result");
+                bool refused=false;
+                try{DownloadCleanup.Retry(unowned);}catch(IOException){refused=true;}
+                Require(refused && File.Exists(fixture.UnownedMedia),"A legacy Path alone must not gain ownership during recovery");
+                DownloadCleanup.Retry(cleanup);owner.Forget(cleanup);
+                Require(!File.Exists(fixture.EventMedia) && File.Exists(fixture.SavedMedia) && File.Exists(fixture.FinishedMedia) &&
+                    File.ReadAllBytes(data.SessionPath).SequenceEqual(fixture.Checkpoint) && File.ReadAllBytes(fixture.EventsPath).SequenceEqual(fixture.Events),
+                    "Explicit cleanup removes only proven owned files and keeps the oversized original checkpoint and legacy events");
+            }
+            owner.Forget(owner.Queue.Single(row=>row.Url==fixture.PaddedUrl));
+            data.Save(owner.Queue,recovered.Settings);
+            Require(data.Restore()!.Queue.Count==owner.Queue.Count && File.Exists(fixture.UnownedMedia) && !File.Exists(data.HistoryPath),
+                "Explicit reduction makes the remaining recovered snapshot durable without adding history or touching unowned media");
+        }
+        Console.WriteLine("PASS: near-cap old queued/legacy Result recovery retains expanded rows, ownership and cleanup before explicit reduction/save");
     }
 
     private static void Refuses(Action action,string error)

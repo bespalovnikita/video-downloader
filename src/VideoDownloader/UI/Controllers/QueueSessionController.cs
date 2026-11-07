@@ -49,9 +49,56 @@ internal sealed class QueueSessionController
 
     internal bool TryAdd(DownloadItem row)
     {
-        if(Queue.Any(existing=>string.Equals(existing.Url,row.Url,StringComparison.Ordinal)))return false;
-        Queue.Add(row);
-        return true;
+        return AddBatch([row],Options).Count!=0;
+    }
+    // AppPersistence has already validated the durable input and reconciled
+    // legacy results. Recovery can expand it beyond today's writer budget;
+    // retain those rows so the UI can expose ownership and explicit cleanup.
+    internal void RestoreValidated(IReadOnlyList<DownloadItem> rows)
+    {
+        if(Queue.Count!=0)throw new InvalidOperationException("Recovery requires an empty queue.");
+        foreach(var row in rows)Queue.Add(row);
+    }
+    // One persistence preflight per ingress batch, including a single live Add.
+    // The dispatcher owns admission; workers still own their result fields.
+    internal IReadOnlyList<DownloadItem> AddBatch(IEnumerable<DownloadItem> rows,DownloadOptions settings,
+        IReadOnlyDictionary<DownloadItem,string>? titles=null)
+    {
+        var seen=Queue.Select(row=>row.Url).ToHashSet(StringComparer.Ordinal);
+        var added=new List<DownloadItem>();
+        foreach(var row in rows)
+        {
+            if(!seen.Add(row.Url))continue;
+            if(Queue.Count+added.Count>=AppPersistence.MaxQueueItems)
+                throw new InvalidDataException("Очередь не помещается в сохранение: допустимо не более 100 000 ссылок. Перенеси её частями.");
+            row.Order=Queue.Count+added.Count+1;
+            added.Add(row);
+        }
+        if(added.Count==0 && (titles==null || titles.Count==0))return added;
+        var proposed=new List<DownloadItem>(Queue.Count+added.Count);
+        foreach(var row in Queue)
+        {
+            int order=proposed.Count+1;
+            string? title=null;
+            bool hasTitle=titles?.TryGetValue(row,out title)==true;
+            if(hasTitle || row.Order!=order)
+            {
+                var copy=JsonSerializer.Deserialize<DownloadItem>(JsonSerializer.SerializeToUtf8Bytes(row,AppPersistence.Json),AppPersistence.Json)!;
+                if(hasTitle)copy.Title=title!;
+                copy.Order=order;proposed.Add(copy);
+            }
+            else proposed.Add(row);
+        }
+        proposed.AddRange(added);
+        AppPersistence.ValidateCanSave(proposed,settings);
+        // No live row, collection, preview or coordinator changes before this
+        // point. In particular a rejected batch cannot poison the checkpoint.
+        foreach(var row in Queue)
+            if(titles?.TryGetValue(row,out string? title)==true)row.Title=title;
+        for(int index=0;index<Queue.Count;index++)
+            if(Queue[index].Order!=index+1)Queue[index].Order=index+1;
+        foreach(var row in added)Queue.Add(row);
+        return added;
     }
     // Portable queues carry display data only. They never enter a live coordinator.
     internal IReadOnlyList<DownloadItem> ImportPortable(IReadOnlyList<PortableQueueEntry> entries,DownloadOptions settings)
