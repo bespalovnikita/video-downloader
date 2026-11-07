@@ -21,6 +21,9 @@ public sealed partial class PreviewService
     private static bool LocalImageFresh(PreviewData data)=>data.ThumbnailBase64.Length>0 &&
         data.LocalThumbnailFingerprint is {Length:64} && data.LocalThumbnailSavedAtUtc is {} saved &&
         saved<=DateTime.UtcNow.AddMinutes(5) && DateTime.UtcNow-saved<TimeSpan.FromHours(72);
+    private static bool CanKeepPoster(PreviewData data,string fingerprint)=>data.ThumbnailBase64.Length>0 &&
+        (string.IsNullOrEmpty(data.LocalThumbnailFingerprint) ||
+            data.LocalThumbnailFingerprint==fingerprint && LocalImageFresh(data));
 
     // This is local-only work on the existing sole preview worker. It never
     // calls yt-dlp, starts a download or changes queue/history ownership.
@@ -133,8 +136,9 @@ public sealed partial class PreviewService
             var prior=LocalPosterBase(work.Input);
             string fingerprint=LocalPosterDecoder.Fingerprint(work.Input);
             // LocalPosterBase validates disk images once; memory was already
-            // decoded by its producer. Reusing it must not decode a gallery.
-            if(prior.ThumbnailBase64.Length>0 && (string.IsNullOrEmpty(prior.LocalThumbnailFingerprint) || prior.LocalThumbnailFingerprint==fingerprint))
+            // decoded by its producer. A matching local file still needs a
+            // fresh image timestamp, independently of metadata freshness.
+            if(CanKeepPoster(prior,fingerprint))
                 return false;
             string ffmpeg=FfmpegExecutable;
             string ffprobe=_ffmpegOverride is null?DependencyCenter.Executable(OperatingSystem.IsWindows()?"ffprobe.exe":"ffprobe"):
@@ -161,7 +165,7 @@ public sealed partial class PreviewService
                 var current=_cache.TryGetValue(work.Input.Url,out var latest)?latest:prior;
                 // Memory entries were already decoded on the worker. Avoid
                 // decoding a complete gallery again on the UI dispatcher.
-                if(current.ThumbnailBase64.Length>0 && (string.IsNullOrEmpty(current.LocalThumbnailFingerprint) || current.LocalThumbnailFingerprint==frame.Fingerprint))return;
+                if(CanKeepPoster(current,frame.Fingerprint))return;
                 merged=current with {ThumbnailBase64=image,ThumbnailsBase64=[image],
                     LocalThumbnailFingerprint=frame.Fingerprint,LocalThumbnailSavedAtUtc=DateTime.UtcNow};
                 CacheInMemory(merged);committed=true;

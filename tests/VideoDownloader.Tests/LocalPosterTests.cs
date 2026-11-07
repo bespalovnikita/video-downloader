@@ -128,6 +128,7 @@ internal static class LocalPosterTests
             }
             finally{service.Dispose();await service.Completion.WaitAsync(TimeSpan.FromSeconds(5));}
         }
+        await ExpiredLocalPosterRefresh(root,ffmpeg,input,remoteBytes);
         await RemoteImageWins(root,ffmpeg,input,remoteBytes);
         await RemoteImageWins(root,ffmpeg,input,remoteBytes,recoverFallback:true);
         await RemoteImageWins(root,ffmpeg,input,remoteBytes,recoverFallback:true,converterRetry:true);
@@ -152,6 +153,52 @@ internal static class LocalPosterTests
             {
                 Require(!await service.RequestLocalPosterAsync(input,(_,_)=>Task.FromResult(false),CancellationToken.None) && service.Peek(input.Url) is null,
                     "A stale/removed attempt rejected by the UI owner must never populate the image cache.");
+            }
+            finally{service.Dispose();await service.Completion.WaitAsync(TimeSpan.FromSeconds(5));}
+        }
+    }
+    private static async Task ExpiredLocalPosterRefresh(string root,string ffmpeg,LocalPosterInput input,byte[] originalImage)
+    {
+        DateTime oldMetadata=DateTime.UtcNow.AddHours(-100),oldLocal=DateTime.UtcNow.AddHours(-100);
+        string fingerprint=LocalPosterDecoder.Fingerprint(input);
+        foreach(var (name,metadataSaved,localSaved) in new (string,DateTime,DateTime?)[]{
+            ("expired",oldMetadata,oldLocal),
+            ("metadata-fresh",DateTime.UtcNow.AddHours(-1),oldLocal),
+            ("missing-local-time",oldMetadata,null),
+            ("future-local-time",oldMetadata,DateTime.UtcNow.AddHours(100))})
+        {
+            var storage=new AppPersistence(Path.Combine(root,"local-refresh-"+name));
+            Seed(storage,input.Url,metadataSaved,Convert.ToBase64String(originalImage));
+            string path=CacheFile(storage,input.Url);
+            var before=JsonNode.Parse(File.ReadAllText(path))!.AsObject();
+            before["LocalThumbnailFingerprint"]=fingerprint;
+            before["LocalThumbnailSavedAtUtc"]=localSaved;
+            File.WriteAllText(path,before.ToJsonString());
+            int publications=0,metadataCallbacks=0;
+            using var service=new PreviewService("must-not-run",storage,()=>"",_=>metadataCallbacks++,_=>{},ffmpegPath:ffmpeg);
+            try
+            {
+                DateTime started=DateTime.UtcNow;
+                bool refreshed=await service.RequestLocalPosterAsync(input,(commit,_)=>
+                {
+                    publications++;
+                    if(metadataSaved==oldMetadata)Require(service.Peek(input.Url) is null,"An expired local image must be hidden until refreshed.");
+                    commit();
+                    Require(service.Peek(input.Url) is {ThumbnailBase64.Length:>0},"Dispatcher admission must replace the expired same-file local image.");
+                    return Task.FromResult(true);
+                },CancellationToken.None);
+                Require(refreshed && publications==1 && metadataCallbacks==0 &&
+                    service.Peek(input.Url) is {LocalThumbnailSavedAtUtc:{} saved} visible && saved>=started &&
+                    visible.LocalThumbnailFingerprint==fingerprint && visible.SavedAtUtc==metadataSaved &&
+                    PreviewImage.IsValid(Convert.FromBase64String(visible.ThumbnailBase64)),
+                    "A same-file local frame with an expired/missing/invalid image timestamp must refresh and become visible without refreshing metadata: "+name);
+                var after=JsonNode.Parse(File.ReadAllText(path))!.AsObject();
+                foreach(string field in new[]{"SavedAtUtc","Success","PreviewFetchVersion","ThumbnailError","Title","Formats","FormatsLoaded","FutureField"})
+                    Require(JsonNode.DeepEquals(before[field],after[field]),"Refreshing an expired local image changed metadata envelope field "+field);
+                Require(after["LocalThumbnailSavedAtUtc"]!.GetValue<DateTime>()>=started,
+                    "The refreshed local timestamp must survive cache restart instead of keeping the expired value.");
+                Require(!await service.RequestLocalPosterAsync(input,(_,_)=>throw new InvalidOperationException("A freshly regenerated same-file image must be reused."),CancellationToken.None),
+                    "Refreshing expiry must not turn every later local request into another decode.");
             }
             finally{service.Dispose();await service.Completion.WaitAsync(TimeSpan.FromSeconds(5));}
         }
