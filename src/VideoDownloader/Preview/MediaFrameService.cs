@@ -6,7 +6,7 @@ using System.Text;
 namespace VideoDownloader.Native;
 
 public sealed record MediaFrameRequest(string Url,double Seconds,string? VideoFormatId=null,
-    double? DurationSeconds=null,bool IsEnd=false);
+    double? DurationSeconds=null,bool IsEnd=false,double? FrameRate=null);
 
 public sealed record MediaFrameResult(string Url,double RequestedSeconds,double? SampledSeconds,byte[] PngBytes,string Error)
 {
@@ -63,7 +63,7 @@ internal sealed class MediaFrameService:IDisposable
         try
         {
             if(!AppPersistence.ValidUrl(request.Url) || !double.IsFinite(request.Seconds) || request.Seconds<0 ||
-                request.Seconds>=TimeSpan.MaxValue.TotalSeconds || request.DurationSeconds is {} duration &&
+                request.Seconds>=TimeSpan.MaxValue.TotalSeconds || request.FrameRate is {} fps && !FragmentTimelineTiming.KnownFps(fps) || request.DurationSeconds is {} duration &&
                 (!double.IsFinite(duration) || duration<=0 || request.Seconds>duration))
                 return Failure("Для кадра укажите корректное время внутри материала.");
             if(Volatile.Read(ref _disposed)!=0)throw new OperationCanceledException(_stop.Token);
@@ -73,7 +73,9 @@ internal sealed class MediaFrameService:IDisposable
             double? known=request.DurationSeconds??source.Duration;
             if(known is {} maximum && request.Seconds>maximum)
                 return Failure("Выбранное время выходит за длительность материала.");
-            double seek=request.IsEnd?Math.Max(0,request.Seconds-(source.Fps>0?1/source.Fps:.05)):request.Seconds;
+            double boundary=FragmentTimelineTiming.Boundary(request.Seconds,request.FrameRate,known);
+            double seek=FragmentTimelineTiming.FrameSample(boundary,request.IsEnd,
+                FragmentTimelineTiming.KnownFps(source.Fps)?source.Fps:request.FrameRate,known);
             var cookies=await MediaFrameCookies.CreateAsync(source,deadline.Token).ConfigureAwait(false);
             PreparedManifestMedia? prepared=null;
             if(source.IsHls || source.IsDash)
@@ -99,11 +101,11 @@ internal sealed class MediaFrameService:IDisposable
                 if(prepared.Demuxer=="mov")
                 {start.ArgumentList.Add("-enable_drefs");start.ArgumentList.Add("0");start.ArgumentList.Add("-use_absolute_path");start.ArgumentList.Add("0");}
                 start.ArgumentList.Add("-i");start.ArgumentList.Add(proxy.Address.AbsoluteUri);
-                start.ArgumentList.Add("-ss");start.ArgumentList.Add(Math.Max(0,seek-prepared.StartSeconds).ToString("0.######",CultureInfo.InvariantCulture));
+                start.ArgumentList.Add("-ss");start.ArgumentList.Add(Math.Max(0,seek-prepared.StartSeconds).ToString("0.#########",CultureInfo.InvariantCulture));
             }
             else
             {
-                start.ArgumentList.Add("-ss");start.ArgumentList.Add(Math.Max(0,seek-(prepared?.StartSeconds??0)).ToString("0.######",CultureInfo.InvariantCulture));
+                start.ArgumentList.Add("-ss");start.ArgumentList.Add(Math.Max(0,seek-(prepared?.StartSeconds??0)).ToString("0.#########",CultureInfo.InvariantCulture));
                 start.ArgumentList.Add("-i");start.ArgumentList.Add(proxy.Address.AbsoluteUri);
             }
             foreach(string argument in new[]{

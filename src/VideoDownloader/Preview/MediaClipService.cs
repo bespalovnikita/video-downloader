@@ -143,7 +143,10 @@ internal sealed class MediaClipService:IDisposable
                 var filters=new List<string>();
                 if(hasVideo)
                 {
-                    filters.Add("[0:v:0]trim=start="+Number(inputs[0].FilterSeek)+":duration="+Number(length)+",setpts=PTS-STARTPTS,scale=w='min(640,iw)':h='min(360,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2[v]");
+                    // duration counts from the first retained PTS, which can be
+                    // later than the requested seek. Keep the requested end on
+                    // the input timeline instead of extending a raw interval.
+                    filters.Add("[0:v:0]trim=start="+Number(inputs[0].FilterSeek)+":end="+Number(inputs[0].FilterSeek+length)+",setpts=PTS-STARTPTS,scale=w='min(640,iw)':h='min(360,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2[v]");
                 }
                 // Keep the same requested source origin as the video. A late
                 // audio track must keep its leading gap instead of moving its
@@ -154,6 +157,12 @@ internal sealed class MediaClipService:IDisposable
                 Add(start,"-filter_complex",string.Join(';',filters));
                 if(hasVideo)Add(start,"-map","[v]","-c:v","libx264","-preset","veryfast","-crf","28","-pix_fmt","yuv420p","-threads","2");
                 else Add(start,"-vn");
+                // A single trimmed frame has no following timestamp from which
+                // the encoder can infer duration. Retain its nominal duration;
+                // Multiple-frame previews retain the inferred output frame rate.
+                if(hasVideo && FragmentTimelineTiming.KnownFps(video!.Fps) &&
+                    FragmentTimelineTiming.FrameSample(end,true,video.Fps,known)<=FragmentTimelineTiming.FrameSample(begin,false,video.Fps,known))
+                    Add(start,"-r",Number(video.Fps));
                 if(hasAudio)Add(start,"-map","[a]","-c:a","aac","-b:a","128k","-ar","48000","-ac","2");
                 else Add(start,"-an");
                 Add(start,"-sn","-dn","-map_metadata","-1","-map_chapters","-1","-t",Number(length),"-fs",MaxClipBytes.ToString(CultureInfo.InvariantCulture),"-movflags","+faststart","-f","mp4",path);
@@ -168,7 +177,7 @@ internal sealed class MediaClipService:IDisposable
                 OwnedFiles.RegularOrAbsent(path);
                 if(!File.Exists(path) || new FileInfo(path).Length is <=0 or >MaxClipBytes)return Failure("Фрагмент превышает ограничение объёма предпросмотра.");
                 var probe=await ProbeAsync(path,deadline.Token).ConfigureAwait(false);
-                if(probe.Video!=hasVideo || probe.Audio!=hasAudio || probe.Duration<Math.Max(.02,length-.35) || probe.Duration>length+.35)
+                if(probe.Video!=hasVideo || probe.Audio!=hasAudio || probe.Duration<Math.Max(Math.Min(.02,length),length-.35) || probe.Duration>length+.35)
                     return Failure("Источник не предоставил полный короткий фрагмент с выбранными дорожками.");
                 deadline.Token.ThrowIfCancellationRequested();
                 var owned=lease;MediaClipPreview? clip=null;
@@ -232,7 +241,7 @@ internal sealed class MediaClipService:IDisposable
         double duration=double.Parse(json.RootElement.GetProperty("format").GetProperty("duration").GetString()!,CultureInfo.InvariantCulture);
         return(streams.Contains("video"),streams.Contains("audio"),duration);
     }
-    private static string Number(double value)=>value.ToString("0.######",CultureInfo.InvariantCulture);
+    private static string Number(double value)=>value.ToString("0.#########",CultureInfo.InvariantCulture);
     private static void Add(ProcessStartInfo start,params string[] values){foreach(string value in values)start.ArgumentList.Add(value);}
     public void Dispose()
     {

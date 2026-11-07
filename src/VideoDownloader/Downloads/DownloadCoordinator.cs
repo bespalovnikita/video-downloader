@@ -290,8 +290,8 @@ public sealed class DownloadCoordinator : IAsyncDisposable
             if(selectedFragments<2 || start is null || end is null)return Math.Min(reportedMedia.Count,Math.Max(0,selectedFragments-1));
             for(int index=0;index<selectedFragments;index++)
             {
-                var range=selection!.EffectiveSections[index];
-                if(Math.Abs(start.Value-range.StartSeconds)<.00001 && Math.Abs(end.Value-range.EndSeconds)<.00001)return index;
+                var range=selection!.SectionBounds(selection.EffectiveSections[index]);
+                if(Math.Abs(start.Value-range.Start)<.00001 && Math.Abs(end.Value-range.End)<.00001)return index;
             }
             return Math.Min(reportedMedia.Count,selectedFragments-1);
         }

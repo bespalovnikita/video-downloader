@@ -59,10 +59,7 @@ internal sealed partial class MediaSelectionDialog
             var format=(_primary.SelectedItem as FormatChoice)?.Format;
             return format?.HasVideo==true && FragmentTimelineTiming.KnownFps(format.Fps)?format.Fps:null;
         }
-        var video=_metadata?.Formats.Where(format=>format.HasVideo).ToArray()??[];
-        if(video.Length==0 || video.Any(format=>!FragmentTimelineTiming.KnownFps(format.Fps)))return null;
-        var values=video.Select(format=>format.Fps).Distinct().Take(2).ToArray();
-        return values.Length==1?values[0]:null;
+        return FragmentTimelineTiming.CommonFrameRate(_metadata?.Formats??[]);
     }
     private bool TimelineRange(out double start,out double end,out double? duration)
     {
@@ -91,7 +88,7 @@ internal sealed partial class MediaSelectionDialog
         foreach(var button in new[]{_startPreviousFrame,_endPreviousFrame})if(button is not null)button.Content="−"+suffix;
         foreach(var button in new[]{_startNextFrame,_endNextFrame})if(button is not null)button.Content="+"+suffix;
         _stepStatus.Text=FragmentTimelineTiming.KnownFps(fps)
-            ?"Шаг: один кадр по сетке "+fps!.Value.ToString("0.###",System.Globalization.CultureInfo.InvariantCulture)+" кадр/с. Поля времени округляются до миллисекунд."
+            ?"Шаг: один кадр по сетке "+fps!.Value.ToString("0.###",System.Globalization.CultureInfo.InvariantCulture)+" кадр/с. Метка округляется до миллисекунд; совпадение с сеткой задаёт её точную границу при экспорте и просмотре кадров."
             :"Частота кадров выбранного видео неизвестна или различается между форматами; шаг — 0.1 секунды.";
         _timelineStatus.Text=!_editable?"Шкала недоступна: строка защищена от изменения.":!individual
             ?"Дождитесь метаданных отдельного видео.":duration is null
