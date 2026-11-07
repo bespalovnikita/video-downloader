@@ -11,8 +11,14 @@ import androidx.documentfile.provider.DocumentFile
 import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertArrayEquals
@@ -115,7 +121,7 @@ class SafCleanupInstrumentedTest {
         runBlocking(Dispatchers.IO) {
             withTimeout(90_000) { graph.ready.await() }
             assertFalse(graph.repository.error, graph.repository.readOnly)
-            awaitServiceIdle()
+            awaitServiceIdle("before SAF fixture")
         }
         val fixture = fixture()
         val task = DownloadTask(url = "https://example.invalid/saf-cleanup-${fixture.id}",
@@ -134,45 +140,59 @@ class SafCleanupInstrumentedTest {
             }
             control(fixture, CleanupDocumentsProvider.REVOKE)
             ActivityScenario.launch(MainActivity::class.java).use { activity ->
-                // A keep request cannot retain an incomplete publication. It must
-                // still roll back, while preserving ownership if access is denied.
-                activity.onActivity { DownloadService.removeTask(it, task.id, deleteFiles = false) }
                 runBlocking(Dispatchers.IO) {
-                    withTimeout(20_000) {
-                        while (true) {
-                            val row = graph.repository.state.value.queue.firstOrNull { it.id == task.id }
-                            assertTrue("A provider denial must retain the task and its cleanup manifest", row != null)
-                            if (row!!.pendingRemoval && row.rawError.isNotBlank() && !DownloadService.isRunning.value && !DownloadService.hasOwnedTasks) break
-                            delay(50)
+                    val ownershipAtRunningFalse = CompletableDeferred<Boolean>()
+                    // Unconfined resumes on the emitter's thread. Observe the public
+                    // running=false publication before that main-thread turn can run
+                    // Android's onDestroy, without reflecting private service fields.
+                    val idleObserver = launch(Dispatchers.Unconfined, start = CoroutineStart.UNDISPATCHED) {
+                        var sawRunning = false
+                        DownloadService.isRunning.collect { running ->
+                            if (running) sawRunning = true
+                            else if (sawRunning && !ownershipAtRunningFalse.isCompleted)
+                                ownershipAtRunningFalse.complete(DownloadService.hasOwnedTasks)
                         }
                     }
-                    val row = graph.repository.state.value.queue.single { it.id == task.id }
-                    assertEquals(DownloadStatus.CLEANUP_REQUIRED, row.status)
-                    assertEquals(task.outputUris, row.outputUris)
-                    val reopened = JsonStateRepository(File(context.filesDir, "state.json"))
-                    assertFalse(reopened.error, reopened.readOnly)
-                    assertEquals("The denied document must survive a snapshot reopen", row,
-                        reopened.state.value.queue.single { it.id == task.id })
-                    assertEquals(listOf(earlierSuccess), graph.repository.state.value.history.filter { it.url == task.url })
-                    assertTrue(status(fixture).getBoolean(CleanupDocumentsProvider.EXISTS))
-                }
+                    try {
+                        // A keep request cannot retain an incomplete publication. It must
+                        // still roll back, while preserving ownership if access is denied.
+                        activity.onActivity { DownloadService.removeTask(it, task.id, deleteFiles = false) }
+                        awaitCleanupPhase(task.id, "denied rollback and graceful idle boundary") {
+                            assertTrue("Publishing running=false must retain lifecycle ownership until onDestroy and drain finish",
+                                ownershipAtRunningFalse.await())
+                            while (true) {
+                                val row = graph.repository.state.value.queue.firstOrNull { it.id == task.id }
+                                assertTrue("A provider denial must retain the task and its cleanup manifest", row != null)
+                                if (row!!.pendingRemoval && row.rawError.isNotBlank() && !DownloadService.isRunning.value && !DownloadService.hasOwnedTasks) break
+                                delay(50)
+                            }
+                        }
+                        val row = graph.repository.state.value.queue.single { it.id == task.id }
+                        assertEquals(DownloadStatus.CLEANUP_REQUIRED, row.status)
+                        assertEquals(task.outputUris, row.outputUris)
+                        val reopened = JsonStateRepository(File(context.filesDir, "state.json"))
+                        assertFalse(reopened.error, reopened.readOnly)
+                        assertEquals("The denied document must survive a snapshot reopen", row,
+                            reopened.state.value.queue.single { it.id == task.id })
+                        assertEquals(listOf(earlierSuccess), graph.repository.state.value.history.filter { it.url == task.url })
+                        assertTrue(status(fixture).getBoolean(CleanupDocumentsProvider.EXISTS))
 
-                grant(fixture)
-                activity.onActivity { DownloadService.removeTask(it, task.id, deleteFiles = false) }
-                runBlocking(Dispatchers.IO) {
-                    withTimeout(20_000) {
-                        while (graph.repository.state.value.queue.any { it.id == task.id }) delay(50)
-                    }
-                    awaitServiceIdle()
-                    assertFalse("Regrant and explicit retry must remove the real provider file", status(fixture).getBoolean(CleanupDocumentsProvider.EXISTS))
-                    assertEquals("Rollback must retain the older successful history without adopting the reused URI",
-                        listOf(earlierSuccess), graph.repository.state.value.history.filter { it.url == task.url })
+                        grant(fixture)
+                        activity.onActivity { DownloadService.removeTask(it, task.id, deleteFiles = false) }
+                        awaitCleanupPhase(task.id, "regranted rollback") {
+                            while (graph.repository.state.value.queue.any { it.id == task.id }) delay(50)
+                        }
+                        awaitServiceIdle("after regranted rollback")
+                        assertFalse("Regrant and explicit retry must remove the real provider file", status(fixture).getBoolean(CleanupDocumentsProvider.EXISTS))
+                        assertEquals("Rollback must retain the older successful history without adopting the reused URI",
+                            listOf(earlierSuccess), graph.repository.state.value.history.filter { it.url == task.url })
+                    } finally { idleObserver.cancelAndJoin() }
                 }
             }
         } finally {
             try {
                 runBlocking(Dispatchers.IO) {
-                    awaitServiceIdle()
+                    awaitServiceIdle("SAF fixture teardown")
                     graph.repository.update { it.copy(queue = it.queue.filterNot { row -> row.id == task.id },
                         history = it.history.filterNot { row -> row.url == task.url }) }
                 }
@@ -180,8 +200,19 @@ class SafCleanupInstrumentedTest {
         }
     }
 
-    private suspend fun awaitServiceIdle() = withTimeout(20_000) {
+    private suspend fun awaitServiceIdle(phase: String) = awaitCleanupPhase(null, phase) {
         while (DownloadService.isRunning.value || DownloadService.hasOwnedTasks) delay(50)
+    }
+
+    private suspend fun awaitCleanupPhase(taskId: String?, phase: String, block: suspend () -> Unit) {
+        try { withTimeout(20_000) { block() } }
+        catch (timeout: TimeoutCancellationException) {
+            val row = graph.repository.state.value.queue.firstOrNull { it.id == taskId }
+            throw AssertionError("SAF cleanup phase=$phase timed out after 20000ms; " +
+                "running=${DownloadService.isRunning.value}, owned=${DownloadService.hasOwnedTasks}, " +
+                "rowStatus=${row?.status}, pendingRemoval=${row?.pendingRemoval}, " +
+                "outputCount=${row?.outputUris?.size}, hasError=${!row?.rawError.isNullOrBlank()}", timeout)
+        }
     }
 
     companion object {
