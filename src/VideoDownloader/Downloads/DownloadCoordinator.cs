@@ -60,7 +60,7 @@ public sealed class DownloadCoordinator : IAsyncDisposable
         if (!IsRunning || _stop.IsCancellationRequested) return false;
         var selection=item.Selection;
         selection?.Validate(item.Url,_options);
-        string outputRoot=SubscriptionNames.ResolveOutputDirectory(_options.OutputDirectory,item.SubscriptionName);
+        string outputRoot=AdmissionOutputRoot(item);
         OwnedFiles.NoReparseAncestors(Path.Combine(outputRoot,"__check__"));
         if (!IsRunning || _stop.IsCancellationRequested || !_queued.TryAdd(item.Url,0)) return false;
         Interlocked.Increment(ref _outstanding);
@@ -83,6 +83,7 @@ public sealed class DownloadCoordinator : IAsyncDisposable
         }
         return true;
     }
+    internal string AdmissionOutputRoot(DownloadItem item)=>SubscriptionNames.ResolveOutputDirectory(_options.OutputDirectory,item.SubscriptionName);
     public bool IsPending(DownloadItem item) => _items.TryGetValue(item.Url,out var owned) &&
         ReferenceEquals(item,owned) && !item.AttemptFinished;
     public void Cancel(DownloadItem item)

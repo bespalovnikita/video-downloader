@@ -319,11 +319,7 @@ public sealed partial class NativeWindow : IDisposable
             if (MessageBox.Show(_window,ErrorMessages.Text($"Восстановить предыдущую очередь ({previous.Queue.Count} ссылок)?\nЗавершённые загрузки не будут запущены повторно.",$"Restore previous queue ({previous.Queue.Count} URLs)?\nCompleted downloads will not restart automatically."),
                     ErrorMessages.Text("Восстановить предыдущую сессию","Restore previous session"),MessageBoxButton.YesNo,MessageBoxImage.Question)!=MessageBoxResult.Yes) return;
             RestoreSubscriptionQueueTitles(previous.Queue);
-            foreach(var item in previous.Queue)
-            {
-                SessionState.TryAdd(item);
-                RequestRowPreview(item);
-            }
+            foreach(var item in SessionState.AddBatch(previous.Queue,ReadOptions()))RequestRowPreview(item);
             Log($"Restored {SessionState.Queue.Count} URLs. Downloads will not restart automatically.");
         }
         catch(Exception e)
@@ -455,11 +451,24 @@ public sealed partial class NativeWindow : IDisposable
         // A modal duplicate dialog pumps the dispatcher: IPC/clipboard may
         // have added these URLs, completed the session, or closed the window.
         if (_closing || _disposed || _appUpdateHandoff || RejectProfileBackupMutation()) return;
-        var added=new List<DownloadItem>();
+        // Capture the final deferred state after the modal loop. Admission
+        // checks the whole resulting UTF-8 checkpoint once for this batch.
         foreach(var row in rows)
         {
-            if (!SessionState.TryAdd(row))continue;
-            added.Add(row);
+            row.DeferredToNextStart=active && (!ReferenceEquals(SessionState.Coordinator,session) || session?.IsRunning!=true);
+            if(active && !row.DeferredToNextStart)row.OutputRoot=session!.AdmissionOutputRoot(row);
+        }
+        IReadOnlyList<DownloadItem> added;
+        try { added=SessionState.AddBatch(rows,ReadOptions()); }
+        catch(InvalidDataException error)
+        {
+            T("ClipboardHint").Text=error.Message;
+            Log("Queue admission refused: "+error.Message);
+            MessageBox.Show(_window,error.Message,ErrorMessages.Text("Очередь не добавлена","Queue was not added"),MessageBoxButton.OK,MessageBoxImage.Warning);
+            return;
+        }
+        foreach(var row in added)
+        {
             RequestRowPreview(row,clipboard&&active);
             if(active && !SessionState.TryJoinActive(session,row))
             {

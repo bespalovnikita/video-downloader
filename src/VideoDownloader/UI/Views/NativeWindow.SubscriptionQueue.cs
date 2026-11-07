@@ -34,17 +34,17 @@ public sealed partial class NativeWindow
                 SubscriptionId=subscriptionId,SubscriptionName=subscriptionName}).ToList();
         var approved=ConfirmDuplicates(candidates,false);
         if (approved==null || RejectProfileBackupMutation()) return [];
-        foreach (var row in approved)
-        {
-            // A modal duplicate prompt may have let another UI action add it.
-            row.DeferredToNextStart=SessionState.Coordinator?.IsRunning==true;
-            SessionState.TryAdd(row);
-        }
+        // The modal loop may have added an exact URL already. Deduplication,
+        // title enrichment and the complete checkpoint budget commit together.
+        foreach (var row in approved)row.DeferredToNextStart=SessionState.Coordinator?.IsRunning==true;
+        var titleUpdates=new Dictionary<DownloadItem,string>();
+        foreach(var row in SessionState.Queue.Where(row=>requestedSet.Contains(row.Url) && row.CanResume && row.Status!="Completed"))
+            if((string.IsNullOrWhiteSpace(row.Title) || string.Equals(row.Title,row.Url,StringComparison.Ordinal)) &&
+                discoveredTitles.TryGetValue(row.Url,out string? title))titleUpdates.Add(row,title);
+        SessionState.AddBatch(approved,ReadOptions(),titleUpdates);
         foreach (var row in SessionState.Queue.Where(row=>requestedSet.Contains(row.Url) &&
             row.CanResume && row.Status!="Completed"))
         {
-            if ((string.IsNullOrWhiteSpace(row.Title) || string.Equals(row.Title,row.Url,StringComparison.Ordinal)) &&
-                discoveredTitles.TryGetValue(row.Url,out string? title)) row.Title=title;
             _preview.RefreshKnownTitle(row);
             // An explicitly accepted URL may already be queued after an
             // earlier metadata failure. Re-request its preview as well; the
