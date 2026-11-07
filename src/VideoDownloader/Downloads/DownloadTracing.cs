@@ -9,7 +9,8 @@ namespace VideoDownloader.Native;
 
 public static class DownloadTraceIdentity
 {
-    public static string JobId(string url)=>Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(url)))[..12].ToLowerInvariant();
+    public static string JobId(string url)=>DiagnosticIdentity(url)[..12];
+    internal static string DiagnosticIdentity(string url)=>Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(url))).ToLowerInvariant();
 
     internal const int OverallMemberTextBudget=2800;
 

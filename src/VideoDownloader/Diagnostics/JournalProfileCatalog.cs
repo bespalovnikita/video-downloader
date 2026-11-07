@@ -5,7 +5,8 @@ public enum JournalLevel { Error, Warning, Information, Progress, Verbose }
 
 /// <summary>Immutable worker event. Identifiers are separate from display text and URL secrets.</summary>
 public sealed record JournalRecord(JournalLevel Level,string Category,string Message,
-    string Session="",string Job="",string Worker="");
+    string Session="",string Job="",string Worker="",string Identity="",string Event="",int? Attempt=null,int? Invocation=null,
+    JobDiagnosticSettings? Settings=null);
 
 public static class JournalProfileCatalog
 {

@@ -278,6 +278,7 @@ public sealed partial class NativeWindow
         // only after the final ownership/status checkpoint has been written.
         e.Cancel=true;
         _closing=true;
+        Task diagnosticsStopped=StopJobDiagnosticsAsync();
         DisposeDiskSpace();
         SessionState.MarkStopping();
         _tick.Stop();_ingress.Stop();
@@ -291,6 +292,7 @@ public sealed partial class NativeWindow
             if (SessionState.RunningTask!=null) await SessionState.RunningTask;
         }
         catch(Exception error) { Log("Shutdown cleanup failed: "+error.Message); }
+        await diagnosticsStopped;
         SaveCheckpoint();
         _journalCloseRequested=true;
         try { await _journal.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(2)); }
@@ -306,6 +308,7 @@ public sealed partial class NativeWindow
     public void Dispose()
     {
         if(_disposed)return;
+        DisposeJobDiagnostics();
         DisposeSubscriptions();
         FlushJournal();
         _disposed=true;

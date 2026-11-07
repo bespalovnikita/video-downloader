@@ -10,10 +10,10 @@ internal sealed record JournalLimits(int MemoryEntries=5000,int MemoryBytes=2*10
 /// <summary>One bounded application journal. Capture never performs file I/O or touches WPF.</summary>
 public sealed class DiagnosticJournal : IAsyncDisposable,IDisposable
 {
-    private sealed record Entry(long Sequence,string Text,int Bytes);
+    private sealed record Entry(long Sequence,string Text,int Bytes,JobDiagnosticEvent? Diagnostic=null);
     private readonly object _gate=new();
     private readonly LinkedList<Entry> _entries=new();
-    private readonly Channel<string> _fileQueue;
+    private readonly Channel<Entry> _fileQueue;
     private readonly Task _writer;
     private readonly JournalLimits _limits;
     private readonly string _directory;
@@ -22,7 +22,21 @@ public sealed class DiagnosticJournal : IAsyncDisposable,IDisposable
     private bool _closed;
     private string _lastFileError="";
     private FileStream? _output;
+    private FileStream? _structuredOutput;
+    private readonly string _journalId=Guid.NewGuid().ToString("N");
+    private long _omittedStructured;
+    private long _queuedBytes;
+    private string _structuredError="";
     public string FilePath { get; }
+    internal string StructuredFilePath=>Path.Combine(_directory,"job-events.jsonl");
+    internal long Sequence {get {lock(_gate)return _sequence;}}
+    internal long OmittedStructuredEntries=>Interlocked.Read(ref _omittedStructured);
+    internal long PendingFileBytes {get {lock(_gate)return Interlocked.Read(ref _queuedBytes);}}
+    internal string StructuredFileError=>Volatile.Read(ref _structuredError);
+    internal IReadOnlyList<JobDiagnosticEvent> SnapshotJobEvents()
+        =>CaptureJobEvents().Events;
+    internal (IReadOnlyList<JobDiagnosticEvent> Events,long Sequence) CaptureJobEvents()
+    {lock(_gate)return (_entries.Where(entry=>entry.Diagnostic is not null).Select(entry=>entry.Diagnostic!).ToArray(),_sequence);}
     public string LastFileError => Volatile.Read(ref _lastFileError);
     public long DroppedFileEntries => Interlocked.Read(ref _droppedFileEntries);
 
@@ -36,7 +50,7 @@ public sealed class DiagnosticJournal : IAsyncDisposable,IDisposable
             throw new ArgumentOutOfRangeException(nameof(limits));
         _directory=Path.GetFullPath(directory);FilePath=Path.Combine(_directory,"journal.log");
         _limits=limits;_profile=(int)JournalProfileCatalog.Parse(JournalProfileCatalog.ToId(profile));
-        _fileQueue=Channel.CreateBounded<string>(new BoundedChannelOptions(limits.FileQueueEntries)
+        _fileQueue=Channel.CreateBounded<Entry>(new BoundedChannelOptions(limits.FileQueueEntries)
         {
             SingleReader=true,SingleWriter=false,FullMode=BoundedChannelFullMode.Wait,
             AllowSynchronousContinuations=false
@@ -99,6 +113,10 @@ public sealed class DiagnosticJournal : IAsyncDisposable,IDisposable
             string timestamp=DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff",CultureInfo.InvariantCulture);
             string text=$"[{timestamp}] [{record.Level}/{category}]{context} {message}";
             int bytes=Encoding.UTF8.GetByteCount(text+Environment.NewLine);
+            var diagnostic=JobDiagnosticCodec.Capture(record with {Message=raw},_journalId,sequence,DateTimeOffset.UtcNow);
+            int diagnosticBytes=diagnostic is null?0:JobDiagnosticCodec.Encode(diagnostic).Length+1;
+            if(diagnostic is not null && bytes+diagnosticBytes>_limits.MemoryBytes)
+            {diagnostic=null;diagnosticBytes=0;Interlocked.Increment(ref _omittedStructured);}
             // The entry cap also works with small diagnostic limits used by the real I/O tests.
             if(bytes>_limits.MemoryBytes)
             {
@@ -106,12 +124,19 @@ public sealed class DiagnosticJournal : IAsyncDisposable,IDisposable
                 if(length>0 && char.IsHighSurrogate(text[length-1]))length--;
                 text=text[..Math.Max(0,length)]+"…";bytes=Encoding.UTF8.GetByteCount(text+Environment.NewLine);
             }
-            _entries.AddLast(new Entry(sequence,text,bytes));_memoryBytes+=bytes;
+            bytes+=diagnosticBytes;
+            var captured=new Entry(sequence,text,bytes,diagnostic);
+            _entries.AddLast(captured);_memoryBytes+=bytes;
             while(_entries.Count>_limits.MemoryEntries || _memoryBytes>_limits.MemoryBytes)
             {
                 _memoryBytes-=_entries.First!.Value.Bytes;_entries.RemoveFirst();
             }
-            if(toFile && !_fileQueue.Writer.TryWrite(text))Interlocked.Increment(ref _droppedFileEntries);
+            if(toFile)
+            {
+                long queued=Interlocked.Add(ref _queuedBytes,captured.Bytes);
+                if(queued>_limits.MemoryBytes*2L || !_fileQueue.Writer.TryWrite(captured))
+                {Interlocked.Add(ref _queuedBytes,-captured.Bytes);Interlocked.Increment(ref _droppedFileEntries);}
+            }
             return text;
         }
     }
@@ -154,12 +179,13 @@ public sealed class DiagnosticJournal : IAsyncDisposable,IDisposable
         bool disabled=false;
         try
         {
-            await foreach(string line in _fileQueue.Reader.ReadAllAsync().ConfigureAwait(false))
+            await foreach(var entry in _fileQueue.Reader.ReadAllAsync().ConfigureAwait(false))
             {
+                Interlocked.Add(ref _queuedBytes,-entry.Bytes);
                 if(disabled)continue;
                 try
                 {
-                    await WriteFileLineAsync(line).ConfigureAwait(false);
+                    await WriteFileLineAsync(entry.Text,entry.Diagnostic).ConfigureAwait(false);
                     // Report pressure without recursively putting another item into the full queue.
                     long dropped=Interlocked.Read(ref _droppedFileEntries);
                     if(dropped>_reportedDropped)
@@ -167,7 +193,7 @@ public sealed class DiagnosticJournal : IAsyncDisposable,IDisposable
                         long delta=dropped-_reportedDropped;_reportedDropped=dropped;
                         string warning="[journal] Очередь записи файла переполнена: пропущено "+delta+" записей (всего "+dropped+"). Уменьшите подробность журнала.";
                         Append(new JournalRecord(JournalLevel.Warning,"journal",warning),false);
-                        await WriteFileLineAsync(warning).ConfigureAwait(false);
+                        await WriteFileLineAsync(warning,null).ConfigureAwait(false);
                     }
                 }
                 catch(Exception error) when(error is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException or System.Security.SecurityException)
@@ -176,36 +202,25 @@ public sealed class DiagnosticJournal : IAsyncDisposable,IDisposable
                     string detail=JournalSanitizer.Redact(error.Message);
                     Volatile.Write(ref _lastFileError,"Не удалось записать файл журнала: "+detail);
                     Append(new JournalRecord(JournalLevel.Warning,"journal",LastFileError+". Журнал в памяти и копирование остаются доступны."),false);
-                    if(_output!=null)
-                    {
-                        try{await _output.DisposeAsync().ConfigureAwait(false);}
-                        catch(Exception closeError) when(closeError is IOException or UnauthorizedAccessException) { }
-                        _output=null;
-                    }
+                    try{await CloseOutputsAsync().ConfigureAwait(false);}
+                    catch(Exception closeError) when(closeError is IOException or UnauthorizedAccessException) { }
                 }
             }
         }
         finally
         {
-            if(_output!=null)
-            {
-                try{await _output.FlushAsync().ConfigureAwait(false);}
-                catch(Exception error) when(error is IOException or UnauthorizedAccessException)
-                {
-                    Volatile.Write(ref _lastFileError,"Не удалось завершить запись журнала: "+JournalSanitizer.Redact(error.Message));
-                }
-                finally
-                {
-                    try{await _output.DisposeAsync().ConfigureAwait(false);}
-                    catch(Exception error) when(error is IOException or UnauthorizedAccessException)
-                    {
-                        Volatile.Write(ref _lastFileError,"Не удалось закрыть файл журнала: "+JournalSanitizer.Redact(error.Message));
-                    }
-                }
-            }
+            try{await CloseOutputsAsync().ConfigureAwait(false);}
+            catch(Exception error) when(error is IOException or UnauthorizedAccessException)
+            {Volatile.Write(ref _lastFileError,"Не удалось закрыть файл журнала: "+JournalSanitizer.Redact(error.Message));}
         }
     }
-    private async Task WriteFileLineAsync(string line)
+    private async Task CloseOutputsAsync()
+    {
+        var text=_output;var structured=_structuredOutput;_output=null;_structuredOutput=null;
+        try{if(text is not null)await text.DisposeAsync().ConfigureAwait(false);}
+        finally{if(structured is not null)await structured.DisposeAsync().ConfigureAwait(false);}
+    }
+    private async Task WriteFileLineAsync(string line,JobDiagnosticEvent? diagnostic)
     {
         byte[] bytes=Encoding.UTF8.GetBytes(line+Environment.NewLine);
         if(bytes.Length>_limits.FileBytes)
@@ -214,28 +229,50 @@ public sealed class DiagnosticJournal : IAsyncDisposable,IDisposable
             if(chars>0 && char.IsHighSurrogate(line[chars-1]))chars--;
             bytes=Encoding.UTF8.GetBytes(line[..Math.Min(chars,line.Length)]+"…"+Environment.NewLine);
         }
-        if(_output!=null && _output.Length+bytes.Length>_limits.FileBytes)
-        {
-            await _output.FlushAsync().ConfigureAwait(false);await _output.DisposeAsync().ConfigureAwait(false);_output=null;
-        }
+        byte[] typed=diagnostic is null?Array.Empty<byte>():JobDiagnosticCodec.Encode(diagnostic).Concat(new byte[]{10}).ToArray();
+        if(bytes.Length+typed.Length>_limits.FileBytes)
+        {typed=Array.Empty<byte>();Interlocked.Increment(ref _omittedStructured);}
+        long ExistingSize(string path)=>File.Exists(path)?new FileInfo(path).Length:0;
+        if(_output!=null && _output.Length+(_structuredOutput?.Length??ExistingSize(StructuredFilePath))+bytes.Length+typed.Length>_limits.FileBytes)
+            await CloseOutputsAsync().ConfigureAwait(false);
         if(_output==null)
         {
             RefuseLinkedAncestors(_directory);
             Directory.CreateDirectory(_directory);
             RefuseLinkedAncestors(_directory);
-            foreach(string name in new[]{"journal.log","journal.1.log","journal.2.log"})RefuseLink(Path.Combine(_directory,name));
-            if(File.Exists(FilePath) && new FileInfo(FilePath).Length+bytes.Length>_limits.FileBytes)
+            foreach(string name in new[]{"journal.log","journal.1.log","journal.2.log","job-events.jsonl","job-events.1.jsonl","job-events.2.jsonl"})RefuseLink(Path.Combine(_directory,name));
+            if(ExistingSize(FilePath)+ExistingSize(StructuredFilePath)+bytes.Length+typed.Length>_limits.FileBytes)
             {
-                string oldest=Path.Combine(_directory,"journal.2.log"),previous=Path.Combine(_directory,"journal.1.log");
-                if(File.Exists(oldest))File.Delete(oldest);
-                if(File.Exists(previous))File.Move(previous,oldest);
-                File.Move(FilePath,previous);
+                foreach(var (stem,extension) in new[]{("journal","log"),("job-events","jsonl")})
+                {
+                    string current=Path.Combine(_directory,stem+"."+extension),previous=Path.Combine(_directory,stem+".1."+extension),oldest=Path.Combine(_directory,stem+".2."+extension);
+                    if(File.Exists(oldest))File.Delete(oldest);
+                    if(File.Exists(previous))File.Move(previous,oldest);
+                    if(File.Exists(current))File.Move(current,previous);
+                }
             }
-            _output=new FileStream(FilePath,FileMode.Append,FileAccess.Write,FileShare.Read,4096,FileOptions.Asynchronous);
+            _output=new FileStream(FilePath,FileMode.Append,FileAccess.Write,FileShare.Read|FileShare.Delete,4096,FileOptions.Asynchronous);
         }
         await _output.WriteAsync(bytes).ConfigureAwait(false);
         // Flush each bounded record in the background, so a diagnostic survives a process crash.
         await _output.FlushAsync().ConfigureAwait(false);
+        if(typed.Length>0)
+        {
+            try
+            {
+                RefuseLink(StructuredFilePath);
+                _structuredOutput??=new FileStream(StructuredFilePath,FileMode.Append,FileAccess.Write,FileShare.Read|FileShare.Delete,4096,FileOptions.Asynchronous);
+                await _structuredOutput.WriteAsync(typed).ConfigureAwait(false);
+                await _structuredOutput.FlushAsync().ConfigureAwait(false);
+            }
+            catch(Exception error) when(error is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+            {
+                Interlocked.Increment(ref _omittedStructured);
+                Volatile.Write(ref _structuredError,"Структурированный архив недоступен; доступны события из памяти.");
+                if(_structuredOutput is not null)
+                {try{await _structuredOutput.DisposeAsync().ConfigureAwait(false);}catch(IOException){ }finally{_structuredOutput=null;}}
+            }
+        }
     }
     private static void RefuseLink(string path)
     {

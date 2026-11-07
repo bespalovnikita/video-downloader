@@ -2,6 +2,7 @@ using System.IO;
 using System.Text.Json;
 using VideoDownloader.Native;
 
+if (JobDiagnosticsTests.TryRunFixture(args)) return;
 if (MediaWaveformServiceTests.TryRunFixture(args)) return;
 if (FragmentMergeTests.TryRunFixture(args) || MultipleFragmentTests.TryRunFixture(args)) return;
 if (MediaFrameServiceTests.TryRunFixture(args)) return;
@@ -9,6 +10,7 @@ if (AppUpdateBootstrapTests.TryRunFixture(args) || AppUpdateInstallerTests.TryRu
 ErrorMessagesTests.Run();
 JournalSanitizerTests.Run();
 await JournalTests.RunAsync();
+await JobDiagnosticsTests.RunAsync();
 await AtomicWriteTests.RunAsync();
 await HistoryLibraryTests.RunAsync();
 PortableQueueTests.Run();
