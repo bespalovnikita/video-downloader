@@ -51,6 +51,7 @@ flowchart TB
 | Связывание UI и команд | [NativeWindow.cs](../../src/VideoDownloader/UI/Views/NativeWindow.cs) |
 | Очередь и статистика сессии | [QueueSessionController.cs](../../src/VideoDownloader/UI/Controllers/QueueSessionController.cs) |
 | Поиск и фильтры представления очереди | [QueueFilterController.cs](../../src/VideoDownloader/UI/Controllers/QueueFilterController.cs), [NativeWindow.QueueFilters.cs](../../src/VideoDownloader/UI/Views/NativeWindow.QueueFilters.cs) |
+| Порядок активных строк в списке загрузок | [DownloadsViewController.cs](../../src/VideoDownloader/UI/Controllers/DownloadsViewController.cs) |
 | Превью | [PreviewController.cs](../../src/VideoDownloader/UI/Controllers/PreviewController.cs), [PreviewService.cs](../../src/VideoDownloader/Preview/PreviewService.cs) |
 | Ручные проверки подписок | [SubscriptionController.cs](../../src/VideoDownloader/UI/Controllers/SubscriptionController.cs), [SubscriptionScanner.cs](../../src/VideoDownloader/Subscriptions/SubscriptionScanner.cs) |
 | Общий приём новинок после проверки | [SubscriptionController.QueueOffer.cs](../../src/VideoDownloader/UI/Controllers/SubscriptionController.QueueOffer.cs) |
@@ -231,6 +232,19 @@ Retry failed, Clear и экспорт по-прежнему читают исх�
 Clear фиксирует полный снимок, поэтому позднее поступившая ссылка не удаляется.
 Перестановка строк при активном фильтре запрещена. Поиск и фильтры не записываются
 в checkpoint и освобождают обработчики при Dispose.
+
+`DownloadsViewController` связывает другую таблицу с отдельным `ListCollectionView`
+над `QueueSessionController.Downloads`. Первичный ключ — активность по машинному
+`Status` (`Running` или `Starting`), затем пользовательские ключи колонок и
+стабильный порядок появления строки. Пауза сохраняет `Running`; этапы обработки и
+публикации не определяют принадлежность группе. WPF live sorting перемещает
+существующие строки по изменению статуса и явно выбранных ключей, сохраняя выделение
+и текущую ячейку. Без пользовательских ключей скорость и прогресс не вызывают
+пересортировку. Ключи сравнения фиксируются на Dispatcher, поэтому одновременное
+изменение модели работником не меняет сравнение внутри операции представления.
+Контроллер не переставляет исходные `Queue`/`Downloads`, не меняет `Order`,
+план приёма работников, индекс материала коллекции, историю или checkpoint.
+Сортировка колонок не сохраняется между запусками; Dispose снимает подписки.
 
 ## Идентичность ссылки
 

@@ -61,6 +61,7 @@ internal sealed partial class UiScenario
             window.Show();
             subject.ApplyOptions(new DownloadOptions{Output=Path.Combine(root,"output"),Threads="2",Container="MP4"});
             var queue=(DataGrid)window.FindName("QueueGrid")!;
+            var downloads=(DataGrid)window.FindName("DownloadGrid")!;
             var stats=(TextBlock)window.FindName("SessionStats")!;
             var fast=new DownloadItem{Url="https://startup-download.invalid/timer-fast"};
             var slow=new DownloadItem{Url="https://startup-download.invalid/timer-slow"};
@@ -72,18 +73,28 @@ internal sealed partial class UiScenario
             Click(window,"StartButton");
             PumpUntil(()=>fast.Status=="Completed" && slow.Status=="Running" && File.Exists(gate+".started"),
                 "The real Start path must publish one media file while another worker remains active");
+            PumpUntil(()=>downloads.Items.Count==2 && ReferenceEquals(downloads.Items[0],slow) && ReferenceEquals(downloads.Items[1],fast),
+                "Downloads must put the real still-running worker above the already-published worker");
+            Require(subject.SessionState.Queue.SequenceEqual(new[]{fast,slow}) && fast.Order==1 && slow.Order==2,
+                "Active-first display must not change the coordinator's original queue admission order");
+            var sourceDownloads=subject.SessionState.Downloads.ToArray();
             var before=subject.SessionState.Elapsed;
             PumpFor(TimeSpan.FromMilliseconds(1100));
             Require(subject.SessionState.Elapsed>before+TimeSpan.FromSeconds(1),
                 "The clock must continue after one success while another URL is still downloading");
             Click(window,"PauseButton");
             Require(subject.SessionState.ReadMetrics().Paused,"Pause must still control this session");
+            Require(ReferenceEquals(downloads.Items[0],slow) && slow.Status=="Running" &&
+                subject.SessionState.Downloads.SequenceEqual(sourceDownloads),
+                "Pausing the real worker must preserve active-first display and the source Downloads collection");
             Click(window,"PauseButton");
             File.WriteAllText(gate,"release");
             PumpUntil(()=>subject.SessionState.Coordinator==null && subject.SessionState.RunningTask?.IsCompleted==true,
                 "All successful workers must finish through the normal Start continuation");
             Require(fast.Status=="Completed" && slow.Status=="Completed" && File.Exists(fast.Path) && File.Exists(slow.Path),
                 "Both fixture media must be published before the session is complete");
+            PumpUntil(()=>downloads.Items.Cast<DownloadItem>().SequenceEqual(sourceDownloads),
+                "When every real worker finishes, Downloads must return to stable source order");
             void RequireFrozen(string terminal)
             {
                 subject.UpdateState();
