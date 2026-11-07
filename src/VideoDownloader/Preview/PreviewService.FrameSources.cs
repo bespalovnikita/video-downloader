@@ -35,6 +35,7 @@ public sealed partial class PreviewService
         lock(_gate)
         {
             if(Volatile.Read(ref _disposed)!=0)throw new OperationCanceledException(_stop.Token);
+            if(_resetting.Contains(url))throw new OperationCanceledException("Метаданные материала сбрасываются.");
             if(_frameSources.TryGetValue(url,out var cached) && cached.CookieContext==cookie && DateTime.UtcNow-cached.CreatedUtc<FrameSourceLifetime)
             {
                 if(videoFormatId is null)
@@ -304,7 +305,7 @@ public sealed partial class PreviewService
                 if(requests.Count==0)_frameRequests.Remove(url);
                 else pendingClip=true;
             }
-            if(pendingClip && Volatile.Read(ref _disposed)==0)
+            if(pendingClip && Volatile.Read(ref _disposed)==0 && !_resetting.Contains(url))
                 {
                     _known.Add(url);_pending.Insert(0,url);_signal.Release();
                 }

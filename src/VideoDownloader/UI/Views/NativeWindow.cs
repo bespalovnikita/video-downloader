@@ -102,6 +102,7 @@ public sealed partial class NativeWindow : IDisposable
         InitializeMediaSelectionControls();
         InitializeQueueFilters();
         InitializeQueueItemActions();
+        InitializeResetQueueItemActions();
         InitializeHistoryControls();
         InitializeJobDiagnostics();
         K("ShowVideoTitlesCheck").Checked+=(_,_)=>SaveCheckpoint();
@@ -228,7 +229,7 @@ public sealed partial class NativeWindow : IDisposable
             if (item.Status=="Completed" && item.AttemptFinished && item.CleanupError.Length==0 && !item.IsPartialResult)
                 RecordSubscriptionSuccess(item.Url);
             if (!SessionState.Queue.Contains(item)) return;
-            if (item.PendingRemoval && item.AttemptFinished && item.CleanupError.Length==0)
+            if (item.PendingRemoval && item.AttemptFinished && item.CleanupError.Length==0 && !_resettingQueueItems.Contains(item))
             {
                 try
                 {
@@ -244,7 +245,7 @@ public sealed partial class NativeWindow : IDisposable
             {
                 Log($"{item.Status}: {item.Url}"+(item.RawError.Length>0?" | "+item.RawError:""));
                 SaveCheckpoint();
-                if (item.CleanupError.Length>0)
+                if (item.CleanupError.Length>0 && !_resettingQueueItems.Contains(item))
                     MessageBox.Show(_window,ErrorMessages.Text(
                         "Не удалось удалить файлы. Строка и пути сохранены; нажмите «Удалить выбранные» для повторной попытки.\n",
                         "Cleanup failed. The row and paths were kept; use Remove to retry.\n")+
@@ -540,14 +541,15 @@ public sealed partial class NativeWindow : IDisposable
     private void RequestRowPreview(DownloadItem row,bool priority=false)=>_preview.RequestRow(row,priority);
     private void ShowPreview(string url)=>_preview.Show(url);
     private void PollClipboard()=>_ingress.PollClipboard();
-    private async Task StartAsync(IEnumerable<DownloadItem>? custom=null)
+    private Task StartAsync(IEnumerable<DownloadItem>? custom=null)=>StartWithConfirmationAsync(custom,null);
+    private async Task StartWithConfirmationAsync(IEnumerable<DownloadItem>? custom,IReadOnlySet<DownloadItem>? duplicateConsents,DownloadOptions? preparedOptions=null)
     {
         if(_closing || _disposed || _restoringSession || _startingSession || _queueItemActionBusy || _appUpdateHandoff || _checkpointReadOnly || _profileBackupReplaying || RejectProfileBackupMutation())return;
         _startingSession=true;
-        try { await StartSessionCoreAsync(custom); }
+        try { await StartSessionCoreAsync(custom,duplicateConsents,preparedOptions); }
         finally { _startingSession=false;UpdateState();_preview.BackfillLocalPosters(); }
     }
-    private async Task StartSessionCoreAsync(IEnumerable<DownloadItem>? custom)
+    private async Task StartSessionCoreAsync(IEnumerable<DownloadItem>? custom,IReadOnlySet<DownloadItem>? duplicateConsents=null,DownloadOptions? preparedOptions=null)
     {
         if (_closing || _disposed || _restoringSession || _checkpointReadOnly || RejectProfileBackupMutation()) return;
         if (_legacyEngineBlocked)
@@ -561,7 +563,7 @@ public sealed partial class NativeWindow : IDisposable
         if(SessionState.Coordinator?.IsRunning==true) return;
         var pending=(custom??SessionState.Queue.Where(i=>i.Status is not ("Completed" or "Skipped"))).Where(i=>i.CanResume).Distinct().ToList();
         if(pending.Count==0)return;
-        var options=ReadOptions();
+        var options=preparedOptions?.Snapshot()??ReadOptions();
         var requested=pending.ToDictionary(row=>row,row=>(row.Url,row.Selection,row.ResumeState,row.Status,row.StageDir,row.RunDir));
         void RequireCurrentPlan(IEnumerable<DownloadItem> plan)
         {
@@ -585,7 +587,9 @@ public sealed partial class NativeWindow : IDisposable
             await _preview.CancelLocalPostersAsync(pending);
             if(_closing || _disposed || _appUpdateHandoff || _checkpointReadOnly || RejectProfileBackupMutation())return;
             RequireCurrentPlan(pending);
-            var approved=ConfirmDuplicates(pending,false);
+            // Reset has already obtained ordinary history choices before any
+            // destructive changes. The consent applies only to those row refs.
+            var approved=duplicateConsents is null?ConfirmDuplicates(pending,false):pending.Where(duplicateConsents.Contains).ToList();
             if(approved==null)return;
             if(_closing || _disposed || _appUpdateHandoff || _checkpointReadOnly || RejectProfileBackupMutation())return;
             RequireCurrentPlan(pending);

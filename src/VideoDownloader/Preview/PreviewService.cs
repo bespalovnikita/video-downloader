@@ -68,6 +68,7 @@ public sealed partial class PreviewService : IDisposable
     internal PreviewData? Peek(string url)
     {
         if(Volatile.Read(ref _disposed)!=0)return null;
+        lock(_gate)if(_resetting.Contains(url))return null;
         if (_cache.TryGetValue(url,out var value) && (MetadataFresh(value) || LocalImageFresh(value)))
         {
             _lastUse[url]=Interlocked.Increment(ref _access);
@@ -208,7 +209,7 @@ public sealed partial class PreviewService : IDisposable
         if(Peek(url) is {FormatsLoaded:true} existing && MetadataFresh(existing))return;
         lock(_gate)
         {
-            if(Volatile.Read(ref _disposed)!=0)return;
+            if(Volatile.Read(ref _disposed)!=0 || _resetting.Contains(url))return;
             _formatsRequested.Add(url);
         }
         Request(url,true);
@@ -219,7 +220,7 @@ public sealed partial class PreviewService : IDisposable
         var cached=Peek(url);
         lock(_gate)
         {
-            if(Volatile.Read(ref _disposed)!=0)return;
+            if(Volatile.Read(ref _disposed)!=0 || _resetting.Contains(url))return;
             if (_known.Contains(url))
             {
                 if (priority && _pending.Remove(url)) _pending.Insert(0,url);
@@ -244,11 +245,13 @@ public sealed partial class PreviewService : IDisposable
             string? url;
             bool requireFormats;
             LocalPosterWork? local=null;
+            MetadataIteration? iteration=null;
             lock(_gate)
             {
                 if (_localPosters.Count>0 && (_pending.Count==0 || _preferLocalPoster))
                 {
                     local=_localPosters[0];_localPosters.RemoveAt(0);local.Started=true;
+                    _activeLocalPoster=local;
                     _preferLocalPoster=false;
                     url=null;requireFormats=false;
                 }
@@ -258,13 +261,22 @@ public sealed partial class PreviewService : IDisposable
                     url=_pending[0];_pending.RemoveAt(0);
                     _preferLocalPoster=true;
                     requireFormats=_formatsRequested.Remove(url);
+                    if(_resetting.Contains(url)){_known.Remove(url);continue;}
+                    iteration=new MetadataIteration(url,_generations.GetValueOrDefault(url),_stop.Token);
+                    _activeMetadata=iteration;
                 }
             }
-            if(local is not null){await ProcessLocalPoster(local).ConfigureAwait(false);continue;}
-            if(url is null)continue;
+            if(local is not null)
+            {
+                try{await ProcessLocalPoster(local).ConfigureAwait(false);}
+                finally{lock(_gate)if(ReferenceEquals(_activeLocalPoster,local))_activeLocalPoster=null;}
+                continue;
+            }
+            if(url is null || iteration is null)continue;
             string? frameExtractionContext=null;
             try
             {
+                iteration.Stop.Token.ThrowIfCancellationRequested();
                 var cached=Get(url);
                 // A missing candidate is a valid cached result, but a failed
                 // image request must not suppress the cover for all 72 hours.
@@ -272,19 +284,19 @@ public sealed partial class PreviewService : IDisposable
                 if(cached!=null && MetadataFresh(cached) && !FrameSourceNeeded(url) && (!requireFormats || cached.FormatsLoaded) &&
                     _fetchVersions.GetValueOrDefault(url)>=3 && !ThumbnailFailureExpired(cached) && !ThumbnailConverterRetry(cached))
                 {
-                    if(!_stop.IsCancellationRequested)_ready(cached);
+                    Publish(iteration,cached,true);
                     continue;
                 }
-                if(cached!=null && !_stop.IsCancellationRequested)_updated?.Invoke(cached);
-                using var deadline=CancellationTokenSource.CreateLinkedTokenSource(_stop.Token);
+                if(cached!=null)Publish(iteration,cached,false);
+                using var deadline=CancellationTokenSource.CreateLinkedTokenSource(_stop.Token,iteration.Stop.Token);
                 deadline.CancelAfter(_requestTimeout);
                 var fetched=await FetchAsync(url,deadline.Token,data=>
                 {
-                    if(_stop.IsCancellationRequested)return;
+                    if(!IsCurrent(iteration))return;
                     // Incomplete upgrades never erase a usable legacy cover.
                     data=RetainKnownData(data);
                     CacheInMemory(data);
-                    _updated?.Invoke(data);
+                    Publish(iteration,data,false);
                 },context=>frameExtractionContext=context).ConfigureAwait(false);
                 var data=RetainKnownData(fetched.Data);
                 if(data.ThumbnailBase64.Length==0 && !string.IsNullOrWhiteSpace(fetched.ThumbnailError))
@@ -292,6 +304,7 @@ public sealed partial class PreviewService : IDisposable
                 if (data!=null)
                 {
                     if (_stop.IsCancellationRequested) break;
+                    if(!IsCurrent(iteration))continue;
                     CacheInMemory(data);
                     _fetchVersions[url]=3;
                     _thumbnailErrors[url]=fetched.ThumbnailError;
@@ -305,29 +318,35 @@ public sealed partial class PreviewService : IDisposable
                     try { AppPersistence.AtomicWrite(CacheFile(url),contents);PruneDiskCache(CacheFile(url)); }
                     catch(Exception error) when(error is IOException or UnauthorizedAccessException)
                     { Log("Preview cache write failed for "+DiagnosticField(url)+": stage=cache_write "+ErrorDetails(error)); }
-                    _ready(data);
+                    Publish(iteration,data,true);
                 }
             }
             catch(OperationCanceledException) when (_stop.IsCancellationRequested){break;}
+            catch(OperationCanceledException) when (!IsCurrent(iteration)){ }
             catch(OperationCanceledException)
             {
                 FailFrameSourceRequests(url,new MediaFrameUnavailableException("Время получения источника кадра истекло."),frameExtractionContext);
                 Log("Preview timed out for "+DiagnosticField(url)+": stage=metadata timeout_ms="+
                     _requestTimeout.TotalMilliseconds.ToString("0",CultureInfo.InvariantCulture));
-                if(Peek(url) is {} prior)_ready(prior);
-                else _failed?.Invoke(url,"Время получения метаданных истекло.");
+                if(Peek(url) is {} prior)Publish(iteration,prior,true);
+                else PublishFailure(iteration,"Время получения метаданных истекло.");
             }
             catch(Exception e)
             {
                 FailFrameSourceRequests(url,new MediaFrameUnavailableException("Не удалось получить источник кадра."),frameExtractionContext);
                 Log("Preview unavailable for "+DiagnosticField(url)+": stage=metadata "+ErrorDetails(e));
-                if(!_stop.IsCancellationRequested)
+                if(IsCurrent(iteration))
                 {
-                    if(Peek(url) is {} prior)_ready(prior);
-                    else _failed?.Invoke(url,e.Message);
+                    if(Peek(url) is {} prior)Publish(iteration,prior,true);
+                    else PublishFailure(iteration,e.Message);
                 }
             }
-            finally { FinishFrameSourceIteration(url); }
+            finally
+            {
+                FinishFrameSourceIteration(url);
+                lock(_gate)if(ReferenceEquals(_activeMetadata,iteration))_activeMetadata=null;
+                iteration.Completion.TrySetResult();iteration.Dispose();
+            }
         }
     }
     private static string Str(JsonElement json,string name)
