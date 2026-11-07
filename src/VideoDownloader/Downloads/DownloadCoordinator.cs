@@ -28,6 +28,7 @@ public sealed partial class DownloadCoordinator : IAsyncDisposable
     private readonly ConcurrentDictionary<string,string> _traceJobIds=new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string,(int Attempt,int Invocation,string? Quality)> _diagnosticAttempts=new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string,int> _invocations=new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string,JobDiagnosticSettings> _diagnosticPlans=new(StringComparer.Ordinal);
     private readonly Stopwatch _traceClock=Stopwatch.StartNew();
     private long _traceSequence;
     public string TraceSessionId { get; }=Guid.NewGuid().ToString("N")[..8];
@@ -81,11 +82,26 @@ public sealed partial class DownloadCoordinator : IAsyncDisposable
             item.Status="Queued";item.State="Queued";item.Speed="";item.ETA="";
             _outputRoots[item.Url]=outputRoot;
             if(selection is not null)_selections[item.Url]=selection;else _selections.TryRemove(item.Url,out _);
+            if(_trace is not null)
+            {
+                var diagnostic=JobDiagnosticSettings.Capture(options,selection);
+                _diagnosticPlans[item.Url]=diagnostic with
+                {
+                    Parallel=_options.Parallel,
+                    // The minimal retained plan stores resolved parameters,
+                    // not an old display/profile preset identifier.
+                    Profile=item.ResumeState is null?diagnostic.Profile:"неизвестно"
+                };
+            }
+            // Queued/resumed belongs to the new generation before its first
+            // invocation; it must not inherit the previous attempt's key.
+            _diagnosticAttempts.TryRemove(item.Url,out _);
             Trace(item,JournalLevel.Information,resume?"job_resumed":"job_queued",$"url={DownloadProgressTrace.Quoted(item.Url)} outstanding={Outstanding}",worker:"");
             if(!_queue.Writer.TryWrite(attempt))
             {
                 _attempts.TryRemove(item.Url,out _);_queued.TryRemove(item.Url,out _);
                 _outputRoots.TryRemove(item.Url,out _);_selections.TryRemove(item.Url,out _);
+                _diagnosticPlans.TryRemove(item.Url,out _);
                 item.AttemptFinished=true;Interlocked.Decrement(ref _outstanding);attempt.Finished.TrySetResult(false);attempt.Stop.Dispose();
                 return false;
             }
@@ -293,8 +309,9 @@ public sealed partial class DownloadCoordinator : IAsyncDisposable
                 TraceSessionId,item==null?"":_traceJobIds.GetOrAdd(item.Url,DownloadTraceIdentity.JobId),worker??item?.Slot??"",
                 Identity:item is null?"":DownloadTraceIdentity.DiagnosticIdentity(item.Url),Event:eventName,
                 Attempt:numbers.Attempt>0?numbers.Attempt:null,Invocation:numbers.Invocation>0?numbers.Invocation:null,
-                Settings:item is not null && (eventName is "job_queued" or "attempt_start" || level is JournalLevel.Error or JournalLevel.Warning)
-                    ?JobDiagnosticSettings.Capture(_options,_selections.GetValueOrDefault(item.Url),numbers.Quality):null);
+                Settings:item is not null && (eventName is "job_queued" or "job_resumed" or "attempt_start" || level is JournalLevel.Error or JournalLevel.Warning) &&
+                    _diagnosticPlans.TryGetValue(item.Url,out var captured)
+                    ?captured with{Quality=numbers.Quality??captured.Quality}:null);
             _trace(record);
         }
         catch(Exception) { /* Diagnostics must not change a download's outcome. */ }

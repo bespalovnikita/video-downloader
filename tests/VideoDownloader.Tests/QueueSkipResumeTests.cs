@@ -42,7 +42,8 @@ internal static class QueueSkipResumeTests
         var options=Options(Path.Combine(root,"live-output"));
         var first=new DownloadItem{Url=origin.Url("primary.mp4")};
         var next=new DownloadItem{Url=origin.Url("next.mp4")};
-        await using var engine=Engine(data,options);
+        var trace=new ConcurrentQueue<JournalRecord>();
+        await using var engine=Engine(data,options,trace);
         Require(engine.Add(first) && engine.Add(next),"The two sequential workers must be admitted");
         Task run=engine.RunAsync();
         await WaitForPartial(first,"The real primary transfer must create a nonempty partial before skip");
@@ -69,6 +70,13 @@ internal static class QueueSkipResumeTests
             "Resume must use a positive HTTP Range and publish the exact source bytes: "+Describe(first));
         Require(first.TransferredBytes==origin.PrimaryBytes.Length,
             $"Resume must not count its retained byte baseline twice: {first.TransferredBytes} instead of {origin.PrimaryBytes.Length}");
+        string identity=DownloadTraceIdentity.DiagnosticIdentity(first.Url);
+        var starts=trace.Where(record=>record.Identity==identity && record.Event=="attempt_start").ToArray();
+        Require(starts.Length==2 && starts.All(record=>record.Invocation is >0 && record.Attempt==1) &&
+            starts.Select(record=>record.Invocation).Distinct().Count()==2 && starts[1].Invocation>starts[0].Invocation,
+            "Live resume must use a new monotonic diagnostic invocation even though its local retry attempt restarts at one");
+        Require(trace.Where(record=>record.Identity==identity && record.Event=="job_resumed").Single() is {Invocation:null,Attempt:null},
+            "Queued resume diagnostics must not inherit the previous invocation or retry attempt");
         Require(data.ReadHistory().ContainsKey(first.Url) && first.ResumeState is null && first.StageDir.Length==0 &&
             !File.Exists(stage+".resume.json"),"Successful completion must retire its retained stage proof and write history once");
         Require(!await engine.SkipAsync(first) && first.Status=="Completed" && File.Exists(first.Path) &&
@@ -124,6 +132,7 @@ internal static class QueueSkipResumeTests
 
         var changed=Options(Path.Combine(root,"changed-output"));
         changed.FilenameTemplate="changed-%(id)s.%(ext)s";changed.Quality="720";
+        changed.Codec="H264";changed.RateLimit="1M";changed.WriteSubs=true;changed.SubtitleLangs="de.*";
         var resumedTrace=new ConcurrentQueue<JournalRecord>();
         int requestsBeforeResume=origin.Requests.Count;
         origin.Release("restore.mp4");
@@ -137,6 +146,11 @@ internal static class QueueSkipResumeTests
             "Checkpoint continuation must resume actual bytes rather than silently restarting: "+Describe(restored));
         Require(restored.TransferredBytes==origin.PrimaryBytes.Length,
             $"Restored resume must retain its per-component baseline without double counting: {restored.TransferredBytes}");
+        var resumedSettings=resumedTrace.Single(record=>record.Event=="attempt_start").Settings;
+        Require(resumedSettings is not null && resumedSettings.Codec==options.Codec && resumedSettings.RateLimit==options.RateLimit &&
+            resumedSettings.Subtitles==options.WriteSubs && resumedSettings.SubtitleLanguages==options.SubtitleLangs &&
+            resumedSettings.Parallel==changed.Parallel && resumedSettings.Profile=="неизвестно",
+            "Resumed diagnostics must capture the actual retained plan rather than changed global UI options or an invented profile name");
         Require(OwnedFiles.Inside(options.Output,restored.Path) && Path.GetFileName(restored.Path).StartsWith("pinned-",StringComparison.Ordinal) &&
             (!Directory.Exists(changed.Output) || !Directory.EnumerateFiles(changed.Output,"*.mp4",SearchOption.AllDirectories).Any()),
             "New global output/template/quality settings must not redirect a retained attempt");
@@ -178,7 +192,8 @@ internal static class QueueSkipResumeTests
 
         origin.Hold("cancel.mp4");
         var cancelled=new DownloadItem{Url=origin.Url("cancel.mp4")};
-        await using(var engine=Engine(data,Options(Path.Combine(root,"cancel-output"))))
+        var resetTrace=new ConcurrentQueue<JournalRecord>();
+        await using(var engine=Engine(data,Options(Path.Combine(root,"cancel-output")),resetTrace))
         {
             Require(engine.Add(cancelled),"Destructive cancellation fixture must be admitted");
             Task running=engine.RunAsync();await WaitForPartial(cancelled,"Cancellation fixture must own a real partial");
@@ -202,6 +217,11 @@ internal static class QueueSkipResumeTests
                 File.ReadAllBytes(cancelled.Path).SequenceEqual(origin.PrimaryBytes) &&
                 File.ReadLines(data.HistoryPath).Count(line=>line.Contains(cancelled.Url,StringComparison.Ordinal))==1,
                 "Reset must make a byte-zero transfer and exactly one new publication/history record, with no stale cancelled generation");
+            string identity=DownloadTraceIdentity.DiagnosticIdentity(cancelled.Url);
+            var attempts=resetTrace.Where(record=>record.Identity==identity && record.Event=="attempt_start").ToArray();
+            Require(attempts.Length==2 && attempts[0].Invocation is >0 && attempts[1].Invocation>attempts[0].Invocation &&
+                resetTrace.Where(record=>record.Identity==identity && record.Event=="job_queued").All(record=>record.Invocation is null && record.Attempt is null),
+                "Explicit reset must separate its diagnostic invocation and clear stale queued-event attempt keys");
         }
     }
 
