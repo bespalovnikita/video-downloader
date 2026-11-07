@@ -89,7 +89,7 @@ public sealed partial class NativeWindow : IDisposable
         B("OutputBox").Text=new DownloadOptions().Output;
         _panelLayout=new PanelLayoutController(_window,SaveCheckpoint);
         _preview=new PreviewController(_window,_storage,_ytDlp,
-            ()=>_profileBackupBusy || _profileBackupRecoveryRequired || _profileBackupReplaying || _checkpointReadOnly || _legacyEngineBlocked
+            ()=>_restoringSession || _profileBackupBusy || _profileBackupRecoveryRequired || _profileBackupReplaying || _checkpointReadOnly || _legacyEngineBlocked
                 ?Array.Empty<DownloadItem>():SessionState.Queue.Concat(SessionState.Downloads),SaveCheckpoint,Log,
             AllowLocalPosters,localPosterFfmpegPath);
         _lifecycle=new WindowLifecycleController(_window,()=>OpenFolder(B("OutputBox").Text));
@@ -144,6 +144,9 @@ public sealed partial class NativeWindow : IDisposable
         };
         TryRestore();
         SessionState.SetOptions(ReadOptions());
+        // Recovery callbacks run with the restore barrier down. Valid rows
+        // retain their cold prefetch; protected capacity recovery has none.
+        if(!_checkpointReadOnly)foreach(var row in SessionState.Queue)RequestRowPreview(row);
         Reindex();
         RefreshDependencyLabel();
         InitializeAppUpdates(updateService,automatic:automaticUpdates??(persistence is null));
@@ -186,7 +189,12 @@ public sealed partial class NativeWindow : IDisposable
         foreach(string name in new[]{"MoveUpButton","MoveDownButton","ClearQueueButton"})
             F<Button>(name).IsEnabled=!running;
         Q.AllowDrop=!running;
-        if (running)
+        if(_checkpointCapacityRecovery)
+        {
+            T("HeaderStatus").Text=ErrorMessages.Text("● Требуется сокращение очереди","● Queue reduction required");
+            T("HeaderStatus").Foreground=Brushes.Orange;
+        }
+        else if (running)
         {
             T("HeaderStatus").Text=paused?ErrorMessages.Text("● Пауза","● Paused"):ErrorMessages.Text("● Скачивание","● Downloading");
             T("HeaderStatus").Foreground=Brushes.LightSkyBlue;
@@ -319,7 +327,24 @@ public sealed partial class NativeWindow : IDisposable
             if (MessageBox.Show(_window,ErrorMessages.Text($"Восстановить предыдущую очередь ({previous.Queue.Count} ссылок)?\nЗавершённые загрузки не будут запущены повторно.",$"Restore previous queue ({previous.Queue.Count} URLs)?\nCompleted downloads will not restart automatically."),
                     ErrorMessages.Text("Восстановить предыдущую сессию","Restore previous session"),MessageBoxButton.YesNo,MessageBoxImage.Question)!=MessageBoxResult.Yes) return;
             RestoreSubscriptionQueueTitles(previous.Queue);
-            foreach(var item in SessionState.AddBatch(previous.Queue,ReadOptions()))RequestRowPreview(item);
+            string? capacityError=null;
+            try {AppPersistence.ValidateCanSave(previous.Queue,ReadOptions());}
+            catch(InvalidDataException error)
+            {
+                _checkpointReadOnly=true;_checkpointCapacityRecovery=true;
+                capacityError=error.Message;
+            }
+            // Observable queue callbacks run only after the restore barrier
+            // and any capacity protection have already been established.
+            SessionState.RestoreValidated(previous.Queue);
+            if(_checkpointCapacityRecovery)
+            {
+                T("ClipboardHint").Text=QueueCapacityRecoveryHint;
+                Log("Recovered queue exceeds current checkpoint capacity: "+capacityError);
+                MessageBox.Show(_window,QueueCapacityRecoveryHint,
+                    ErrorMessages.Text("Восстановленная очередь требует сокращения","Recovered queue requires reduction"),MessageBoxButton.OK,MessageBoxImage.Warning);
+                return;
+            }
             Log($"Restored {SessionState.Queue.Count} URLs. Downloads will not restart automatically.");
         }
         catch(Exception e)
@@ -334,6 +359,33 @@ public sealed partial class NativeWindow : IDisposable
     }
     private bool _restoringSession;
     private bool _checkpointReadOnly;
+    private bool _checkpointCapacityRecovery;
+    private static string QueueCapacityRecoveryHint=>ErrorMessages.Text(
+        "Очередь восстановлена, включая результаты и пути очистки, но после чтения прежних данных её сохранение превышает 16 МиБ. Исходный файл оставлен без изменений. Добавление и запуск заблокированы. Экспортируйте очередь, затем явно сократите её кнопками «Удалить выбранные» или «Очистить всю очередь»; строки, ожидающие очистки, удаляются только через «Удалить выбранные». Сохранение возобновится, когда оставшаяся очередь поместится в лимит.",
+        "The queue, results and cleanup paths were recovered, but expanding the older data exceeds the 16 MiB checkpoint limit. The original file is unchanged. Adding and starting are blocked. Export the queue, then explicitly reduce it with Remove selected or Clear all; use Remove selected for rows awaiting cleanup. Saving resumes once the remaining queue fits the limit.");
+    private bool QueueRemovalBlocked=>_restoringSession || (_checkpointReadOnly && !_checkpointCapacityRecovery);
+    private void SaveReducedRecoveryQueue()
+    {
+        if(!_checkpointCapacityRecovery || _restoringSession || _closing || _disposed || _appUpdateHandoff ||
+            _profileBackupBusy || _profileBackupRecoveryRequired || _profileBackupReplaying || _legacyEngineBlocked)return;
+        try {AppPersistence.ValidateCanSave(SessionState.Queue,ReadOptions());}
+        catch(InvalidDataException){T("ClipboardHint").Text=QueueCapacityRecoveryHint;return;}
+        _checkpointReadOnly=false;
+        SaveCheckpoint();
+        // A filesystem failure retains the ordinary read-only barrier. Only
+        // a confirmed save completes capacity recovery and reopens ingress.
+        _checkpointCapacityRecovery=false;
+        if(!_checkpointReadOnly)
+        {
+            T("ClipboardHint").Text=ErrorMessages.Text("Сокращённая очередь сохранена. Добавление и запуск снова доступны.",
+                "The reduced queue was saved. Adding and starting are available again.");
+            foreach(var row in SessionState.Queue)RequestRowPreview(row);
+        }
+        else T("ClipboardHint").Text=ErrorMessages.Text(
+            "Не удалось сохранить сокращённую очередь. Исходный файл оставлен без изменений; добавление, запуск и дальнейшее удаление заблокированы. Подробности ошибки — в журнале.",
+            "The reduced queue could not be saved. The original file is unchanged; adding, starting and further removal are blocked. See the journal for the save error.");
+        UpdateState();
+    }
     private bool _legacyEngineBlocked;
     internal void SaveCheckpoint()
     {
@@ -435,7 +487,7 @@ public sealed partial class NativeWindow : IDisposable
     private static IReadOnlyList<string> ParseUrls(string text)=>InputIngressController.ParseUrls(text);
     internal void AddUrls(IEnumerable<string> urls,bool clipboard=false,bool selectNew=false)
     {
-        if (_closing || _disposed || _appUpdateHandoff || RejectProfileBackupMutation()) return;
+        if (_closing || _disposed || _appUpdateHandoff || _restoringSession || _checkpointReadOnly || RejectProfileBackupMutation()) return;
         var rows=urls.Where(AppPersistence.ValidUrl).Distinct(StringComparer.Ordinal)
             .Where(url=>!SessionState.Queue.Any(i=>string.Equals(i.Url,url,StringComparison.Ordinal)))
             .Select(url=>new DownloadItem{Url=url}).ToList();
@@ -450,7 +502,7 @@ public sealed partial class NativeWindow : IDisposable
         }
         // A modal duplicate dialog pumps the dispatcher: IPC/clipboard may
         // have added these URLs, completed the session, or closed the window.
-        if (_closing || _disposed || _appUpdateHandoff || RejectProfileBackupMutation()) return;
+        if (_closing || _disposed || _appUpdateHandoff || _checkpointReadOnly || RejectProfileBackupMutation()) return;
         // Capture the final deferred state after the modal loop. Admission
         // checks the whole resulting UTF-8 checkpoint once for this batch.
         foreach(var row in rows)
@@ -488,14 +540,14 @@ public sealed partial class NativeWindow : IDisposable
     private void PollClipboard()=>_ingress.PollClipboard();
     private async Task StartAsync(IEnumerable<DownloadItem>? custom=null)
     {
-        if(_closing || _disposed || _startingSession || _appUpdateHandoff || _checkpointReadOnly || _profileBackupReplaying || RejectProfileBackupMutation())return;
+        if(_closing || _disposed || _restoringSession || _startingSession || _appUpdateHandoff || _checkpointReadOnly || _profileBackupReplaying || RejectProfileBackupMutation())return;
         _startingSession=true;
         try { await StartSessionCoreAsync(custom); }
         finally { _startingSession=false;UpdateState();_preview.BackfillLocalPosters(); }
     }
     private async Task StartSessionCoreAsync(IEnumerable<DownloadItem>? custom)
     {
-        if (_closing || _disposed || _checkpointReadOnly || RejectProfileBackupMutation()) return;
+        if (_closing || _disposed || _restoringSession || _checkpointReadOnly || RejectProfileBackupMutation()) return;
         if (_legacyEngineBlocked)
         {
             MessageBox.Show(_window,
@@ -601,13 +653,13 @@ public sealed partial class NativeWindow : IDisposable
     }
     private async Task RemoveRowsAsync(IEnumerable<DownloadItem> rows)
     {
-        if(_closing || _disposed || _appUpdateHandoff || _checkpointReadOnly || RejectProfileBackupMutation())return;
+        if(_closing || _disposed || _appUpdateHandoff || QueueRemovalBlocked || RejectProfileBackupMutation())return;
         var selected=rows.Where(SessionState.Queue.Contains).Distinct().ToArray();
         if(selected.Length==0)return;
         if(selected.Any(x=>x.Status!="Queued") &&
             MessageBox.Show(_window,ErrorMessages.Text($"Удалить выбранные ссылки ({selected.Length})?\nИх активные задачи будут остановлены, а принадлежащие им готовые файлы — удалены без возможности восстановления.\nОстальные загрузки продолжатся.",$"Remove {selected.Length} selected URL(s)?\nActive jobs will be stopped; finished files belonging to them will be permanently deleted.\nOther downloads continue."),
                 ErrorMessages.Text("Удалить загрузки","Delete downloads"),MessageBoxButton.YesNo,MessageBoxImage.Warning)!=MessageBoxResult.Yes)return;
-        if(_closing || _disposed || _appUpdateHandoff || _checkpointReadOnly || RejectProfileBackupMutation())return;
+        if(_closing || _disposed || _appUpdateHandoff || QueueRemovalBlocked || RejectProfileBackupMutation())return;
         var alreadyPending=selected.Where(row=>row.PendingRemoval).ToHashSet();
         var cancelledWorkers=new HashSet<DownloadItem>();
         foreach(var row in selected)
@@ -623,7 +675,7 @@ public sealed partial class NativeWindow : IDisposable
             }
         }
         await _preview.CancelLocalPostersAsync(selected);
-        if(_closing || _disposed || _appUpdateHandoff || _checkpointReadOnly || RejectProfileBackupMutation())
+        if(_closing || _disposed || _appUpdateHandoff || QueueRemovalBlocked || RejectProfileBackupMutation())
         {
             foreach(var row in selected.Where(row=>!alreadyPending.Contains(row) && !cancelledWorkers.Contains(row)))
                 if(row.CleanupError.Length==0 && SessionState.Queue.Contains(row))row.PendingRemoval=false;
@@ -651,6 +703,7 @@ public sealed partial class NativeWindow : IDisposable
             }
         }
         Reindex();
+        SaveReducedRecoveryQueue();
     }
     private void ForgetRow(DownloadItem row)
     {
@@ -660,7 +713,7 @@ public sealed partial class NativeWindow : IDisposable
     {
         if(_startingSession || SessionState.Coordinator?.IsRunning==true || RejectProfileBackupMutation())return;
         await _preview.CancelLocalPostersAsync(candidates);
-        if(_closing || _disposed || _appUpdateHandoff || _checkpointReadOnly || _startingSession ||
+        if(_closing || _disposed || _appUpdateHandoff || QueueRemovalBlocked || _startingSession ||
             SessionState.Coordinator?.IsRunning==true || RejectProfileBackupMutation())return;
         foreach(var row in candidates)
             if (SessionState.Queue.Contains(row) && row.CanResume && row.StageDir.Length==0 && row.CleanupPaths.Count==0) ForgetRow(row);
@@ -669,6 +722,7 @@ public sealed partial class NativeWindow : IDisposable
                 "Downloads awaiting cleanup were kept. Use Remove to retry."),
                 ErrorMessages.Text("Ожидается очистка","Cleanup pending"),MessageBoxButton.OK,MessageBoxImage.Warning);
         Reindex();
+        SaveReducedRecoveryQueue();
     }
     private void MoveItem(DownloadItem item,int index)
     {
@@ -676,7 +730,7 @@ public sealed partial class NativeWindow : IDisposable
     }
     public void ReceiveArguments(IEnumerable<string> args)
     {
-        if(_closing || _disposed || _appUpdateHandoff)return;
+        if(_closing || _disposed || _appUpdateHandoff || _restoringSession)return;
         if(_profileBackupBusy || _profileBackupReplaying){DeferProfileArguments(args);return;}
         if(_profileBackupRecoveryRequired || _checkpointReadOnly || _legacyEngineBlocked)
         {
