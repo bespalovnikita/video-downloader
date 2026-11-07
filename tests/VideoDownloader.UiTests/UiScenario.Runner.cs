@@ -54,6 +54,8 @@ internal sealed partial class UiScenario
             UiScenario.TestMediaSelection(root);
             Stage("testing multiple fragment drafts, ordering and whole-batch selection persistence");
             UiScenario.TestMultipleFragments(root);
+            Stage("testing merged fragment output, explicit reencode consent and saved selection ownership");
+            UiScenario.TestFragmentMergeSelection(root);
             Stage("testing fragment start/end frame cards, cancellation and optional failures");
             UiScenario.TestMediaSectionFrames(root);
             Stage("testing draggable fragment timeline, frame steps and synchronized range");

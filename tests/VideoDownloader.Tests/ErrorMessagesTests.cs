@@ -52,6 +52,8 @@ internal static class ErrorMessagesTests
                 ("HTTP Error 451: Unavailable For Legal Reasons","юридическ"),
                 ("HTTP Error 503: Service Unavailable","сервера"),
                 ("ERROR: Unsupported URL: https://example.invalid/clip","не поддерживается"),
+                ("Fragment merge failed: Fragment stream parameters differ.", "склеить"),
+                ("Fragment merge failed: Embedded covers cannot be preserved when joining this container.", "обложкой"),
                 ("ERROR: This video is DRM protected", "DRM"),
                 ("ERROR: This video is DRM-protected", "DRM"),
                 ("ERROR: This video is not available in your country", "регион"),

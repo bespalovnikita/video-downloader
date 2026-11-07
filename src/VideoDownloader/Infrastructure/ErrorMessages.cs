@@ -48,6 +48,8 @@ internal static class ErrorMessages
     // mistaken for HTTP codes or an extractor's diagnostic text.
     private static readonly Rule[] BeforeHttp =
     [
+        RuleFor(@"^Fragment merge failed: Embedded covers cannot be preserved", "Склейка этого контейнера со встроенной обложкой пока не поддерживается. Выключите Embed thumbnail либо сохраните отдельные фрагменты."),
+        RuleFor(@"^Fragment merge failed:", "Не удалось склеить выбранные фрагменты. Проверьте совместимость дорожек и параметры перекодирования либо сохраните отдельные файлы. Исходная диагностика доступна в подробностях ошибки."),
         RuleFor(@"\bunsupported URL\b|\bno suitable extractor\b", "Этот адрес не поддерживается yt-dlp. Проверьте ссылку и обновите yt-dlp в разделе Dependencies."),
         RuleFor(@"\bDRM[- ]protected\b|\bprotected (?:with|by) DRM\b|\bDRM protection\b", "Материал защищён DRM. Приложение не может скачать его обычным способом."),
         RuleFor(@"\bnot (?:available|accessible) in your (?:country|region)\b|\bgeo[- ]restrict|\bgeographic restriction", "Материал недоступен в вашем регионе. Проверьте доступность видео в браузере."),

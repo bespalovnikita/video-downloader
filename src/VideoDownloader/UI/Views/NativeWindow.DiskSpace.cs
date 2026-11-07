@@ -143,7 +143,7 @@ public sealed partial class NativeWindow
             string destination=running && row.OutputRoot.Length>0?row.OutputRoot:
                 SubscriptionNames.ResolveOutputDirectory(output,row.SubscriptionName);
             jobs.Add(new(row.Url,destination,row.Selection,DiskRanges(row.Selection)));
-            jobs.Add(new(row.Url,temporary,row.Selection,DiskRanges(row.Selection),ReservedCopies:2));
+            jobs.Add(new(row.Url,temporary,row.Selection,DiskRanges(row.Selection),ReservedCopies:DiskTemporaryCopies(row.Selection)));
         }
         if(jobs.Count==0)
         {
@@ -156,6 +156,7 @@ public sealed partial class NativeWindow
     // fragments reserves their sum rather than a full stream for every range.
     private static IReadOnlyList<DownloadSection> DiskRanges(DownloadSelection? selection)=>
         selection?.EffectiveSections??Array.Empty<DownloadSection>();
+    private static int DiskTemporaryCopies(DownloadSelection? selection)=>selection is {IsMerged:true,AllowMergeReencode:true}?3:2;
 
     private DiskQueueState[] FreezeDiskQueue()=>SessionState.Queue.Select(row=>new DiskQueueState(row,row.Url,row.Selection,
         row.Status,row.SubscriptionName,row.PendingRemoval,row.CleanupError,row.StageDir,row.RunDir)).ToArray();
@@ -189,7 +190,7 @@ public sealed partial class NativeWindow
         foreach(var row in approved)
         {
             jobs.Add(new(row.Url,outputRoots[row],row.Selection,DiskRanges(row.Selection)));
-            jobs.Add(new(row.Url,temporary,row.Selection,DiskRanges(row.Selection),ReservedCopies:2));
+            jobs.Add(new(row.Url,temporary,row.Selection,DiskRanges(row.Selection),ReservedCopies:DiskTemporaryCopies(row.Selection)));
         }
         try
         {

@@ -85,12 +85,16 @@ public sealed record DownloadSelection(string Url,DownloadSection? Section=null,
     // Old snapshots continue to use Section. Multiple outputs keep their first
     // range there too, while the immutable array owns the complete plan.
     public DownloadSectionSet? Sections { get; init; }
+    // String IDs keep previous snapshots readable and reject unknown modes.
+    public string FragmentOutputMode { get; init; }="Separate";
+    public bool AllowMergeReencode { get; init; }
+    [JsonIgnore] public bool IsMerged=>FragmentOutputMode=="Merged";
     [JsonIgnore] public IReadOnlyList<DownloadSection> EffectiveSections=>Sections is not null?Sections:Section is {} single?new[]{single}:Array.Empty<DownloadSection>();
     [JsonIgnore] public bool IsPartial=>Sections is not null || Section is not null;
     [JsonIgnore] public string Summary=>(Format is null?"Автоматический формат":Format.Id+(AudioFormat is null?"":" + "+AudioFormat.Id))+
         (EffectiveSections.Count==0?" · Полностью":EffectiveSections.Count==1?" · "+RangeSummary(EffectiveSections[0]):
             $" · Фрагментов: {EffectiveSections.Count} · "+string.Join("; ",EffectiveSections.Take(3).Select(RangeSummary))+
-            (EffectiveSections.Count>3?"; …":""));
+            (EffectiveSections.Count>3?"; …":""))+(IsMerged?" · Один файл"+(AllowMergeReencode?" · перекодирование разрешено":" · без перекодирования"):"");
     private static string RangeSummary(DownloadSection range)=>DownloadSection.FormatTimestamp(range.StartSeconds)+" — "+DownloadSection.FormatTimestamp(range.EndSeconds);
     public bool TryValidate(string url,DownloadOptions options,out string error)
     {
@@ -100,6 +104,8 @@ public sealed record DownloadSelection(string Url,DownloadSection? Section=null,
     public void Validate(string url,DownloadOptions options)
     {
         ValidatePersisted(url);
+        if(IsMerged && (options.WriteSubs || options.AutoSubs || options.EmbedSubs))
+            throw new ArgumentException("Склейка фрагментов пока не переносит субтитры. Выключите субтитры либо выберите отдельные файлы.");
         if(Format is null)return;
         if(options.AudioOnly && (!Format.IsAudioOnly || AudioFormat is not null))
             throw new ArgumentException("Для «MP3 only» выберите аудиоформат без видео или автоматический формат.");
@@ -109,6 +115,8 @@ public sealed record DownloadSelection(string Url,DownloadSection? Section=null,
     }
     internal void ValidatePersisted(string url)
     {
+        if(FragmentOutputMode is not ("Separate" or "Merged") || AllowMergeReencode && !IsMerged)
+            throw new ArgumentException("Некорректный режим сохранения фрагментов.");
         if(!AppPersistence.ValidUrl(Url) || !string.Equals(Url,url,StringComparison.Ordinal))
             throw new ArgumentException("Выбор формата и фрагмента относится к другому URL.");
         if(DurationSeconds is {} duration && (!double.IsFinite(duration) || duration<=0 || duration>=TimeSpan.MaxValue.TotalSeconds))
@@ -118,6 +126,8 @@ public sealed record DownloadSelection(string Url,DownloadSection? Section=null,
         if(Sections is not null && Section is not null &&
             (Math.Round(Section.StartSeconds,3)!=Sections[0].StartSeconds || Math.Round(Section.EndSeconds,3)!=Sections[0].EndSeconds))
             throw new ArgumentException("Первый фрагмент не совпадает с сохранённым диапазоном.");
+        if(IsMerged && EffectiveSections.Count<2)
+            throw new ArgumentException("Для склейки добавьте не менее двух фрагментов.");
         if(Format is null)
         {
             if(AudioFormat is not null)throw new ArgumentException("Сначала выберите основной формат.");

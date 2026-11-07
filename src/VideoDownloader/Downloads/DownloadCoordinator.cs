@@ -434,11 +434,23 @@ public sealed class DownloadCoordinator : IAsyncDisposable
                                 !Path.GetExtension(path).Equals("."+_options.Container,StringComparison.OrdinalIgnoreCase))
                                 return new DownloadResult(false,false,"",[],"yt-dlp did not produce the requested container: "+_options.Container,transferred);
                         }
+                        string publishStage=stage;
+                        if(selection?.IsMerged==true)
+                        {
+                            var merger=new FragmentMergeService(DependencyCenter.Executable(OperatingSystem.IsWindows()?"ffmpeg.exe":"ffmpeg"),
+                                DependencyCenter.Executable(OperatingSystem.IsWindows()?"ffprobe.exe":"ffprobe"),
+                                (start,stdout,stderr,token)=>RunProcessingToolAsync(item,start,stdout,stderr,token),()=>_pause.IsPaused);
+                            Trace(item,JournalLevel.Information,"fragment_merge_start",$"fragments={media.Length} allow_reencode={selection.AllowMergeReencode}");
+                            var joined=await merger.MergeAsync(stage,media,selection.AllowMergeReencode,_options.EmbedMetadata,_options.EmbedChapters,ct,
+                                (detail,processing)=>{item.State=processing?"Processing":"Merging";item.ProgressDetail=detail;item.Speed="";item.ETA="";_changed(item);}).ConfigureAwait(false);
+                            publishStage=joined.PublishStage;mediaPath=joined.MediaPath;
+                            Trace(item,JournalLevel.Information,"fragment_merge_ready",$"fragments={media.Length} reencoded={joined.Reencoded} duration={DownloadProgressTrace.Number(joined.DurationSeconds)}");
+                        }
                         // Publication updates the row's manifest after each move,
                         // so even a failed rollback retains exact cleanup paths.
                         item.State="Publishing";item.Speed="";item.ETA="";_changed(item);
                         Trace(item,JournalLevel.Information,"publishing",$"attempt={attempt+1} quality={DownloadProgressTrace.Quoted(q)}");
-                        var published=OwnedFiles.Publish(stage,outputRoot,mediaPath,
+                        var published=OwnedFiles.Publish(publishStage,outputRoot,mediaPath,
                             paths=>item.CleanupPaths=paths.ToList(),renameCollisions:true);
                         Trace(item,JournalLevel.Information,"published",$"attempt={attempt+1} files={published.OwnedPaths.Count}");
                         if (ct.IsCancellationRequested || _cancelled.ContainsKey(item.Url))
@@ -488,6 +500,27 @@ public sealed class DownloadCoordinator : IAsyncDisposable
                 _log(item.CleanupError);
             }
         }
+    }
+
+    private async Task<FragmentMergeToolOutput> RunProcessingToolAsync(DownloadItem item,ProcessStartInfo start,
+        int stdout,int stderr,CancellationToken token)
+    {
+        await _pause.WaitForResumeAsync(token).ConfigureAwait(false);
+        token.ThrowIfCancellationRequested();
+        using var child=ManagedChildProcess.Start(start);
+        _pause.Register(item.Url,child.Process);
+        Trace(item,JournalLevel.Information,"processing_process_start",$"tool={DownloadProgressTrace.Quoted(Path.GetFileName(start.FileName))} pid={child.Process.Id}");
+        using var resume=token.Register(()=>
+        {
+            try{if(!child.Process.HasExited)_pause.ResumeForCancellation(child.Process);}
+            catch(InvalidOperationException){ }catch(System.ComponentModel.Win32Exception){ }
+        });
+        try
+        {
+            var captured=await BoundedProcessOutput.ReadAsync(child,stdout,stderr,token).ConfigureAwait(false);
+            return new(child.Process.ExitCode,captured.StandardOutput,captured.StandardError);
+        }
+        finally{_pause.Unregister(item.Url);}
     }
 
     private async Task<int> RunProcessAsync(DownloadItem item,string quality,int attempt,IEnumerable<string> args,Action<string,string> onLine,CancellationToken token)
