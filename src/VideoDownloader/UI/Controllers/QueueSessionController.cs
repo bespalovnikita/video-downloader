@@ -179,6 +179,13 @@ internal sealed class QueueSessionController
     }
     internal DownloadItem[] ClearCandidates()=>Queue.Any(row=>row.Status!="Skipped")
         ?Queue.Where(row=>row.Status!="Skipped").ToArray():Queue.ToArray();
+    internal bool TryRestartActive(DownloadCoordinator expected,DownloadItem row)
+    {
+        if(!ReferenceEquals(Coordinator,expected) || !expected.IsRunning || !Queue.Contains(row))return false;
+        if(!expected.Restart(row) && !expected.Add(row))return false;
+        _urls.Add(row.Url);_finalStates.Remove(row.Url);row.DeferredToNextStart=false;
+        return true;
+    }
     internal void Begin(DownloadCoordinator coordinator,DownloadOptions options,IReadOnlyList<DownloadItem> rows)
     {
         Options=options;Coordinator=coordinator;StartedAt=_timeProvider.GetLocalNow().DateTime;Stopping=false;

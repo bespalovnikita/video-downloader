@@ -39,6 +39,7 @@ public sealed partial class NativeWindow
         var selected=SelectedVisibleQueueRows();
         F<Button>("SkipQueueItemsButton").IsEnabled=ready && selected.Any(CanSkipQueueItem);
         F<Button>("ResumeQueueItemsButton").IsEnabled=ready && selected.Any(CanContinueQueueItem);
+        RefreshResetQueueItemActions();
     }
 
     private Task RunQueueItemActionAsync(Func<Task> action)

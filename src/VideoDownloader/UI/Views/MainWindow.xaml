@@ -447,6 +447,7 @@
                         <Button x:Name="RemoveQueueButton" Content="Удалить выбранные"/>
                         <Button x:Name="SkipQueueItemsButton" Content="Пропустить выбранные" IsEnabled="False"/>
                         <Button x:Name="ResumeQueueItemsButton" Content="Продолжить выбранные" IsEnabled="False"/>
+                        <Button x:Name="ResetQueueItemsButton" Content="Сбросить и скачать заново…" IsEnabled="False"/>
                         <Button x:Name="QueueDiagnosticsButton" Content="Диагностика…" IsEnabled="False"
                                 ToolTip="События, попытки и диагностический пакет одной выбранной строки"/>
                         <Button x:Name="ClearQueueButton" Content="Очистить всю очередь"/>
