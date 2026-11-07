@@ -862,8 +862,8 @@ class DownloadService : Service() {
         val isPaused: StateFlow<Boolean> = mutablePaused.asStateFlow()
         val progress: StateFlow<Map<String, EngineProgress>> = mutableProgress.asStateFlow()
         val session: StateFlow<DownloadSessionSnapshot?> = mutableSession.asStateFlow()
-        /** Native joins and delayed snapshot writes still own data after onDestroy. */
-        val hasOwnedTasks: Boolean get() = claimedTasks.isNotEmpty() || drainingServices.isNotEmpty()
+        /** Ownership covers the live service, then native joins and delayed writes after onDestroy. */
+        val hasOwnedTasks: Boolean get() = currentService.get() != null || claimedTasks.isNotEmpty() || drainingServices.isNotEmpty()
         /** False means the row remains queued for the next explicit Start. */
         fun admitManual(expectedSessionId: String, candidates: List<ManualQueueCandidate>): Boolean =
             currentService.get()?.requestManualAdmission(expectedSessionId, candidates) ?: false
