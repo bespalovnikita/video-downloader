@@ -30,7 +30,9 @@ $start.Environment['VD_NATIVE_UI_TEST_RESULT'] = $ResultPath
 $start.Environment['VD_NATIVE_TITLE_FIXTURE'] = $fixture
 $process = [Diagnostics.Process]::Start($start)
 try {
-    $deadline = [DateTime]::UtcNow.AddSeconds(90)
+    # This is the whole WPF process budget; individual scenario waits retain
+    # their own short deadlines as the number of real windows grows.
+    $deadline = [DateTime]::UtcNow.AddSeconds(180)
     $lastStage = ''
     while (-not $process.WaitForExit(250)) {
         if (Test-Path -LiteralPath $ResultPath) {

@@ -1,9 +1,11 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Markup;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -25,14 +27,14 @@ internal sealed partial class UiScenario
         static T Control<T>(Window window,string name) where T:class=>(T)(window.FindName(name)
             ??throw new InvalidOperationException("Missing waveform control: "+name));
         static void Click(Window window,string name)=>Control<Button>(window,name).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-        static void PumpUntil(Func<bool> condition,string reason)
+        static void PumpUntil(Func<bool> condition,string reason,Func<string>? evidence=null)
         {
             if(condition())return;
             var frame=new DispatcherFrame();var watch=Stopwatch.StartNew();
             var timer=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(15)};
             timer.Tick+=(_,_)=>{if(condition() || watch.Elapsed>TimeSpan.FromSeconds(6))frame.Continue=false;};
             timer.Start();try{Dispatcher.PushFrame(frame);}finally{timer.Stop();}
-            Require(condition(),reason);
+            Require(condition(),reason+(evidence is null?"":" "+evidence()));
         }
         static void FlushDispatcher()
         {
@@ -205,13 +207,28 @@ internal sealed partial class UiScenario
             start.Text="10";end.Text="30";Require(first.Data is null,"External typed edits must invalidate the previous waveform.");
             Click(dialog,"PreviewMediaWaveformStartButton");calls[^1].Success(measured);
             PumpUntil(()=>ReferenceEquals(first.Data,measured),"Replacement start waveform was not rendered.");
-            first.BringIntoView();dialog.UpdateLayout();dialog.Activate();
-            var target=first.PointToScreen(new Point(8+(first.ActualWidth-16)/2,53));
-            System.Windows.Forms.Cursor.Position=new System.Drawing.Point((int)Math.Round(target.X),(int)Math.Round(target.Y));FlushDispatcher();
-            first.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice,Environment.TickCount,MouseButton.Left)
-                {RoutedEvent=UIElement.MouseLeftButtonDownEvent,Source=first});
-            Require(DownloadSection.TryParseTimestamp(start.Text,out double clicked) && Math.Abs(clicked-12.5)<.05,
-                "A real track-click event must map the device position onto absolute source time.");
+            _=CaptureWaveform(first); // Settle the actual viewport/render before calculating a device target.
+            var localTarget=new Point(8+(first.ActualWidth-16)/2,53);
+            var target=first.PointToScreen(localTarget);
+            System.Windows.Forms.Cursor.Position=new System.Drawing.Point((int)Math.Round(target.X),(int)Math.Round(target.Y));
+            var hwnd=new WindowInteropHelper(dialog).Handle;
+            var client=new WaveformMouseInput.DevicePoint{X=(int)Math.Round(target.X),Y=(int)Math.Round(target.Y)};
+            Require(WaveformMouseInput.ScreenToClient(hwnd,ref client),"The shown editor must translate the real screen target into HWND client coordinates.");
+            Require(client.X is >=0 and <=short.MaxValue && client.Y is >=0 and <=short.MaxValue,
+                "The native click target must be inside the shown editor's client area.");
+            nint coordinates=(client.Y<<16)|(client.X&0xffff);
+            // SetCursorPos alone does not update MouseDevice's cached raw-input
+            // position. Send native input reports through this owned HWND so
+            // the real WPF input provider updates that position and routes the
+            // subsequent button gesture to its actual hit-tested source.
+            _=WaveformMouseInput.SendMessage(hwnd,0x0200,0,coordinates); // WM_MOUSEMOVE
+            string ClickEvidence()=>$"targetLocal={localTarget}, targetScreen={target}, client={client.X},{client.Y}, actualWpf={Mouse.GetPosition(first)}, actualCursor={System.Windows.Forms.Cursor.Position}, directlyOver={Mouse.DirectlyOver?.GetType().Name}, start={start.Text}, "+RenderEvidence(first);
+            PumpUntil(()=>Math.Abs(Mouse.GetPosition(first).X-localTarget.X)<1.5 && Math.Abs(Mouse.GetPosition(first).Y-localTarget.Y)<1.5 &&
+                ReferenceEquals(Mouse.DirectlyOver,first),"The WPF mouse device must acknowledge the native track target before clicking.",ClickEvidence);
+            _=WaveformMouseInput.SendMessage(hwnd,0x0201,1,coordinates); // WM_LBUTTONDOWN / MK_LBUTTON
+            _=WaveformMouseInput.SendMessage(hwnd,0x0202,0,coordinates); // WM_LBUTTONUP
+            PumpUntil(()=>DownloadSection.TryParseTimestamp(start.Text,out double clicked) && Math.Abs(clicked-12.5)<.05,
+                "A native HWND track-click must map the acknowledged device position onto absolute source time.",ClickEvidence);
 
             start.Text="12.5";end.Text="13";Click(dialog,"PreviewMediaWaveformStartButton");calls[^1].Success(measured);
             PumpUntil(()=>ReferenceEquals(first.Data,measured),"The short valid draft did not accept its waveform context.");
@@ -367,5 +384,15 @@ internal sealed partial class UiScenario
             Request.IsEnd?Request.ClipRequest.EndSeconds:Request.ClipRequest.StartSeconds,waveform,""));
         internal void Failure(string error)=>Completion.TrySetResult(new(Request.ClipRequest.Url,
             Request.IsEnd?Request.ClipRequest.EndSeconds:Request.ClipRequest.StartSeconds,null,error));
+    }
+    private static class WaveformMouseInput
+    {
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct DevicePoint {internal int X,Y;}
+        [DllImport("user32.dll",SetLastError=true)]
+        [return:MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool ScreenToClient(nint window,ref DevicePoint point);
+        [DllImport("user32.dll",EntryPoint="SendMessageW")]
+        internal static extern nint SendMessage(nint window,uint message,nuint state,nint coordinates);
     }
 }
