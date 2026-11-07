@@ -377,7 +377,7 @@ Reorder / drag/drop / download selected остаются заблокирова�
 pwsh -NoProfile -File scripts/build.ps1 -Task Test
 ~~~
 
-Команда собирает приложение и выполняет release-version/Russian/smoke, нативные unit/integration/security/legacy tests и реальные WPF-сценарии с изолированным профилем. Не подменяй холодное получение метаданных тестом с готовым кешем. Проверяй все пути добавления URL/TXT/InternetShortcut/подписка до Start без выбора строки, а также singleton/протокол/трей и все варианты диалога повтора.
+Команда собирает приложение и выполняет release-version/Russian/smoke, нативные unit/integration/security/legacy tests и реальные WPF-сценарии с изолированным профилем. Общий срок дочернего WPF-процесса в `scripts/ui-tests.ps1` — 180 секунд на все окна; сохраняй отдельные короткие operation/assertion deadlines. Нативные mouse-сценарии подтверждают WPF MouseDevice position после HWND WM_MOUSEMOVE до кнопок мыши: один SetCursorPos с ручным RaiseEvent может оставить старые координаты. Не подменяй холодное получение метаданных тестом с готовым кешем. Проверяй все пути добавления URL/TXT/InternetShortcut/подписка до Start без выбора строки, а также singleton/протокол/трей и все варианты диалога повтора.
 
 Исполняемые проверки находятся в `tests/VideoDownloader.Tests/` и `tests/VideoDownloader.UiTests/`: `LegacyCompatibilityTests` читает фиксированные старые данные; `SubscriptionStoreTests` и `SubscriptionScannerTests` проверяют обнаружение, RSS и состояния; WPF host проверяет настоящие контролы. Не заменяй эти сценарии поиском маркеров в исходниках.
 
