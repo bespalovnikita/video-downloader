@@ -193,7 +193,7 @@ internal sealed class QueueFilterController:IDisposable
         _empty.Text=ErrorMessages.Text("Ничего не найдено.\nИзмените поиск или сбросьте фильтры.","No matching rows.\nChange the search or reset filters.");
         _reset.IsEnabled=IsFiltering || _query.Text.Length>0;
         _scope.Text=IsFiltering
-            ? ErrorMessages.Text("Фильтры меняют только список. Start и очистка действуют на всю очередь, включая скрытые строки.",
+            ? ErrorMessages.Text("Фильтры меняют только список. «Скачать всю очередь» и очистка действуют на всю очередь, включая скрытые строки.",
                 "Filters change this list only. Start and Clear all apply to the whole queue, including hidden rows.")
             : ErrorMessages.Text("Поиск по названию или URL · Ctrl+F. Esc сбрасывает фильтры.","Search title or URL · Ctrl+F. Esc resets filters.");
     }

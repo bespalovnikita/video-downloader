@@ -55,7 +55,7 @@ public sealed partial class NativeWindow
         if (_checkpointReadOnly)
             throw new IOException("Не удалось сохранить очередь. Материалы подписки остаются доступными для повторного добавления.");
         var accepted=requested.Where(url=>SessionState.Queue.Any(row=>row.Url==url && row.CanResume && row.Status!="Completed")).ToArray();
-        T("ClipboardHint").Text=$"Из подписок принято {accepted.Length}. Загрузка начнётся по кнопке Start.";
+        T("ClipboardHint").Text=$"Из подписок принято {accepted.Length}. Загрузка начнётся по кнопке «Скачать всю очередь».";
         return accepted;
     }
 

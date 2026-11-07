@@ -22,6 +22,10 @@ internal static class ErrorMessagesTests
                 CultureInfo.CurrentCulture=CultureInfo.GetCultureInfo("en-US");
                 Require(ErrorMessages.IsRussian && ErrorMessages.Text("Ошибка","Error")=="Ошибка",
                     "All Russian UI locales must choose Russian independently of numeric formatting: "+language);
+                const string originalControlReference="MP3 поддерживает одну аудиодорожку. Выберите один язык или отключите «MP3 only».";
+                Require(ErrorMessages.ForDisplay(originalControlReference).Contains("«Только MP3»",StringComparison.Ordinal) &&
+                        originalControlReference.Contains("«MP3 only»",StringComparison.Ordinal),
+                    "Old diagnostics must display the current Russian control caption without rewriting the original.");
                 string translated=ErrorMessages.ForDisplay(denied);
                 Require(translated.Contains("доступ",StringComparison.OrdinalIgnoreCase) && translated.Contains("403") && !translated.Contains("Forbidden"),
                     "The actual yt-dlp access diagnostic must have a Russian explanation: "+language);
@@ -37,6 +41,10 @@ internal static class ErrorMessagesTests
             Require(ErrorMessages.ForException(original)==original.Message && ErrorMessages.ForDisplay(original.Message)==original.Message,
                 "Other UI languages must retain the exact original diagnostic");
             Require(ErrorMessages.ForLog(denied)==denied,"Other UI languages must keep original log entries exactly");
+            foreach(string reference in new[]{"MP3 поддерживает одну аудиодорожку. Отключите «MP3 only».",
+                "Для обработки медиа нажмите Install FFmpeg в разделе Dependencies.","Параметры задания изменились. Повторите Start."})
+                Require(ErrorMessages.ForDisplay(reference)==reference,
+                    "Control-caption references in saved diagnostics must remain exact outside Russian UI locales.");
             Require(ErrorMessages.ForDisplay(null)=="" && ErrorMessages.ForDisplay("")=="",
                 "No diagnostic must remain empty");
 
@@ -91,6 +99,8 @@ internal static class ErrorMessagesTests
                 ("ffmpeg.exe not found", "FFmpeg"),
                 ("Cannot start yt-dlp", "запустить"),
                 ("yt-dlp exit code 1", "yt-dlp завершился"),
+                ("Cookie file is missing.", "файл cookies"),
+                ("Choose an output directory.", "папку загрузок"),
                 ("HTTP Error 503: Service Unavailable | ERROR: HTTP Error 403: Forbidden | connection timed out", "403")
             };
             foreach(var (diagnostic,expected) in cases)

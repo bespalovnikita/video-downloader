@@ -65,7 +65,7 @@ internal sealed partial class SubscriptionController
             Name="SubscriptionQueueOfferSummary",TextWrapping=TextWrapping.Wrap,FontSize=16,
             Text=$"В проверенных подписках — {items.Count} материалов со статусом «Новое»."+Environment.NewLine+
                 $"Уникальных ссылок: {unique}. Подписок: {groups.Length}."+Environment.NewLine+Environment.NewLine+
-                "Добавить все в обычную очередь? Скачивание запускается только кнопкой Start."
+                "Добавить все в обычную очередь? Скачивание запускается только кнопкой «Скачать всю очередь»."
         };
         panel.Children.Add(summary);dialog.RegisterName(summary.Name,summary);
         string listing=string.Join(Environment.NewLine,groups.Take(20).Select(group=>

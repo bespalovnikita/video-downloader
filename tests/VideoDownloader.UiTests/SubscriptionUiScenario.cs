@@ -136,7 +136,7 @@ internal sealed partial class UiScenario
             Task.Run(()=>firstProgress.Report(new("Enumerating",MetadataBytes:1024))).GetAwaiter().GetResult();
             DrainProgressCallbacks();
             Require(subscriptions.TestControl<TextBlock>("SubscriptionCheckDetailText").Text.Contains("после полного обхода") &&
-                    subscriptions.TestControl<TextBlock>("SubscriptionCheckDetailText").Text.Contains("1 KB"),
+                    subscriptions.TestControl<TextBlock>("SubscriptionCheckDetailText").Text.Contains(ErrorMessages.Text("1 КБ","1 KB")),
                 "Enumerating must show real received bytes while the material count remains unknown");
             firstProgress.Report(new("Parsing",3,2048));
             firstProgress.Report(new("Feed",3,2048));

@@ -76,7 +76,7 @@ internal sealed partial class MediaSelectionDialog : Window
             CanUserAddRows=false,CanUserDeleteRows=false,EnableRowVirtualization=true,EnableColumnVirtualization=true,
             SelectionMode=DataGridSelectionMode.Single,Margin=new Thickness(0,4,0,8)});
         foreach(var (header,path,width) in new (string,string,double)[]{
-            ("ID","Id",85),("Тип","Kind",100),("Разрешение","Resolution",105),("FPS","Fps",55),
+            ("ID","Id",85),("Тип","Kind",100),("Разрешение","Resolution",105),("кадр/с","Fps",65),
             ("HDR","DynamicRange",80),("Видеокодек","VideoCodec",120),("Аудиокодек","AudioCodec",100),
             ("Язык","Language",70),("Размер","Size",110)})
         {
@@ -216,7 +216,7 @@ internal sealed partial class MediaSelectionDialog : Window
         if(!_editable){_error.Text="Эта строка недоступна для изменения.";return;}
         double? duration=_metadata is {Duration:>0} data && double.IsFinite(data.Duration)?data.Duration:null;
         if(!TryReadSections(duration,out var sections,out string error))
-        {_error.Text=error;return;}
+        {_error.Text=ErrorMessages.ForDisplay(error);return;}
         var section=sections.FirstOrDefault();
         bool manual=_mode.SelectedIndex==1;
         if((manual || section!=null) && _metadata?.FormatsLoaded!=true)
@@ -239,14 +239,14 @@ internal sealed partial class MediaSelectionDialog : Window
         var selection=manual || section!=null ? new DownloadSelection(Row.Url,section,primary,audio,duration)
             {Sections=sections.Length>1?new DownloadSectionSet(sections):null,
                 FragmentOutputMode=_mergeDraft?"Merged":"Separate",AllowMergeReencode=_mergeDraft && _mergeReencodeDraft} : null;
-        if(selection!=null && !selection.TryValidate(Row.Url,_options(),out error)){_error.Text=error;return;}
+        if(selection!=null && !selection.TryValidate(Row.Url,_options(),out error)){_error.Text=ErrorMessages.ForDisplay(error);return;}
         Commit(selection);
     }
     private void Commit(DownloadSelection? selection)
     {
         if(!_editable){_error.Text="Эта строка недоступна для изменения.";return;}
         string? error=_apply(selection);
-        if(!string.IsNullOrEmpty(error)){_error.Text=error;return;}
+        if(!string.IsNullOrEmpty(error)){_error.Text=ErrorMessages.ForDisplay(error);return;}
         Close();
     }
 
@@ -261,6 +261,6 @@ internal sealed partial class MediaSelectionDialog : Window
         public string VideoCodec=>format.HasVideo?format.VideoCodec:"—";
         public string AudioCodec=>format.HasAudio?format.AudioCodec:"—";
         public string Language=>string.IsNullOrWhiteSpace(format.Language)?"—":format.Language;
-        public string Size=>format.EstimatedSizeBytes is >0?$"{(format.SizeIsApproximate?"≈ ":"")}{DownloadFormat.Bytes(format.EstimatedSizeBytes.Value)}":"Неизвестно";
+        public string Size=>format.EstimatedSizeBytes is >0?$"{(format.SizeIsApproximate?"≈ ":"")}{DisplayValueConverter.Bytes(format.EstimatedSizeBytes.Value)}":"Неизвестно";
     }
 }

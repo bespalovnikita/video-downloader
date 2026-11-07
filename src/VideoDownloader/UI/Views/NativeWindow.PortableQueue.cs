@@ -65,7 +65,7 @@ public sealed partial class NativeWindow
                     return;
                 }
                 Clipboard.SetText(text);
-                T("ClipboardHint").Text=$"Скопировано {entries.Length} ссылок. На другом клиенте нажми «Вставить очередь» или Paste, затем Start.";
+                T("ClipboardHint").Text=$"Скопировано {entries.Length} ссылок. На другом клиенте нажми «Вставить очередь» или «Вставить», затем «Скачать всю очередь».";
             }
         }
         catch(Exception error) when(error is IOException or InvalidDataException or ArgumentException or System.Runtime.InteropServices.COMException or UnauthorizedAccessException)
@@ -94,7 +94,7 @@ public sealed partial class NativeWindow
             if(_checkpointReadOnly)throw new IOException("Не удалось сохранить импортированную очередь.");
             foreach(var row in added)RequestRowPreview(row);
             foreach(var row in SessionState.Queue)_preview.RefreshKnownTitle(row);
-            T("ClipboardHint").Text=$"Добавлено {added.Count} из {entries.Count} ссылок; существующие строки сохранены. Загрузка начнётся по Start."+QueueFilterIngressHint;
+            T("ClipboardHint").Text=$"Добавлено {added.Count} из {entries.Count} ссылок; существующие строки сохранены. Загрузка начнётся по кнопке «Скачать всю очередь»."+QueueFilterIngressHint;
         }
         catch(Exception error) when(error is IOException or InvalidDataException or ArgumentException or InvalidOperationException or UnauthorizedAccessException)
         {

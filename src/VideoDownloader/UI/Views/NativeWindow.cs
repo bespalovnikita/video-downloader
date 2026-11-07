@@ -76,7 +76,13 @@ public sealed partial class NativeWindow : IDisposable
             ("FragmentsCombo",["Auto","1","2","3","4","6","8"]),
             ("ProfileCombo",ProfileCatalog.DisplayNames)})
         {
-            foreach(var v in values) C(control).Items.Add(v);
+            foreach(var v in values) C(control).Items.Add(control=="RateLimitCombo"?DisplayValueConverter.Display(v):v);
+            if(control is "QualityCombo" or "CodecCombo" or "ContainerCombo" or "FragmentsCombo")
+            {
+                var caption=new FrameworkElementFactory(typeof(TextBlock));
+                caption.SetBinding(TextBlock.TextProperty,new System.Windows.Data.Binding {Converter=new DisplayValueConverter()});
+                C(control).ItemTemplate=new DataTemplate {VisualTree=caption};
+            }
             C(control).SelectedIndex=0;
         }
         B("OutputBox").Text=new DownloadOptions().Output;
@@ -160,35 +166,35 @@ public sealed partial class NativeWindow : IDisposable
         var metrics=SessionState.ReadMetrics();
         TraceOverallProgress(metrics);
         bool running=metrics.Running,paused=metrics.Paused;
-        T("HeaderStats").Text=$"{metrics.Active} active · {DownloadFormat.Speed(metrics.Speed)} · {metrics.Successful}/{metrics.Total}";
+        T("HeaderStats").Text=ErrorMessages.Text($"{metrics.Active} активных · {DisplayValueConverter.Speed(metrics.Speed)} · {metrics.Successful}/{metrics.Total}",$"{metrics.Active} active · {DisplayValueConverter.Speed(metrics.Speed)} · {metrics.Successful}/{metrics.Total}");
         F<ProgressBar>("OverallProgress").Value=metrics.Progress;
         T("SessionStats").Text=SessionState.StartedAt.HasValue
-            ? $"Session: {metrics.Successful} OK · {metrics.Left} left · {metrics.Failed} errors · {DownloadFormat.Bytes(metrics.Transferred)} · {SessionState.Elapsed:hh\\:mm\\:ss}"
-            : $"Session: idle · {metrics.Total} URLs";
+            ? ErrorMessages.Text($"Сеанс: {metrics.Successful} готово · {metrics.Left} осталось · {metrics.Failed} ошибок · {DisplayValueConverter.Bytes(metrics.Transferred)} · {SessionState.Elapsed:hh\\:mm\\:ss}",$"Session: {metrics.Successful} OK · {metrics.Left} left · {metrics.Failed} errors · {DisplayValueConverter.Bytes(metrics.Transferred)} · {SessionState.Elapsed:hh\\:mm\\:ss}")
+            : ErrorMessages.Text($"Сеанс: ожидание · {metrics.Total} ссылок",$"Session: idle · {metrics.Total} URLs");
         string title=SessionState.StartedAt.HasValue
-            ? DownloadFormat.Tray(metrics.Successful,metrics.Left,metrics.Failed,metrics.Speed,running,paused) : "Video Downloader | Ready";
+            ? DownloadFormat.Tray(metrics.Successful,metrics.Left,metrics.Failed,metrics.Speed,running,paused) : ErrorMessages.Text("Video Downloader | Готово","Video Downloader | Ready");
         _lifecycle.UpdateStatus(title);
         F<Button>("StartButton").IsEnabled=!running && !_startingSession && SessionState.Queue.Any(x=>x.Status!="Completed" && x.CanResume);
         F<Button>("StopButton").IsEnabled=running;
         F<Button>("PauseButton").IsEnabled=running;
-        F<Button>("PauseButton").Content=paused?"Resume":"Pause";
+        F<Button>("PauseButton").Content=paused?ErrorMessages.Text("Продолжить","Resume"):ErrorMessages.Text("Пауза","Pause");
         F<Button>("RetryFailedButton").IsEnabled=!running && SessionState.Queue.Any(x=>x.Status=="Failed");
         foreach(string name in new[]{"MoveUpButton","MoveDownButton","ClearQueueButton"})
             F<Button>(name).IsEnabled=!running;
         Q.AllowDrop=!running;
         if (running)
         {
-            T("HeaderStatus").Text=paused?"● Paused":"● Downloading";
+            T("HeaderStatus").Text=paused?ErrorMessages.Text("● Пауза","● Paused"):ErrorMessages.Text("● Скачивание","● Downloading");
             T("HeaderStatus").Foreground=Brushes.LightSkyBlue;
         }
         else if (SessionState.StartedAt.HasValue)
         {
-            T("HeaderStatus").Text=SessionState.Stopping?"● Stopped":metrics.Failed==0?"● Completed":ErrorMessages.Text("● Завершено с ошибками","● Completed with errors");
+            T("HeaderStatus").Text=SessionState.Stopping?ErrorMessages.Text("● Остановлено","● Stopped"):metrics.Failed==0?ErrorMessages.Text("● Завершено","● Completed"):ErrorMessages.Text("● Завершено с ошибками","● Completed with errors");
             T("HeaderStatus").Foreground=SessionState.Stopping?Brushes.Orange:metrics.Failed==0?Brushes.LightGreen:Brushes.Tomato;
         }
         else
         {
-            T("HeaderStatus").Text="● Ready";
+            T("HeaderStatus").Text=ErrorMessages.Text("● Готово","● Ready");
             T("HeaderStatus").Foreground=Brushes.LightGray;
         }
         if(metrics.ActiveChanged) RefreshQueueView();
@@ -219,7 +225,7 @@ public sealed partial class NativeWindow : IDisposable
                 SaveCheckpoint();
                 if (item.CleanupError.Length>0)
                     MessageBox.Show(_window,ErrorMessages.Text(
-                        "Не удалось удалить файлы. Строка и пути сохранены; нажмите Remove для повторной попытки.\n",
+                        "Не удалось удалить файлы. Строка и пути сохранены; нажмите «Удалить выбранные» для повторной попытки.\n",
                         "Cleanup failed. The row and paths were kept; use Remove to retry.\n")+
                         ErrorMessages.ForDisplay(item.CleanupError),ErrorMessages.Text("Удаление заблокировано","Removal blocked"),
                         MessageBoxButton.OK,MessageBoxImage.Warning);
@@ -240,7 +246,7 @@ public sealed partial class NativeWindow : IDisposable
     internal DownloadOptions ReadOptions() => new()
     {
         Profile=ProfileCatalog.ToId(Pick(C("ProfileCombo"))),Quality=Pick(C("QualityCombo")),Codec=Pick(C("CodecCombo")),
-        Container=Pick(C("ContainerCombo")),RateLimit=C("RateLimitCombo").Text,
+        Container=Pick(C("ContainerCombo")),RateLimit=DisplayValueConverter.OptionId(C("RateLimitCombo").Text),
         Threads=B("ThreadsBox").Text,Fragments=Pick(C("FragmentsCombo")),
         FilenameTemplate=B("FilenameTemplateBox").Text,Output=B("OutputBox").Text,
         Cookies=B("CookiesBox").Text,SubtitleLangs=B("SubtitleLangsBox").Text,
@@ -263,7 +269,7 @@ public sealed partial class NativeWindow : IDisposable
             ("ProfileCombo",ProfileCatalog.Display(o.Profile)),("QualityCombo",o.Quality),("CodecCombo",o.Codec),
             ("ContainerCombo",o.Container),("FragmentsCombo",o.Fragments)})
             if (C(name).Items.Contains(value)) C(name).SelectedItem=value;
-        C("RateLimitCombo").Text=o.RateLimit;
+        C("RateLimitCombo").Text=DisplayValueConverter.Display(o.RateLimit);
         foreach(var(name,value)in new[]{
             ("ThreadsBox",o.Threads),("FilenameTemplateBox",o.FilenameTemplate),
             ("OutputBox",o.Output),("CookiesBox",o.Cookies),("SubtitleLangsBox",o.SubtitleLangs),("AudioLanguagesBox",o.AudioLanguages)})
@@ -299,8 +305,8 @@ public sealed partial class NativeWindow : IDisposable
             // or the user chooses not to restore its rows.
             ApplyOptions(previous.Settings);
             if (previous.Queue.Count==0) return;
-            if (MessageBox.Show(_window,$"Restore previous queue ({previous.Queue.Count} URLs)?\nCompleted downloads will not restart automatically.",
-                    "Restore previous session",MessageBoxButton.YesNo,MessageBoxImage.Question)!=MessageBoxResult.Yes) return;
+            if (MessageBox.Show(_window,ErrorMessages.Text($"Восстановить предыдущую очередь ({previous.Queue.Count} ссылок)?\nЗавершённые загрузки не будут запущены повторно.",$"Restore previous queue ({previous.Queue.Count} URLs)?\nCompleted downloads will not restart automatically."),
+                    ErrorMessages.Text("Восстановить предыдущую сессию","Restore previous session"),MessageBoxButton.YesNo,MessageBoxImage.Question)!=MessageBoxResult.Yes) return;
             RestoreSubscriptionQueueTitles(previous.Queue);
             foreach(var item in previous.Queue)
             {
@@ -362,10 +368,10 @@ public sealed partial class NativeWindow : IDisposable
     }
     private static DuplicateChoice DisplayDuplicate(Window dialog,string url,DateTimeOffset? completed,int index,int count)
     {
-        ((TextBlock)dialog.FindName("CounterLabel")!).Text=$"Previously downloaded URL ({index}/{count})";
+        ((TextBlock)dialog.FindName("CounterLabel")!).Text=ErrorMessages.Text($"Ссылка уже скачивалась ({index}/{count})",$"Previously downloaded URL ({index}/{count})");
         ((TextBlock)dialog.FindName("CompletedAtLabel")!).Text=completed.HasValue
-            ? "Last downloaded: "+completed.Value.LocalDateTime.ToString("g",CultureInfo.CurrentCulture)
-            : "Last download date unknown";
+            ? ErrorMessages.Text("Последнее скачивание: ","Last downloaded: ")+completed.Value.LocalDateTime.ToString("g",CultureInfo.CurrentCulture)
+            : ErrorMessages.Text("Дата последнего скачивания неизвестна","Last download date unknown");
         ((TextBox)dialog.FindName("DuplicateUrl")!).Text=url;
         var choice=DuplicateChoice.Cancel;
         foreach(var(name,value) in new[]{
@@ -567,8 +573,8 @@ public sealed partial class NativeWindow : IDisposable
         var selected=rows.Where(SessionState.Queue.Contains).Distinct().ToArray();
         if(selected.Length==0)return;
         if(selected.Any(x=>x.Status!="Queued") &&
-            MessageBox.Show(_window,$"Remove {selected.Length} selected URL(s)?\nActive jobs will be stopped; finished files belonging to them will be permanently deleted.\nOther downloads continue.",
-                "Delete downloads",MessageBoxButton.YesNo,MessageBoxImage.Warning)!=MessageBoxResult.Yes)return;
+            MessageBox.Show(_window,ErrorMessages.Text($"Удалить выбранные ссылки ({selected.Length})?\nИх активные задачи будут остановлены, а принадлежащие им готовые файлы — удалены без возможности восстановления.\nОстальные загрузки продолжатся.",$"Remove {selected.Length} selected URL(s)?\nActive jobs will be stopped; finished files belonging to them will be permanently deleted.\nOther downloads continue."),
+                ErrorMessages.Text("Удалить загрузки","Delete downloads"),MessageBoxButton.YesNo,MessageBoxImage.Warning)!=MessageBoxResult.Yes)return;
         if(RejectProfileBackupMutation())return;
         foreach(var row in selected)
         {
@@ -601,7 +607,7 @@ public sealed partial class NativeWindow : IDisposable
         foreach(var row in candidates)
             if (SessionState.Queue.Contains(row) && row.CanResume && row.StageDir.Length==0 && row.CleanupPaths.Count==0) ForgetRow(row);
         if(candidates.Any(SessionState.Queue.Contains))
-            MessageBox.Show(_window,ErrorMessages.Text("Задачи, ожидающие очистки, сохранены. Нажмите Remove для повторной попытки.",
+            MessageBox.Show(_window,ErrorMessages.Text("Задачи, ожидающие очистки, сохранены. Нажмите «Удалить выбранные» для повторной попытки.",
                 "Downloads awaiting cleanup were kept. Use Remove to retry."),
                 ErrorMessages.Text("Ожидается очистка","Cleanup pending"),MessageBoxButton.OK,MessageBoxImage.Warning);
         Reindex();

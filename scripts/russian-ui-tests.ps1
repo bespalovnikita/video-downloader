@@ -22,4 +22,18 @@ $nsm.AddNamespace('x','http://schemas.microsoft.com/winfx/2006/xaml')
 foreach ($id in @('RetryFailedButton','OpenOutputDirectoryButton','RegisterProtocolButton','OpenAppSettingsButton')) {
     Assert ($null -ne $xaml.SelectSingleNode("//w:Button[@x:Name='$id']", $nsm)) "WPF markup must define $id"
 }
-Write-Host 'Native Russian profile mapping and folder controls: PASS (handlers are exercised by the real UI tests).'
+$captions = @{
+    OpenListButton = 'Открыть список'
+    PasteClipboardButton = 'Вставить'
+    OpenFolderButton = 'Показать в папке'
+    InstallFfmpegButton = 'Установить FFmpeg'
+    EmbedThumbnailCheck = 'Встроить обложку'
+}
+foreach ($id in $captions.Keys) {
+    $control = $xaml.SelectSingleNode("//*[@x:Name='$id']", $nsm)
+    Assert ($null -ne $control -and $control.Content -ceq $captions[$id]) "Russian WPF caption: $id"
+}
+foreach ($column in $xaml.SelectNodes('//w:DataGridTextColumn', $nsm)) {
+    Assert ($column.Header -cnotin @('State','Slot')) 'Grid column captions must be translated, without changing bindings.'
+}
+Write-Host 'Native Russian profile IDs and markup captions: PASS (real controls, picker, options, dynamic menus and tray are exercised by Windows WPF tests).'

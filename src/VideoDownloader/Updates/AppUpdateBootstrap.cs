@@ -79,7 +79,7 @@ internal static class AppUpdateBootstrap
         {
             System.Windows.Forms.MessageBox.Show(ErrorMessages.Text(
                 "Не удалось обновить приложение. Прежние файлы сохранены или восстановлены.\n",
-                "The application update failed. Previous files were retained or restored.\n")+error.Message,
+                "The application update failed. Previous files were retained or restored.\n")+ErrorMessages.ForException(error)+ErrorMessages.Text("\n\nИсходная диагностика:\n","\n\nOriginal diagnostic:\n")+error,
                 "Video Downloader",System.Windows.Forms.MessageBoxButtons.OK,System.Windows.Forms.MessageBoxIcon.Warning);
         }
         return true;

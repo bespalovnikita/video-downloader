@@ -53,13 +53,13 @@ public sealed record JobDiagnosticSettings(string Profile,string Quality,string 
             double.IsFinite(range.Start) && double.IsFinite(range.End) && range.Start>=0 && range.End>range.Start)
             .Select(range=>new DiagnosticRange(range.Start,range.End)).ToArray())
     };
-    [JsonIgnore] public string DisplayText=>"Профиль: "+Profile+" · качество: "+Quality+" · кодек: "+Codec+
-        " · контейнер: "+Container+" · звук: "+AudioTrack+(AudioLanguages.Length>0?" ("+AudioLanguages+")":"")+
+    [JsonIgnore] public string DisplayText=>"Профиль: "+(Profile=="неизвестно"?Profile:ProfileCatalog.Display(Profile))+" · качество: "+DisplayValueConverter.Display(Quality)+" · кодек: "+DisplayValueConverter.Display(Codec)+
+        " · контейнер: "+DisplayValueConverter.Display(Container)+" · звук: "+(AudioTrack=="неизвестно"?AudioTrack:AudioTrackSelection.Display(AudioTrack))+(AudioLanguages.Length>0?" ("+AudioLanguages+")":"")+
         " · форматы: "+(VideoFormat??"авто")+" / "+(AudioFormat??"авто")+
         Environment.NewLine+"Диапазоны, секунды: "+(Ranges.Count==0?"полностью":string.Join("; ",Ranges.Select(range=>
             range.Start.ToString("0.###",CultureInfo.InvariantCulture)+" — "+range.End.ToString("0.###",CultureInfo.InvariantCulture))))+
-        " · режим: "+FragmentOutputMode+" · перекодирование при склейке: "+YesNo(AllowMergeReencode)+
-        Environment.NewLine+"Параллельно: "+Parallel+" · сетевые фрагменты: "+NetworkFragments+" · скорость: "+RateLimit+
+        " · режим: "+(FragmentOutputMode switch {"Merged"=>"Один файл","Separate"=>"Отдельные файлы",_=>FragmentOutputMode})+" · перекодирование при склейке: "+YesNo(AllowMergeReencode)+
+        Environment.NewLine+"Параллельно: "+Parallel+" · сетевые фрагменты: "+NetworkFragments+" · скорость: "+DisplayValueConverter.Display(RateLimit)+
         " · только аудио: "+YesNo(AudioOnly)+" · архивная папка: "+YesNo(Archive)+
         Environment.NewLine+"Субтитры: "+YesNo(Subtitles)+" · автоматические: "+YesNo(AutoSubtitles)+
         " · встроенные: "+YesNo(EmbeddedSubtitles)+" · языки: "+SubtitleLanguages+

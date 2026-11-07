@@ -121,7 +121,7 @@ public sealed partial class NativeWindow
         catch(Exception error)
         {
             prepared.Dispose();
-            System.Windows.Forms.MessageBox.Show(ErrorMessages.Text("Не удалось запустить обновление: ","Cannot start the updater: ")+error.Message,"Video Downloader");
+            System.Windows.Forms.MessageBox.Show(ErrorMessages.Text("Не удалось запустить обновление: ","Cannot start the updater: ")+ErrorMessages.ForException(error)+ErrorMessages.Text("\n\nИсходная диагностика:\n","\n\nOriginal diagnostic:\n")+error,"Video Downloader");
         }
     }
 }

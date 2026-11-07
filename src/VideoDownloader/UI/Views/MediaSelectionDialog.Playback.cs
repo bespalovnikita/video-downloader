@@ -94,7 +94,7 @@ internal sealed partial class MediaSelectionDialog
         _playbackContext=context;ResetClip();
         bool available=TryPlaybackRequest(false,out _,out string explanation);
         _clipFirst.IsEnabled=_clipLast!.IsEnabled=available;
-        _clipStatus!.Text=available?"Нажмите «Начало фрагмента» или «Конец фрагмента». Подготовка не мешает применить выбранный диапазон.":explanation;
+        _clipStatus!.Text=available?"Нажмите «Начало фрагмента» или «Конец фрагмента». Подготовка не мешает применить выбранный диапазон.":ErrorMessages.ForDisplay(explanation);
     }
     private void PlaybackTimeChanged(object sender,TextChangedEventArgs e)
     {if(!_loading)RefreshPlaybackState();}
@@ -117,7 +117,7 @@ internal sealed partial class MediaSelectionDialog
         if(_playbackClosed)return;
         RefreshPlaybackState();
         if(!TryPlaybackRequest(fromEnd,out var request,out string explanation))
-        {_clipStatus!.Text=explanation;return;}
+        {_clipStatus!.Text=ErrorMessages.ForDisplay(explanation);return;}
         ResetClip();
         var cancel=new CancellationTokenSource();_clipCancellation=cancel;
         _clipStop!.IsEnabled=true;

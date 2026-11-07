@@ -107,7 +107,7 @@ internal sealed partial class UiScenario
             Control<ComboBox>(dialog,"MediaFormatModeCombo").SelectedIndex=1;
             Control<ComboBox>(dialog,"PrimaryMediaFormatCombo").SelectedValue="v25";
             start.Text="1";end.Text="2";Click(dialog,"MediaSectionStartNextFrameButton");
-            Require(start.Text==DownloadSection.FormatTimestamp(1.04) && Control<TextBlock>(dialog,"MediaSectionStepStatus").Text.Contains("25 FPS",StringComparison.Ordinal),
+            Require(start.Text==DownloadSection.FormatTimestamp(1.04) && Control<TextBlock>(dialog,"MediaSectionStepStatus").Text.Contains("25 кадр/с",StringComparison.Ordinal),
                 "An exact selected video format must restore its known frame grid.");
             Drag(first,100000,dialog);
             Require(DownloadSection.TryParse(start.Text,end.Text,12,out var clamped,out _) && clamped!.EndSeconds-clamped.StartSeconds>=.001-1e-9,
