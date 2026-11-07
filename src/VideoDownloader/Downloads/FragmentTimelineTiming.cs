@@ -14,6 +14,27 @@ internal static class FragmentTimelineTiming
         double rounded=Milliseconds(duration);
         return rounded<=duration?rounded:Milliseconds(rounded-MinimumRange);
     }
+    // A millisecond label which rounds a nominal frame boundary denotes that
+    // boundary. Other typed times retain their millisecond meaning. Keep this
+    // conversion shared by export and previews; never export the display rounding.
+    internal static double Boundary(double seconds,double? fps,double? duration=null)
+    {
+        if(!KnownFps(fps))return seconds;
+        double frame=Math.Round(seconds*fps!.Value,MidpointRounding.AwayFromZero);
+        double exact=frame/fps.Value;
+        return Math.Abs(Milliseconds(exact)-seconds)<1e-9 && (duration is null || exact<=duration.Value)
+            ?exact:seconds;
+    }
+    internal static double FrameSample(double seconds,bool isEnd,double? fps,double? duration=null)
+    {
+        double boundary=Boundary(seconds,fps,duration);
+        if(!KnownFps(fps))return isEnd?Math.Max(0,boundary-.05):boundary;
+        // The first nominal PTS at/after the start, or last strictly before the
+        // exclusive end. Tolerance only absorbs floating-point frame arithmetic.
+        double index=Math.Ceiling(boundary*fps!.Value-1e-7)-(isEnd?1:0);
+        if(duration is >0)index=Math.Min(index,Math.Ceiling(duration.Value*fps.Value-1e-7)-1);
+        return Math.Max(0,index)/fps.Value;
+    }
     internal static double Step(double current,int direction,double? fps,double minimum,double maximum)
     {
         if(!double.IsFinite(current) || !double.IsFinite(minimum) || !double.IsFinite(maximum) || maximum<minimum)

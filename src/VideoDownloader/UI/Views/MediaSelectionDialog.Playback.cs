@@ -11,7 +11,7 @@ namespace VideoDownloader.Native;
 internal sealed partial class MediaSelectionDialog
 {
     private sealed record PlaybackContext(bool Editable,bool Loaded,bool Collection,double? Duration,string Start,string End,
-        bool Manual,string? Primary,string? Audio,bool AudioOnly,string AudioTrack,string AudioLanguages);
+        bool Manual,string? Primary,string? Audio,bool AudioOnly,string AudioTrack,string AudioLanguages,double? FrameRate);
     private Func<MediaClipRequest,CancellationToken,Task<MediaClipResult>>? _clipPreview;
     private IMediaClipPlayer? _clipPlayer;
     private MediaClipPreview? _clip;
@@ -64,7 +64,7 @@ internal sealed partial class MediaSelectionDialog
         double? duration=_metadata is {Duration:>0} data && double.IsFinite(data.Duration)?data.Duration:null;
         return new(_editable,_metadata?.FormatsLoaded==true,_metadata?.IsCollection==true,duration,_start.Text,_end.Text,
             manual,manual?(_primary.SelectedItem as FormatChoice)?.Id:null,
-            manual?(_audio.SelectedItem as FormatChoice)?.Id:null,options.AudioOnly,options.AudioTrack,options.AudioLanguages);
+            manual?(_audio.SelectedItem as FormatChoice)?.Id:null,options.AudioOnly,options.AudioTrack,options.AudioLanguages,TimelineFps());
     }
     private bool TryPlaybackRequest(bool fromEnd,out MediaClipRequest? request,out string explanation)
     {
@@ -81,8 +81,10 @@ internal sealed partial class MediaSelectionDialog
         MediaFormat? audio=context.Manual?(_audio.SelectedItem as FormatChoice)?.Format:null;
         if(context.Manual && !string.IsNullOrEmpty(context.Audio) && audio is null)
         {explanation="Выберите доступный аудиоформат.";return false;}
-        if(!new DownloadSelection(Row.Url,section,primary,audio,context.Duration).TryValidate(Row.Url,_options(),out explanation))return false;
-        request=new(Row.Url,section.StartSeconds,section.EndSeconds,context.Primary,
+        var selection=new DownloadSelection(Row.Url,section,primary,audio,context.Duration){FrameRate=context.Manual?null:context.FrameRate};
+        if(!selection.TryValidate(Row.Url,_options(),out explanation))return false;
+        var bounds=selection.SectionBounds(section);
+        request=new(Row.Url,bounds.Start,bounds.End,context.Primary,
             string.IsNullOrEmpty(context.Audio)?null:context.Audio,context.Duration,fromEnd,context.AudioOnly,context.AudioTrack,context.AudioLanguages);
         return true;
     }
