@@ -59,12 +59,12 @@ internal sealed partial class SubscriptionController : IDisposable
         (T)(_window?.FindName(name) ?? throw new InvalidOperationException("Missing subscription control: "+name));
     private DataGrid Sources => Control<DataGrid>("SubscriptionGrid");
     private DataGrid Inbox => Control<DataGrid>("SubscriptionInboxGrid");
-    private bool Busy => _mutation || _finalizingCheck || _cancellation!=null || _checkProgress.IsActive;
-    internal bool HasActiveWork=>Busy;
+    private bool Busy => HasActiveWork || IsSchedulingSuspended;
+    internal bool HasActiveWork=>_mutation || _finalizingCheck || _cancellation!=null || _checkProgress.IsActive || _noticeShowing;
 
     internal void Open()
     {
-        if (_disposed) return;
+        if (_disposed || IsSchedulingSuspended) return;
         if (_window!=null)
         {
             _window.Show();
@@ -86,6 +86,7 @@ internal sealed partial class SubscriptionController : IDisposable
             _details=new SubscriptionPreviewController(window,_previews,_openUrl,_log);
             Control<Button>("AddSubscriptionButton").Click+=async(_,_)=>await AddAsync();
             Control<Button>("SaveSubscriptionNameButton").Click+=async(_,_)=>await SaveNameAsync();
+            BindScheduleControls();
             Control<Button>("CheckSubscriptionButton").Click+=async(_,_)=>
             {
                 if (Sources.SelectedItem is SubscriptionSourceView source)
@@ -122,19 +123,20 @@ internal sealed partial class SubscriptionController : IDisposable
             Sources.SelectionChanged+=(_,_)=>
             {
                 if (_binding) return;
-                ShowInbox();UpdateNameEditor();UpdateButtons();
+                ShowInbox();UpdateNameEditor();UpdateScheduleEditor();UpdateButtons();
             };
             Inbox.SelectionChanged+=(_,_)=>{UpdateButtons();ShowSelectedPreview();};
             Inbox.MouseDoubleClick+=(_,_)=>OpenItem();
             window.Closed+=(_,_)=>
             {
                 if (!ReferenceEquals(_window,window)) return;
-                _cancellation?.Cancel();
+                if(!_automaticCheck)_cancellation?.Cancel();
                 _checkProgress.Stop();
                 _details?.Dispose();_details=null;
                 _window=null;
                 _nameSelectionId="";
                 _nameSavedValue="";
+                _scheduleEditorId="";_scheduleEditorValue="";
                 _refreshVersion++;
             };
             window.Show();
@@ -152,6 +154,7 @@ internal sealed partial class SubscriptionController : IDisposable
     public void Dispose()
     {
         _disposed=true;
+        StopScheduleTimer();
         _cancellation?.Cancel();
         _checkProgress.Stop();
         _details?.Dispose();_details=null;
@@ -162,7 +165,7 @@ internal sealed partial class SubscriptionController : IDisposable
 
     internal void Refresh()
     {
-        if (_disposed || _window==null) return;
+        if (_disposed || _window==null || IsSchedulingSuspended) return;
         if (!Dispatcher.CheckAccess()) { _=Dispatcher.BeginInvoke(Refresh);return; }
         if (_refreshQueued) return;
         _refreshQueued=true;
@@ -177,6 +180,13 @@ internal sealed partial class SubscriptionController : IDisposable
         window!=null && !_disposed && ReferenceEquals(window,_window);
 
     private async Task<SubscriptionSnapshot?> ReloadAsync(bool notify=true)
+    {
+        if(IsSchedulingSuspended)return null;
+        var task=ReloadCoreAsync(notify);_subscriptionReloads.Add(task);
+        try{return await task;}finally{_subscriptionReloads.Remove(task);}
+    }
+
+    private async Task<SubscriptionSnapshot?> ReloadCoreAsync(bool notify)
     {
         var window=_window;
         if (!CurrentWindow(window)) return null;
@@ -194,7 +204,8 @@ internal sealed partial class SubscriptionController : IDisposable
             if (version!=_refreshVersion) return snapshot;
             string? selected=(Sources.SelectedItem as SubscriptionSourceView)?.Id;
             _snapshot=snapshot;
-            var rows=snapshot.Subscriptions.Select(x=>new SubscriptionSourceView(x)).ToArray();
+            _schedulePlanner.Synchronize(snapshot.Subscriptions);SetNextSchedulePoll(snapshot);
+            var rows=snapshot.Subscriptions.Select(x=>new SubscriptionSourceView(x,NextScheduledCheckUtc)).ToArray();
             _binding=true;
             try
             {
@@ -204,8 +215,9 @@ internal sealed partial class SubscriptionController : IDisposable
             finally { _binding=false; }
             ShowInbox();
             UpdateNameEditor();
+            UpdateScheduleEditor();
             UpdateButtons();
-            if (notify) await NotifyDuplicatesAsync(snapshot,window!);
+            if (notify && !IsSchedulingSuspended) await NotifyDuplicatesAsync(snapshot,window!);
             return snapshot;
         }
         catch(Exception e)
@@ -304,6 +316,7 @@ internal sealed partial class SubscriptionController : IDisposable
         Control<Button>("SaveSubscriptionNameButton").IsEnabled=ready && source!=null &&
             !string.IsNullOrWhiteSpace(nameBox.Text) && nameBox.Text!=source.Definition.ShortName;
         Control<CheckBox>("DownloadExistingCheck").IsEnabled=ready;
+        UpdateScheduleButtons(ready,source);
     }
 
     private void UpdateNameEditor()
@@ -384,6 +397,14 @@ internal sealed partial class SubscriptionController : IDisposable
     }
 
     private async Task CheckAsync(IEnumerable<string> subscriptionIds)
+    {
+        if(Busy || _window is null)return;
+        var task=CheckCoreAsync(subscriptionIds);_manualCheckTask=task;
+        try {await task;}
+        finally {if(ReferenceEquals(_manualCheckTask,task))_manualCheckTask=null;}
+    }
+
+    private async Task CheckCoreAsync(IEnumerable<string> subscriptionIds)
     {
         if (Busy || _window==null) return;
         var ids=subscriptionIds.Distinct(StringComparer.Ordinal).ToArray();
@@ -636,7 +657,9 @@ internal sealed partial class SubscriptionController : IDisposable
         {
             await Task.Run(()=>_store.SetPaused(selected.Id,!selected.Definition.Paused));
             await ReloadAsync();
-            Status(selected.Definition.Paused?"Подписка возобновлена. Следующая проверка запускается вручную.":"Подписка приостановлена: «Проверить все» её пропустит.");
+            Status(selected.Definition.Paused
+                ?selected.Definition.ScheduleEnabled?"Подписка возобновлена. Следующая проверка — через выбранный интервал.":"Подписка возобновлена. Проверка запускается вручную."
+                :"Подписка приостановлена: ручная общая проверка и расписание её пропустят.");
         }
         catch(Exception e) { Status("Не удалось изменить подписку: "+DisplayError(e),true); }
         finally { _mutation=false;UpdateButtons(); }
@@ -711,7 +734,7 @@ internal sealed partial class SubscriptionController : IDisposable
         }
     }
 
-    internal sealed class SubscriptionSourceView(SubscriptionDefinition definition)
+    internal sealed class SubscriptionSourceView(SubscriptionDefinition definition,Func<string,DateTimeOffset?>? next=null)
     {
         public SubscriptionDefinition Definition { get; }=definition;
         public string Id=>Definition.Id;
@@ -720,6 +743,10 @@ internal sealed partial class SubscriptionController : IDisposable
         public string ShortName=>Definition.ShortName.Length>0?Definition.ShortName:"После проверки";
         public string StatusLabel=>Definition.Paused?"Приостановлена":!Definition.Initialized?"Нужна первая проверка":Definition.LastError.Length>0?"Ошибка проверки":"Активна";
         public string LastSuccessLabel=>Definition.LastSuccessUtc?.ToLocalTime().ToString("dd.MM.yyyy HH:mm")??"Ещё не проверена";
+        public string LastAttemptLabel=>Definition.LastAttemptUtc?.ToLocalTime().ToString("dd.MM.yyyy HH:mm")??"Ещё не проверена";
+        public string ScheduleLabel=>!Definition.ScheduleEnabled?"Выключено":Definition.Paused?"Пауза":$"Каждые {Definition.ScheduleIntervalMinutes} мин";
+        public string NextCheckLabel=>!Definition.ScheduleEnabled || Definition.Paused?"—":!Definition.Initialized?"Нужна первая проверка":
+            next?.Invoke(Definition.Id)?.ToLocalTime().ToString("dd.MM.yyyy HH:mm")??"После начала расписания";
         public string RawMessage=>Definition.LastError.Length>0?Definition.LastError:Definition.LastWarning;
         public string Message=>ErrorMessages.ForDisplay(RawMessage);
         public string DiagnosticDetails=>Message==RawMessage?RawMessage:Message+"\n\n"+

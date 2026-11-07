@@ -42,6 +42,7 @@ await PornHubChannelTests.RunAsync();
 await StartupDownloadRegressionTests.RunAsync();
 await DependencyInstallTests.RunAsync();
 SubscriptionStoreTests.Run();
+await SubscriptionScheduleTests.RunAsync();
 await SubscriptionScannerTests.RunAsync();
 await LifecycleRegressionTests.RunAsync();
 await ReviewRegressionTests.RunAsync();

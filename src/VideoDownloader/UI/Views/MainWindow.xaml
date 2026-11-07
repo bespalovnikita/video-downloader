@@ -429,7 +429,7 @@
                     <WrapPanel Grid.Row="2" Margin="0,0,0,8">
                         <Button x:Name="OpenListButton" Content="Open list"/>
                         <Button x:Name="PortableQueueButton" Content="Перенос очереди" ToolTip="Скопировать очередь или сохранить её для другого клиента Windows / Android"/>
-                        <Button x:Name="SubscriptionsButton" Content="Подписки" ToolTip="Ручная проверка каналов и плейлистов, новые материалы и исходный набор"/>
+                        <Button x:Name="SubscriptionsButton" Content="Подписки" ToolTip="Проверки каналов и плейлистов, расписание, новые материалы и исходный набор"/>
                         <Button x:Name="RemoveQueueButton" Content="Remove"/>
                         <Button x:Name="ClearQueueButton" Content="Clear"/>
                         <Button x:Name="MoveUpButton" Content="↑"/>
@@ -439,6 +439,8 @@
                     </WrapPanel>
 
                     <StackPanel Grid.Row="3" Margin="0,0,0,8">
+                        <TextBlock x:Name="MainSubscriptionScheduleStatusText" Text="Проверки по расписанию выключены."
+                                   TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" FontSize="11" Margin="0,0,0,6"/>
                         <DockPanel Margin="0,0,0,4">
                             <Button x:Name="ResetQueueFiltersButton" Content="Сбросить фильтры" DockPanel.Dock="Right" Padding="7,3"/>
                             <TextBlock Text="Поиск в очереди" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}"/>

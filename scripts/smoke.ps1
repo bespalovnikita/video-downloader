@@ -6,13 +6,14 @@ $xamlFiles = @{
         'WriteSubsCheck','FilenameTemplateBox','FilenameTemplateLabel','FilenameTemplateHelpButton','DependencyStatus','OpenOutputDirectoryButton','OpenAppSettingsButton','ShowVideoTitlesCheck',
         'MediaSelectionButton','MediaSelectionSummary','CheckAppUpdateButton','InstallAppUpdateButton','AppUpdateStatusText',
         'QueueSearchBox','QueueStatusFilter','QueueSubscriptionFilter','ResetQueueFiltersButton','QueueEmptyFilterHint','QueueFilterScopeHint','OpenHistoryButton',
-        'DiskSpaceSummaryText','DiskSpaceWarningText')
+        'DiskSpaceSummaryText','DiskSpaceWarningText','MainSubscriptionScheduleStatusText')
     'DuplicateDownloadDialog.xaml' = @('YesButton','NoButton','YesAllButton','NoAllButton','CancelButton','DuplicateUrl')
     'SubscriptionsWindow.xaml' = @('SubscriptionGrid','SubscriptionInboxGrid','SubscriptionCheckProgressPanel',
         'SubscriptionCheckOverallProgress','SubscriptionCheckActivityProgress','CancelSubscriptionCheckButton','QueueSubscriptionItemsButton','FullSubscriptionCheck',
         'SelectedSubscriptionUrlBox','CopySubscriptionUrlButton','SubscriptionDetailsPanel','SubscriptionDetailsSplitter',
         'SubscriptionPreviewTitle','SubscriptionPreviewUrlBox','SubscriptionPreviewInfo','SubscriptionPreviewImage',
-        'SubscriptionPreviewSecondImage','SubscriptionPreviewStatus','SubscriptionPreviewError','SubscriptionOpenVideoButton','SubscriptionCopyVideoUrlButton')
+        'SubscriptionPreviewSecondImage','SubscriptionPreviewStatus','SubscriptionPreviewError','SubscriptionOpenVideoButton','SubscriptionCopyVideoUrlButton',
+        'SubscriptionScheduleEnabledCheck','SubscriptionScheduleIntervalBox','SaveSubscriptionScheduleButton','SubscriptionScheduleStatusText')
 }
 foreach ($entry in $xamlFiles.GetEnumerator()) {
     [xml]$markup = Get-Content -LiteralPath (Join-Path $root "src/VideoDownloader/UI/Views/$($entry.Key)") -Raw -Encoding utf8

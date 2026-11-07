@@ -33,7 +33,8 @@ public sealed partial class NativeWindow
     }
     private bool CanInstallAppUpdate()=>!_disposed && !_closing && !_appUpdateHandoff && !_restoringSession &&
         !_checkpointReadOnly && !_legacyEngineBlocked && !_startingSession && !_dependencyOperationRunning &&
-        _window.IsEnabled && _mediaSelectionDialog is null && _subscriptions?.HasActiveWork!=true && SessionState.Coordinator?.IsRunning!=true &&
+        _window.IsEnabled && _mediaSelectionDialog is null && _subscriptions?.HasActiveWork!=true &&
+        _subscriptions?.IsSchedulingSuspended!=true && SessionState.Coordinator?.IsRunning!=true &&
         SessionState.RunningTask?.IsCompleted!=false &&
         !SessionState.Queue.Concat(SessionState.Downloads).Any(row=>row.Status=="Running" || row.PendingRemoval ||
             row.CleanupPaths.Count>0 || row.CleanupError.Length>0);

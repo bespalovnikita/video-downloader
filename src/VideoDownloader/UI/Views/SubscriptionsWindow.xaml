@@ -105,7 +105,7 @@
         </Grid.RowDefinitions>
         <StackPanel Grid.Row="0" Margin="0,0,0,12">
             <TextBlock Text="Подписки" FontSize="24" FontWeight="SemiBold"/>
-            <TextBlock Text="Проверка только вручную. Материалы добавляются в обычную очередь; скачивание — только кнопкой Start."
+            <TextBlock Text="Ручные проверки и необязательное расписание при открытом приложении. Скачивание — только кнопкой Start."
                        Foreground="#B3BBCD" TextWrapping="Wrap" Margin="0,5,0,0"/>
         </StackPanel>
         <Border Grid.Row="1" Background="#1B1E25" CornerRadius="8" Padding="12" Margin="0,0,0,12">
@@ -146,6 +146,17 @@
                 <Button x:Name="SaveSubscriptionNameButton" Content="Сохранить имя"/>
             </WrapPanel>
             <TextBlock Text="Материалы сохраняются в подпапку с этим именем, например D:\Video\123. Изменение имени действует на новые задания."
+                       Foreground="#B3BBCD" TextWrapping="Wrap" FontSize="11" Margin="0,5,0,0"/>
+            <WrapPanel Margin="0,8,0,0">
+                <CheckBox x:Name="SubscriptionScheduleEnabledCheck" Content="Проверять по расписанию" Margin="0,0,12,0" VerticalAlignment="Center"
+                          ToolTip="Только пока приложение открыто или в трее. Первая проверка источника выполняется вручную; расписание не добавляет материалы в очередь и не скачивает их."/>
+                <TextBlock Text="Каждые" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                <TextBox x:Name="SubscriptionScheduleIntervalBox" Text="30" Width="70" MaxLength="5" Margin="0,0,8,0"
+                         ToolTip="От 5 до 10080 минут. После запуска приложения или включения расписания сначала проходит полный интервал."/>
+                <TextBlock Text="минут" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                <Button x:Name="SaveSubscriptionScheduleButton" Content="Сохранить расписание"/>
+            </WrapPanel>
+            <TextBlock x:Name="SubscriptionScheduleStatusText" Text="Проверки по расписанию выключены."
                        Foreground="#B3BBCD" TextWrapping="Wrap" FontSize="11" Margin="0,5,0,0"/>
             <Grid Margin="0,8,0,0">
                 <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
@@ -191,7 +202,10 @@
                 <DataGridTextColumn Header="Подписка" Binding="{Binding Title}" Width="2*"/>
                 <DataGridTextColumn Header="Краткое имя / папка" Binding="{Binding ShortName}" Width="170"/>
                 <DataGridTextColumn Header="Состояние" Binding="{Binding StatusLabel}" Width="145"/>
-                <DataGridTextColumn Header="Последняя проверка" Binding="{Binding LastSuccessLabel}" Width="185"/>
+                <DataGridTextColumn Header="Последняя попытка" Binding="{Binding LastAttemptLabel}" Width="160"/>
+                <DataGridTextColumn Header="Успешная проверка" Binding="{Binding LastSuccessLabel}" Width="160"/>
+                <DataGridTextColumn Header="Расписание" Binding="{Binding ScheduleLabel}" Width="125"/>
+                <DataGridTextColumn Header="Следующая проверка" Binding="{Binding NextCheckLabel}" Width="165"/>
                 <DataGridTextColumn Header="URL" Binding="{Binding Url}" Width="2*"/>
                 <DataGridTextColumn Header="Ошибка / предупреждение" Binding="{Binding Message}" Width="2*"/>
             </DataGrid.Columns>
@@ -218,7 +232,7 @@
             <Button x:Name="OpenSubscriptionItemButton" Content="Открыть URL"/>
         </WrapPanel>
         <StackPanel Grid.Row="8">
-            <TextBlock x:Name="SubscriptionStatusText" Text="Исходный снимок виден в списке и доступен для ручного добавления в очередь. Проверки по расписанию и автоматического скачивания нет."
+            <TextBlock x:Name="SubscriptionStatusText" Text="Исходный снимок доступен для ручного добавления. Расписание включается отдельно для каждой подписки; новинки ожидают принятия в очередь и Start."
                        TextWrapping="Wrap" Foreground="#B3BBCD"/>
             <TextBlock Text="До 10 000 материалов. Обычная проверка — до 180 секунд; публикации Pornhub — до 15 минут и 500 страниц. Каждый ролик скачивается отдельно. Неполный список не меняет исходную отметку."
                        Foreground="#949CAE" TextWrapping="Wrap" FontSize="11" Margin="0,6,0,0"/>

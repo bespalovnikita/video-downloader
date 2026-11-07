@@ -237,6 +237,8 @@ public sealed partial class NativeWindow
         F<Button>("InstallFfmpegButton").IsEnabled=false;
         try
         {
+            using var schedulingPause=await SuspendSubscriptionSchedulingAsync();
+            if(_closing || _disposed || _appUpdateHandoff)throw new OperationCanceledException("Приложение закрывается или обновляется.");
             var response=await task(CancellationToken.None);
             Log(response);
             MessageBox.Show(_window,response,"Dependency operation complete");
@@ -277,10 +279,12 @@ public sealed partial class NativeWindow
         e.Cancel=true;
         _closing=true;
         DisposeDiskSpace();
-        DisposeSubscriptions();
         SessionState.MarkStopping();
         _tick.Stop();_ingress.Stop();
         _window.IsEnabled=false;
+        try{if(_subscriptions is not null)await _subscriptions.StopChecksAsync();}
+        catch(Exception error){Log("Subscription shutdown failed: "+ErrorMessages.ForException(error));}
+        DisposeSubscriptions();
         try
         {
             SessionState.Coordinator?.Stop();

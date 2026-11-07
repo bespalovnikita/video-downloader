@@ -12,6 +12,8 @@ public sealed class SubscriptionDefinition
     public bool DownloadExisting { get; set; }
     public bool Initialized { get; set; }
     public bool Paused { get; set; }
+    public bool ScheduleEnabled { get; set; }
+    public int ScheduleIntervalMinutes { get; set; } = 30;
     public DateTimeOffset? LastAttemptUtc { get; set; }
     public DateTimeOffset? LastSuccessUtc { get; set; }
     public string LastError { get; set; } = "";

@@ -57,7 +57,8 @@ public sealed partial class NativeWindow : IDisposable
     // The isolated UI test uses a metadata fixture process through the same
     // production worker. Normal startup always resolves the packaged yt-dlp.
     internal NativeWindow(Window window,AppPersistence? persistence,string ytDlpExecutable,
-        IAppUpdateService? updateService=null,bool? automaticUpdates=null,IDiskSpaceProvider? diskSpaceProvider=null)
+        IAppUpdateService? updateService=null,bool? automaticUpdates=null,IDiskSpaceProvider? diskSpaceProvider=null,
+        TimeProvider? subscriptionClock=null,bool automaticSubscriptionChecks=true)
     {
         _window=window;
         _storage=persistence??new AppPersistence();
@@ -135,6 +136,7 @@ public sealed partial class NativeWindow : IDisposable
         RefreshDependencyLabel();
         InitializeAppUpdates(updateService,automatic:automaticUpdates??(persistence is null));
         InitializeDiskSpace(diskSpaceProvider);
+        InitializeSubscriptionScheduling(subscriptionClock,automaticSubscriptionChecks);
         UpdateState();
         FlushJournal();
         _tick.Start();_ingress.Start();
