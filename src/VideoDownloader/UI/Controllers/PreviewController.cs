@@ -84,11 +84,11 @@ internal sealed partial class PreviewController : IDisposable
         _cookies=_cookiesBox.Text;
         _cookiesBox.TextChanged+=CookiesChanged;
         _service=new PreviewService(executable,storage,()=>CookieSnapshot,
-            data=>Dispatch(()=>ReceiveReady(data)),
+            _=>{},
             message=>Dispatch(()=>_log(message)),
-            ffmpegPath:localPosterFfmpegPath,
-            failed:(url,error)=>Dispatch(()=>ReceiveFailure(url,error)),
-            updated:data=>Dispatch(()=>ReceiveReady(data,false)));
+            ffmpegPath:localPosterFfmpegPath);
+        _service.ResultAvailable+=ServiceResultAvailable;
+        _service.FailureAvailable+=ServiceFailureAvailable;
         _frames=new MediaFrameService(_service);
         _clips=new MediaClipService(_service,storage.PreviewDir);
         _waveforms=new MediaWaveformService(_clips);
@@ -103,22 +103,25 @@ internal sealed partial class PreviewController : IDisposable
         _=_window.Dispatcher.BeginInvoke(()=>{if(!_disposed)action();});
     }
 
-    internal PreviewData? GetCached(string url)=>_service.Peek(url);
-    internal Task<MediaClipResult> GetClipAsync(MediaClipRequest request,CancellationToken token)=>_clips.GetClipAsync(request,token);
-    internal Task<MediaWaveformResult> GetWaveformAsync(MediaWaveformRequest request,CancellationToken token)=>_waveforms.GetWaveformAsync(request,token);
-    internal Task<MediaFrameResult> GetFrameAsync(MediaFrameRequest request,CancellationToken token)=>_frames.GetFrameAsync(request,token);
+    internal PreviewData? GetCached(string url)=>IsResetting(url)?null:_service.Peek(url);
+    internal Task<MediaClipResult> GetClipAsync(MediaClipRequest request,CancellationToken token)=>
+        RunPreviewOperationAsync(request.Url,token,stop=>_clips.GetClipAsync(request,stop),result=>result.Clip?.Dispose());
+    internal Task<MediaWaveformResult> GetWaveformAsync(MediaWaveformRequest request,CancellationToken token)=>
+        RunPreviewOperationAsync(request.ClipRequest.Url,token,stop=>_waveforms.GetWaveformAsync(request,stop));
+    internal Task<MediaFrameResult> GetFrameAsync(MediaFrameRequest request,CancellationToken token)=>
+        RunPreviewOperationAsync(request.Url,token,stop=>_frames.GetFrameAsync(request,stop));
 
     // Other views share the same worker/cache without changing this panel's
     // selection. Metadata callbacks are delivered on the owning dispatcher.
     internal void RequestUrl(string url,bool priority=true)
     {
-        if(!_disposed && AppPersistence.ValidUrl(url))_service.Request(url,priority);
+        if(!_disposed && !IsResetting(url) && AppPersistence.ValidUrl(url))_service.Request(url,priority);
     }
 
     // The format editor uses this same worker to enrich legacy preview caches.
     internal void RequestFormats(string url)
     {
-        if(!_disposed && AppPersistence.ValidUrl(url))_service.RequestFormats(url);
+        if(!_disposed && !IsResetting(url) && AppPersistence.ValidUrl(url))_service.RequestFormats(url);
     }
 
     private void Notify<T>(T? listeners,Action<T> invoke) where T:Delegate
@@ -133,7 +136,7 @@ internal sealed partial class PreviewController : IDisposable
 
     internal void RequestRow(DownloadItem row,bool priority=false)
     {
-        if(_disposed)return;
+        if(_disposed || IsResetting(row.Url))return;
         var cached=_service.Peek(row.Url);
         if(cached!=null)ApplyTitle(cached);
         _service.Request(row.Url,priority);
@@ -153,8 +156,9 @@ internal sealed partial class PreviewController : IDisposable
                 if(_disposed)return;
                 try
                 {
+                    long generation=_service.Generation(url);
                     var cached=_service.Peek(url);
-                    if(cached!=null)Dispatch(()=>{if(ApplyTitle(cached))_save();});
+                    if(cached!=null)DispatchCurrent(url,generation,()=>{if(ApplyTitle(cached))_save();});
                     _service.Request(url);
                 }
                 catch(ObjectDisposedException) when(_disposed){return;}
@@ -166,6 +170,7 @@ internal sealed partial class PreviewController : IDisposable
 
     private bool ApplyTitle(PreviewData data)
     {
+        if(IsResetting(data.Url))return false;
         if(string.IsNullOrWhiteSpace(data.Title) || string.Equals(data.Title.Trim(),data.Url,StringComparison.Ordinal))return false;
         string title=data.Title.Trim();
         bool changed=false;
@@ -188,7 +193,7 @@ internal sealed partial class PreviewController : IDisposable
     // succeeds. Refresh only the current matching title, leaving image/details.
     internal void RefreshKnownTitle(DownloadItem row)
     {
-        if(!_disposed && string.Equals(SelectedUrl,row.Url,StringComparison.Ordinal) &&
+        if(!_disposed && !IsResetting(row.Url) && string.Equals(SelectedUrl,row.Url,StringComparison.Ordinal) &&
             !string.IsNullOrWhiteSpace(row.Title) && !string.Equals(row.Title,row.Url,StringComparison.Ordinal))
         {
             _selectedKnownTitle=row.Title;
@@ -198,7 +203,7 @@ internal sealed partial class PreviewController : IDisposable
 
     internal void Show(string url,string? knownTitle=null)
     {
-        if(_disposed || !AppPersistence.ValidUrl(url))return;
+        if(_disposed || IsResetting(url) || !AppPersistence.ValidUrl(url))return;
         SelectedUrl=url;
         if(!string.IsNullOrWhiteSpace(knownTitle) && !string.Equals(knownTitle.Trim(),url,StringComparison.Ordinal))
             _selectedKnownTitle=knownTitle.Trim();
@@ -213,7 +218,7 @@ internal sealed partial class PreviewController : IDisposable
 
     internal void ReceiveFailure(string url,string error)
     {
-        if(_disposed)return;
+        if(_disposed || IsResetting(url))return;
         Notify(Failed,listener=>listener(url,error));
         if(!string.Equals(SelectedUrl,url,StringComparison.Ordinal))return;
         _title.Text=DisplayTitle(url,"","Не удалось получить метаданные");
@@ -224,7 +229,7 @@ internal sealed partial class PreviewController : IDisposable
 
     internal void ReceiveReady(PreviewData data,bool isFinal=true)
     {
-        if(_disposed)return;
+        if(_disposed || IsResetting(data.Url))return;
         string receivedTitle=data.Title.Trim();
         if(!string.Equals(_lastReceivedUrl,data.Url,StringComparison.Ordinal) ||
            !string.Equals(_lastReceivedTitle,receivedTitle,StringComparison.Ordinal))
@@ -356,6 +361,9 @@ internal sealed partial class PreviewController : IDisposable
     {
         if(_disposed)return;
         _disposed=true;
+        CancelPreviewOperations();
+        _service.ResultAvailable-=ServiceResultAvailable;
+        _service.FailureAvailable-=ServiceFailureAvailable;
         CancelLocalPosters();
         _galleryTimer.Stop();
         _galleryTimer.Tick-=GalleryTick;

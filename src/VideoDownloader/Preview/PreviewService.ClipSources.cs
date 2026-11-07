@@ -25,6 +25,7 @@ public sealed partial class PreviewService
         lock(_gate)
         {
             if(Volatile.Read(ref _disposed)!=0)throw new OperationCanceledException(_stop.Token);
+            if(_resetting.Contains(request.Url))throw new OperationCanceledException("Метаданные материала сбрасываются.");
             if(_clipSources.TryGetValue(request.Url,out var cached) && cached.Context==context && DateTime.UtcNow-cached.Created<FrameSourceLifetime &&
                 (request.AudioTrack=="Default" || cached.AudioSelections.Contains(AudioSelectionKey(request))) &&
                 new[]{request.VideoFormatId,request.AudioFormatId}.All(id=>id is null || cached.Sources.Any(source=>source.FormatId==id) || cached.Unavailable.Contains(id)))

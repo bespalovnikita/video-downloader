@@ -13,6 +13,7 @@ public sealed partial class PreviewService
         internal LocalPosterInput Input{get;}=input;
         internal Func<Action,CancellationToken,Task<bool>> Publish{get;}=publish;
         internal CancellationToken Token{get;}=token;
+        internal CancellationTokenSource ResetStop{get;}=new();
         internal TaskCompletionSource<bool> Completion{get;}=new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal CancellationTokenRegistration Registration;
         internal bool Started;
@@ -34,8 +35,8 @@ public sealed partial class PreviewService
         var work=new LocalPosterWork(input,publish,token);
         lock(_gate)
         {
-            if(Volatile.Read(ref _disposed)!=0)return Task.FromResult(false);
-            if(_localPosters.Count>=MaxPendingLocalPosters)return Task.FromResult(false);
+            if(Volatile.Read(ref _disposed)!=0 || _resetting.Contains(input.Url) || _localPosters.Count>=MaxPendingLocalPosters)
+            {work.ResetStop.Dispose();return Task.FromResult(false);}
             _localPosters.Add(work);
             work.Registration=token.Register(()=>
             {
@@ -49,7 +50,7 @@ public sealed partial class PreviewService
     private static async Task<bool> AwaitLocalPoster(LocalPosterWork work)
     {
         try{return await work.Completion.Task.ConfigureAwait(false);}
-        finally{work.Registration.Dispose();}
+        finally{work.Registration.Dispose();work.ResetStop.Dispose();}
     }
     private bool UsableImage(PreviewData data)
     {
@@ -128,7 +129,7 @@ public sealed partial class PreviewService
     }
     private async Task<bool> ProcessLocalPosterCore(LocalPosterWork work)
     {
-        using var stop=CancellationTokenSource.CreateLinkedTokenSource(_stop.Token,work.Token);
+        using var stop=CancellationTokenSource.CreateLinkedTokenSource(_stop.Token,work.Token,work.ResetStop.Token);
         CancellationToken token=stop.Token;
         try
         {

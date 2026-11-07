@@ -225,6 +225,7 @@ internal sealed partial class PreviewController
     internal async Task StopAsync()
     {
         Dispose();
+        await JoinPreviewOperationsAsync();
         await Task.WhenAll(_localPosterJobs.Values.Select(job=>job.Completion).ToArray());
         await _service.Completion;
     }
