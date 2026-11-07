@@ -2,6 +2,7 @@ package ru.bespalov.videodownloader
 
 import android.app.Activity
 import android.app.Instrumentation
+import android.app.KeyguardManager
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -11,8 +12,11 @@ import android.os.Bundle
 import android.os.Process
 import android.provider.DocumentsContract
 import android.os.SystemClock
+import android.util.Log
 import androidx.compose.ui.test.hasScrollAction
 import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -24,6 +28,11 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.runner.intent.IntentCallback
 import androidx.test.runner.intent.IntentMonitorRegistry
+import androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry
+import androidx.test.runner.lifecycle.Stage
+import androidx.test.uiautomator.UiDevice
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.ViewModelProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
@@ -41,6 +50,7 @@ import ru.bespalov.video.core.SubscriptionRules
 import ru.bespalov.videodownloader.download.DownloadService
 import ru.bespalov.videodownloader.download.MediaPublisher
 import ru.bespalov.videodownloader.ui.OutputViewing
+import ru.bespalov.videodownloader.ui.MobileUiState
 import java.io.File
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicReference
@@ -52,6 +62,98 @@ class PrimaryOutputInstrumentedTest {
     private val context: Context get() = ApplicationProvider.getApplicationContext()
     private val graph: AppGraph get() = (context.applicationContext as DownloaderApplication).graph
     private val instrumentation get() = InstrumentationRegistry.getInstrumentation()
+    private var uiStage = "not launched"
+
+    private fun markUiStage(label: String) {
+        uiStage = label
+        Log.i("PrimaryOutputTest", "stage=$label")
+    }
+
+    /** ActivityScenario can be RESUMED before the first Compose frame or behind keyguard. */
+    private fun awaitMainUi(activity: ActivityScenario<MainActivity>, label: String) {
+        markUiStage("$label: foreground and first Compose frame")
+        val device = UiDevice.getInstance(instrumentation)
+        device.wakeUp()
+        device.executeShellCommand("wm dismiss-keyguard")
+        activity.moveToState(Lifecycle.State.RESUMED)
+        awaitUiTag("downloadsTab")
+        awaitAppWindowFocus(compose, activity, label)
+    }
+
+    private fun awaitUiTag(tag: String) = awaitUiNode(hasTestTag(tag))
+
+    private fun awaitUiNode(matcher: SemanticsMatcher) {
+        compose.waitUntil(10_000) {
+            compose.onAllNodes(matcher).fetchSemanticsNodes(atLeastOneRootRequired = false).isNotEmpty()
+        }
+        compose.waitForIdle()
+    }
+
+    private fun awaitUiModel(activity: ActivityScenario<MainActivity>, predicate: (MobileUiState) -> Boolean) {
+        compose.waitUntil(10_000) {
+            var ready = false
+            activity.onActivity { current -> ready = predicate(ViewModelProvider(current)[DownloaderViewModel::class.java].ui.value) }
+            ready
+        }
+        compose.waitForIdle()
+    }
+
+    private fun withFreshMainActivity(label: String, block: (ActivityScenario<MainActivity>) -> Unit) {
+        markUiStage("$label: fresh Activity launch")
+        val device = UiDevice.getInstance(instrumentation)
+        device.wakeUp()
+        device.executeShellCommand("wm dismiss-keyguard")
+        // MainActivity is singleTop. Clear a previous test's task so setContent
+        // executes inside this test's already-running ComposeTestRule.
+        val intent = Intent(context, MainActivity::class.java).setAction(Intent.ACTION_MAIN)
+            .addCategory(Intent.CATEGORY_LAUNCHER)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+        ActivityScenario.launch<MainActivity>(intent).use { activity ->
+            try {
+                awaitMainUi(activity, label)
+                markUiStage("$label: wait for real ViewModel startup")
+                awaitUiModel(activity) { it.runtimeReady }
+                var recovery = false
+                activity.onActivity { current -> recovery = ViewModelProvider(current)[DownloaderViewModel::class.java].ui.value.recoveryRequired }
+                if (recovery) {
+                    // The service fixture deliberately retains an INTERRUPTED stage.
+                    // Restore through the app's actual recovery prompt before Start.
+                    markUiStage("$label: restore interrupted queue through Compose")
+                    awaitUiNode(hasText("Восстановить"))
+                    awaitAppWindowFocus(compose, activity, "queue recovery dialog", dialog = true)
+                    compose.onNodeWithText("Восстановить").performClick()
+                    awaitUiModel(activity) { !it.recoveryRequired }
+                }
+                block(activity)
+            } catch (failure: Throwable) {
+                throw AssertionError("Primary output UI stage=$uiStage; ${uiDiagnostics(activity)}", failure)
+            }
+        }
+    }
+
+    private fun uiDiagnostics(activity: ActivityScenario<MainActivity>): String {
+        val state = runCatching { activity.state.name }.getOrElse { "unavailable:${it.javaClass.simpleName}" }
+        var lifecycle = "unavailable"
+        runCatching {
+            instrumentation.runOnMainSync {
+                val monitor = ActivityLifecycleMonitorRegistry.getInstance()
+                lifecycle = listOf(Stage.RESUMED, Stage.STARTED, Stage.PAUSED, Stage.STOPPED).joinToString { stage ->
+                    "$stage=" + monitor.getActivitiesInStage(stage).take(4).joinToString(prefix = "[", postfix = "]") { current ->
+                        val view = current.window.decorView
+                        "${current.javaClass.simpleName}@${System.identityHashCode(current).toString(16)}" +
+                            "(finishing=${current.isFinishing},destroyed=${current.isDestroyed}," +
+                            "attached=${view.isAttachedToWindow},shown=${view.isShown},focus=${current.hasWindowFocus()})"
+                    }
+                }
+            }
+        }.onFailure { lifecycle = "error:${it.javaClass.simpleName}" }
+        val device = UiDevice.getInstance(instrumentation)
+        val foreground = runCatching { device.currentPackageName }.getOrElse { "error:${it.javaClass.simpleName}" }
+        val screen = runCatching { device.isScreenOn }.getOrDefault(false)
+        val keyguard = context.getSystemService(KeyguardManager::class.java)
+        return "scenario=$state, foreground=$foreground, screenOn=$screen, keyguardLocked=${keyguard.isKeyguardLocked}, " +
+            "deviceLocked=${keyguard.isDeviceLocked}, activities={$lifecycle}"
+    }
     private fun await(predicate: () -> Boolean) = runBlocking(Dispatchers.IO) {
         withTimeout(90_000) { while (!predicate()) delay(50) }
     }
@@ -64,6 +166,9 @@ class PrimaryOutputInstrumentedTest {
     private fun sample() = instrumentation.context.assets.open("offline-sample.mp4").use { it.readBytes() }
     private fun openTask(id: String) {
         val tag = "openCompletedFile:$id"
+        compose.waitUntil(10_000) {
+            compose.onAllNodes(hasScrollAction()).fetchSemanticsNodes(atLeastOneRootRequired = false).isNotEmpty()
+        }
         compose.onNode(hasScrollAction()).performScrollToNode(hasTestTag(tag))
         compose.onNodeWithTag(tag).performClick()
     }
@@ -95,7 +200,8 @@ class PrimaryOutputInstrumentedTest {
             var published = emptyList<String>()
             try {
                 runBlocking(Dispatchers.IO) { graph.repository.update { it.copy(queue = it.queue + resumable) } }
-                ActivityScenario.launch(MainActivity::class.java).use { activity ->
+                withFreshMainActivity("MediaStore service publication") { activity ->
+                    markUiStage("MediaStore: start actual native service download")
                     activity.onActivity { DownloadService.start(it, listOf(task.id)) }
                     await { graph.repository.state.value.queue.single { it.id == task.id }.status in setOf(DownloadStatus.COMPLETED, DownloadStatus.FAILED, DownloadStatus.CLEANUP_REQUIRED) }
                     val completed = graph.repository.state.value.queue.single { it.id == task.id }
@@ -105,6 +211,7 @@ class PrimaryOutputInstrumentedTest {
                     assertNotEquals("This regression must exercise sidecar-first ordering", published.first(), completed.primaryOutputUri)
                     assertEquals("video/mp4", context.contentResolver.getType(Uri.parse(completed.primaryOutputUri)))
                     await { !DownloadService.isRunning.value && !DownloadService.hasOwnedTasks }
+                    markUiStage("MediaStore: reopen committed state")
                     val reopened = JsonStateRepository(File(context.filesDir, "state.json"))
                     assertFalse(reopened.error, reopened.readOnly)
                     val restored = reopened.state.value.queue.single { it.id == task.id }
@@ -114,14 +221,19 @@ class PrimaryOutputInstrumentedTest {
                     runBlocking(Dispatchers.IO) { graph.repository.update { state -> state.copy(
                         queue = state.queue.map { if (it.id == task.id) restored else it },
                         history = state.history.map { if (it.url == task.url) history else it }) } }
+                    awaitMainUi(activity, "MediaStore restored state")
                     observeViews { captured ->
+                        markUiStage("MediaStore: open queue primary")
                         compose.onNodeWithTag("downloadsTab").performClick()
                         openTask(task.id)
                         await { captured.get() != null }
                         assertEquals(restored.primaryOutputUri, captured.get()!!.data.toString())
                         assertEquals("video/mp4", captured.get()!!.type)
                         captured.set(null)
+                        awaitMainUi(activity, "MediaStore after intercepted queue ACTION_VIEW")
+                        markUiStage("MediaStore: open history primary")
                         compose.onNodeWithText("История (${graph.repository.state.value.history.size})").performClick()
+                        awaitUiTag("openHistoryFile:${history.completedAtUtc}")
                         compose.onNodeWithTag("openHistoryFile:${history.completedAtUtc}").performClick()
                         await { captured.get() != null }
                         assertEquals(restored.primaryOutputUri, captured.get()!!.data.toString())
@@ -171,24 +283,33 @@ class PrimaryOutputInstrumentedTest {
                 assertNull(OutputViewing.primary(context, "content://foreign/video.mp4", published))
                 assertEquals(listOf("lesson.en.vtt", "lesson.mp4", "second.mp4"), OutputViewing.files(context, published).map { it.name })
             }
-            ActivityScenario.launch(MainActivity::class.java).use {
+            withFreshMainActivity("SAF restored publication") { activity ->
                 observeViews { captured ->
+                    markUiStage("SAF: open persisted primary")
                     compose.onNodeWithTag("downloadsTab").performClick()
                     openTask(task.id)
                     await { captured.get() != null }
                     assertEquals(batch.primaryUri, captured.get()!!.data.toString())
                     captured.set(null)
+                    awaitMainUi(activity, "SAF after intercepted primary ACTION_VIEW")
+                    markUiStage("SAF: clear marker and open legacy multiple-media chooser")
                     runBlocking(Dispatchers.IO) { graph.repository.update { state -> state.copy(queue = state.queue.map { row ->
                         if (row.id == task.id) row.copy(primaryOutputUri = "") else row }) } }
+                    awaitUiModel(activity) { state -> state.snapshot.queue.single { it.id == task.id }.primaryOutputUri.isEmpty() }
                     openTask(task.id)
-                    compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("publishedFile:0")).fetchSemanticsNodes().isNotEmpty() }
+                    awaitUiTag("publishedFile:0")
+                    awaitAppWindowFocus(compose, activity, "legacy multiple-media chooser", dialog = true)
                     assertNull("Legacy records with two media must not silently open a sidecar or arbitrary video", captured.get())
+                    markUiStage("SAF: explicitly select second media")
                     compose.onNodeWithTag("publishedFile:1").performClick()
                     await { captured.get() != null }
                     assertEquals(published[1], captured.get()!!.data.toString())
                     captured.set(null)
+                    awaitMainUi(activity, "SAF after intercepted chosen-media ACTION_VIEW")
+                    markUiStage("SAF: explicitly choose sidecar from all files")
                     compose.onNodeWithTag("chooseCompletedFiles:${task.id}").performClick()
-                    compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("publishedFile:0")).fetchSemanticsNodes().isNotEmpty() }
+                    awaitUiTag("publishedFile:0")
+                    awaitAppWindowFocus(compose, activity, "all-files chooser", dialog = true)
                     compose.onNodeWithTag("publishedFile:0").performClick()
                     await { captured.get() != null }
                     assertEquals("A sidecar remains available through explicit selection", published[0], captured.get()!!.data.toString())
