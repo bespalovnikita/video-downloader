@@ -57,6 +57,7 @@ public sealed partial class NativeWindow
         IDisposable? scheduling=null;
         try
         {
+            await _preview.CancelLocalPostersAsync();token.ThrowIfCancellationRequested();
             scheduling=await SuspendSubscriptionSchedulingAsync();token.ThrowIfCancellationRequested();
             if(!CanUseProfileBackup(ownBarrier:true,allowAutomatic:false))
                 throw new InvalidOperationException("Состояние профиля изменилось. Завершите текущие операции и повторите действие.");
@@ -111,6 +112,7 @@ public sealed partial class NativeWindow
             {
                 if(_window.Content is UIElement content)content.IsEnabled=!_profileBackupRecoveryRequired;
                 if(!_profileBackupRecoveryRequired && !_checkpointReadOnly && !_legacyEngineBlocked)_ingress.Start();UpdateState();
+                _preview.BackfillLocalPosters();
             }
         }
     }

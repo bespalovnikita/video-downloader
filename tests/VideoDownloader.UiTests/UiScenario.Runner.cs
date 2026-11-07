@@ -44,6 +44,8 @@ internal sealed partial class UiScenario
             UiScenario.TestDownloadProgressStatus();
             Stage("testing hover preview gallery and manual image navigation");
             UiScenario.TestPreviewGallery(root);
+            Stage("testing automatic completed-video posters, shared gallery, stale attempts and joined file removal");
+            UiScenario.TestLocalVideoPosters(root);
             Stage("testing resizable panel layout and restored widths");
             UiScenario.TestPanelLayout(root);
             Stage("testing journal profiles, trace correlation and clipboard/export");

@@ -59,7 +59,8 @@ public sealed partial class NativeWindow : IDisposable
     // production worker. Normal startup always resolves the packaged yt-dlp.
     internal NativeWindow(Window window,AppPersistence? persistence,string ytDlpExecutable,
         IAppUpdateService? updateService=null,bool? automaticUpdates=null,IDiskSpaceProvider? diskSpaceProvider=null,
-        TimeProvider? subscriptionClock=null,bool automaticSubscriptionChecks=true,WindowsProfileBackup? profileBackup=null)
+        TimeProvider? subscriptionClock=null,bool automaticSubscriptionChecks=true,WindowsProfileBackup? profileBackup=null,
+        string? localPosterFfmpegPath=null)
     {
         _window=window;
         _storage=persistence??new AppPersistence();
@@ -88,7 +89,9 @@ public sealed partial class NativeWindow : IDisposable
         B("OutputBox").Text=new DownloadOptions().Output;
         _panelLayout=new PanelLayoutController(_window,SaveCheckpoint);
         _preview=new PreviewController(_window,_storage,_ytDlp,
-            ()=>_profileBackupBusy || _profileBackupRecoveryRequired || _profileBackupReplaying?Array.Empty<DownloadItem>():SessionState.Queue.Concat(SessionState.Downloads),SaveCheckpoint,Log);
+            ()=>_profileBackupBusy || _profileBackupRecoveryRequired || _profileBackupReplaying || _checkpointReadOnly || _legacyEngineBlocked
+                ?Array.Empty<DownloadItem>():SessionState.Queue.Concat(SessionState.Downloads),SaveCheckpoint,Log,
+            AllowLocalPosters,localPosterFfmpegPath);
         _lifecycle=new WindowLifecycleController(_window,()=>OpenFolder(B("OutputBox").Text));
         _ingress=new InputIngressController(_window,AddUrls,()=>!_profileBackupBusy && !_profileBackupRecoveryRequired && !_profileBackupReplaying &&
             !_checkpointReadOnly && !_legacyEngineBlocked && Check(K("WatchClipboardCheck")),_lifecycle.Activate,Log,
@@ -147,6 +150,7 @@ public sealed partial class NativeWindow : IDisposable
         InitializeDiskSpace(diskSpaceProvider);
         InitializeSubscriptionScheduling(subscriptionClock,automaticSubscriptionChecks);
         InitializeProfileBackup(profileBackup);
+        _preview.BackfillLocalPosters();
         UpdateState();
         FlushJournal();
         _tick.Start();_ingress.Start();
@@ -208,7 +212,7 @@ public sealed partial class NativeWindow : IDisposable
     }
     internal void OnRowChanged(DownloadItem item)
     {
-        _=Dispatcher.BeginInvoke(()=>
+        _=Dispatcher.BeginInvoke(async()=>
         {
             if (_disposed || _profileBackupBusy || _profileBackupRecoveryRequired || _profileBackupReplaying) return;
             if (item.Status=="Completed" && item.AttemptFinished && item.CleanupError.Length==0 && !item.IsPartialResult)
@@ -216,9 +220,16 @@ public sealed partial class NativeWindow : IDisposable
             if (!SessionState.Queue.Contains(item)) return;
             if (item.PendingRemoval && item.AttemptFinished && item.CleanupError.Length==0)
             {
-                try { DownloadCleanup.Retry(item);ForgetRow(item);Reindex();return; }
+                try
+                {
+                    await _preview.CancelLocalPostersAsync([item]);
+                    if(_disposed || _closing || _appUpdateHandoff || _profileBackupBusy || _profileBackupRecoveryRequired ||
+                        _profileBackupReplaying || _checkpointReadOnly || !SessionState.Queue.Contains(item))return;
+                    DownloadCleanup.Retry(item);ForgetRow(item);Reindex();return;
+                }
                 catch(Exception e) { Log("Removal failed for "+item.Url+": "+e.Message); }
             }
+            _preview.ScheduleLocalPoster(item);
             if (SessionState.RecordRowChanged(item))
             {
                 Log($"{item.Status}: {item.Url}"+(item.RawError.Length>0?" | "+item.RawError:""));
@@ -471,7 +482,7 @@ public sealed partial class NativeWindow : IDisposable
         if(_closing || _disposed || _startingSession || _appUpdateHandoff || _checkpointReadOnly || _profileBackupReplaying || RejectProfileBackupMutation())return;
         _startingSession=true;
         try { await StartSessionCoreAsync(custom); }
-        finally { _startingSession=false;UpdateState(); }
+        finally { _startingSession=false;UpdateState();_preview.BackfillLocalPosters(); }
     }
     private async Task StartSessionCoreAsync(IEnumerable<DownloadItem>? custom)
     {
@@ -489,6 +500,12 @@ public sealed partial class NativeWindow : IDisposable
         if(pending.Count==0)return;
         var options=ReadOptions();
         var requested=pending.ToDictionary(row=>row,row=>(row.Url,row.Selection));
+        void RequireCurrentPlan(IEnumerable<DownloadItem> plan)
+        {
+            if(SessionState.Coordinator?.IsRunning==true || plan.Any(row=>!SessionState.Queue.Contains(row) || !row.CanResume ||
+                !requested.TryGetValue(row,out var original) || !string.Equals(row.Url,original.Url,StringComparison.Ordinal) || row.Selection!=original.Selection))
+                throw new InvalidOperationException("Состав очереди или параметры задания изменились. Повторите Start.");
+        }
         try
         {
             AudioTrackSelection.Validate(options);
@@ -498,12 +515,15 @@ public sealed partial class NativeWindow : IDisposable
                 throw new FileNotFoundException("Cookie file is missing.",options.Cookies);
             if(string.IsNullOrWhiteSpace(options.Output))throw new ArgumentException("Choose an output directory.");
             OwnedFiles.ValidateTemplate(options.FilenameTemplate);
+            // A No choice below can remove a completed row from the queue.
+            // Join its optional reader before the modal decision can forget it.
+            await _preview.CancelLocalPostersAsync(pending);
+            if(_closing || _disposed || _appUpdateHandoff || _checkpointReadOnly || RejectProfileBackupMutation())return;
+            RequireCurrentPlan(pending);
             var approved=ConfirmDuplicates(pending,true);
             if(approved==null||approved.Count==0)return;
             if(_closing || _disposed || _appUpdateHandoff || _checkpointReadOnly || RejectProfileBackupMutation())return;
-            if(approved.Any(row=>!string.Equals(row.Url,requested[row].Url,StringComparison.Ordinal) ||
-                row.Selection!=requested[row].Selection))
-                throw new InvalidOperationException("Параметры задания изменились во время подтверждения. Повторите Start.");
+            RequireCurrentPlan(approved);
             options.PinOutputDirectory();
             OwnedFiles.NoReparseAncestors(Path.Combine(options.OutputDirectory,"__validation__"));
             var outputRoots=approved.ToDictionary(row=>row,row=>
@@ -514,6 +534,9 @@ public sealed partial class NativeWindow : IDisposable
             });
             if(!await ConfirmDiskSpaceBeforeStartAsync(approved,options,outputRoots))return;
             if(_closing || _disposed || _appUpdateHandoff || _checkpointReadOnly || RejectProfileBackupMutation())return;
+            await _preview.CancelLocalPostersAsync(approved);
+            if(_closing || _disposed || _appUpdateHandoff || _checkpointReadOnly || RejectProfileBackupMutation())return;
+            RequireCurrentPlan(approved);
             Directory.CreateDirectory(options.OutputDirectory);
             SessionState.SetOptions(options);
             // Validate retained staging before resetting any attempt or ownership.
@@ -567,17 +590,40 @@ public sealed partial class NativeWindow : IDisposable
     {
         if (SessionState.Coordinator?.IsRunning==true && (row.Status=="Queued" || row.Status=="Running"))SessionState.Coordinator.Cancel(row);
     }
-    private void RemoveRows(IEnumerable<DownloadItem> rows)
+    private async Task RemoveRowsAsync(IEnumerable<DownloadItem> rows)
     {
-        if(RejectProfileBackupMutation())return;
+        if(_closing || _disposed || _appUpdateHandoff || _checkpointReadOnly || RejectProfileBackupMutation())return;
         var selected=rows.Where(SessionState.Queue.Contains).Distinct().ToArray();
         if(selected.Length==0)return;
         if(selected.Any(x=>x.Status!="Queued") &&
             MessageBox.Show(_window,ErrorMessages.Text($"Удалить выбранные ссылки ({selected.Length})?\nИх активные задачи будут остановлены, а принадлежащие им готовые файлы — удалены без возможности восстановления.\nОстальные загрузки продолжатся.",$"Remove {selected.Length} selected URL(s)?\nActive jobs will be stopped; finished files belonging to them will be permanently deleted.\nOther downloads continue."),
                 ErrorMessages.Text("Удалить загрузки","Delete downloads"),MessageBoxButton.YesNo,MessageBoxImage.Warning)!=MessageBoxResult.Yes)return;
-        if(RejectProfileBackupMutation())return;
+        if(_closing || _disposed || _appUpdateHandoff || _checkpointReadOnly || RejectProfileBackupMutation())return;
+        var alreadyPending=selected.Where(row=>row.PendingRemoval).ToHashSet();
+        var cancelledWorkers=new HashSet<DownloadItem>();
         foreach(var row in selected)
         {
+            row.PendingRemoval=true;
+            // A worker can finish while an unrelated local reader is joining.
+            // Set its cancellation tombstone before the first await, so a
+            // published success cannot fall through merely on PendingRemoval.
+            if(SessionState.Coordinator?.IsRunning==true && SessionState.Coordinator.IsPending(row))
+            {
+                row.State="Cancelling — waiting for cleanup";
+                SessionState.Coordinator.Cancel(row);cancelledWorkers.Add(row);
+            }
+        }
+        await _preview.CancelLocalPostersAsync(selected);
+        if(_closing || _disposed || _appUpdateHandoff || _checkpointReadOnly || RejectProfileBackupMutation())
+        {
+            foreach(var row in selected.Where(row=>!alreadyPending.Contains(row) && !cancelledWorkers.Contains(row)))
+                if(row.CleanupError.Length==0 && SessionState.Queue.Contains(row))row.PendingRemoval=false;
+            _preview.BackfillLocalPosters();
+            return;
+        }
+        foreach(var row in selected)
+        {
+            if(!SessionState.Queue.Contains(row))continue;
             try
             {
                 if (SessionState.Coordinator?.IsRunning==true && SessionState.Coordinator.IsPending(row))
@@ -601,9 +647,12 @@ public sealed partial class NativeWindow : IDisposable
     {
         SessionState.Forget(row);
     }
-    private void ClearRows(IReadOnlyCollection<DownloadItem> candidates)
+    private async Task ClearRowsAsync(IReadOnlyCollection<DownloadItem> candidates)
     {
-        if(RejectProfileBackupMutation())return;
+        if(_startingSession || SessionState.Coordinator?.IsRunning==true || RejectProfileBackupMutation())return;
+        await _preview.CancelLocalPostersAsync(candidates);
+        if(_closing || _disposed || _appUpdateHandoff || _checkpointReadOnly || _startingSession ||
+            SessionState.Coordinator?.IsRunning==true || RejectProfileBackupMutation())return;
         foreach(var row in candidates)
             if (SessionState.Queue.Contains(row) && row.CanResume && row.StageDir.Length==0 && row.CleanupPaths.Count==0) ForgetRow(row);
         if(candidates.Any(SessionState.Queue.Contains))

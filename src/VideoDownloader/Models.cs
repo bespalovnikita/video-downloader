@@ -148,6 +148,10 @@ public sealed record PreviewData(string Url, string Title, string Uploader, stri
     // Keep the original single cover and constructor compatible with old
     // cache records and callers; the gallery is additive.
     public string[] ThumbnailsBase64 { get; init; } = [];
+    // Optional local image provenance never contains a filesystem path.
+    // Metadata keeps its original SavedAtUtc and independent freshness.
+    public string LocalThumbnailFingerprint { get; init; } = "";
+    public DateTime? LocalThumbnailSavedAtUtc { get; init; }
     public MediaFormat[] Formats { get; init; } = [];
     public bool FormatsTruncated { get; init; }
     public bool FormatsLoaded { get; init; }
