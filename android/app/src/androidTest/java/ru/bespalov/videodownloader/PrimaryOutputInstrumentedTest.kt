@@ -103,6 +103,9 @@ class PrimaryOutputInstrumentedTest {
         val device = UiDevice.getInstance(instrumentation)
         device.wakeUp()
         device.executeShellCommand("wm dismiss-keyguard")
+        // Start from the launcher if an earlier test left another app's window on top.
+        // No navigation is performed after an ACTION_VIEW interception.
+        device.pressHome()
         // MainActivity is singleTop. Clear a previous test's task so setContent
         // executes inside this test's already-running ComposeTestRule.
         val intent = Intent(context, MainActivity::class.java).setAction(Intent.ACTION_MAIN)
@@ -173,12 +176,62 @@ class PrimaryOutputInstrumentedTest {
         compose.onNodeWithTag(tag).performClick()
     }
 
-    private fun observeViews(block: (AtomicReference<Intent?>) -> Unit) {
+    private fun assertViewStayedInApp(activity: ActivityScenario<MainActivity>) {
+        try {
+            val device = UiDevice.getInstance(instrumentation)
+            compose.waitUntil(5_000) {
+                var resumedAndFocused = false
+                if (activity.state == Lifecycle.State.RESUMED) {
+                    activity.onActivity { current ->
+                        resumedAndFocused = current.lifecycle.currentState == Lifecycle.State.RESUMED &&
+                            current.window.decorView.isShown && current.hasWindowFocus()
+                    }
+                }
+                resumedAndFocused && device.currentPackageName == context.packageName
+            }
+        } catch (failure: Throwable) {
+            throw AssertionError("A blocked published ACTION_VIEW must leave MainActivity RESUMED and foreground; " +
+                uiDiagnostics(activity), failure)
+        }
+    }
+
+    private fun observeViews(activity: ActivityScenario<MainActivity>, block: (AtomicReference<Intent?>, () -> Intent) -> Unit) {
         val captured = AtomicReference<Intent?>()
+        val filter = IntentFilter(Intent.ACTION_VIEW).apply {
+            addDataScheme("content")
+            addDataScheme("file")
+            addDataType("*/*")
+        }
+        fun match(intent: Intent) = filter.match(intent.action, intent.type, intent.scheme, intent.data, intent.categories, "PrimaryOutputTest")
+        // ACTION_VIEW alone does not match a typed content URI. Verify both media
+        // and sidecar coverage before installing the monitor that must block them.
+        for (scheme in listOf("content", "file")) for (mime in listOf("video/mp4", "text/vtt")) {
+            val uri = if (scheme == "file") Uri.fromFile(File("/fixture/opaque")) else Uri.parse("content://fixture/opaque")
+            val probe = Intent(Intent.ACTION_VIEW).setDataAndType(uri, mime)
+            assertTrue("The blocking monitor must match $scheme / $mime", match(probe) >= 0)
+        }
         val callback = IntentCallback { intent -> if (intent.action == Intent.ACTION_VIEW) captured.set(Intent(intent)) }
-        val monitor = instrumentation.addMonitor(IntentFilter(Intent.ACTION_VIEW), Instrumentation.ActivityResult(Activity.RESULT_OK, null), true)
+        val monitor = instrumentation.addMonitor(filter, Instrumentation.ActivityResult(Activity.RESULT_OK, null), true)
+        var verifiedHits = 0
+        fun intercepted(): Intent {
+            compose.waitUntil(10_000) { captured.get() != null }
+            val intent = requireNotNull(captured.get())
+            assertTrue("Published ACTION_VIEW must match the blocking filter: scheme=${intent.scheme}, MIME=${intent.type}", match(intent) >= 0)
+            val expectedHits = verifiedHits + 1
+            try {
+                compose.waitUntil(5_000) { monitor.hits >= expectedHits }
+            } catch (failure: Throwable) {
+                throw AssertionError("ACTION_VIEW was observed but not blocked: expected monitor hits=$expectedHits, actual=${monitor.hits}; " +
+                    uiDiagnostics(activity), failure)
+            }
+            assertEquals("Every observed ACTION_VIEW must have exactly one blocking monitor hit", expectedHits, monitor.hits)
+            assertViewStayedInApp(activity)
+            verifiedHits = expectedHits
+            captured.set(null)
+            return intent
+        }
         IntentMonitorRegistry.getInstance().addIntentCallback(callback)
-        try { block(captured) }
+        try { block(captured, ::intercepted) }
         finally {
             IntentMonitorRegistry.getInstance().removeIntentCallback(callback)
             instrumentation.removeMonitor(monitor)
@@ -222,21 +275,18 @@ class PrimaryOutputInstrumentedTest {
                         queue = state.queue.map { if (it.id == task.id) restored else it },
                         history = state.history.map { if (it.url == task.url) history else it }) } }
                     awaitMainUi(activity, "MediaStore restored state")
-                    observeViews { captured ->
+                    observeViews(activity) { _, intercepted ->
                         markUiStage("MediaStore: open queue primary")
                         compose.onNodeWithTag("downloadsTab").performClick()
                         openTask(task.id)
-                        await { captured.get() != null }
-                        assertEquals(restored.primaryOutputUri, captured.get()!!.data.toString())
-                        assertEquals("video/mp4", captured.get()!!.type)
-                        captured.set(null)
-                        awaitMainUi(activity, "MediaStore after intercepted queue ACTION_VIEW")
+                        val queueIntent = intercepted()
+                        assertEquals(restored.primaryOutputUri, queueIntent.data.toString())
+                        assertEquals("video/mp4", queueIntent.type)
                         markUiStage("MediaStore: open history primary")
                         compose.onNodeWithText("История (${graph.repository.state.value.history.size})").performClick()
                         awaitUiTag("openHistoryFile:${history.completedAtUtc}")
                         compose.onNodeWithTag("openHistoryFile:${history.completedAtUtc}").performClick()
-                        await { captured.get() != null }
-                        assertEquals(restored.primaryOutputUri, captured.get()!!.data.toString())
+                        assertEquals(restored.primaryOutputUri, intercepted().data.toString())
                     }
                     // Old history without the additive primary field uses provider MIME, never URI order.
                     runBlocking(Dispatchers.IO) { assertEquals(restored.primaryOutputUri, OutputViewing.primary(context, "", published)) }
@@ -284,14 +334,11 @@ class PrimaryOutputInstrumentedTest {
                 assertEquals(listOf("lesson.en.vtt", "lesson.mp4", "second.mp4"), OutputViewing.files(context, published).map { it.name })
             }
             withFreshMainActivity("SAF restored publication") { activity ->
-                observeViews { captured ->
+                observeViews(activity) { captured, intercepted ->
                     markUiStage("SAF: open persisted primary")
                     compose.onNodeWithTag("downloadsTab").performClick()
                     openTask(task.id)
-                    await { captured.get() != null }
-                    assertEquals(batch.primaryUri, captured.get()!!.data.toString())
-                    captured.set(null)
-                    awaitMainUi(activity, "SAF after intercepted primary ACTION_VIEW")
+                    assertEquals(batch.primaryUri, intercepted().data.toString())
                     markUiStage("SAF: clear marker and open legacy multiple-media chooser")
                     runBlocking(Dispatchers.IO) { graph.repository.update { state -> state.copy(queue = state.queue.map { row ->
                         if (row.id == task.id) row.copy(primaryOutputUri = "") else row }) } }
@@ -302,17 +349,13 @@ class PrimaryOutputInstrumentedTest {
                     assertNull("Legacy records with two media must not silently open a sidecar or arbitrary video", captured.get())
                     markUiStage("SAF: explicitly select second media")
                     compose.onNodeWithTag("publishedFile:1").performClick()
-                    await { captured.get() != null }
-                    assertEquals(published[1], captured.get()!!.data.toString())
-                    captured.set(null)
-                    awaitMainUi(activity, "SAF after intercepted chosen-media ACTION_VIEW")
+                    assertEquals(published[1], intercepted().data.toString())
                     markUiStage("SAF: explicitly choose sidecar from all files")
                     compose.onNodeWithTag("chooseCompletedFiles:${task.id}").performClick()
                     awaitUiTag("publishedFile:0")
                     awaitAppWindowFocus(compose, activity, "all-files chooser", dialog = true)
                     compose.onNodeWithTag("publishedFile:0").performClick()
-                    await { captured.get() != null }
-                    assertEquals("A sidecar remains available through explicit selection", published[0], captured.get()!!.data.toString())
+                    assertEquals("A sidecar remains available through explicit selection", published[0], intercepted().data.toString())
                 }
             }
         } finally {
