@@ -92,7 +92,7 @@ public sealed partial class NativeWindow
     }
     private void SetDownloadActions()
     {
-        var selected=D.SelectedItem as DownloadItem;
+        var selected=D.SelectedItems.Count==1?D.SelectedItem as DownloadItem:null;
         F<Button>("OpenFileButton").IsEnabled=selected!=null && File.Exists(selected.Path);
         F<Button>("OpenFolderButton").IsEnabled=selected!=null && File.Exists(selected.Path);
         F<Button>("CopyPathButton").IsEnabled=selected!=null && selected.Path.Length>0;
@@ -165,10 +165,10 @@ public sealed partial class NativeWindow
             try { DependencyCenter.RegisterProtocol();MessageBox.Show(_window,ErrorMessages.Text("Протокол videodownloader:// зарегистрирован для текущего пользователя Windows.","videodownloader:// registered for this Windows user."),ErrorMessages.Text("Протокол зарегистрирован","Protocol registered"));}
             catch(Exception e){MessageBox.Show(_window,DisplayError(e),ErrorMessages.Text("Не удалось зарегистрировать протокол","Protocol registration failed"));}
         };
-        F<Button>("OpenFileButton").Click+=(_,_)=>{if(D.SelectedItem is DownloadItem row)OpenFile(row.Path);};
-        F<Button>("OpenFolderButton").Click+=(_,_)=>ShowFileInFolder(D.SelectedItem as DownloadItem);
-        F<Button>("CopyPathButton").Click+=(_,_)=>{if(D.SelectedItem is DownloadItem row && row.Path.Length>0)Clipboard.SetText(row.Path);};
-        F<Button>("OpenUrlButton").Click+=(_,_)=>{if(D.SelectedItem is DownloadItem row)OpenUrl(row.Url);};
+        F<Button>("OpenFileButton").Click+=(_,_)=>{if(D.SelectedItems.Count==1 && D.SelectedItem is DownloadItem row)OpenFile(row.Path);};
+        F<Button>("OpenFolderButton").Click+=(_,_)=>ShowFileInFolder(D.SelectedItems.Count==1?D.SelectedItem as DownloadItem:null);
+        F<Button>("CopyPathButton").Click+=(_,_)=>{if(D.SelectedItems.Count==1 && D.SelectedItem is DownloadItem row && row.Path.Length>0)Clipboard.SetText(row.Path);};
+        F<Button>("OpenUrlButton").Click+=(_,_)=>{if(D.SelectedItems.Count==1 && D.SelectedItem is DownloadItem row)OpenUrl(row.Url);};
         Q.KeyDown+=async(_,e)=>
         {
             if (e.Key==Key.Delete){e.Handled=true;await RemoveRowsAsync(SelectedVisibleQueueRows());}
@@ -213,7 +213,8 @@ public sealed partial class NativeWindow
         void DownloadAction(string title,Action<DownloadItem> callback)
         {
             var entry=new MenuItem{Header=title};
-            entry.Click+=(_,_)=>{if(D.SelectedItem is DownloadItem row)callback(row);};
+            entry.Click+=(_,_)=>{if(D.SelectedItems.Count==1 && D.SelectedItem is DownloadItem row)callback(row);};
+            downloadMenu.Opened+=(_,_)=>entry.IsEnabled=D.SelectedItems.Count==1 && D.SelectedItem is DownloadItem;
             downloadMenu.Items.Add(entry);
         }
         DownloadAction(ErrorMessages.Text("Открыть файл","Open file"),row=>OpenFile(row.Path));
