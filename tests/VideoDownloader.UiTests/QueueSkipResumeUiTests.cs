@@ -27,7 +27,14 @@ internal sealed partial class UiScenario
         }
         static T Control<T>(Window window,string name) where T:class=>(T)(window.FindName(name)
             ??throw new InvalidOperationException("Missing real queue skip/resume control: "+name));
-        static void Click(Window window,string name)=>Control<Button>(window,name).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        static void InvokeUi(Dispatcher dispatcher,Action action)
+        {
+            var operation=dispatcher.BeginInvoke(action);
+            PumpUntil(()=>operation.Task.IsCompleted,"The actual Dispatcher operation must deliver its queue action.");
+            operation.Task.GetAwaiter().GetResult();
+        }
+        static void Click(Window window,string name)=>InvokeUi(window.Dispatcher,
+            ()=>Control<Button>(window,name).RaiseEvent(new RoutedEventArgs(Button.ClickEvent)));
         static Window LoadWindow()
         {
             using var input=File.OpenRead(Path.Combine(AppContext.BaseDirectory,"ui","MainWindow.xaml"));
@@ -147,7 +154,7 @@ internal sealed partial class UiScenario
             var skipMenu=MenuAction(queue,"Пропустить");
             Require(skipMenu.IsEnabled && Control<Button>(window,"SkipQueueItemsButton").IsEnabled,
                 "The queue menu and button must expose the same visible multi-selection.");
-            skipMenu.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+            InvokeUi(skipMenu.Dispatcher,()=>skipMenu.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent)));
             PumpUntil(()=>first.Status=="Skipped" && second.Status=="Skipped" && first.AttemptFinished && second.AttemptFinished,
                 "The actual Skip button must mark both selected rows as Skipped.");
             Require(hidden.Status=="Queued" && completed.Status=="Completed" && subject.SessionState.Coordinator is null &&
@@ -238,7 +245,7 @@ internal sealed partial class UiScenario
             Select(downloads,slow,next);string nextOutput=next.Path;
             var resumeMenu=MenuAction(downloads,"Продолжить");
             Require(resumeMenu.IsEnabled,"Downloads must offer Resume for a skipped row in a mixed selection.");
-            resumeMenu.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+            InvokeUi(resumeMenu.Dispatcher,()=>resumeMenu.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent)));
             PumpUntil(()=>slow.Status=="Queued" && active!.IsPending(slow),"The real Resume button must readmit the skipped URL to the live session.");
             Require(ReferenceEquals(subject.SessionState.Coordinator,active) && slow.StageDir==retained && keeper.Status=="Running" &&
                 next.Status=="Completed" && next.Path==nextOutput,
