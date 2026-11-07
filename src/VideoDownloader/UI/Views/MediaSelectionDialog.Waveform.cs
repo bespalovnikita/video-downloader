@@ -108,6 +108,9 @@ internal sealed partial class MediaSelectionDialog
         CancelWaveform(card,"");
         var cancellation=new CancellationTokenSource();card.Cancellation=cancellation;card.Cancel.IsEnabled=true;
         card.Status.Text="Готовим короткий участок и измеряем звук…";
+        // The explicit action reveals its measured area as well as its button;
+        // an asynchronous completion must not scroll a different card later.
+        card.View.BringIntoView(new Rect(card.View.RenderSize));
         _=LoadWaveformAsync(card,new MediaWaveformRequest(clip!,card.IsEnd),CurrentWaveformContext(),card.Generation,cancellation);
     }
     private bool CurrentWaveform(WaveformCard card,WaveformContext context,long generation,CancellationTokenSource cancellation)=>
