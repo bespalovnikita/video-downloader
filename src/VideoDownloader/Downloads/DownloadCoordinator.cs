@@ -127,7 +127,11 @@ public sealed partial class DownloadCoordinator : IAsyncDisposable
                     attempt.Started=true;
                     var cleanup=Task.Run(()=>
                     {
-                        try{DownloadCleanup.Retry(item);}
+                        try
+                        {
+                            Trace(item,JournalLevel.Information,"queued_cleanup_start",category:"cleanup",worker:"");
+                            DownloadCleanup.Retry(item);
+                        }
                         catch(Exception error){_log("Queued cancellation cleanup failed: "+error.Message);}
                         finally{lock(_completionGate)FinishQueuedAttempt(attempt,false);}
                     });

@@ -276,6 +276,9 @@ internal static class QueueSkipResumeTests
         File.WriteAllText(Path.Combine(stage,"owned.mp4.part"),"OWNED PARTIAL");
         DownloadResumeStore.Create(row,options,null,"best");
         var entered=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cleanupStarted=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var allowCleanup=new ManualResetEventSlim();
+        int cleanupGateTimedOut=0;
         using var release=new ManualResetEventSlim();
         Task? disposal=null;
         var engine=new DownloadCoordinator(DependencyCenter.Executable("yt-dlp.exe"),new AppPersistence(Path.Combine(root,"dispose-profile")),options,
@@ -283,11 +286,21 @@ internal static class QueueSkipResumeTests
             {
                 if(changed.AttemptFinished && changed.Status=="Interrupted")
                 {entered.TrySetResult();release.Wait(TimeSpan.FromSeconds(10));}
-            },_=>{});
+            },_=>{},trace:record=>
+            {
+                if(record.Event!="queued_cleanup_start")return;
+                cleanupStarted.TrySetResult();
+                if(!allowCleanup.Wait(TimeSpan.FromSeconds(10)))Interlocked.Exchange(ref cleanupGateTimedOut,1);
+            });
         try
         {
             Require(engine.Add(row),"A retained unstarted attempt must be admitted before cancellation");
             engine.Cancel(row);
+            await cleanupStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Require(Volatile.Read(ref cleanupGateTimedOut)==0 && !row.AttemptFinished && engine.IsPending(row) &&
+                Directory.Exists(stage) && File.Exists(stage+".resume.json"),
+                "A real queued cleanup that has not acknowledged completion must retain its attempt and owned staging");
+            allowCleanup.Set();
             await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
             disposal=engine.DisposeAsync().AsTask();
             Require(!disposal.IsCompleted && !Directory.Exists(stage) && !File.Exists(stage+".resume.json"),
@@ -296,7 +309,7 @@ internal static class QueueSkipResumeTests
         }
         finally
         {
-            release.Set();await (disposal??engine.DisposeAsync().AsTask());
+            allowCleanup.Set();release.Set();await (disposal??engine.DisposeAsync().AsTask());
             if(Directory.Exists(run))Directory.Delete(run,true);
         }
     }
