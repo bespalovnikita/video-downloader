@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Markup;
 using System.Windows.Media;
 using System.Windows.Threading;
@@ -35,6 +36,18 @@ internal sealed partial class UiScenario
             for(int index=0;index<VisualTreeHelper.GetChildrenCount(parent);index++)
                 foreach(string text in RenderedText(VisualTreeHelper.GetChild(parent,index)))yield return text;
         }
+        static void AwaitPresentation(Func<bool> ready,Func<string> failure)
+        {
+            if(ready())return;
+            var frame=new DispatcherFrame();
+            var timer=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(20)};
+            var deadline=DateTime.UtcNow.AddSeconds(5);
+            timer.Tick+=(_,_)=>{if(ready() || DateTime.UtcNow>=deadline)frame.Continue=false;};
+            timer.Start();
+            try{Dispatcher.PushFrame(frame);}
+            finally{timer.Stop();}
+            Require(ready(),failure());
+        }
 
         var originalUiCulture=CultureInfo.CurrentUICulture;
         var originalCulture=CultureInfo.CurrentCulture;
@@ -59,11 +72,38 @@ internal sealed partial class UiScenario
                     Require(((CheckBox)window.FindName("EmbedThumbnailCheck")!).Content.ToString()=="Встроить обложку" &&
                             ((Button)window.FindName("InstallFfmpegButton")!).Content.ToString()=="Установить FFmpeg",
                         "The actual settings and component buttons must use Russian captions, keeping the FFmpeg brand.");
-                    var quality=(ComboBox)window.FindName("QualityCombo")!;
-                    var optionCaption=(TextBlock)quality.ItemTemplate.LoadContent();
-                    optionCaption.DataContext="Best";
-                    Require(optionCaption.Text==(russian?"Лучшее":"Best") && quality.SelectedItem as string=="Best",
-                        "An option template must translate its visible caption while preserving its checkpoint identifier.");
+                    foreach(var (name,id,caption,readId) in new (string,string,string,Func<string>)[]
+                    {
+                        ("QualityCombo","Best",russian?"Лучшее":"Best",()=>subject.ReadOptions().Quality),
+                        ("CodecCombo","Auto",russian?"Авто":"Auto",()=>subject.ReadOptions().Codec)
+                    })
+                    {
+                        var option=(ComboBox)window.FindName(name)!;
+                        // Read the selected value the user sees. A detached
+                        // DataTemplate.LoadContent() has no host or binding/layout
+                        // turn and cannot establish the displayed ComboBox result.
+                        option.BringIntoView();option.ApplyTemplate();window.UpdateLayout();
+                        var selection=option.Template.FindName("ContentSite",option) as ContentPresenter;
+                        Require(selection is not null,"The actual ComboBox must expose its selected-value presenter: "+name);
+                        string OptionDetails(string location,IEnumerable<string> captions)=>
+                            $"{name}/{location}; UI={language}; selected={option.SelectedItem}; option={readId()}; captions=[{string.Join(" | ",captions)}]";
+                        AwaitPresentation(()=>RenderedText(selection!).Contains(caption),()=>
+                            "The actual selected option must translate its visible caption. "+OptionDetails("selected",RenderedText(selection!)));
+                        Require(option.SelectedItem as string==id && selection!.Content as string==id && readId()==id,
+                            "The actual selected caption must preserve its canonical item and checkpoint ID. "+OptionDetails("selected",RenderedText(selection!)));
+                        try
+                        {
+                            option.IsDropDownOpen=true;window.UpdateLayout();
+                            AwaitPresentation(()=>option.Template.FindName("PART_Popup",option) is Popup {IsOpen:true} &&
+                                    option.ItemContainerGenerator.ContainerFromItem(id) is ComboBoxItem item && RenderedText(item).Contains(caption),()=>
+                                "The actual open dropdown must translate the option caption. "+OptionDetails("dropdown",
+                                    option.ItemContainerGenerator.ContainerFromItem(id) is ComboBoxItem item?RenderedText(item):[]));
+                            Require(option.SelectedItem as string==id && readId()==id,
+                                "Opening the localized dropdown must preserve the selected canonical identifier.");
+                            Console.WriteLine("PASS: actual option presentation: "+OptionDetails("selected",RenderedText(selection!)));
+                        }
+                        finally{option.IsDropDownOpen=false;}
+                    }
                     var rate=(ComboBox)window.FindName("RateLimitCombo")!;
                     Require(rate.Text==(russian?"Без ограничений":"Unlimited") && subject.ReadOptions().RateLimit=="Unlimited",
                         "The editable unlimited rate must persist its canonical identifier.");
