@@ -327,6 +327,7 @@ public sealed partial class NativeWindow
             SessionState.Coordinator?.Stop();
             if (SessionState.RunningTask!=null) await SessionState.RunningTask;
             if (_queueItemActionTask!=null) await _queueItemActionTask;
+            if (_queueClearTask!=null) await _queueClearTask;
         }
         catch(Exception error) { Log("Shutdown cleanup failed: "+error.Message); }
         await diagnosticsStopped;

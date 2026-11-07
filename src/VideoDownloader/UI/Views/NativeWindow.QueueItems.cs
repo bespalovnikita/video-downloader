@@ -7,6 +7,7 @@ public sealed partial class NativeWindow
 {
     private bool _queueItemActionBusy;
     private Task? _queueItemActionTask;
+    private Task? _queueClearTask;
 
     private bool QueueItemActionsBlocked(bool ownOperation=false)=>_disposed || _closing || _appUpdateHandoff ||
         _restoringSession || _checkpointReadOnly || _legacyEngineBlocked || _dependencyOperationRunning ||
