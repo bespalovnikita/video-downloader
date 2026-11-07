@@ -58,7 +58,8 @@ public static class DependencyCenter
         InstallFfmpegAsync(new Uri("https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"),
             AppContext.BaseDirectory,TimeSpan.FromMinutes(6),token);
 
-    internal static async Task InstallFfmpegAsync(Uri source,string installDirectory,TimeSpan downloadTimeout,CancellationToken token)
+    internal static async Task InstallFfmpegAsync(Uri source,string installDirectory,TimeSpan downloadTimeout,CancellationToken token,
+        Action<int>? afterReplacement=null)
     {
         if (downloadTimeout<=TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(downloadTimeout));
         string scratch=Path.Combine(Path.GetTempPath(),"vd-ffmpeg-"+Guid.NewGuid().ToString("N"));
@@ -79,14 +80,7 @@ public static class DependencyCenter
             }
             catch(OperationCanceledException error) when (!token.IsCancellationRequested)
             { throw new TimeoutException("Не удалось скачать FFmpeg за отведённое время. Повторите установку.",error); }
-            string unpack=Path.Combine(scratch,"unpacked");
-            ZipFile.ExtractToDirectory(zip,unpack);
-            string[] f=Directory.GetFiles(unpack,"ffmpeg.exe",SearchOption.AllDirectories);
-            string[] p=Directory.GetFiles(unpack,"ffprobe.exe",SearchOption.AllDirectories);
-            if(f.Length==0||p.Length==0)throw new IOException("No ffmpeg or ffprobe binary in package.");
-            token.ThrowIfCancellationRequested();
-            File.Copy(f[0],Path.Combine(installDirectory,"ffmpeg.exe"),true);
-            File.Copy(p[0],Path.Combine(installDirectory,"ffprobe.exe"),true);
+            FfmpegInstallTransaction.Install(zip,installDirectory,token,afterReplacement);
         }
         finally { try { Directory.Delete(scratch,true); } catch(IOException){} }
     }

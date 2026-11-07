@@ -163,6 +163,23 @@ FFmpeg и ffprobe на loopback-видео подтверждают два ра�
 
 Проверки обновления используют изолированные пакеты и HTTP-ответы. Установщик должен сохранить посторонние FFmpeg/cookies/загрузки, отклонить понижение версии и пакет без манифеста, восстановить прежние байты после ошибки и сохранить backup при отказе отката. Дочерний установщик действительно завершается принудительно в трёх точках транзакции; повторно открытый указатель и backup должны восстановить прежние байты. Настоящие Windows sharing locks и NTFS junction проверяются на Windows; запуск переносимого подмножества на Linux их не заменяет. После изменения упаковки отдельно выполняй `-Task Publish` и smoke опубликованного helper, включая проверку `windows-package.json` и хешей файлов.
 
+`AppUpdateRuntimeTests` отдельно подготавливает два официальных Windows yt-dlp
+`2025.07.21` и `2025.08.22` по закреплённым
+[SHA-256](../../tests/fixtures/component-updates/yt-dlp-releases.json), затем
+проверяет версию настоящих EXE на Windows, сохранение нового runtime при
+обновлении приложения, effective manifest, отказ неподтверждённого PE,
+checksum/network/redirect/timeout/cancel, позднюю подмену и killed-helper recovery.
+Первый запуск загружает около 35 МиБ с фиксированных GitHub releases; каждый
+release ограничен двумя минутами, setup-ошибки помечаются `SETUP` отдельно от
+assertions. Кеш — `%TEMP%\VideoDownloaderTestRuntimes`; для офлайн-запуска задай
+`VD_TEST_YTDLP_FIXTURES` с подкаталогами версий, содержащими `yt-dlp.exe` и
+`SHA2-256SUMS`. Перед выполнением EXE всегда проверяется закреплённый hash.
+На Linux `FileVersionInfo` не читает native PE-ресурсы: linked-source подмножество
+проверяет pin/manifest/rollback/recovery, а policy и `--version` требуют Windows.
+`DependencyInstallTests` скачивает настоящий ZIP со своего loopback-сервера и
+проверяет возврат прежней пары, отсутствие первого файла, отмену, foreign
+directory/read-only, Windows sharing lock и ACL отказ второго назначения.
+
 `AppUpdateUiTests` нажимает реальные WPF-кнопки с управляемым сервисом обновления и наблюдаемым handoff: он не устанавливает Release поверх тестового приложения. Сетевые проверки, замена файлов и rollback покрываются отдельными клиентскими и установочными сценариями. `MediaSelectionUiTests` проверяет отображаемые ячейки реальных метаданных, ошибки диапазона, URL-область открытого окна, сохранение checkpoint и неизменность ранее опубликованного результата.
 
 `MediaSectionFrameUiTests` использует настоящее WPF-окно и управляемый источник

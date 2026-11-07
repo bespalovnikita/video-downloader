@@ -22,6 +22,9 @@ public sealed partial class NativeWindow
         _appUpdateService=service??new AppUpdateClient();
         _appUpdateStop=new CancellationTokenSource();
         _appUpdateStatus=ErrorMessages.Text("Обновления проверяются автоматически при запуске и по кнопке.","Updates are checked at startup and on request.");
+        F<Button>("InstallAppUpdateButton").ToolTip=ErrorMessages.Text(
+            "Проверенный более новый yt-dlp сохраняется. Если его подлинность нельзя подтвердить, обновление приложения останавливается.",
+            "A verified newer yt-dlp is kept. If its authenticity cannot be confirmed, the application update stops.");
         if(!_appUpdateEventsBound)
         {
             F<Button>("CheckAppUpdateButton").Click+=async(_,_)=>await CheckAppUpdateAsync(false);
