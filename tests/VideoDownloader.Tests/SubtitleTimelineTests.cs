@@ -162,10 +162,11 @@ internal static class SubtitleTimelineTests
         string ytDlp=DependencyCenter.Executable("yt-dlp.exe");Require(File.Exists(ytDlp),"Packaged yt-dlp is required");
         string master=Path.Combine(source,"master.m3u8");
         File.WriteAllText(master,File.ReadAllText(master).Replace("#EXT-X-STREAM-INF:","#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"subs\",NAME=\"German\",LANGUAGE=\"de\",URI=\"de.m3u8\"\n#EXT-X-STREAM-INF:",StringComparison.Ordinal));
-        foreach(var (name,write,embed,multiple,language) in new[]{("sidecar",true,false,false,"en,de,ru"),("embedded",false,true,false,"en,de,ru"),("both",true,true,false,"en,de,ru"),("multiple",true,true,true,"en"),("empty",true,true,false,"ru"),("unavailable",true,true,false,"fr")})
+        foreach(var (name,write,embed,multiple,language) in new[]{("sidecar",true,false,false,"en,de,ru"),("embedded",false,true,false,"en,de,ru"),("both",true,true,false,"en,de,ru"),("fractional",true,true,false,"en,de,ru"),("multiple",true,true,true,"en"),("empty",true,true,false,"ru"),("unavailable",true,true,false,"fr")})
         {
             string folder=Path.Combine(root,name);var data=new AppPersistence(Path.Combine(folder,"profile"));
             var selection=new DownloadSelection(url,new(5,7),DurationSeconds:20);
+            if(name=="fractional")selection=selection with {Section=new(5.042,7.042),FrameRate=24};
             if(multiple)selection=selection with {Sections=new([new(5,7),new(15,17)])};
             var row=new DownloadItem {Url=url,Selection=selection};
             var options=new DownloadOptions {Output=Path.Combine(folder,"output"),Threads="1",Container=multiple?"MKV":"MP4",WriteSubs=write,EmbedSubs=embed,SubtitleLangs=language,EmbedMetadata=false,EmbedChapters=false};
@@ -186,7 +187,7 @@ internal static class SubtitleTimelineTests
                 {
                     string text=File.ReadAllText(sidecar);
                     Require(text.Contains(expected,StringComparison.Ordinal) && !text.Contains("BEFORE",StringComparison.Ordinal) &&
-                        (second || !text.Contains("AFTER",StringComparison.Ordinal)) && text.Contains(second?"00:00:00.000 --> 00:00:01.000":"00:00:00.500 --> 00:00:01.500",StringComparison.Ordinal),"Each sidecar must use its own range origin: "+text);
+                        (second || !text.Contains("AFTER",StringComparison.Ordinal)) && text.Contains(second?"00:00:00.000 --> 00:00:01.000":name=="fractional"?"00:00:00.458 --> 00:00:01.458":"00:00:00.500 --> 00:00:01.500",StringComparison.Ordinal),"Each sidecar must use its own native range origin: "+text);
                     if(embed)
                     {
                         string actual=await Tool(ffmpeg,["-hide_banner","-loglevel","error","-i",media,"-map","0:s:0","-f","srt","pipe:1"]);
@@ -206,6 +207,12 @@ internal static class SubtitleTimelineTests
                 Require(inspection.RootElement.GetProperty("streams").GetArrayLength()==0,"An all-empty selection must not claim an embedded subtitle track");
             }
             if(language=="fr")Require(row.OwnedPaths.Count==1,"An unavailable requested language must retain existing no-subtitle semantics");
+            if(name=="fractional")
+            {
+                using var inspection=JsonDocument.Parse(await Tool(ffprobe,["-v","error","-count_frames","-select_streams","v:0","-show_entries","stream=nb_read_frames","-of","json",row.Path]));
+                Require(inspection.RootElement.GetProperty("streams")[0].GetProperty("nb_read_frames").GetString()=="48",
+                    "The fractional native manifest must accompany the same actual 48-frame clip as export");
+            }
             Require(records.Any(record=>record.Message.Contains("event=subtitle_timeline_ready",StringComparison.Ordinal)),"Production coordinator must complete subtitle processing before publication");
         }
         // A processing failure and cancellation preserve an earlier owned result.

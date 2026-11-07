@@ -456,7 +456,8 @@ public sealed class DownloadCoordinator : IAsyncDisposable
                             var subtitles=new SubtitleTimelineService(DependencyCenter.Executable(OperatingSystem.IsWindows()?"ffmpeg.exe":"ffmpeg"),
                                 DependencyCenter.Executable(OperatingSystem.IsWindows()?"ffprobe.exe":"ffprobe"),
                                 (start,stdout,stderr,token)=>RunProcessingToolAsync(item,start,stdout,stderr,token),()=>_pause.IsPaused);
-                            await subtitles.ProcessAsync(stage,media,selection.EffectiveSections,subtitleManifests.ToArray(),_options.EmbedSubs,ct).ConfigureAwait(false);
+                            await subtitles.ProcessAsync(stage,media,selection.EffectiveSections,subtitleManifests.ToArray(),_options.EmbedSubs,ct,
+                                selection.EffectiveSections.Select(selection.SectionBounds).ToArray()).ConfigureAwait(false);
                             Trace(item,JournalLevel.Information,"subtitle_timeline_ready",$"fragments={media.Length}");
                         }
                         if(selection?.IsMerged==true)

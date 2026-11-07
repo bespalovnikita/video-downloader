@@ -74,7 +74,7 @@ internal sealed partial class SubtitleTimelineService
             var replacements=new List<(string Source,string Destination)>();
             var originals=new HashSet<string>(comparer);
             var destinations=new HashSet<string>(comparer);
-            long totalBytes=0;
+            long totalBytes=0,normalizedBytes=0;
             for(int index=0;index<media.Count;index++)
             {
                 var manifest=manifests.Single(value=>comparer.Equals(Path.GetFullPath(value.MediaPath),Path.GetFullPath(media[index])));
@@ -88,7 +88,8 @@ internal sealed partial class SubtitleTimelineService
                         Input(start,stage,source,SubtitleDemuxer(track.Extension));
                         Add(start,"-map","0:s:0","-c:s","srt","-f","srt","pipe:1");
                         var output=await RunAsync(start,MaximumBytes,budget.Token).ConfigureAwait(false);
-                        totalBytes+=output.Length;if(totalBytes>32L*1024*1024)throw Invalid("Subtitle batch exceeds the 32 MiB normalization limit.");
+                        totalBytes+=output.Length;normalizedBytes+=output.Length;
+                        if(normalizedBytes>32L*1024*1024)throw Invalid("Subtitle batch exceeds the 32 MiB normalization limit.");
                         normalized[source]=cues=ParseSrt(output);
                     }
                     var clipped=ClipBounds(cues,timelineBounds[index]);
@@ -101,13 +102,15 @@ internal sealed partial class SubtitleTimelineService
                     replacements.Add((temporary,target));
                     // An empty VTT sidecar represents a selected language with no
                     // overlapping cue. Empty tracks cannot be muxed by FFmpeg.
-                    if(clipped.Length>0)
+                    if(embed && clipped.Length>0)
                     {
                         // mov_text cannot represent simultaneous cues. Split
                         // at every boundary and retain all visible dialogue.
                         var visible=Flatten(clipped);
                         string embedded=Path.Combine(work,Guid.NewGuid().ToString("N")+".vtt");
-                        await WriteNewAsync(embedded,Encoding.UTF8.GetBytes(WebVtt(visible)),budget.Token).ConfigureAwait(false);
+                        byte[] embeddedBytes=Encoding.UTF8.GetBytes(WebVtt(visible));totalBytes+=embeddedBytes.Length;
+                        if(totalBytes>64L*1024*1024)throw Invalid("Clipped subtitle batch exceeds the 64 MiB limit.");
+                        await WriteNewAsync(embedded,embeddedBytes,budget.Token).ConfigureAwait(false);
                         prepared.Add(new(track.Language,embedded,visible));
                     }
                 }
