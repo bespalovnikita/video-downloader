@@ -17,7 +17,10 @@ internal static class SubscriptionScannerTests
     {
         if (args.Length == 2 && args[0] == "--subscription-scanner-sleeper")
         {
-            File.WriteAllText(args[1], Environment.ProcessId.ToString());
+            // File existence is the parent's readiness signal. Publish only
+            // after closing the writer so Windows polling readers cannot see
+            // an incomplete or exclusively shared PID file.
+            AppPersistence.AtomicWrite(args[1], Environment.ProcessId.ToString());
             Thread.Sleep(TimeSpan.FromSeconds(30));
             return true;
         }
