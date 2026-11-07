@@ -298,8 +298,10 @@ private fun DownloadsScreen(ui: MobileUiState, actions: MobileActions, start: (L
                         Text(record.url, maxLines = 2, overflow = TextOverflow.Ellipsis)
                         Text(DateFormat.getDateTimeInstance().format(Date(record.completedAtUtc)), style = MaterialTheme.typography.bodySmall)
                         if (record.outputUris.isNotEmpty()) {
-                            val context = LocalContext.current
-                            TextButton(onClick = { OpenUri(context, record.outputUris.first(), true) }) { Text("Открыть файл") }
+                            val files = rememberPublishedFileActions(record.outputUris, record.primaryOutputUri)
+                            TextButton(onClick = files.open, modifier = Modifier.testTag("openHistoryFile:${record.completedAtUtc}")) { Text("Открыть файл") }
+                            if (record.outputUris.size > 1) TextButton(onClick = files.choose,
+                                modifier = Modifier.testTag("chooseHistoryFiles:${record.completedAtUtc}")) { Text("Все файлы (${record.outputUris.size})") }
                         }
                     }
                 }
@@ -325,6 +327,7 @@ private fun TaskCard(task: DownloadTask, ui: MobileUiState, actions: MobileActio
         mutableStateOf(task.status == DownloadStatus.CLEANUP_REQUIRED && !publishedSuccessfully)
     }
     val context = LocalContext.current
+    val files = rememberPublishedFileActions(task.outputUris, task.primaryOutputUri)
     val clipboard = LocalClipboardManager.current
     val progress = ui.taskProgress[task.id]
     val overall = progress?.percent ?: task.progress
@@ -348,7 +351,8 @@ private fun TaskCard(task: DownloadTask, ui: MobileUiState, actions: MobileActio
                             DropdownMenuItem(text = { Text("Выше") }, onClick = { menu = false; actions.move(task.id, -1) })
                             DropdownMenuItem(text = { Text("Ниже") }, onClick = { menu = false; actions.move(task.id, 1) })
                         }
-                        if (task.outputUris.isNotEmpty()) DropdownMenuItem(text = { Text("Открыть файл") }, onClick = { menu = false; OpenUri(context, task.outputUris.first(), true) })
+                        if (task.outputUris.isNotEmpty()) DropdownMenuItem(text = { Text("Открыть файл") }, onClick = { menu = false; files.open() })
+                        if (task.outputUris.size > 1) DropdownMenuItem(text = { Text("Все файлы (${task.outputUris.size})") }, onClick = { menu = false; files.choose() })
                         if (task.rawError.isNotBlank()) DropdownMenuItem(text = { Text("Исходная диагностика") }, onClick = { menu = false; diagnostic = true })
                         DropdownMenuItem(text = { Text(when {
                             cleanupOnly -> "Очистить временные файлы"
@@ -377,7 +381,9 @@ private fun TaskCard(task: DownloadTask, ui: MobileUiState, actions: MobileActio
                 if (transfer.isNotBlank()) Text(transfer, style = MaterialTheme.typography.bodySmall)
             }
             if (task.status == DownloadStatus.COMPLETED && task.outputUris.isNotEmpty()) {
-                OutlinedButton(onClick = { OpenUri(context, task.outputUris.first(), true) }, modifier = Modifier.testTag("openCompletedFile:${task.id}")) { Text("Открыть файл") }
+                OutlinedButton(onClick = files.open, modifier = Modifier.testTag("openCompletedFile:${task.id}")) { Text("Открыть файл") }
+                if (task.outputUris.size > 1) TextButton(onClick = files.choose,
+                    modifier = Modifier.testTag("chooseCompletedFiles:${task.id}")) { Text("Все файлы (${task.outputUris.size})") }
             }
             if (task.rawError.isNotBlank()) Text(ErrorText.display(task.rawError, androidx.compose.ui.platform.LocalConfiguration.current.locales[0].language), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
         }

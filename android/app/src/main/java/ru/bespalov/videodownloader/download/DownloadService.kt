@@ -208,6 +208,7 @@ class DownloadService : Service() {
                     accepted += task.id
                     task.copy(status = DownloadStatus.QUEUED, progress = 0f, speed = "", eta = "", rawError = "", transferredBytes = 0,
                         deferredNextStart = false, outputUris = if (repeat) emptyList() else task.outputUris,
+                        primaryOutputUri = if (repeat) "" else task.primaryOutputUri,
                         runId = if (resume) task.runId else stagingRun,
                         stageDirectory = if (resume) task.stageDirectory else "",
                         settingsSnapshot = if (resume) task.settingsSnapshot ?: state.settings else state.settings,
@@ -451,7 +452,7 @@ class DownloadService : Service() {
                 original.subscriptionName, original.archiveDate, { transfer.reason.get() != null || destroyed }) { manifest ->
                 owned = manifest
                 graph.repository.update { state -> state.copy(queue = state.queue.map {
-                    if (it.id == transfer.id) it.copy(outputUris = manifest) else it
+                    if (it.id == transfer.id) it.copy(outputUris = manifest, primaryOutputUri = "") else it
                 }) }
             }
             gate.withLock {
@@ -464,7 +465,7 @@ class DownloadService : Service() {
                             if (it.id == transfer.id) it.copy(transferredBytes = tracker.transferred(transfer.id),
                                 title = transfer.title.get().ifBlank { it.title }, progress = progress?.percent ?: it.progress) else it
                         })
-                        val success = SubscriptionRules.recordSuccess(updated, transfer.id, batch.uris, transfer.title.get())
+                        val success = SubscriptionRules.recordSuccess(updated, transfer.id, batch.uris, transfer.title.get(), primaryOutputUri = batch.primaryUri)
                         // Keep private cleanup ownership durable until removal is confirmed.
                         success.copy(queue = success.queue.map {
                             if (it.id == transfer.id) it.copy(stageDirectory = workStage.absolutePath, runId = original.runId) else it
@@ -503,7 +504,7 @@ class DownloadService : Service() {
                                         reason == Reason.PAUSE -> DownloadStatus.PAUSED
                                         reason != null || error is CancellationException -> DownloadStatus.INTERRUPTED
                                         else -> DownloadStatus.FAILED
-                                    }, outputUris = retained, pendingRemoval = remove,
+                                    }, outputUris = retained, primaryOutputUri = "", pendingRemoval = remove,
                                     rawError = if (reason != null && retained.isEmpty() && stageClean) "" else error.message ?: error.javaClass.simpleName,
                                     speed = "", eta = "", title = transfer.title.get().ifBlank { it.title },
                                     transferredBytes = mutableProgress.value[transfer.id]?.transferredBytes ?: it.transferredBytes)
@@ -710,7 +711,8 @@ class DownloadService : Service() {
         graph.repository.update { state -> state.copy(queue = state.queue.mapNotNull {
             if (it.id != task.id) it
             else if (retained.isEmpty() && clean) null
-            else it.copy(outputUris = if (keepPublishedFiles) task.outputUris else retained, status = DownloadStatus.CLEANUP_REQUIRED,
+            else it.copy(outputUris = if (keepPublishedFiles) task.outputUris else retained,
+                primaryOutputUri = task.primaryOutputUri.takeIf { keepPublishedFiles || it in retained }.orEmpty(), status = DownloadStatus.CLEANUP_REQUIRED,
                 rawError = if (keepPublishedFiles) "The download was published, but its private staging directory could not be removed."
                     else "Some owned files could not be deleted. Retry removal after restoring storage access.")
         }) }
