@@ -2,7 +2,7 @@ using System.IO;
 using System.Text.Json;
 using VideoDownloader.Native;
 
-if (MultipleFragmentTests.TryRunFixture(args)) return;
+if (FragmentMergeTests.TryRunFixture(args) || MultipleFragmentTests.TryRunFixture(args)) return;
 if (MediaFrameServiceTests.TryRunFixture(args)) return;
 if (AppUpdateBootstrapTests.TryRunFixture(args) || AppUpdateInstallerTests.TryRunFixture(args) || DownloadSelectionTests.TryRunFixture(args) || PreviewOutputLimitTests.TryRunFixture(args) || GuiInstanceTests.TryRunFixture(args) || NativeIpcFixture.TryRunFixture(args) || TitleIngressFixture.TryRunFixture(args) || PreviewSchedulingTests.TryRunFixture(args) || PreviewGalleryTests.TryRunFixture(args) || NativeContractTests.TryRunFixture(args) || PornHubChannelTests.TryRunFixture(args) || StartupDownloadRegressionTests.TryRunFixture(args) || SubscriptionScannerTests.TryRunFixture(args) || LifecycleRegressionTests.TryRunFixture(args) || ReviewRegressionTests.TryRunFixture(args)) return;
 ErrorMessagesTests.Run();
@@ -25,6 +25,7 @@ await AudioTrackSelectionTests.RunAsync();
 await DownloadSelectionTests.RunAsync();
 await DownloadSelectionTests.RunNativeMediaAsync();
 FragmentTimelineTests.Run();
+await FragmentMergeTests.RunAsync();
 await MultipleFragmentTests.RunAsync();
 await MediaFrameProxyTests.RunAsync();
 await MediaFrameServiceTests.RunAsync();

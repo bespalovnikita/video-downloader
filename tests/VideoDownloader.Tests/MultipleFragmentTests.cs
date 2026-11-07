@@ -164,6 +164,7 @@ internal static class MultipleFragmentTests
             "-filter_complex","[0:v][1:v]concat=n=2:v=1:a=0[v]","-map","[v]","-map","2:a","-c:v","libx264","-preset","ultrafast",
             "-pix_fmt","yuv420p","-c:a","aac","-movflags","+faststart",input});
         await using var source=new MediaServer(await File.ReadAllBytesAsync(input));
+        await FragmentMergeTests.Coordinator(root,source.Url);
         string output=Path.Combine(root,"real-output");Directory.CreateDirectory(output);
         string sentinel=Path.Combine(output,"unrelated.mp4");File.WriteAllText(sentinel,"KEEP");
         var data=new AppPersistence(Path.Combine(root,"real-profile"));

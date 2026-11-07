@@ -29,7 +29,7 @@ internal sealed partial class MediaSelectionDialog
     private void InitializeSectionList(StackPanel body,FrameworkElement range,DownloadSelection? selection)
     {
         var panel=new StackPanel();
-        _multipleSections=Named("MultipleMediaSectionsCheck",new CheckBox{Content="Несколько фрагментов — отдельные файлы",Margin=new Thickness(0,6,0,6)});
+        _multipleSections=Named("MultipleMediaSectionsCheck",new CheckBox{Content="Несколько фрагментов",Margin=new Thickness(0,6,0,6)});
         panel.Children.Add(_multipleSections);
         var details=new StackPanel();_sectionListPanel=details;
         _sectionList=Named("MediaSectionsList",new ListBox{ItemsSource=_sectionDrafts,DisplayMemberPath=nameof(SectionDraft.Label),
@@ -47,7 +47,7 @@ internal sealed partial class MediaSelectionDialog
         _sectionUp=Action("MoveMediaSectionUpButton","Выше");
         _sectionDown=Action("MoveMediaSectionDownButton","Ниже");
         details.Children.Add(actions);
-        details.Children.Add(Note($"До {DownloadSectionSet.MaximumCount} непересекающихся фрагментов. Выбери строку и меняй её начало/конец ниже. Порядок списка задаёт порядок получения отдельных файлов. Выключение списка оставляет текущий диапазон."));
+        details.Children.Add(Note($"До {DownloadSectionSet.MaximumCount} непересекающихся фрагментов. Выбери строку и меняй её начало/конец ниже. Порядок списка задаёт порядок файлов или отрезков в одном ролике. Выключение списка оставляет текущий диапазон."));
         panel.Children.Add(details);
         body.Children.Insert(body.Children.IndexOf(range),panel);
 
@@ -57,6 +57,7 @@ internal sealed partial class MediaSelectionDialog
         _multipleSections.IsChecked=_sectionDrafts.Count>1;
         _sectionList.SelectedIndex=_sectionDrafts.Count>0?0:-1;
         _sectionListPanel.Visibility=_multipleSections.IsChecked==true?Visibility.Visible:Visibility.Collapsed;
+        InitializeFragmentOutput(details,selection);
         _multipleSections.Checked+=SectionModeChanged;_multipleSections.Unchecked+=SectionModeChanged;
         _sectionList.SelectionChanged+=SectionChanged;
         _start.TextChanged+=SectionTextChanged;_end.TextChanged+=SectionTextChanged;
@@ -132,6 +133,7 @@ internal sealed partial class MediaSelectionDialog
         _removeSection.IsEnabled=enabled && selected>=0;
         _sectionUp.IsEnabled=enabled && selected>0;
         _sectionDown.IsEnabled=enabled && selected>=0 && selected<_sectionDrafts.Count-1;
+        RefreshFragmentOutput();
     }
     private bool TryReadSections(double? duration,out DownloadSection[] sections,out string error)
     {
