@@ -175,8 +175,16 @@ internal sealed partial class UiScenario
             {
                 grid.UpdateLayout();
                 var header=Descendants<DataGridColumnHeader>(grid).Single(item=>ReferenceEquals(item.Column,grid.Columns[0]));
-                var peer=new DataGridColumnHeaderAutomationPeer(header);
-                Require(peer.GetPattern(PatternInterface.Invoke) is IInvokeProvider,"The actual column header must expose its normal sort invocation");
+                Require(grid.CanUserSortColumns && grid.Columns[0].CanUserSort && header.CanUserSort && grid.Items.CanSort,
+                    "The real grid, column, header and view must all permit user sorting");
+                var presenter=Descendants<DataGridColumnHeadersPresenter>(grid).Single();
+                var presenterPeer=UIElementAutomationPeer.CreatePeerForElement(presenter) as DataGridColumnHeadersPresenterAutomationPeer;
+                Require(presenterPeer is not null,"The real header presenter must provide its connected automation peer");
+                // WPF exposes Invoke on the presenter's item peer, not on the
+                // DataGridColumnHeaderAutomationPeer wrapper around the button.
+                var peer=presenterPeer!.GetChildren().OfType<DataGridColumnHeaderItemAutomationPeer>()
+                    .Single(item=>ReferenceEquals(item.Item,grid.Columns[0].Header));
+                Require(peer.GetPattern(PatternInterface.Invoke) is IInvokeProvider,"The actual column header item must expose its normal sort invocation");
                 ((IInvokeProvider)peer.GetPattern(PatternInterface.Invoke)!).Invoke();
                 PumpUntil(()=>grid.Columns[0].SortDirection==expectedDirection,"Invoking the real header must update its sort arrow");
                 Drain();
