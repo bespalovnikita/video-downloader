@@ -431,6 +431,8 @@
                         <Button x:Name="PortableQueueButton" Content="Перенос очереди" ToolTip="Скопировать очередь или сохранить её для другого клиента Windows / Android"/>
                         <Button x:Name="SubscriptionsButton" Content="Подписки" ToolTip="Проверки каналов и плейлистов, расписание, новые материалы и исходный набор"/>
                         <Button x:Name="RemoveQueueButton" Content="Remove"/>
+                        <Button x:Name="QueueDiagnosticsButton" Content="Диагностика…" IsEnabled="False"
+                                ToolTip="События, попытки и диагностический пакет одной выбранной строки"/>
                         <Button x:Name="ClearQueueButton" Content="Clear"/>
                         <Button x:Name="MoveUpButton" Content="↑"/>
                         <Button x:Name="MoveDownButton" Content="↓"/>
@@ -506,6 +508,8 @@
                     </Grid.RowDefinitions>
 
                     <DockPanel Grid.Row="0">
+                        <Button x:Name="DownloadDiagnosticsButton" Content="Диагностика…" DockPanel.Dock="Right" Margin="8,0,0,6"
+                                IsEnabled="False" ToolTip="Диагностика выбранной загрузки, включая работающую"/>
                         <Button x:Name="OpenHistoryButton" Content="История…" DockPanel.Dock="Right" Margin="8,0,0,6"
                                 ToolTip="Найти подтверждённые загрузки и проверить сохранённые файлы"/>
                         <TextBlock Text="Downloads" Style="{StaticResource SectionTitle}"/>

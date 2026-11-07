@@ -91,6 +91,7 @@ public sealed partial class NativeWindow : IDisposable
         InitializeMediaSelectionControls();
         InitializeQueueFilters();
         InitializeHistoryControls();
+        InitializeJobDiagnostics();
         K("ShowVideoTitlesCheck").Checked+=(_,_)=>SaveCheckpoint();
         K("ShowVideoTitlesCheck").Unchecked+=(_,_)=>SaveCheckpoint();
         _tick.Tick+=(_,_)=>Tick();
@@ -192,6 +193,7 @@ public sealed partial class NativeWindow : IDisposable
         RefreshQueueFilterActions();
         RefreshMediaSelectionState();
         RefreshAppUpdateControls();
+        RefreshJobDiagnosticActions();
         PollDiskSpace();
     }
     internal void OnRowChanged(DownloadItem item)

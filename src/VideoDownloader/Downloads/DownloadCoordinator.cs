@@ -25,6 +25,7 @@ public sealed class DownloadCoordinator : IAsyncDisposable
     private readonly Action<string> _log;
     private readonly Action<JournalRecord>? _trace;
     private readonly ConcurrentDictionary<string,string> _traceJobIds=new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string,(int Attempt,int Invocation,string? Quality)> _diagnosticAttempts=new(StringComparer.Ordinal);
     private readonly Stopwatch _traceClock=Stopwatch.StartNew();
     private long _traceSequence;
     public string TraceSessionId { get; }=Guid.NewGuid().ToString("N")[..8];
@@ -250,10 +251,15 @@ public sealed class DownloadCoordinator : IAsyncDisposable
         try
         {
             long sequence=Interlocked.Increment(ref _traceSequence);
+            var numbers=item is null?default:_diagnosticAttempts.GetValueOrDefault(item.Url);
             var record=new JournalRecord(level,category,
                 $"event={eventName} "+(item==null?"":DownloadTraceIdentity.VideoLabel(item)+" ")+
                 $"seq={sequence} elapsed_ms={_traceClock.ElapsedMilliseconds}"+(details.Length>0?" "+details:""),
-                TraceSessionId,item==null?"":_traceJobIds.GetOrAdd(item.Url,DownloadTraceIdentity.JobId),worker??item?.Slot??"");
+                TraceSessionId,item==null?"":_traceJobIds.GetOrAdd(item.Url,DownloadTraceIdentity.JobId),worker??item?.Slot??"",
+                Identity:item is null?"":DownloadTraceIdentity.DiagnosticIdentity(item.Url),Event:eventName,
+                Attempt:numbers.Attempt>0?numbers.Attempt:null,Invocation:numbers.Invocation>0?numbers.Invocation:null,
+                Settings:item is not null && (eventName is "job_queued" or "attempt_start" || level is JournalLevel.Error or JournalLevel.Warning)
+                    ?JobDiagnosticSettings.Capture(_options,_selections.GetValueOrDefault(item.Url),numbers.Quality):null);
             _trace(record);
         }
         catch(Exception) { /* Diagnostics must not change a download's outcome. */ }
@@ -315,6 +321,7 @@ public sealed class DownloadCoordinator : IAsyncDisposable
                     fragmentPercent.Clear();
                     if(selectedFragments>1)streamed.Clear();
                     bool postprocessing=false;
+                    _diagnosticAttempts[item.Url]=(attempt+1,launch,q);
                     Trace(item,JournalLevel.Information,"attempt_start",$"attempt={attempt+1} invocation={launch} quality={DownloadProgressTrace.Quoted(q)} previous_shown_pct={DownloadProgressTrace.Number(previousShown)} transferred={transferred}");
                     var errors=new ConcurrentQueue<string>();
                     void Line(string line,string source)
