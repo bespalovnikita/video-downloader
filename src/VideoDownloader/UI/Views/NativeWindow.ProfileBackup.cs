@@ -154,6 +154,8 @@ public sealed partial class NativeWindow
         F<Button>("OpenProfileBackupButton").IsEnabled=CanUseProfileBackup();
         if(_checkpointReadOnly || _legacyEngineBlocked)
         {F<Button>("StartButton").IsEnabled=false;F<Button>("RetryFailedButton").IsEnabled=false;}
+        foreach(string name in new[]{"AddUrlButton","PasteClipboardButton","OpenListButton"})
+            F<Button>(name).IsEnabled=!_checkpointReadOnly && !_restoringSession;
         if(!_profileBackupBusy && !_profileBackupRecoveryRequired && !_profileBackupReplaying)return;
         foreach(string name in new[]{"StartButton","RetryFailedButton","MoveUpButton","MoveDownButton","ClearQueueButton","SubscriptionsButton",
             "UpdateYtDlpButton","InstallFfmpegButton","CheckAppUpdateButton","InstallAppUpdateButton"})F<Button>(name).IsEnabled=false;

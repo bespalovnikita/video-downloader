@@ -12,7 +12,7 @@ public sealed partial class NativeWindow
     internal IReadOnlyList<string> QueueSubscriptionUrls(IEnumerable<string> urls,string subscriptionId,string subscriptionName,
         IReadOnlyDictionary<string,string>? titles)
     {
-        if (_closing || _disposed || RejectProfileBackupMutation()) return [];
+        if (_closing || _disposed || _restoringSession || RejectProfileBackupMutation()) return [];
         if (_checkpointReadOnly || _legacyEngineBlocked)
             throw new InvalidOperationException("Очередь недоступна для сохранения. Сначала устраните ошибку восстановления или завершите прежний движок.");
         if ((subscriptionId.Length==0)!=(subscriptionName.Length==0) ||
@@ -33,7 +33,7 @@ public sealed partial class NativeWindow
             .Select(url=>new DownloadItem{Url=url,Title=discoveredTitles.GetValueOrDefault(url,""),
                 SubscriptionId=subscriptionId,SubscriptionName=subscriptionName}).ToList();
         var approved=ConfirmDuplicates(candidates,false);
-        if (approved==null || RejectProfileBackupMutation()) return [];
+        if (approved==null || _restoringSession || RejectProfileBackupMutation()) return [];
         // The modal loop may have added an exact URL already. Deduplication,
         // title enrichment and the complete checkpoint budget commit together.
         foreach (var row in approved)row.DeferredToNextStart=SessionState.Coordinator?.IsRunning==true;
