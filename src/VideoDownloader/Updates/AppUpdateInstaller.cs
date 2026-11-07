@@ -18,6 +18,7 @@ public static class AppUpdateInstaller
     private const string OwnerFile = "update-owner.json";
     private const string SnapshotFile = "previous-package.json";
     private const string NextSnapshotFile = "next-package.json";
+    private const string RetainedRuntimeFile = "retained-yt-dlp.exe";
     private const string PointerFile = ".video-downloader-update.json";
     private const int MaxOwnerBytes = 4 * 1024 * 1024;
     private const long MaxArchiveBytes = 512L * 1024 * 1024;
@@ -38,6 +39,8 @@ public static class AppUpdateInstaller
         public string Version { get; set; } = "";
         public string OriginalManifestSha256 { get; set; } = "";
         public string NextManifestSha256 { get; set; } = "";
+        public string PreparedYtDlpSha256 { get; set; } = "";
+        public AppPackageFile? RetainedYtDlp { get; set; }
         public bool BackupReady { get; set; }
         public List<BackupFile> OldFiles { get; set; } = new();
         public List<string> NewFiles { get; set; } = new();
@@ -95,7 +98,9 @@ public static class AppUpdateInstaller
             var owner = new Owner
             {
                 Id = id, TargetDirectory = target, Version = expectedVersion,
-                OriginalManifestSha256 = AppUpdatePackage.HashFile(snapshot)
+                OriginalManifestSha256 = AppUpdatePackage.HashFile(snapshot),
+                PreparedYtDlpSha256 = File.Exists(Child(target, "yt-dlp.exe"))
+                    ? AppUpdatePackage.HashFile(Child(target, "yt-dlp.exe")) : ""
             };
             WriteOwner(directory, owner);
             Extract(archivePath, prepared.StageDirectory, cancellationToken);
@@ -121,6 +126,45 @@ public static class AppUpdateInstaller
         }
     }
 
+    // The policy verifies the installed bytes against a fixed official release
+    // checksum before calling this. The ZIP/stage remains unchanged; only the
+    // effective ownership manifest describes the verified retained runtime.
+    internal static void RetainVerifiedYtDlp(PreparedAppUpdate update, AppPackageFile verified)
+    {
+        var owner = ReadOwner(update.Directory);
+        ValidatePrepared(update, owner);
+        RequirePreparedState(owner, update.Directory);
+        if (verified.Path != "yt-dlp.exe" || owner.RetainedYtDlp is not null ||
+            verified.Sha256 != owner.PreparedYtDlpSha256)
+            throw new InvalidDataException("The verified yt-dlp no longer matches the prepared update.");
+        string installed = Child(update.TargetDirectory, verified.Path);
+        VerifyFile(installed, verified.Size, verified.Sha256);
+        var bundled = ReadPackageManifest(Child(update.StageDirectory, AppUpdatePackage.ManifestName));
+        AppUpdatePackage.ValidateDirectory(update.StageDirectory, bundled);
+        CopyDurably(installed, Child(update.Directory, RetainedRuntimeFile));
+        VerifyFile(Child(update.Directory, RetainedRuntimeFile), verified.Size, verified.Sha256);
+        owner.RetainedYtDlp = verified;
+        var effective = EffectiveManifest(bundled, owner);
+        string next = Child(update.Directory, NextSnapshotFile);
+        using (var output = new FileStream(next, FileMode.Truncate, FileAccess.Write, FileShare.None))
+        {
+            JsonSerializer.Serialize(output, effective, AppUpdatePackage.Json);
+            output.Flush(true);
+        }
+        owner.NextManifestSha256 = AppUpdatePackage.HashFile(next);
+        WriteOwner(update.Directory, owner);
+    }
+
+    private static AppPackageManifest EffectiveManifest(AppPackageManifest bundled, Owner owner)
+    {
+        if (owner.RetainedYtDlp is not { } retained) return bundled;
+        if (retained.Path != "yt-dlp.exe" || retained.Sha256 != owner.PreparedYtDlpSha256)
+            throw new InvalidDataException("Invalid retained yt-dlp metadata.");
+        var effective = bundled with { Files = bundled.Files.Select(file => Paths.Equals(file.Path, retained.Path) ? retained : file).ToList() };
+        AppUpdatePackage.ValidateManifest(effective);
+        return effective;
+    }
+
     public static PreparedAppUpdate OpenPrepared(string directory)
     {
         string full = Path.TrimEndingDirectorySeparator(Path.GetFullPath(directory));
@@ -133,6 +177,7 @@ public static class AppUpdateInstaller
         if (!string.Equals(manifest.Version, owner.Version, StringComparison.Ordinal))
             throw new InvalidDataException("The staged update version changed.");
         AppUpdatePackage.ValidateDirectory(prepared.StageDirectory, manifest);
+        ValidateNextSnapshot(prepared, owner, manifest);
         Preflight(prepared, owner, manifest);
         return prepared;
     }
@@ -157,6 +202,7 @@ public static class AppUpdateInstaller
         string pointerPath = Child(update.TargetDirectory, PointerFile);
         if (File.Exists(pointerPath) || System.IO.Directory.Exists(pointerPath)) throw new IOException("Another application update is pending recovery.");
         ValidateNextSnapshot(update, owner, manifest);
+        var effective = EffectiveManifest(manifest, owner);
         // Complete and verify the backup before recording any mutation intent.
         // Originals, especially the launchable EXE, are never moved away.
         foreach (string relative in previous.Files.Select(file => file.Path).Append(AppUpdatePackage.ManifestName))
@@ -193,9 +239,11 @@ public static class AppUpdateInstaller
         }
         try
         {
-            foreach (var file in manifest.Files.Where(file => !Paths.Equals(file.Path, "VideoDownloader.exe")))
+            foreach (var file in effective.Files.Where(file => !Paths.Equals(file.Path, "VideoDownloader.exe")))
             {
-                Install(update, owner, file.Path, Child(update.StageDirectory, file.Path));
+                string source = owner.RetainedYtDlp is not null && Paths.Equals(file.Path, "yt-dlp.exe")
+                    ? Child(update.Directory, RetainedRuntimeFile) : Child(update.StageDirectory, file.Path);
+                Install(update, owner, file.Path, source);
                 VerifyFile(Child(update.TargetDirectory, file.Path), file.Size, file.Sha256);
                 faultAfterFile?.Invoke(++changed);
             }
@@ -383,12 +431,15 @@ public static class AppUpdateInstaller
         { Path = AppUpdatePackage.ValidateRelativePath(file.Path) }).ToList() };
     }
 
-    private static void ValidateNextSnapshot(PreparedAppUpdate update, Owner owner, AppPackageManifest manifest)
+    private static void ValidateNextSnapshot(PreparedAppUpdate update, Owner owner, AppPackageManifest manifest, bool verifyRetainedSource = true)
     {
         string path = Child(update.Directory, NextSnapshotFile);
         if (AppUpdatePackage.HashFile(path) != owner.NextManifestSha256) throw new InvalidDataException("The new package ownership snapshot changed.");
         var saved = ReadPackageManifest(path);
-        if (saved.Schema != manifest.Schema || saved.Version != manifest.Version || !saved.Files.SequenceEqual(manifest.Files) ||
+        var effective = EffectiveManifest(manifest, owner);
+        if (verifyRetainedSource && owner.RetainedYtDlp is { } retained)
+            VerifyFile(Child(update.Directory, RetainedRuntimeFile), retained.Size, retained.Sha256);
+        if (saved.Schema != effective.Schema || saved.Version != effective.Version || !saved.Files.SequenceEqual(effective.Files) ||
             !owner.NewFiles.SequenceEqual(manifest.Files.Select(file => file.Path)))
             throw new InvalidDataException("The new package ownership snapshot is inconsistent.");
     }
@@ -401,7 +452,7 @@ public static class AppUpdateInstaller
         if (AppUpdatePackage.HashFile(oldPath) != owner.OriginalManifestSha256) throw new InvalidDataException("The original ownership snapshot changed.");
         var original = ReadPackageManifest(oldPath);
         var next = ReadPackageManifest(Child(update.Directory, NextSnapshotFile));
-        ValidateNextSnapshot(update, owner, next);
+        ValidateNextSnapshot(update, owner, next, verifyRetainedSource: false);
         var expected = new HashSet<string>(original.Files.Select(file => file.Path).Append(AppUpdatePackage.ManifestName), Paths);
         foreach (var record in owner.OldFiles)
         {
@@ -529,6 +580,10 @@ public static class AppUpdateInstaller
         }
         if (System.IO.Directory.EnumerateFileSystemEntries(update.BackupDirectory).Any())
             throw new IOException("The recovery directory is not empty; its files will be preserved.");
+        string runtime = Child(update.TargetDirectory, "yt-dlp.exe");
+        string actualRuntime = File.Exists(runtime) ? AppUpdatePackage.HashFile(runtime) : "";
+        if (actualRuntime != owner.PreparedYtDlpSha256)
+            throw new IOException("yt-dlp changed after update preparation. Prepare the application update again.");
         return previous;
     }
 
@@ -610,6 +665,8 @@ public static class AppUpdateInstaller
             string.IsNullOrEmpty(owner.TargetDirectory) || string.IsNullOrEmpty(owner.Version) ||
             string.IsNullOrEmpty(owner.OriginalManifestSha256) || owner.OriginalManifestSha256.Length != 64 || !owner.OriginalManifestSha256.All(Uri.IsHexDigit) ||
             string.IsNullOrEmpty(owner.NextManifestSha256) || owner.NextManifestSha256.Length != 64 || !owner.NextManifestSha256.All(Uri.IsHexDigit) ||
+            owner.PreparedYtDlpSha256 is null || (owner.PreparedYtDlpSha256.Length != 0 &&
+                (owner.PreparedYtDlpSha256.Length != 64 || !owner.PreparedYtDlpSha256.All(Uri.IsHexDigit))) ||
             owner.OldFiles is null || owner.NewFiles is null || owner.TouchedFiles is null || owner.PendingTemps is null ||
             owner.OldFiles.Count > MaxEntries || owner.NewFiles.Count > MaxEntries || owner.TouchedFiles.Count > 2 * MaxEntries || owner.PendingTemps.Count > 8 * MaxEntries ||
             owner.State is not ("Prepared" or "Applying" or "Applied" or "RolledBack" or "RollbackFailed"))

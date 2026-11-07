@@ -3,7 +3,7 @@ using System.IO.Compression;
 using System.Text.Json;
 using VideoDownloader.Native;
 
-internal static class AppUpdateInstallerTests
+internal static partial class AppUpdateInstallerTests
 {
     internal static bool TryRunFixture(string[] args)
     {
@@ -23,6 +23,7 @@ internal static class AppUpdateInstallerTests
     internal static async Task RunAsync()
     {
         Run();
+        await RuntimePolicyAsync();
         await CrashRecoveryAsync();
     }
 
@@ -283,6 +284,7 @@ internal static class AppUpdateInstallerTests
                 Require(File.Exists(executable), "The original or replacement EXE must remain launchable at the crash checkpoint.");
                 process.Kill(true);
                 await process.WaitForExitAsync();
+                if(pauseAfter==1)RemoveRuntimePolicyMetadata(prepared.Directory);
                 var pending = AppUpdateInstaller.FindPending(fixture.Current + Path.DirectorySeparatorChar);
                 Require(pending is not null, "A killed updater must leave a validated pending recovery pointer.");
                 AppUpdateInstaller.Recover(pending!);
@@ -359,16 +361,27 @@ internal static class AppUpdateInstallerTests
         internal string Current => Path.Combine(Root, "current");
         internal string Scratch => Path.Combine(Root, "scratch");
         internal string Archive => Path.Combine(Root, "update.zip");
-        internal Fixture()
+        internal Fixture(string? installedRuntime=null,string? bundledRuntime=null)
         {
             Directory.CreateDirectory(Scratch);
             WritePackage(Current, "2.0.1", new[] { ("VideoDownloader.exe", "old executable"), ("yt-dlp.exe", "old yt-dlp"), ("ui/MainWindow.xaml", "old UI"), ("obsolete.dll", "old removed DLL") });
             string next = Path.Combine(Root, "next");
             WritePackage(next, "2.0.2", new[] { ("VideoDownloader.exe", "new executable"), ("yt-dlp.exe", "new yt-dlp"), ("ui/MainWindow.xaml", "new UI"), ("new.dll", "new DLL") });
+            if(installedRuntime is not null)ReplaceRuntime(Current,installedRuntime);
+            if(bundledRuntime is not null)ReplaceRuntime(next,bundledRuntime);
             ZipFile.CreateFromDirectory(next, Archive);
         }
         internal PreparedAppUpdate Prepare() => AppUpdateInstaller.Prepare(Archive, Current + Path.DirectorySeparatorChar, Scratch, "2.0.2", CancellationToken.None);
         public void Dispose() { if (Directory.Exists(Root)) Directory.Delete(Root, true); }
+        private static void ReplaceRuntime(string directory,string source)
+        {
+            string runtime=Path.Combine(directory,"yt-dlp.exe");File.Copy(source,runtime,true);
+            string path=Path.Combine(directory,AppUpdatePackage.ManifestName);
+            var manifest=AppUpdatePackage.ReadManifest(path);
+            manifest=manifest with {Files=manifest.Files.Select(file=>file.Path=="yt-dlp.exe"?
+                new AppPackageFile(file.Path,new FileInfo(runtime).Length,AppUpdatePackage.HashFile(runtime)):file).ToList()};
+            File.WriteAllText(path,JsonSerializer.Serialize(manifest,AppUpdatePackage.Json));
+        }
         private static void WritePackage(string directory, string version, (string Name, string Text)[] content)
         {
             var files = new List<AppPackageFile>();

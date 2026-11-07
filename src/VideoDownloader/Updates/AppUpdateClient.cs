@@ -79,7 +79,18 @@ public sealed class AppUpdateClient:IAppUpdateService
             using(var input=File.OpenRead(archive))
                 if(!Convert.ToHexString(await SHA256.HashDataAsync(input,deadline.Token).ConfigureAwait(false)).Equals(matches[0].Groups[1].Value,StringComparison.OrdinalIgnoreCase))
                     throw new InvalidDataException("The downloaded application checksum does not match.");
-            return await Task.Run(()=>AppUpdateInstaller.Prepare(archive,currentDirectory,root,release.Version,deadline.Token),deadline.Token).ConfigureAwait(false);
+            var prepared=await Task.Run(()=>AppUpdateInstaller.Prepare(archive,currentDirectory,root,release.Version,deadline.Token),deadline.Token).ConfigureAwait(false);
+            try
+            {
+                await Task.Run(()=>YtDlpUpdatePolicy.PreserveNewerAsync(prepared,ReadBytesAsync,deadline.Token),deadline.Token).ConfigureAwait(false);
+                return prepared;
+            }
+            catch(OperationCanceledException error) when(!cancel.IsCancellationRequested)
+            {
+                prepared.Dispose();
+                throw new TimeoutException("Не удалось вовремя проверить компоненты обновления. Приложение и yt-dlp сохранены; повторите обновление.",error);
+            }
+            catch {prepared.Dispose();throw;}
         }
         finally {if(Directory.Exists(download))Directory.Delete(download,true);}
     }
