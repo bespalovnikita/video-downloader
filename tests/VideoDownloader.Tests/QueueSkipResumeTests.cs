@@ -26,6 +26,7 @@ internal static class QueueSkipResumeTests
             await QueuedSkipAndDestructiveCancellation(root);
             await PublicationSkipBoundary(root);
             await QueuedCleanupIsJoinedByDispose(root);
+            await ClaimedWorkerKeepsStopIntent(root);
             Console.WriteLine("PASS: real per-item skip joins its worker, frees the next slot, resumes HTTP bytes in-place and after checkpoint, retains its pinned plan, rejects forged ownership and cleans destructive cancellation");
         }
         finally
@@ -222,6 +223,46 @@ internal static class QueueSkipResumeTests
             Require(attempts.Length==2 && attempts[0].Invocation is >0 && attempts[1].Invocation>attempts[0].Invocation &&
                 resetTrace.Where(record=>record.Identity==identity && record.Event=="job_queued").All(record=>record.Invocation is null && record.Attempt is null),
                 "Explicit reset must separate its diagnostic invocation and clear stale queued-event attempt keys");
+        }
+    }
+
+    private static async Task ClaimedWorkerKeepsStopIntent(string root)
+    {
+        await using var origin=new RangeOrigin();
+        foreach(bool skip in new[]{true,false})
+        {
+            string name=skip?"claimed-skip":"claimed-cancel";
+            var options=Options(Path.Combine(root,name+"-output"));
+            var row=new DownloadItem{Url=origin.Url(name+".mp4")};
+            string stage="";
+            if(!skip)
+            {
+                string run=Path.Combine(Path.GetTempPath(),"vd-native-"+Guid.NewGuid().ToString("N"));
+                stage=Path.Combine(run,Guid.NewGuid().ToString("N"));Directory.CreateDirectory(stage);
+                row.StageDir=stage;row.RunDir=run;row.OutputRoot=options.Output;row.Status="Skipped";row.AttemptFinished=true;
+                File.WriteAllText(Path.Combine(stage,"owned.mp4.part"),"OWNED PARTIAL");
+                DownloadResumeStore.Create(row,options,null,"best");
+            }
+            Task<bool>? skipped=null;
+            DownloadCoordinator? engine=null;
+            var data=new AppPersistence(Path.Combine(root,name+"-profile"));
+            await using(engine=new DownloadCoordinator(DependencyCenter.Executable("yt-dlp.exe"),data,options,_=>{},_=>{},trace:record=>
+                {
+                    if(record.Event!="job_claimed")return;
+                    if(skip)skipped=engine!.SkipAsync(row);else engine!.Cancel(row);
+                }))
+            {
+                Require(engine.Add(row),"The claimed-worker race fixture must be admitted");
+                await engine.RunAsync().WaitAsync(TimeSpan.FromSeconds(10));
+            }
+            if(skip)
+                Require(skipped is not null && await skipped && row.Status=="Skipped" && row.State=="Skipped" && row.AttemptFinished,
+                    "Skip after worker claim but before its first cancellation check must keep the Skipped terminal intent");
+            else
+                Require(row.Status=="Interrupted" && row.AttemptFinished && row.ResumeState is null && !Directory.Exists(stage) && !File.Exists(stage+".resume.json"),
+                    "Destructive cancellation after a retained worker claim must clean its own bytes even before extractor launch");
+            Require(origin.Requests.Count==0 && row.Path.Length==0 && !data.ReadHistory().ContainsKey(row.Url),
+                "Claimed cancellation or skip must never start a native transfer, publish media or record success");
         }
     }
 

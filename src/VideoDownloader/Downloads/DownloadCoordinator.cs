@@ -198,12 +198,17 @@ public sealed partial class DownloadCoordinator : IAsyncDisposable
             _itemCancels[item.Url]=linked;
             try
             {
+                Trace(item,JournalLevel.Information,"job_claimed",$"url={DownloadProgressTrace.Quoted(item.Url)}",worker:"T"+slot);
+                DownloadResult result;
                 if(_cancelled.ContainsKey(item.Url) || linked.IsCancellationRequested)
-                {item.Status="Interrupted";item.State="Cancelled";continue;}
-                item.Slot="T"+slot;item.Status="Running";item.State="Starting";_changed(item);
-                Trace(item,JournalLevel.Information,"job_start",$"url={DownloadProgressTrace.Quoted(item.Url)}");
-                if(_cancelled.ContainsKey(item.Url))linked.Cancel();
-                var result=await DownloadAsync(item,attempt).ConfigureAwait(false);
+                    result=new DownloadResult(false,true,"",[],"",item.TransferredBytes);
+                else
+                {
+                    item.Slot="T"+slot;item.Status="Running";item.State="Starting";_changed(item);
+                    Trace(item,JournalLevel.Information,"job_start",$"url={DownloadProgressTrace.Quoted(item.Url)}");
+                    if(_cancelled.ContainsKey(item.Url))linked.Cancel();
+                    result=await DownloadAsync(item,attempt).ConfigureAwait(false);
+                }
                 bool cancelled=result.Cancelled || linked.IsCancellationRequested || _cancelled.ContainsKey(item.Url);
                 while(true)
                 {
@@ -323,7 +328,7 @@ public sealed partial class DownloadCoordinator : IAsyncDisposable
         string outputRoot=_outputRoots[item.Url];
         OwnedFiles.NoReparseAncestors(Path.Combine(outputRoot,"__check__"));
         bool retained=item.ResumeState is not null;
-        DownloadResumeStore.Validated? validated=retained?DownloadResumeStore.Validate(item):null;
+        DownloadResumeStore.Validated? validated=retained?DownloadResumeStore.Validate(item,requireMatchingSelection:false):null;
         var options=validated?.State.Plan.ToOptions()??_options;
         var arguments=new YtDlpArguments(options);
         string stage=retained?item.StageDir:Path.Combine(_stageRoot,Guid.NewGuid().ToString("N"));

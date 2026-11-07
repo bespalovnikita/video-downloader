@@ -74,7 +74,7 @@ internal static class DownloadResumeStore
     internal static string ComponentIdentity(string value)=>Identity(value);
     private static string Marker(DownloadItem row)=>row.StageDir+".resume.json";
 
-    internal static void ValidatePersisted(DownloadItem row)
+    internal static void ValidatePersisted(DownloadItem row,bool requireMatchingSelection=true)
     {
         if(row.ResumeState is not {} state)return;
         if(state.Version!=1 || state.Plan is null || !Regex.IsMatch(state.Token,@"\A[0-9a-f]{32}\z",RegexOptions.CultureInvariant) ||
@@ -87,7 +87,7 @@ internal static class DownloadResumeStore
         OwnedFiles.ValidateTemplate(state.Plan.FilenameTemplate);
         AudioTrackSelection.Validate(state.Plan.ToOptions());
         state.Selection?.ValidatePersisted(row.Url);
-        if(JsonSerializer.Serialize(state.Selection,AppPersistence.Json)!=JsonSerializer.Serialize(row.Selection,AppPersistence.Json))
+        if(requireMatchingSelection && JsonSerializer.Serialize(state.Selection,AppPersistence.Json)!=JsonSerializer.Serialize(row.Selection,AppPersistence.Json))
             throw new InvalidDataException("The retained download belongs to a different format or fragment. Reset it before changing the selection.");
         if(state.ComponentBytes is null || state.ComponentBytes.Count>2048 || state.ComponentBytes.Any(pair=>pair.Value<0 ||
             !Regex.IsMatch(pair.Key,@"\A[0-9A-F]{64}\z",RegexOptions.CultureInvariant)))
@@ -108,9 +108,9 @@ internal static class DownloadResumeStore
             throw new InvalidDataException("Retained staging does not belong to a native download.");
     }
 
-    internal static Validated Validate(DownloadItem row,bool requireStage=true)
+    internal static Validated Validate(DownloadItem row,bool requireStage=true,bool requireMatchingSelection=true)
     {
-        ValidatePersisted(row);
+        ValidatePersisted(row,requireMatchingSelection);
         var state=row.ResumeState??throw new InvalidDataException("No retained download state is available.");
         OwnedFiles.NoReparseAncestors(Path.Combine(row.StageDir,"__check__"));
         if(requireStage && !Directory.Exists(row.StageDir))throw new IOException("The retained download data is no longer available. Reset the item to start again.");
@@ -147,7 +147,7 @@ internal static class DownloadResumeStore
         bool created=false;
         try
         {
-            ValidatePersisted(row);OwnedFiles.RegularOrAbsent(Marker(row));
+            ValidatePersisted(row,requireMatchingSelection:false);OwnedFiles.RegularOrAbsent(Marker(row));
             using var output=new FileStream(Marker(row),FileMode.CreateNew,FileAccess.Write,FileShare.None);
             created=true;
             var owner=MakeOwner(row,state,quality);
@@ -172,7 +172,7 @@ internal static class DownloadResumeStore
 
     internal static void UpdateQuality(DownloadItem row,string quality)
     {
-        var validated=Validate(row);var state=validated.State;
+        var validated=Validate(row,requireMatchingSelection:false);var state=validated.State;
         var owner=MakeOwner(row,state,quality);
         AppPersistence.AtomicWrite(Marker(row),JsonSerializer.Serialize(owner,AppPersistence.Json));
     }
@@ -187,13 +187,13 @@ internal static class DownloadResumeStore
     internal static void DeleteRetained(DownloadItem row)
     {
         if(row.ResumeState is null)return;
-        ValidatePersisted(row);
+        ValidatePersisted(row,requireMatchingSelection:false);
         OwnedFiles.NoReparseAncestors(Path.Combine(row.StageDir,"__check__"));
         // A removed TEMP tree leaves no files to authorize or delete. This is
         // metadata-only recovery; an existing stage without proof still fails.
         if(Absent(row.StageDir) && Absent(Marker(row)))
         {row.StageDir="";row.ResumeState=null;return;}
-        Validate(row,requireStage:false);
+        Validate(row,requireStage:false,requireMatchingSelection:false);
         OwnedFiles.DeleteStage(row.StageDir,row.RunDir);
         DeleteProof(row);
         row.StageDir="";row.ResumeState=null;
