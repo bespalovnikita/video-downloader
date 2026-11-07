@@ -59,10 +59,7 @@ internal sealed partial class MediaSelectionDialog
             var format=(_primary.SelectedItem as FormatChoice)?.Format;
             return format?.HasVideo==true && FragmentTimelineTiming.KnownFps(format.Fps)?format.Fps:null;
         }
-        var video=_metadata?.Formats.Where(format=>format.HasVideo).ToArray()??[];
-        if(video.Length==0 || video.Any(format=>!FragmentTimelineTiming.KnownFps(format.Fps)))return null;
-        var values=video.Select(format=>format.Fps).Distinct().Take(2).ToArray();
-        return values.Length==1?values[0]:null;
+        return FragmentTimelineTiming.CommonFrameRate(_metadata?.Formats??[]);
     }
     private bool TimelineRange(out double start,out double end,out double? duration)
     {

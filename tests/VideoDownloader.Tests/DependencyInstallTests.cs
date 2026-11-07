@@ -66,7 +66,7 @@ internal static class DependencyInstallTests
             else File.WriteAllText(probe,"previous ffprobe");
             File.WriteAllText(Path.Combine(target,"foreign.txt"),"unrelated sentinel");
             FileStream? held=null;
-            FileSecurity? originalAcl=null;
+            string? originalDacl=null;
             string? firstAcl=null;
             using var cancel=new CancellationTokenSource();
             int replaced=0;
@@ -76,7 +76,7 @@ internal static class DependencyInstallTests
                 if(kind=="readonly")File.SetAttributes(probe,File.GetAttributes(probe)|FileAttributes.ReadOnly);
                 if(kind=="acl")
                 {
-                    originalAcl=new FileInfo(probe).GetAccessControl();
+                    originalDacl=new FileInfo(probe).GetAccessControl().GetSecurityDescriptorSddlForm(AccessControlSections.Access);
                     var denied=new FileInfo(probe).GetAccessControl();
                     denied.AddAccessRule(new FileSystemAccessRule(WindowsIdentity.GetCurrent().User!,
                         FileSystemRights.WriteData,AccessControlType.Deny));
@@ -98,7 +98,12 @@ internal static class DependencyInstallTests
                         if(kind=="cancel")cancel.Cancel();
                     });
                 }
-                catch(Exception error) when(error is IOException or UnauthorizedAccessException or OperationCanceledException){failed=true;}
+                catch(Exception error) when(error is IOException or UnauthorizedAccessException or OperationCanceledException)
+                {
+                    failed=true;
+                    if(kind=="acl")Require(error is UnauthorizedAccessException && error.HResult==unchecked((int)0x80070005),
+                        $"Write-denied component must fail with Windows access denied, actual {error.GetType().Name}/0x{error.HResult:x8}");
+                }
                 Require(failed,"The component pair fixture must fail: "+kind);
                 Require(kind=="missing"?!File.Exists(ffmpeg):File.ReadAllText(ffmpeg)=="previous ffmpeg",
                     "Failure must restore the prior ffmpeg existence and bytes: "+kind);
@@ -114,7 +119,17 @@ internal static class DependencyInstallTests
             finally
             {
                 held?.Dispose();
-                if(originalAcl is not null)new FileInfo(probe).SetAccessControl(originalAcl);
+                if(originalDacl is not null)
+                {
+                    // Persist writes only modified sections. A FileSecurity
+                    // returned by GetAccessControl has no dirty DACL flag, so
+                    // simply passing that snapshot to SetAccessControl is a no-op.
+                    var restored=new FileSecurity();
+                    restored.SetSecurityDescriptorSddlForm(originalDacl,AccessControlSections.Access);
+                    new FileInfo(probe).SetAccessControl(restored);
+                    string actual=new FileInfo(probe).GetAccessControl().GetSecurityDescriptorSddlForm(AccessControlSections.Access);
+                    Require(actual==originalDacl,$"ACL fixture must restore its original DACL before retry; expected={originalDacl}; actual={actual}");
+                }
                 if(kind=="readonly")File.SetAttributes(probe,File.GetAttributes(probe)&~FileAttributes.ReadOnly);
             }
             if(kind is "sharing" or "acl")
@@ -122,6 +137,8 @@ internal static class DependencyInstallTests
                 await DependencyCenter.InstallFfmpegAsync(new Uri(server.BaseUrl+"ok"),target,TimeSpan.FromSeconds(5),CancellationToken.None);
                 Require(File.ReadAllText(ffmpeg)=="ffmpeg fixture" && File.ReadAllText(probe)=="ffprobe fixture",
                     "A retry after releasing the Windows lock/ACL denial must install the full pair");
+                if(firstAcl is not null)Require(new FileInfo(ffmpeg).GetAccessControl().GetSecurityDescriptorSddlForm(AccessControlSections.Access)==firstAcl,
+                    "A successful retry must also preserve the existing component's explicit Windows DACL");
             }
         }
         string collision=Path.Combine(root,"rollback-collision");Directory.CreateDirectory(collision);

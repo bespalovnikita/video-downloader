@@ -32,11 +32,22 @@ internal static class FragmentTimelineTests
         Require(FragmentTimelineTiming.Boundary(.042,24,.042)==1/24d &&
             FragmentTimelineTiming.Boundary(.083,24,.083)==.083,
             "Recovering a grid label must not move a boundary beyond known source duration.");
-        Require(FragmentTimelineTiming.FrameSample(.042,false,24)==1/24d &&
+        Require(FragmentTimelineTiming.FrameSample(FragmentTimelineTiming.Boundary(.042,24),false,24)==1/24d &&
             FragmentTimelineTiming.FrameSample(.083,true,24)==1/24d &&
             FragmentTimelineTiming.FrameSample(.125,true,24)==2/24d &&
             FragmentTimelineTiming.FrameSample(.084,true,24)==2/24d,
             "Start and exclusive-end cards must share nominal PTS selection, including non-grid end milliseconds.");
+        Require(FragmentTimelineTiming.FrameSample(.042,false,24)==2/24d &&
+            FragmentTimelineTiming.FrameSample(.042,true,24)==1/24d &&
+            FragmentTimelineTiming.FrameSample(FragmentTimelineTiming.Boundary(.042,24),true,24)==0 &&
+            FragmentTimelineTiming.FrameSample(.084,true,24)==2/24d &&
+            FragmentTimelineTiming.FrameSample(.083,false,24)==2/24d &&
+            FragmentTimelineTiming.FrameSample(.126,true,24)==3/24d,
+            "A decoder's FPS may select a sample but must not silently restore raw millisecond boundaries.");
+        var format=new MediaFormat("v24","mp4",160,90,24,"avc1","none","",null,false);
+        Require(FragmentTimelineTiming.CommonFrameRate([format])==24 &&
+            FragmentTimelineTiming.CommonFrameRate([format,format with{Id="v30",Fps=30}]) is null,
+            "Only a common catalogue FPS may grant automatic boundary restoration.");
         Require(FragmentTimelineTiming.FrameSample(20,true,24,20)==479/24d &&
             FragmentTimelineTiming.FrameSample(0,true,24)==0,
             "End-of-source and zero previews must remain inside the source.");

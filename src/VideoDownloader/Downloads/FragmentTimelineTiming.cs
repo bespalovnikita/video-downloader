@@ -25,15 +25,23 @@ internal static class FragmentTimelineTiming
         return Math.Abs(Milliseconds(exact)-seconds)<1e-9 && (duration is null || exact<=duration.Value)
             ?exact:seconds;
     }
-    internal static double FrameSample(double seconds,bool isEnd,double? fps,double? duration=null)
+    // Sampling must not reinterpret a boundary. Only the editor's explicit
+    // frame-grid context may restore a rounded label through Boundary first.
+    internal static double FrameSample(double boundary,bool isEnd,double? fps,double? duration=null)
     {
-        double boundary=Boundary(seconds,fps,duration);
         if(!KnownFps(fps))return isEnd?Math.Max(0,boundary-.05):boundary;
         // The first nominal PTS at/after the start, or last strictly before the
         // exclusive end. Tolerance only absorbs floating-point frame arithmetic.
         double index=Math.Ceiling(boundary*fps!.Value-1e-7)-(isEnd?1:0);
         if(duration is >0)index=Math.Min(index,Math.Ceiling(duration.Value*fps.Value-1e-7)-1);
         return Math.Max(0,index)/fps.Value;
+    }
+    internal static double? CommonFrameRate(IEnumerable<MediaFormat> formats)
+    {
+        var video=formats.Where(format=>format.HasVideo).ToArray();
+        if(video.Length==0 || video.Any(format=>!KnownFps(format.Fps)))return null;
+        var values=video.Select(format=>format.Fps).Distinct().Take(2).ToArray();
+        return values.Length==1?values[0]:null;
     }
     internal static double Step(double current,int direction,double? fps,double minimum,double maximum)
     {
