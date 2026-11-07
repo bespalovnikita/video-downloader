@@ -85,6 +85,8 @@ dotnet run --no-build --configuration Release --project tests/VideoDownloader.Te
 | Кадры HLS/DASH, init/byte ranges, шифрование TS, выбор времени и запрет обхода сетевого лимита | [MediaManifestFrameTests](../../tests/VideoDownloader.Tests/MediaManifestFrameTests.cs) |
 | Настоящие короткие progressive/HLS/DASH AV-клипы, раздельный звук, PCM RMS, поиск, лимиты и владение кешем | [MediaClipServiceTests](../../tests/VideoDownloader.Tests/MediaClipServiceTests.cs) |
 | Реальный MediaElement, кнопки воспроизведения/паузы/стопа/поиска, события, поздние ответы и освобождение Source | [MediaClipPlaybackUiTests](../../tests/VideoDownloader.UiTests/MediaClipPlaybackUiTests.cs) |
+| Реальный FFmpeg PCM: тишина/уровни/12 кГц/противофазное стерео, исходное время, аудио без видео, отсутствующий звук, лимиты, joined cancellation и retention клипа | [MediaWaveformServiceTests](../../tests/VideoDownloader.Tests/MediaWaveformServiceTests.cs) |
+| Настоящие WPF bins и пиксели, щелчок/непрерывный захваченный Thumb/клавиатура, поля границ, metadata refresh, поколения, read-only и смена диапазона | [MediaWaveformUiTests](../../tests/VideoDownloader.UiTests/MediaWaveformUiTests.cs) |
 | Свободное место, резерв TEMP/результата, неизвестные размеры, лимит OS-запросов и предупреждения | [DiskSpaceTests](../../tests/VideoDownloader.Tests/DiskSpaceTests.cs) |
 | Реальные окна Cancel/Continue, смена плана во время проверки и неблокирующее предупреждение активной сессии | [DiskSpaceUiTests](../../tests/VideoDownloader.UiTests/DiskSpaceUiTests.cs) |
 | Стабильный Release, SHA-256 ZIP, отмена тела HTTP-ответа, таймаут и ожидание исходного процесса | [AppUpdateClientTests](../../tests/VideoDownloader.Tests/AppUpdateClientTests.cs) |

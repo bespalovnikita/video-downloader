@@ -44,7 +44,8 @@ public sealed partial class NativeWindow
     {
         if(_mediaSelectionDialog is {} existing){existing.Activate();return;}
         if(Q.SelectedItems.Count!=1 || Q.SelectedItem is not DownloadItem row || !CanEditMediaSelection(row))return;
-        var dialog=new MediaSelectionDialog(_window,row,ReadOptions,selection=>ApplyMediaSelection(row,selection),_preview.GetFrameAsync,_preview.GetClipAsync);
+        var dialog=new MediaSelectionDialog(_window,row,ReadOptions,selection=>ApplyMediaSelection(row,selection),_preview.GetFrameAsync,_preview.GetClipAsync,
+            waveformPreview:_preview.GetWaveformAsync);
         _mediaSelectionDialog=dialog;
         RefreshAppUpdateControls();
         dialog.Closed+=(_,_)=>

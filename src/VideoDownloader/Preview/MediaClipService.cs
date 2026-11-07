@@ -8,14 +8,52 @@ namespace VideoDownloader.Native;
 /// <summary>An owned, short local clip. Detach the player before disposing it.</summary>
 internal sealed class MediaClipPreview(string path,double start,double end,bool hasVideo,bool hasAudio,Action? cleanup=null):IDisposable
 {
+    private readonly object _useGate=new();
     private Action? _cleanup=cleanup;
+    private bool _released;
+    private int _users;
     internal string Path {get;}=path;
     internal double StartSeconds {get;}=start;
     internal double EndSeconds {get;}=end;
     internal double DurationSeconds=>EndSeconds-StartSeconds;
     internal bool HasVideo {get;}=hasVideo;
     internal bool HasAudio {get;}=hasAudio;
-    public void Dispose()=>Interlocked.Exchange(ref _cleanup,null)?.Invoke();
+    // A decoder can retain this same cache slot while its process and pipes
+    // finish. Disposing the service revokes ownership without deleting an
+    // input file that an in-flight consumer still uses.
+    internal IDisposable Retain()
+    {
+        lock(_useGate)
+        {
+            ObjectDisposedException.ThrowIf(_released,this);
+            _users++;return new Usage(this);
+        }
+    }
+    private sealed class Usage(MediaClipPreview owner):IDisposable
+    {
+        private MediaClipPreview? _owner=owner;
+        public void Dispose()=>Interlocked.Exchange(ref _owner,null)?.ReleaseUse();
+    }
+    private void ReleaseUse()
+    {
+        Action? cleanup=null;
+        lock(_useGate)
+        {
+            _users--;
+            if(_released && _users==0){cleanup=_cleanup;_cleanup=null;}
+        }
+        cleanup?.Invoke();
+    }
+    public void Dispose()
+    {
+        Action? cleanup=null;
+        lock(_useGate)
+        {
+            if(_released)return;_released=true;
+            if(_users==0){cleanup=_cleanup;_cleanup=null;}
+        }
+        cleanup?.Invoke();
+    }
 }
 
 /// <summary>Serial, bounded preparation independent of queue, results and history.</summary>
@@ -35,6 +73,7 @@ internal sealed class MediaClipService:IDisposable
     private readonly object _gate=new();
     private readonly HashSet<MediaClipPreview> _clips=[];
     private int _disposed;
+    internal string FfmpegExecutable=>_ffmpeg;
     internal MediaClipService(PreviewService previews,string root,string? ffmpeg=null,string? ffprobe=null,TimeSpan? timeout=null)
         :this(previews.GetClipSourcesAsync,root,ffmpeg,ffprobe,timeout) { }
     internal MediaClipService(Func<MediaClipRequest,CancellationToken,Task<MediaClipSources>> source,string root,

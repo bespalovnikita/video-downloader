@@ -38,7 +38,8 @@ internal sealed partial class MediaSelectionDialog : Window
     internal MediaSelectionDialog(Window owner,DownloadItem row,Func<DownloadOptions> options,
         Func<DownloadSelection?,string?> apply,
         Func<MediaFrameRequest,CancellationToken,Task<MediaFrameResult>>? framePreview=null,
-        Func<MediaClipRequest,CancellationToken,Task<MediaClipResult>>? clipPreview=null,IMediaClipPlayer? clipPlayer=null)
+        Func<MediaClipRequest,CancellationToken,Task<MediaClipResult>>? clipPreview=null,IMediaClipPlayer? clipPlayer=null,
+        Func<MediaWaveformRequest,CancellationToken,Task<MediaWaveformResult>>? waveformPreview=null)
     {
         Row=row;_options=options;_apply=apply;
         Name="MediaSelectionDialog";Title="Формат и фрагмент";Owner=owner;
@@ -109,6 +110,7 @@ internal sealed partial class MediaSelectionDialog : Window
         InitializeTimeline(body);
         InitializeFramePreviews(body,framePreview);
         InitializePlayback(body,clipPreview,clipPlayer);
+        InitializeWaveforms(body,waveformPreview);
         _error=Named("MediaSelectionError",new TextBlock{Foreground=Brushes.Salmon,TextWrapping=TextWrapping.Wrap,Margin=new Thickness(0,8,0,0)});
         body.Children.Add(_error);
 
@@ -129,6 +131,7 @@ internal sealed partial class MediaSelectionDialog : Window
         RefreshFrameState();
         RefreshTimelineState();
         RefreshPlaybackState();
+        RefreshWaveformState();
     }
 
     private T Named<T>(string name,T control) where T:FrameworkElement
@@ -152,6 +155,7 @@ internal sealed partial class MediaSelectionDialog : Window
         RefreshFrameState();
         RefreshTimelineState();
         RefreshPlaybackState();
+        RefreshWaveformState();
     }
     private void RefreshEnabled()
     {
@@ -182,6 +186,7 @@ internal sealed partial class MediaSelectionDialog : Window
         RefreshFrameState();
         RefreshTimelineState();
         RefreshPlaybackState();
+        RefreshWaveformState();
     }
     internal void ReceiveMetadataFailure(string error)
     {
