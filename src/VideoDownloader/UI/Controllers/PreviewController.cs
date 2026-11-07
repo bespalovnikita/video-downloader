@@ -10,7 +10,7 @@ namespace VideoDownloader.Native;
 
 // Owns the independent prefetch worker and its displayed selection. Queue and
 // session orchestration supply rows and checkpoint/log actions explicitly.
-internal sealed class PreviewController : IDisposable
+internal sealed partial class PreviewController : IDisposable
 {
     private readonly Window _window;
     private readonly Func<IEnumerable<DownloadItem>> _rows;
@@ -57,9 +57,11 @@ internal sealed class PreviewController : IDisposable
     internal event Action<string,string>? Failed;
 
     internal PreviewController(Window window,AppPersistence storage,string executable,
-        Func<IEnumerable<DownloadItem>> rows,Action save,Action<string> log)
+        Func<IEnumerable<DownloadItem>> rows,Action save,Action<string> log,
+        Func<bool>? allowLocalPosters=null,string? localPosterFfmpegPath=null)
     {
         _window=window;_rows=rows;_save=save;_log=log;
+        _allowLocalPosters=allowLocalPosters??(()=>true);
         T Control<T>(string name) where T:class=>(T)(window.FindName(name)
             ??throw new InvalidOperationException("Missing preview control: "+name));
         _cookiesBox=Control<TextBox>("CookiesBox");
@@ -84,6 +86,7 @@ internal sealed class PreviewController : IDisposable
         _service=new PreviewService(executable,storage,()=>CookieSnapshot,
             data=>Dispatch(()=>ReceiveReady(data)),
             message=>Dispatch(()=>_log(message)),
+            ffmpegPath:localPosterFfmpegPath,
             failed:(url,error)=>Dispatch(()=>ReceiveFailure(url,error)),
             updated:data=>Dispatch(()=>ReceiveReady(data,false)));
         _frames=new MediaFrameService(_service);
@@ -353,6 +356,7 @@ internal sealed class PreviewController : IDisposable
     {
         if(_disposed)return;
         _disposed=true;
+        CancelLocalPosters();
         _galleryTimer.Stop();
         _galleryTimer.Tick-=GalleryTick;
         _imageHost.MouseEnter-=EnterGallery;

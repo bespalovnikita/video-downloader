@@ -123,16 +123,16 @@ public sealed partial class NativeWindow
                 else AddUrls(ReadInputFile(picker.FileName));
             }
         };
-        F<Button>("RemoveQueueButton").Click+=(_,_)=>RemoveRows(SelectedVisibleQueueRows());
+        F<Button>("RemoveQueueButton").Click+=async(_,_)=>await RemoveRowsAsync(SelectedVisibleQueueRows());
         F<Button>("SubscriptionsButton").Click+=(_,_)=>OpenSubscriptions();
-        F<Button>("ClearQueueButton").Click+=(_,_)=>
+        F<Button>("ClearQueueButton").Click+=async(_,_)=>
         {
             if(RejectProfileBackupMutation())return;
             if (SessionState.Coordinator?.IsRunning==true)return;
             var candidates=SessionState.Queue.ToArray();
             if(candidates.Length>0 && ConfirmClearEntireQueue(candidates) && !_closing && !_disposed &&
                 !_appUpdateHandoff && SessionState.Coordinator?.IsRunning!=true)
-            {ClearRows(candidates);}
+            {await ClearRowsAsync(candidates);}
         };
         F<Button>("MoveUpButton").Click+=(_,_)=>{if(Q.SelectedItem is DownloadItem item)MoveItem(item,SessionState.Queue.IndexOf(item)-1);};
         F<Button>("MoveDownButton").Click+=(_,_)=>{if(Q.SelectedItem is DownloadItem item)MoveItem(item,SessionState.Queue.IndexOf(item)+1);};
@@ -169,9 +169,9 @@ public sealed partial class NativeWindow
         F<Button>("OpenFolderButton").Click+=(_,_)=>ShowFileInFolder(D.SelectedItem as DownloadItem);
         F<Button>("CopyPathButton").Click+=(_,_)=>{if(D.SelectedItem is DownloadItem row && row.Path.Length>0)Clipboard.SetText(row.Path);};
         F<Button>("OpenUrlButton").Click+=(_,_)=>{if(D.SelectedItem is DownloadItem row)OpenUrl(row.Url);};
-        Q.KeyDown+=(_,e)=>
+        Q.KeyDown+=async(_,e)=>
         {
-            if (e.Key==Key.Delete){RemoveRows(SelectedVisibleQueueRows());e.Handled=true;}
+            if (e.Key==Key.Delete){e.Handled=true;await RemoveRowsAsync(SelectedVisibleQueueRows());}
             else if(e.Key==Key.C && Keyboard.Modifiers==ModifierKeys.Control && Q.SelectedItem is DownloadItem row && IsVisibleQueueRow(row))
             {Clipboard.SetText(row.Url);e.Handled=true;}
         };
@@ -194,7 +194,7 @@ public sealed partial class NativeWindow
         downloadSelected.Click+=(_,_)=>{var rows=SelectedVisibleQueueRows();if(rows.Length>0)_ = StartAsync(rows);};
         queueMenu.Items.Add(downloadSelected);
         var removeSelected=new MenuItem{Header=ErrorMessages.Text("Удалить выбранные строки","Remove selected rows")};
-        removeSelected.Click+=(_,_)=>RemoveRows(SelectedVisibleQueueRows());queueMenu.Items.Add(removeSelected);
+        removeSelected.Click+=async(_,_)=>await RemoveRowsAsync(SelectedVisibleQueueRows());queueMenu.Items.Add(removeSelected);
         queueMenu.Opened+=(_,_)=>
         {
             bool selected=HasVisibleQueueSelection;
@@ -246,6 +246,7 @@ public sealed partial class NativeWindow
         try
         {
             using var schedulingPause=await SuspendSubscriptionSchedulingAsync();
+            await _preview.CancelLocalPostersAsync();
             if(_closing || _disposed || _appUpdateHandoff)throw new OperationCanceledException("Приложение закрывается или обновляется.");
             var response=await task(CancellationToken.None);
             Log(response);
@@ -263,6 +264,8 @@ public sealed partial class NativeWindow
             F<Button>("InstallFfmpegButton").IsEnabled=true;
             RefreshDependencyLabel();
             RefreshAppUpdateControls();
+            _preview.ResetLocalPosterAttempts();
+            _preview.BackfillLocalPosters();
         }
     }
     private async void OnClosing(object? sender,System.ComponentModel.CancelEventArgs e)
@@ -294,6 +297,7 @@ public sealed partial class NativeWindow
         // only after the final ownership/status checkpoint has been written.
         e.Cancel=true;
         _closing=true;
+        Task previewsStopped=_preview.StopAsync();
         Task diagnosticsStopped=StopJobDiagnosticsAsync();
         DisposeProfileBackup();
         DisposeDiskSpace();
@@ -310,6 +314,7 @@ public sealed partial class NativeWindow
         }
         catch(Exception error) { Log("Shutdown cleanup failed: "+error.Message); }
         await diagnosticsStopped;
+        await previewsStopped;
         SaveCheckpoint();
         _journalCloseRequested=true;
         try { await _journal.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(2)); }

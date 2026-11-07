@@ -287,6 +287,16 @@ internal static class LifecycleRegressionTests
         }
         object Metadata(string thumbnail,object[]? thumbnails=null)=>new{title="Thumbnail fixture",uploader="Subscription author",thumbnail,
             thumbnails=thumbnails??[],formats=new[]{new{vcodec="avc1",height=1080}}};
+        void InstallFixtureConverter(string target)
+        {
+            string directory=Path.GetDirectoryName(target)!;Directory.CreateDirectory(directory);
+            string assembly=typeof(LifecycleRegressionTests).Assembly.GetName().Name!;
+            foreach(string suffix in new[]{".dll",".deps.json",".runtimeconfig.json"})
+                File.Copy(Path.Combine(AppContext.BaseDirectory,assembly+suffix),Path.Combine(directory,assembly+suffix),true);
+            string application=typeof(PreviewService).Assembly.Location;
+            if(Path.GetFileName(application)!=assembly+".dll")File.Copy(application,Path.Combine(directory,Path.GetFileName(application)),true);
+            File.Copy(Executable(),target,true);
+        }
         string? previousPid=Environment.GetEnvironmentVariable("VD_PREVIEW_CONVERTER_PID");
         try
         {
@@ -334,20 +344,48 @@ internal static class LifecycleRegressionTests
             var unavailable=await Fetch("preview-webp-unavailable",Metadata(address+"/webp"),Path.Combine(root,"no-ffmpeg"));
             Require(unavailable.Data.ThumbnailBase64.Length==0 && unavailable.Logs.Any(value=>value.Contains("needs FFmpeg")),
                 "Without FFmpeg, unsupported cover must keep useful text metadata");
-            using(var refreshed=new PreviewService("unused",data,()=>"",_=>{},_=>{},ffmpegPath:Executable()))
-                Require(refreshed.Get(Prefix+"preview-webp-unavailable")==null,
+            var coldReady=new TaskCompletionSource<PreviewData>(TaskCreationOptions.RunContinuationsAsynchronously);
+            using(var refreshed=new PreviewService(Executable(),data,()=>cookies,value=>coldReady.TrySetResult(value),_=>{},ffmpegPath:Executable()))
+            {
+                string unavailableUrl=Prefix+"preview-webp-unavailable";
+                string cachedFile=Path.Combine(data.PreviewDir,Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(unavailableUrl))).ToLowerInvariant()+".json");
+                byte[] original=File.ReadAllBytes(cachedFile);
+                Require(refreshed.Get(unavailableUrl)==null,
                     "A text-only disk cache must retry its missing converter after FFmpeg becomes available");
-            string installedConverter=Path.Combine(root,"installed-ffmpeg");
+                Require(refreshed.Peek(unavailableUrl)?.Title==unavailable.Data.Title && refreshed.Peek(unavailableUrl)?.SavedAtUtc==unavailable.Data.SavedAtUtc &&
+                    File.ReadAllBytes(cachedFile).SequenceEqual(original),"A converter retry signal must preserve text metadata, its TTL and the original disk cache.");
+                int before=requested.Count(value=>value=="/webp");refreshed.Request(unavailableUrl);refreshed.Request(unavailableUrl);
+                var recovered=await coldReady.Task.WaitAsync(TimeSpan.FromSeconds(8));
+                Require(Convert.FromBase64String(recovered.ThumbnailBase64).SequenceEqual(PreviewPng) &&
+                    refreshed.Get(unavailableUrl)?.ThumbnailBase64==recovered.ThumbnailBase64 && requested.Count(value=>value=="/webp")==before+1,
+                    "A cold converter retry must run the actual metadata/HTTP/converter path once and replace text-only cache with a valid image.");
+            }
+            string installedConverter=Path.Combine(root,"converter-install",OperatingSystem.IsWindows()?"installed-ffmpeg.exe":"installed-ffmpeg");
             File.WriteAllText(cookies,JsonSerializer.Serialize(Metadata(address+"/webp")));
             var installReady=new TaskCompletionSource<PreviewData>(TaskCreationOptions.RunContinuationsAsynchronously);
-            using(var waiting=new PreviewService(Executable(),data,()=>cookies,p=>installReady.TrySetResult(p),_=>{},ffmpegPath:installedConverter))
+            var barrierReady=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            string waitingUrl=Prefix+"preview-webp-install",barrierUrl=Prefix+"preview-extensionless";
+            using(var waiting=new PreviewService(Executable(),data,()=>cookies,p=>
+                {if(p.Url==waitingUrl)installReady.TrySetResult(p);if(p.Url==barrierUrl)barrierReady.TrySetResult();},_=>{},ffmpegPath:installedConverter))
             {
-                string waitingUrl=Prefix+"preview-webp-install";waiting.Request(waitingUrl);
-                await installReady.Task.WaitAsync(TimeSpan.FromSeconds(8));
+                waiting.Request(waitingUrl);
+                var beforeInstall=await installReady.Task.WaitAsync(TimeSpan.FromSeconds(8));
                 Require(waiting.Get(waitingUrl)?.Title=="Thumbnail fixture","The same missing converter result must remain cacheable while FFmpeg is absent");
-                File.WriteAllText(installedConverter,"Installed after the request");
+                // A cached FIFO barrier joins the first URL's worker iteration
+                // before the second request, without a timing-dependent sleep.
+                waiting.Request(barrierUrl);await barrierReady.Task.WaitAsync(TimeSpan.FromSeconds(8));
+                InstallFixtureConverter(installedConverter);
                 Require(waiting.Get(waitingUrl)==null,"An in-memory missing converter result must refresh after installing FFmpeg in the same app run");
+                Require(waiting.Peek(waitingUrl)?.Title==beforeInstall.Title && waiting.Peek(waitingUrl)?.SavedAtUtc==beforeInstall.SavedAtUtc,
+                    "A warm converter retry must retain known metadata and the original TTL while the image is unavailable.");
+                installReady=new(TaskCreationOptions.RunContinuationsAsynchronously);
+                int before=requested.Count(value=>value=="/webp");waiting.Request(waitingUrl);
+                var recovered=await installReady.Task.WaitAsync(TimeSpan.FromSeconds(8));
+                Require(Convert.FromBase64String(recovered.ThumbnailBase64).SequenceEqual(PreviewPng) &&
+                    waiting.Get(waitingUrl)?.ThumbnailBase64==recovered.ThumbnailBase64 && requested.Count(value=>value=="/webp")==before+1,
+                    "Installing a converter in the same app run must recover through the owned metadata/HTTP/converter path and cache the valid image.");
             }
+            File.WriteAllText(installedConverter,"Broken converter after recovery");
             var broken=await Fetch("preview-webp-broken-converter",Metadata(address+"/webp"),installedConverter);
             Require(broken.Data.ThumbnailBase64.Length==0 && broken.Logs.Any(value=>value.Contains("could not start")),
                 "An installed but invalid FFmpeg executable must not erase valid text metadata");
@@ -370,11 +408,14 @@ internal static class LifecycleRegressionTests
             Require(reader.Get(staleUrl)==null && !File.Exists(file),"Only legacy suffix-rejected cache results must be retried after upgrade");
             string corruptUrl=Prefix+"preview-corrupt-cache";
             string corruptFile=Path.Combine(data.PreviewDir,Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(corruptUrl))).ToLowerInvariant()+".json");
-            File.WriteAllText(corruptFile,JsonSerializer.Serialize(new{CacheVersion=1,PreviewFetchVersion=2,Url=corruptUrl,SavedAtUtc=DateTime.UtcNow,
+            DateTime corruptSaved=DateTime.UtcNow;
+            File.WriteAllText(corruptFile,JsonSerializer.Serialize(new{CacheVersion=1,PreviewFetchVersion=2,Url=corruptUrl,SavedAtUtc=corruptSaved,
                 Title="Corrupt image",Uploader="",PlaylistTitle="",Extractor="",Codecs="",DynamicRange="",Duration=0,
                 ThumbnailBase64="iVBORw0KGgo="}));
-            Require(reader.Get(corruptUrl)==null && !File.Exists(corruptFile),
-                "Previously cached image headers without a complete frame must be evicted before reaching the UI");
+            byte[] corruptRecord=File.ReadAllBytes(corruptFile);var retained=reader.Get(corruptUrl);
+            Require(retained is {Title:"Corrupt image",ThumbnailBase64.Length:0,ThumbnailsBase64.Length:0} && retained.SavedAtUtc==corruptSaved &&
+                File.ReadAllBytes(corruptFile).SequenceEqual(corruptRecord),
+                "Cached headers without a complete frame must not reach the UI; retain valid metadata, its TTL and the original disk record for image-only recovery.");
             File.WriteAllText(cookies,JsonSerializer.Serialize(Metadata(address+"/valid-after-cache")));
             var cacheReady=new TaskCompletionSource<PreviewData>(TaskCreationOptions.RunContinuationsAsynchronously);
             using(var repaired=new PreviewService(Executable(),data,()=>cookies,value=>cacheReady.TrySetResult(value),_=>{}))
@@ -382,7 +423,7 @@ internal static class LifecycleRegressionTests
                 repaired.Request(corruptUrl);
                 var recovered=await cacheReady.Task.WaitAsync(TimeSpan.FromSeconds(8));
                 Require(recovered.ThumbnailBase64.Length>0 && repaired.Get(corruptUrl)?.ThumbnailBase64==recovered.ThumbnailBase64,
-                    "An evicted broken cache must fetch once and retain the valid recovered image");
+                    "A cache with a rejected image must fetch once and retain the valid recovered image");
             }
             Console.WriteLine("PASS: thumbnail URL fallback, WebP conversion, deadlines and metadata preservation");
         }

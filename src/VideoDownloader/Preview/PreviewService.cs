@@ -68,7 +68,7 @@ public sealed partial class PreviewService : IDisposable
     internal PreviewData? Peek(string url)
     {
         if(Volatile.Read(ref _disposed)!=0)return null;
-        if (_cache.TryGetValue(url,out var value) && DateTime.UtcNow-value.SavedAtUtc<TimeSpan.FromHours(72))
+        if (_cache.TryGetValue(url,out var value) && (MetadataFresh(value) || LocalImageFresh(value)))
         {
             _lastUse[url]=Interlocked.Increment(ref _access);
             return value;
@@ -78,11 +78,7 @@ public sealed partial class PreviewService : IDisposable
     public PreviewData? Get(string url)
     {
         if(Volatile.Read(ref _disposed)!=0)return null;
-        if(Peek(url) is {} cached)
-        {
-            if(cached.ThumbnailBase64.Length>0 || !_thumbnailErrors.TryGetValue(url,out string? previousError) || !ConverterNowAvailable(previousError))return cached;
-            _cache.TryRemove(url,out _);_thumbnailErrors.TryRemove(url,out _);
-        }
+        if(Peek(url) is {} cached)return CachedResult(cached);
         string path=CacheFile(url);
         if (!File.Exists(path)) return null;
         try
@@ -93,9 +89,8 @@ public sealed partial class PreviewService : IDisposable
             if (root.GetProperty("CacheVersion").GetInt32()!=1 ||
                 root.GetProperty("Url").GetString()!=url) throw new InvalidDataException("Invalid preview cache identity");
             if (Str(root,"ThumbnailBase64").Length==0 &&
-                ((Str(root,"ThumbnailError")=="no JPEG/PNG thumbnail was provided by yt-dlp" &&
-                (!root.TryGetProperty("PreviewFetchVersion",out var fetchVersion) || !fetchVersion.TryGetInt32(out int version) || version<2)) ||
-                ConverterNowAvailable(Str(root,"ThumbnailError"))))
+                Str(root,"ThumbnailError")=="no JPEG/PNG thumbnail was provided by yt-dlp" &&
+                (!root.TryGetProperty("PreviewFetchVersion",out var fetchVersion) || !fetchVersion.TryGetInt32(out int version) || version<2))
                 throw new InvalidDataException("Retry a legacy thumbnail result rejected only by its URL suffix.");
             var entry=JsonSerializer.Deserialize<PreviewData>(root.GetRawText(),AppPersistence.Json);
             if (entry!=null)
@@ -105,17 +100,30 @@ public sealed partial class PreviewService : IDisposable
             if (entry is { Title:not null, Uploader:not null, PlaylistTitle:not null,
                 Extractor:not null, Codecs:not null, DynamicRange:not null, ThumbnailBase64:not null } &&
                 entry.Duration>=0 && entry.Duration<TimeSpan.MaxValue.TotalSeconds &&
-                DateTime.UtcNow-entry.SavedAtUtc<TimeSpan.FromHours(72) &&
-                ValidGallery(entry) && MediaFormatCatalog.IsValid(entry.Formats) && (!entry.IsCollection || entry.Formats.Length==0)) {
+                (MetadataFresh(entry) || LocalImageFresh(entry)) &&
+                MediaFormatCatalog.IsValid(entry.Formats) && (!entry.IsCollection || entry.Formats.Length==0)) {
+                bool validImages;
+                try{validImages=ValidGallery(entry);}catch(FormatException){validImages=false;}
+                if(!validImages)
+                {
+                    // A broken optional image must not erase otherwise valid
+                    // titles/formats/TTL before a completed-video fallback can
+                    // merge a replacement. A normal request can still refetch.
+                    entry=RepairCachedGallery(entry);
+                    Log("Preview cache image unavailable for "+DiagnosticField(url)+": stage=cache_image_decode");
+                }
                 CacheInMemory(entry);_thumbnailErrors[url]=Str(root,"ThumbnailError");
-                _fetchVersions[url]=root.TryGetProperty("PreviewFetchVersion",out var storedVersion) && storedVersion.TryGetInt32(out int versionNumber)?versionNumber:0;
-                return entry;
+                _fetchVersions[url]=validImages && root.TryGetProperty("PreviewFetchVersion",out var storedVersion) && storedVersion.TryGetInt32(out int versionNumber)?versionNumber:0;
+                return CachedResult(entry);
             }
         }
         catch(Exception error) { Log("Preview cache unavailable for "+DiagnosticField(url)+": stage=cache_read "+ErrorDetails(error)); }
         try { File.Delete(path); } catch(IOException){} catch(UnauthorizedAccessException){}
         return null;
     }
+    // Preserve Get's retry signal after installation without evicting the
+    // known metadata needed by a failed refresh or a later local image merge.
+    private PreviewData? CachedResult(PreviewData data)=>data.ThumbnailBase64.Length==0 && ThumbnailConverterRetry(data)?null:data;
     private bool ValidGallery(PreviewData entry)
     {
         if(entry.ThumbnailsBase64 is null || entry.ThumbnailsBase64.Length>MaxImages)return false;
@@ -180,11 +188,15 @@ public sealed partial class PreviewService : IDisposable
         if(!_cache.TryGetValue(data.Url,out var previous))return data;
         if(data.Title.Length==0 && previous.Title.Length>0)data=data with {Title=previous.Title};
         if(data.ThumbnailBase64.Length==0 && previous.ThumbnailBase64.Length>0)
-            data=data with {ThumbnailBase64=previous.ThumbnailBase64,ThumbnailsBase64=previous.ThumbnailsBase64};
+            data=data with {ThumbnailBase64=previous.ThumbnailBase64,ThumbnailsBase64=previous.ThumbnailsBase64,
+                LocalThumbnailFingerprint=previous.LocalThumbnailFingerprint,LocalThumbnailSavedAtUtc=previous.LocalThumbnailSavedAtUtc};
         return data;
     }
+    private static bool HasRemoteThumbnail(PreviewData data)=>data.ThumbnailBase64.Length>0 && string.IsNullOrEmpty(data.LocalThumbnailFingerprint);
+    private bool ThumbnailConverterRetry(PreviewData data)=>!HasRemoteThumbnail(data) &&
+        _thumbnailErrors.TryGetValue(data.Url,out string? error) && ConverterNowAvailable(error);
     private bool ThumbnailFailureExpired(PreviewData data) =>
-        data.ThumbnailBase64.Length==0 && _thumbnailErrors.TryGetValue(data.Url,out string? error) &&
+        !HasRemoteThumbnail(data) && _thumbnailErrors.TryGetValue(data.Url,out string? error) &&
         !string.IsNullOrWhiteSpace(error) && !NeedsConverter(error) &&
         DateTime.UtcNow-data.SavedAtUtc>=ThumbnailFailureRetryDelay;
 
@@ -193,7 +205,7 @@ public sealed partial class PreviewService : IDisposable
     public void RequestFormats(string url)
     {
         if(Volatile.Read(ref _disposed)!=0 || !AppPersistence.ValidUrl(url))return;
-        if(Peek(url)?.FormatsLoaded==true)return;
+        if(Peek(url) is {FormatsLoaded:true} existing && MetadataFresh(existing))return;
         lock(_gate)
         {
             if(Volatile.Read(ref _disposed)!=0)return;
@@ -213,9 +225,8 @@ public sealed partial class PreviewService : IDisposable
                 if (priority && _pending.Remove(url)) _pending.Insert(0,url);
                 return;
             }
-            if(cached!=null && !FrameSourceNeeded(url) && (!_formatsRequested.Contains(url) || cached.FormatsLoaded) &&
-                _fetchVersions.GetValueOrDefault(url)>=3 && !ThumbnailFailureExpired(cached) &&
-                !(cached.ThumbnailBase64.Length==0 && _thumbnailErrors.TryGetValue(url,out string? error) && NeedsConverter(error)))
+            if(cached!=null && MetadataFresh(cached) && !FrameSourceNeeded(url) && (!_formatsRequested.Contains(url) || cached.FormatsLoaded) &&
+                _fetchVersions.GetValueOrDefault(url)>=3 && !ThumbnailFailureExpired(cached) && !ThumbnailConverterRetry(cached))
             {_formatsRequested.Remove(url);return;}
             _known.Add(url);
             if (priority) _pending.Insert(0,url);
@@ -232,12 +243,25 @@ public sealed partial class PreviewService : IDisposable
             catch(OperationCanceledException) { break; }
             string? url;
             bool requireFormats;
+            LocalPosterWork? local=null;
             lock(_gate)
             {
-                if (_pending.Count==0) continue;
-                url=_pending[0];_pending.RemoveAt(0);
-                requireFormats=_formatsRequested.Remove(url);
+                if (_localPosters.Count>0 && (_pending.Count==0 || _preferLocalPoster))
+                {
+                    local=_localPosters[0];_localPosters.RemoveAt(0);local.Started=true;
+                    _preferLocalPoster=false;
+                    url=null;requireFormats=false;
+                }
+                else
+                {
+                    if(_pending.Count==0)continue;
+                    url=_pending[0];_pending.RemoveAt(0);
+                    _preferLocalPoster=true;
+                    requireFormats=_formatsRequested.Remove(url);
+                }
             }
+            if(local is not null){await ProcessLocalPoster(local).ConfigureAwait(false);continue;}
+            if(url is null)continue;
             string? frameExtractionContext=null;
             try
             {
@@ -245,8 +269,8 @@ public sealed partial class PreviewService : IDisposable
                 // A missing candidate is a valid cached result, but a failed
                 // image request must not suppress the cover for all 72 hours.
                 // Retry only on another request after the bounded cooldown.
-                if(cached!=null && !FrameSourceNeeded(url) && (!requireFormats || cached.FormatsLoaded) &&
-                    _fetchVersions.GetValueOrDefault(url)>=3 && !ThumbnailFailureExpired(cached))
+                if(cached!=null && MetadataFresh(cached) && !FrameSourceNeeded(url) && (!requireFormats || cached.FormatsLoaded) &&
+                    _fetchVersions.GetValueOrDefault(url)>=3 && !ThumbnailFailureExpired(cached) && !ThumbnailConverterRetry(cached))
                 {
                     if(!_stop.IsCancellationRequested)_ready(cached);
                     continue;
@@ -275,7 +299,8 @@ public sealed partial class PreviewService : IDisposable
                         CacheVersion=1, PreviewFetchVersion=3, data.SavedAtUtc, data.Url, Success=true, fetched.ThumbnailError,
                         data.Title,data.PlaylistTitle,data.Uploader,data.Duration,
                         data.ThumbnailBase64,data.ThumbnailsBase64,data.Extractor,data.MaxHeight,data.MaxFps,data.Codecs,data.DynamicRange,
-                        data.Formats,data.FormatsLoaded,data.IsCollection,data.FormatsTruncated
+                        data.Formats,data.FormatsLoaded,data.IsCollection,data.FormatsTruncated,
+                        data.LocalThumbnailFingerprint,data.LocalThumbnailSavedAtUtc
                     },AppPersistence.Json);
                     try { AppPersistence.AtomicWrite(CacheFile(url),contents);PruneDiskCache(CacheFile(url)); }
                     catch(Exception error) when(error is IOException or UnauthorizedAccessException)
@@ -597,6 +622,7 @@ public sealed partial class PreviewService : IDisposable
         {
             if(Interlocked.Exchange(ref _disposed,1)!=0)return;
             _stop.Cancel();
+            CancelLocalPosters();
             CancelFrameSources();
             // The worker is still allowed to observe cancellation. Do not dispose
             // the semaphore/HTTP client underneath an in-flight prefetch.
