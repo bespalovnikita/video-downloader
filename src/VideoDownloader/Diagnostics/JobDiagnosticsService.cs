@@ -91,9 +91,14 @@ internal sealed class JobDiagnosticsService
 
     private sealed class SnapshotBuilder(JobDiagnosticTarget target)
     {
+        // Valid JSONL records need more than 128 bytes for their fixed hex IDs
+        // and field names. This cap covers the 15 MiB read budget plus the
+        // 5000-entry memory ring, without retaining decoded journal strings.
+        private const int MaxSeenKeys=128*1024;
         private readonly LinkedList<(JobDiagnosticEvent Event,int Bytes)> _entries=new();
-        private readonly HashSet<(string Journal,long Sequence)> _keys=[];
+        private readonly HashSet<(Guid Journal,long Sequence)> _seen=[];
         private int _bytes,_omitted;
+        private bool _seenLimit;
         internal int Malformed;
         internal bool Truncated;
         internal readonly List<string> Warnings=[];
@@ -105,13 +110,17 @@ internal sealed class JobDiagnosticsService
         }
         internal void Add(JobDiagnosticEvent entry)
         {
-            if(entry.Identity!=target.Identity || entry.Job!=target.Job || !_keys.Add((entry.Journal,entry.Sequence)))return;
+            if(entry.Identity!=target.Identity || entry.Job!=target.Job)return;
+            var key=(Guid.ParseExact(entry.Journal,"N"),entry.Sequence);
+            if(_seen.Contains(key))return;
+            if(_seen.Count>=MaxSeenKeys){_seenLimit=true;Truncated=true;return;}
+            _seen.Add(key);
             int bytes=JobDiagnosticCodec.Encode(entry).Length+1;
             _entries.AddLast((entry,bytes));_bytes+=bytes;
             while(_entries.Count>MaxEvents || _bytes>MaxSnapshotBytes)
             {
                 var first=_entries.First!.Value;_entries.RemoveFirst();_bytes-=first.Bytes;
-                _keys.Remove((first.Event.Journal,first.Event.Sequence));_omitted++;
+                _omitted++;
             }
         }
         internal JobDiagnosticSnapshot Build(DiagnosticJournal journal,long observedSequence)
@@ -125,6 +134,7 @@ internal sealed class JobDiagnosticsService
             if(journal.StructuredFileError.Length>0)Warnings.Add(journal.StructuredFileError);
             if(journal.LastFileError.Length>0)Warnings.Add("Файловая запись журнала недоступна; часть событий может оставаться только в памяти.");
             if(_omitted>0)Warnings.Add("Из выборки исключены более старые события: "+_omitted+". Предел: 2000 событий / 2 МиБ.");
+            if(_seenLimit)Warnings.Add("Достигнут предел индекса уникальных событий; часть данных не включена. Полнота выборки не подтверждена.");
             if(Malformed>0)Warnings.Add("Не удалось разобрать записей архива: "+Malformed+". Полнота выборки не подтверждена.");
             if(events.Length>0 && !events.Any(entry=>entry.Event=="job_queued"))
                 Warnings.Add("Начальная запись задачи отсутствует: сохранённая история может быть неполной.");

@@ -51,13 +51,67 @@ internal sealed partial class UiScenario
             var source=PresentationSource.FromVisual(window)??throw new InvalidOperationException("Shown WPF source required.");
             thumb.RaiseEvent(new KeyEventArgs(Keyboard.PrimaryDevice,source,Environment.TickCount,key){RoutedEvent=Keyboard.KeyDownEvent});
         }
-        static Color Pixel(AudioWaveformView view,int bin)
+        static T Ancestor<T>(DependencyObject child) where T:DependencyObject
         {
-            view.UpdateLayout();var bitmap=new RenderTargetBitmap((int)Math.Ceiling(view.ActualWidth),112,96,96,PixelFormats.Pbgra32);
-            bitmap.Render(view);
-            int x=(int)Math.Round(8+(bin+.5)*(view.ActualWidth-16)/view.Data!.Bins.Count);
-            byte[] pixel=new byte[4];bitmap.CopyPixels(new Int32Rect(x,36,1,1),pixel,4,0);
+            for(var parent=VisualTreeHelper.GetParent(child);parent is not null;parent=VisualTreeHelper.GetParent(parent))
+                if(parent is T found)return found;
+            throw new InvalidOperationException("Missing waveform ancestor: "+typeof(T).Name);
+        }
+        static string RenderEvidence(AudioWaveformView view)
+        {
+            var editor=Window.GetWindow(view)!;var scroll=Ancestor<ScrollViewer>(view);var viewport=Ancestor<ScrollContentPresenter>(view);
+            var bounds=view.TransformToAncestor(editor).TransformBounds(new Rect(view.RenderSize));
+            var clip=viewport.TransformToAncestor(editor).TransformBounds(new Rect(viewport.RenderSize));
+            return $"size={view.ActualWidth}x{view.ActualHeight}, offset={VisualTreeHelper.GetOffset(view)}, bounds={bounds}, viewport={clip}, scroll={scroll.VerticalOffset}/{scroll.ScrollableHeight}, viewportHeight={scroll.ViewportHeight}, dpi={VisualTreeHelper.GetDpi(view).DpiScaleX}";
+        }
+        static RenderTargetBitmap CaptureWaveform(AudioWaveformView view)
+        {
+            var editor=Window.GetWindow(view)??throw new InvalidOperationException("The waveform must remain in its shown product editor.");
+            var scroll=Ancestor<ScrollViewer>(view);var content=(Visual)scroll.Content;
+            editor.Activate();editor.UpdateLayout();
+            double top=view.TransformToAncestor(content).Transform(new Point()).Y;
+            scroll.ScrollToVerticalOffset(Math.Max(0,top-(scroll.ViewportHeight-view.ActualHeight)/2));
+            FlushDispatcher();editor.UpdateLayout();
+            view.BringIntoView(new Rect(view.RenderSize));FlushDispatcher();editor.UpdateLayout();
+            bool rendered=false;EventHandler painted=(_,_)=>rendered=true;
+            CompositionTarget.Rendering+=painted;
+            try{view.InvalidateVisual();PumpUntil(()=>rendered,"The shown editor did not complete a real rendering frame.");}
+            finally{CompositionTarget.Rendering-=painted;}
+            FlushDispatcher();
+            // Capture the actual window with its real ancestor/ScrollViewer
+            // clipping. Bin coordinates below are translated into this image;
+            // the Canvas is never detached or painted by a test substitute.
+            var bitmap=new RenderTargetBitmap((int)Math.Ceiling(editor.ActualWidth),(int)Math.Ceiling(editor.ActualHeight),96,96,PixelFormats.Pbgra32);
+            bitmap.Render(editor);
+            string? resultPath=Environment.GetEnvironmentVariable("VD_NATIVE_UI_TEST_RESULT");
+            if(!string.IsNullOrWhiteSpace(resultPath))
+            {
+                var encoder=new PngBitmapEncoder();encoder.Frames.Add(BitmapFrame.Create(bitmap));
+                using var file=File.Create(Path.Combine(Path.GetDirectoryName(resultPath)!,"media-waveform-window.png"));encoder.Save(file);
+            }
+            var viewport=Ancestor<ScrollContentPresenter>(view);
+            var bounds=view.TransformToAncestor(editor).TransformBounds(new Rect(view.RenderSize));
+            var clip=viewport.TransformToAncestor(editor).TransformBounds(new Rect(viewport.RenderSize));
+            Require(view.IsVisible && bounds.Width>0 && bounds.Height>0 && bounds.Left>=clip.Left-1 && bounds.Right<=clip.Right+1 &&
+                bounds.Top>=clip.Top-1 && bounds.Bottom<=clip.Bottom+1,"The complete waveform must be visible inside the real editor viewport: "+RenderEvidence(view));
+            return bitmap;
+        }
+        static Color Pixel(RenderTargetBitmap bitmap,AudioWaveformView view,int bin,int y=36)
+        {
+            double localX=8+(bin+.5)*(view.ActualWidth-16)/view.Data!.Bins.Count;
+            var point=view.TranslatePoint(new Point(localX,y),Window.GetWindow(view));
+            int x=(int)Math.Round(point.X),imageY=(int)Math.Round(point.Y);
+            Require(x>=0 && imageY>=0 && x<bitmap.PixelWidth && imageY<bitmap.PixelHeight,"A measured bin must lie within the captured editor: "+RenderEvidence(view));
+            byte[] pixel=new byte[4];bitmap.CopyPixels(new Int32Rect(x,imageY,1,1),pixel,4,0);
             return Color.FromArgb(pixel[3],pixel[2],pixel[1],pixel[0]);
+        }
+        static void AssertMeasuredPixels(AudioWaveformView view)
+        {
+            var bitmap=CaptureWaveform(view);var quiet=Pixel(bitmap,view,1);var peak=Pixel(bitmap,view,6);var rms=Pixel(bitmap,view,6,45);
+            string evidence=$"quiet={quiet}, peak={peak}, rms={rms}, "+RenderEvidence(view);
+            Require(quiet.A>240 && peak.A>240 && rms.A>240,"The waveform background and measured bins must render opaque inside the actual editor window: "+evidence);
+            Require(peak.G>quiet.G+60,"Rendered PCM peaks must draw visibly above the silent-bin background: "+evidence);
+            Require(rms.G>peak.G+50,"Measured RMS must form a distinct inner band inside the real peak envelope: "+evidence);
         }
         static AudioWaveform Wave(double start,double end,double? decodedEnd=null)=>new(start,end,
             Enumerable.Range(0,10).Select(index=>index is >=3 and <=7?new WaveformBin(.8,.4):new WaveformBin(0,0)),decodedEnd);
@@ -115,8 +169,21 @@ internal sealed partial class UiScenario
                 Control<TextBlock>(dialog,"MediaWaveformStartRange").Text.Contains(DownloadSection.FormatTimestamp(5),StringComparison.Ordinal) &&
                 Control<TextBlock>(dialog,"MediaWaveformStartRange").Text.Contains(DownloadSection.FormatTimestamp(20),StringComparison.Ordinal),
                 "The real view must expose its source-time window and accessible boundary handle.");
-            var quiet=Pixel(first,1);var loud=Pixel(first,6);
-            Require(loud.G>quiet.G+60,"Rendered PCM peaks must draw visibly above the silent-bin background.");
+            Require(VisualTreeHelper.GetOffset(first).Y>first.ActualHeight,
+                "The render regression must exercise the real waveform nested below the editor's other controls.");
+            var visibleCenter=first.TranslatePoint(new Point(first.ActualWidth/2,53),dialog);
+            Require(first.IsVisible && visibleCenter.Y>0 && visibleCenter.Y<dialog.ActualHeight,
+                "BringIntoView must expose the measured waveform inside the shown editor.");
+            AssertMeasuredPixels(first);
+            var reversed=new AudioWaveform(5,20,Enumerable.Range(0,10).Select(index=>index==1?new WaveformBin(.8,.4):new WaveformBin(0,0)));
+            first.SetData(reversed,10,0,29.999,true);FlushDispatcher();
+            var replacedBitmap=CaptureWaveform(first);
+            Require(Pixel(replacedBitmap,first,1).G>Pixel(replacedBitmap,first,6).G+60,
+                "Changing measured bins must repaint their actual source-time positions instead of preserving a cached image.");
+            first.SetData(measured,10,0,29.999,true);FlushDispatcher();
+            double originalWidth=dialog.Width;dialog.Width=Math.Max(dialog.MinWidth,originalWidth-140);
+            dialog.UpdateLayout();first.BringIntoView();FlushDispatcher();AssertMeasuredPixels(first);
+            dialog.Width=originalWidth;dialog.UpdateLayout();first.BringIntoView();FlushDispatcher();AssertMeasuredPixels(first);
             Require(firstThumb.CaptureMouse() && firstThumb.IsMouseCaptured,"The shown waveform Thumb must capture the real WPF mouse.");
             try
             {

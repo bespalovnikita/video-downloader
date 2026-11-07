@@ -34,6 +34,7 @@ internal static class JobDiagnosticsTests
             await IdentityAndArchive(root);
             await CapturedCoordinator(root);
             await BoundsAndConcurrency(root);
+            await UniqueRetentionCounts(root);
             await ExportPrivacyAndCancellation(root);
             await VersionProcesses(root);
             Console.WriteLine("PASS: job diagnostics typed identity, real attempts/settings, bounded archives, private ZIP snapshots and owned version children");
@@ -197,6 +198,42 @@ internal static class JobDiagnosticsTests
         using var cancelled=new CancellationTokenSource();cancelled.Cancel();
         await MustCancel(()=>service.ReadAsync(target,cancelled.Token),"Cancelled reads stop without changing journal or downloads");
         static long Size(string path)=>File.Exists(path)?new FileInfo(path).Length:0;
+    }
+
+    private static async Task UniqueRetentionCounts(string root)
+    {
+        var target=Target();string directory=Path.Combine(root,"unique-retention");
+        var journal=new DiagnosticJournal(directory,JournalProfile.Detailed,
+            new JournalLimits(FileQueueEntries:5000));
+        for(int index=0;index<2001;index++)journal.Write(Record(target,message:"unique-"+index));
+        await journal.DisposeAsync();
+        Require(journal.DroppedFileEntries==0 && journal.SnapshotJobEvents().Count==2001,
+            "The real 2001-event fixture must retain every event in both disk and memory");
+        var snapshot=await new JobDiagnosticsService(journal,"missing").ReadAsync(target,CancellationToken.None);
+        Require(snapshot.Events.Count==2000 && snapshot.OmittedEvents==1,
+            $"2001 unique disk+memory events must omit exactly one event, got {snapshot.OmittedEvents}");
+
+        var restarted=new DiagnosticJournal(directory,JournalProfile.Detailed);
+        restarted.Write(Record(target,message:"restart-1"));restarted.Write(Record(target,message:"restart-2"));
+        await restarted.DisposeAsync();
+        var acrossRuns=await new JobDiagnosticsService(restarted,"missing").ReadAsync(target,CancellationToken.None);
+        Require(acrossRuns.Events.Count==2000 && acrossRuns.OmittedEvents==3 && acrossRuns.Events.Select(entry=>entry.Journal).Distinct().Count()==2,
+            "A restarted journal counts unique omissions across journal IDs and its new memory overlap");
+
+        var large=new DiagnosticJournal(Path.Combine(root,"unique-bytes"),JournalProfile.Detailed,
+            new JournalLimits(FileQueueEntries:5000));
+        for(int index=0;index<2001;index++)
+        {
+            large.Write(Record(target,message:new string('x',1800)+index));
+            if(index%100==99)while(large.PendingFileBytes>0)await Task.Delay(1);
+        }
+        await large.DisposeAsync();
+        Require(large.DroppedFileEntries==0 && File.Exists(Path.Combine(Path.GetDirectoryName(large.FilePath)!,"job-events.1.jsonl")),
+            "The larger real journal rotates paired files without dropping producer events");
+        var bytesLimited=await new JobDiagnosticsService(large,"missing").ReadAsync(target,CancellationToken.None);
+        Require(bytesLimited.Events.Count<2000 && bytesLimited.Events.Count>0 && bytesLimited.OmittedEvents==2001-bytesLimited.Events.Count &&
+            bytesLimited.Events.Sum(entry=>JobDiagnosticCodec.Encode(entry).Length+1)<=JobDiagnosticsService.MaxSnapshotBytes,
+            "Rotated archives and overlapping memory preserve unique omission counts at the independent 2 MiB snapshot limit");
     }
 
     private static async Task ExportPrivacyAndCancellation(string root)
