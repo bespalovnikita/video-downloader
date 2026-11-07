@@ -27,7 +27,8 @@ public static class DownloadCleanup
             if (row.StageDir.Length>0)
             {
                 if (row.RunDir.Length==0) throw new IOException("Original staging root is unavailable.");
-                OwnedFiles.DeleteStage(row.StageDir,row.RunDir);
+                if(row.ResumeState is not null)DownloadResumeStore.DeleteRetained(row);
+                else OwnedFiles.DeleteStage(row.StageDir,row.RunDir);
             }
             row.OwnedPaths=[];row.CleanupPaths=[];row.StageDir="";
             row.Path="";row.CleanupError="";
