@@ -168,7 +168,7 @@ public sealed partial class NativeWindow
     }
     private bool DiskAdmissionChanged()
     {
-        _diskAdmissionMessage=ErrorMessages.Text("Очередь или настройки изменились во время проверки места. Повторите Start.",
+        _diskAdmissionMessage=ErrorMessages.Text("Очередь или настройки изменились во время проверки места. Повторите запуск кнопкой «Скачать всю очередь».",
             "The queue or settings changed while disk space was being checked. Press Start again.");
         T("DiskSpaceWarningText").Text=_diskAdmissionMessage;T("DiskSpaceWarningText").Visibility=Visibility.Visible;
         Log("Start postponed: queue or options changed during the disk-space check.");
@@ -225,7 +225,7 @@ public sealed partial class NativeWindow
                 if(_diskPressure.Observe(volume.Space))
                 {
                     string message=ErrorMessages.Text("Мало места на диске ","Low disk space on ")+volume.Space.Volume+
-                        ": "+DownloadFormat.Bytes(volume.Space.AvailableBytes!.Value);
+                        ": "+DisplayValueConverter.Bytes(volume.Space.AvailableBytes!.Value);
                     _journal.Write(new JournalRecord(JournalLevel.Warning,"disk",message));
                     _lifecycle.NotifyWarning(ErrorMessages.Text("Мало места на диске","Low disk space"),message);
                 }
@@ -244,14 +244,14 @@ public sealed partial class NativeWindow
             if(place.Length>180)place=place[..180]+"…";
             text.Append(place).Append(": ");
             if(volume.Space.Availability==DiskSpaceAvailability.Available && volume.Space.AvailableBytes is {} available)
-                text.Append(ErrorMessages.Text("свободно ","free ")).Append(DownloadFormat.Bytes(available));
+                text.Append(ErrorMessages.Text("свободно ","free ")).Append(DisplayValueConverter.Bytes(available));
             else text.Append(volume.Space.Detail.Length>0?volume.Space.Detail:
                 ErrorMessages.Text("свободное место неизвестно","free space is unknown"));
             var estimate=volume.Estimate;
             if(volume.ItemCount==0)continue;
             if(estimate.HasKnownSize)
-                text.Append(ErrorMessages.Text(" · известная часть потоков ≈ "," · known streams ≈ ")).Append(DownloadFormat.Bytes(estimate.KnownPayloadBytes))
-                    .Append(ErrorMessages.Text(" · резерв на этом диске ≈ "," · allowance on this disk ≈ ")).Append(DownloadFormat.Bytes(estimate.RequiredBytes));
+                text.Append(ErrorMessages.Text(" · известная часть потоков ≈ "," · known streams ≈ ")).Append(DisplayValueConverter.Bytes(estimate.KnownPayloadBytes))
+                    .Append(ErrorMessages.Text(" · резерв на этом диске ≈ "," · allowance on this disk ≈ ")).Append(DisplayValueConverter.Bytes(estimate.RequiredBytes));
             if(estimate.UnknownItems>0)
                 text.Append(ErrorMessages.Text(" · размер неизвестен у "," · size unknown for ")).Append(estimate.UnknownItems).Append(" URL");
         }

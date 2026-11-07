@@ -23,13 +23,13 @@ internal sealed class WindowLifecycleController : IDisposable
         if(File.Exists(iconPath))_ownedIcon=new Drawing.Icon(iconPath);
         _tray=new Forms.NotifyIcon {
             Icon=_ownedIcon??Drawing.SystemIcons.Application,
-            Text="Video Downloader | Ready",Visible=true
+            Text=ErrorMessages.Text("Video Downloader | Готово","Video Downloader | Ready"),Visible=true
         };
         _menu=new Forms.ContextMenuStrip();
-        _menu.Items.Add("Open",null,(_,_)=>Restore());
-        _menu.Items.Add("Open downloads",null,(_,_)=>openDownloads());
+        _menu.Items.Add(ErrorMessages.Text("Открыть","Open"),null,(_,_)=>Restore());
+        _menu.Items.Add(ErrorMessages.Text("Открыть папку загрузок","Open downloads"),null,(_,_)=>openDownloads());
         _menu.Items.Add(new Forms.ToolStripSeparator());
-        _menu.Items.Add("Exit",null,(_,_)=>RequestExit());
+        _menu.Items.Add(ErrorMessages.Text("Выход","Exit"),null,(_,_)=>RequestExit());
         _tray.ContextMenuStrip=_menu;
         _tray.DoubleClick+=OnTrayDoubleClick;
         _window.StateChanged+=OnWindowStateChanged;
@@ -70,7 +70,7 @@ internal sealed class WindowLifecycleController : IDisposable
         try
         {
             (failed>0?System.Media.SystemSounds.Hand:System.Media.SystemSounds.Asterisk).Play();
-            _tray.ShowBalloonTip(4000,"Video Downloader",$"OK {completed} · Left {remaining} · Err {failed}",
+            _tray.ShowBalloonTip(4000,"Video Downloader",ErrorMessages.Text($"Готово {completed} · Осталось {remaining} · Ошибок {failed}",$"OK {completed} · Left {remaining} · Err {failed}"),
                 failed>0?Forms.ToolTipIcon.Warning:Forms.ToolTipIcon.Info);
         }
         catch(InvalidOperationException){}

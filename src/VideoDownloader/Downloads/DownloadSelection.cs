@@ -19,10 +19,10 @@ public sealed record MediaFormat(string Id,string Extension,int Width,int Height
         get
         {
             string picture=HasVideo ? (Height>0?$"{(Width>0?Width+"×":"")}{Height}":"видео")+
-                (Fps>0?$" · {Fps:0.###} FPS":"") : "аудио";
+                (Fps>0?$" · {Fps:0.###} "+ErrorMessages.Text("кадр/с","FPS"):"") : "аудио";
             string codecs=string.Join(" / ",new[]{HasVideo?VideoCodec:"",HasAudio?AudioCodec:""}.Where(value=>value.Length>0));
             return string.Join(" · ",new[]{Id,Extension,picture,codecs,DynamicRange,Language,
-                EstimatedSizeBytes is {} bytes?(SizeIsApproximate?"≈ ":"")+DownloadFormat.Bytes(bytes):"размер неизвестен"}.Where(value=>value.Length>0));
+                EstimatedSizeBytes is {} bytes?(SizeIsApproximate?"≈ ":"")+DisplayValueConverter.Bytes(bytes):"размер неизвестен"}.Where(value=>value.Length>0));
         }
     }
 }

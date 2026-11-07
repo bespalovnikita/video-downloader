@@ -98,6 +98,13 @@ public sealed partial class NativeWindow
         F<Button>("CopyPathButton").IsEnabled=selected!=null && selected.Path.Length>0;
         F<Button>("OpenUrlButton").IsEnabled=selected!=null;
     }
+    internal static Forms.OpenFileDialog CreateOpenListDialog() => new()
+    {
+        Title=ErrorMessages.Text("Открыть список ссылок","Open URL list"),
+        Filter=ErrorMessages.Text("Файлы очереди и ссылок|*.vdqueue;*.txt;*.url|Все файлы|*.*",
+            "Queue and link files|*.vdqueue;*.txt;*.url|All files|*.*")
+    };
+
     private void BindActions()
     {
         BindFilenameTemplateHelp();
@@ -108,10 +115,7 @@ public sealed partial class NativeWindow
         F<Button>("PortableQueueButton").Click+=(_,_)=>OpenPortableQueueMenu();
         F<Button>("OpenListButton").Click+=(_,_)=>
         {
-            using var picker=new Forms.OpenFileDialog
-            {
-                Title="Open URL list",Filter="Queue and link files|*.vdqueue;*.txt;*.url|All files|*.*"
-            };
+            using var picker=CreateOpenListDialog();
             if(picker.ShowDialog()==Forms.DialogResult.OK)
             {
                 if(Path.GetExtension(picker.FileName).Equals(".vdqueue",StringComparison.OrdinalIgnoreCase))
@@ -141,24 +145,24 @@ public sealed partial class NativeWindow
         F<Button>("PickOutputButton").Click+=(_,_)=>
         {
             if(RejectProfileBackupMutation())return;
-            using var picker=new Forms.FolderBrowserDialog{Description="Download folder"};
+            using var picker=new Forms.FolderBrowserDialog{Description=ErrorMessages.Text("Папка загрузок","Download folder")};
             if(picker.ShowDialog()==Forms.DialogResult.OK && !RejectProfileBackupMutation())B("OutputBox").Text=picker.SelectedPath;
         };
         F<Button>("PickCookiesButton").Click+=(_,_)=>
         {
             if(RejectProfileBackupMutation())return;
-            using var picker=new Forms.OpenFileDialog{Filter="Cookie text files|*.txt|All files|*.*"};
+            using var picker=new Forms.OpenFileDialog{Title=ErrorMessages.Text("Выбрать файл cookies","Choose cookies file"),Filter=ErrorMessages.Text("Текстовые файлы cookies|*.txt|Все файлы|*.*","Cookie text files|*.txt|All files|*.*")};
             if(picker.ShowDialog()==Forms.DialogResult.OK && !RejectProfileBackupMutation())B("CookiesBox").Text=picker.FileName;
         };
         C("ProfileCombo").SelectionChanged+=(_,_)=>ApplyProfile(Pick(C("ProfileCombo")));
         F<Button>("RefreshDepsButton").Click+=(_,_)=>RefreshDependencyLabel();
-        F<Button>("UpdateYtDlpButton").Click+=async(_,_)=>await DependencyOperation("Updating yt-dlp...",DependencyCenter.UpdateYtDlpAsync);
-        F<Button>("InstallFfmpegButton").Click+=async(_,_)=>await DependencyOperation("Installing FFmpeg...",
-            async cancel=>{ await DependencyCenter.InstallFfmpegAsync(cancel);return "FFmpeg installed next to VideoDownloader.exe.";});
+        F<Button>("UpdateYtDlpButton").Click+=async(_,_)=>await DependencyOperation(ErrorMessages.Text("Обновление yt-dlp…","Updating yt-dlp..."),DependencyCenter.UpdateYtDlpAsync);
+        F<Button>("InstallFfmpegButton").Click+=async(_,_)=>await DependencyOperation(ErrorMessages.Text("Установка FFmpeg…","Installing FFmpeg..."),
+            async cancel=>{ await DependencyCenter.InstallFfmpegAsync(cancel);return ErrorMessages.Text("FFmpeg установлен рядом с VideoDownloader.exe.","FFmpeg installed next to VideoDownloader.exe.");});
         F<Button>("OpenAppSettingsButton").Click+=(_,_)=>OpenAppSettingsFolder();
         F<Button>("RegisterProtocolButton").Click+=(_,_)=>
         {
-            try { DependencyCenter.RegisterProtocol();MessageBox.Show(_window,"videodownloader:// registered for this Windows user.","Protocol registered");}
+            try { DependencyCenter.RegisterProtocol();MessageBox.Show(_window,ErrorMessages.Text("Протокол videodownloader:// зарегистрирован для текущего пользователя Windows.","videodownloader:// registered for this Windows user."),ErrorMessages.Text("Протокол зарегистрирован","Protocol registered"));}
             catch(Exception e){MessageBox.Show(_window,DisplayError(e),ErrorMessages.Text("Не удалось зарегистрировать протокол","Protocol registration failed"));}
         };
         F<Button>("OpenFileButton").Click+=(_,_)=>{if(D.SelectedItem is DownloadItem row)OpenFile(row.Path);};
@@ -184,8 +188,8 @@ public sealed partial class NativeWindow
             queueMenu.Opened+=(_,_)=>entry.IsEnabled=Q.SelectedItem is DownloadItem row && IsVisibleQueueRow(row);
             queueMenu.Items.Add(entry);
         }
-        QueueAction("Open URL",row=>OpenUrl(row.Url));
-        QueueAction("Copy URL",row=>Clipboard.SetText(row.Url));
+        QueueAction(ErrorMessages.Text("Открыть ссылку","Open URL"),row=>OpenUrl(row.Url));
+        QueueAction(ErrorMessages.Text("Копировать ссылку","Copy URL"),row=>Clipboard.SetText(row.Url));
         var downloadSelected=new MenuItem{Header=ErrorMessages.Text("Скачать выбранные строки","Download selected rows")};
         downloadSelected.Click+=(_,_)=>{var rows=SelectedVisibleQueueRows();if(rows.Length>0)_ = StartAsync(rows);};
         queueMenu.Items.Add(downloadSelected);
@@ -206,11 +210,11 @@ public sealed partial class NativeWindow
             entry.Click+=(_,_)=>{if(D.SelectedItem is DownloadItem row)callback(row);};
             downloadMenu.Items.Add(entry);
         }
-        DownloadAction("Open file",row=>OpenFile(row.Path));
-        DownloadAction("Show in folder",row=>ShowFileInFolder(row));
-        DownloadAction("Copy path",row=>{if(row.Path.Length>0)Clipboard.SetText(row.Path);});
-        DownloadAction("Open URL",row=>OpenUrl(row.Url));
-        DownloadAction("Retry URL",row=>{_ = StartAsync([row]);});
+        DownloadAction(ErrorMessages.Text("Открыть файл","Open file"),row=>OpenFile(row.Path));
+        DownloadAction(ErrorMessages.Text("Показать в папке","Show in folder"),row=>ShowFileInFolder(row));
+        DownloadAction(ErrorMessages.Text("Копировать путь","Copy path"),row=>{if(row.Path.Length>0)Clipboard.SetText(row.Path);});
+        DownloadAction(ErrorMessages.Text("Открыть ссылку","Open URL"),row=>OpenUrl(row.Url));
+        DownloadAction(ErrorMessages.Text("Скачать повторно","Retry URL"),row=>{_ = StartAsync([row]);});
         DownloadAction(ErrorMessages.Text("Показать ошибку","Show error"),row=>MessageBox.Show(_window,row.ErrorMessage,
             ErrorMessages.Text("Ошибка скачивания","Download error")));
         DownloadAction(ErrorMessages.Text("Исходная диагностика","Show raw error"),row=>MessageBox.Show(_window,row.RawError,
@@ -245,7 +249,7 @@ public sealed partial class NativeWindow
             if(_closing || _disposed || _appUpdateHandoff)throw new OperationCanceledException("Приложение закрывается или обновляется.");
             var response=await task(CancellationToken.None);
             Log(response);
-            MessageBox.Show(_window,response,"Dependency operation complete");
+            MessageBox.Show(_window,ErrorMessages.Text("Операция с компонентами завершена. Подробности доступны в журнале.",response),ErrorMessages.Text("Компоненты обновлены","Dependency operation complete"));
         }
         catch(Exception e)
         {
@@ -279,8 +283,8 @@ public sealed partial class NativeWindow
             var active=SessionState.Coordinator?.IsRunning==true;
             var answer=MessageBox.Show(_window,
                 active
-                    ? "A download is still running.\nYes: minimize to tray (downloads continue)\nNo: stop downloads and exit\nCancel: stay in the app"
-                    : "Close Video Downloader?\nYes: minimize to tray\nNo: exit\nCancel: stay in the app",
+                    ? ErrorMessages.Text("Загрузка ещё выполняется.\nДа: свернуть в трей и продолжить скачивание\nНет: остановить скачивание и выйти\nОтмена: остаться в приложении","A download is still running.\nYes: minimize to tray (downloads continue)\nNo: stop downloads and exit\nCancel: stay in the app")
+                    : ErrorMessages.Text("Закрыть Video Downloader?\nДа: свернуть в трей\nНет: выйти\nОтмена: остаться в приложении","Close Video Downloader?\nYes: minimize to tray\nNo: exit\nCancel: stay in the app"),
                 "Video Downloader",MessageBoxButton.YesNoCancel,MessageBoxImage.Question);
             if(answer==MessageBoxResult.Yes){e.Cancel=true;_lifecycle.Hide();return;}
             if(answer==MessageBoxResult.Cancel){e.Cancel=true;return;}

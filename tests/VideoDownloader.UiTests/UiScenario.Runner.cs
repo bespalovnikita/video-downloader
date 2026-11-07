@@ -281,7 +281,7 @@ internal sealed partial class UiScenario
             Require(currentRows.Length==1 && currentRows[0].Url=="https://example.com/clipboard",
                 "Completion notifications and live metrics must share the current-session subset, excluding old successes");
             controller.Subject.UpdateState();
-            Require(tray.Text.Contains("OK 0 Left 1 Err 0"),
+            Require(tray.Text.Contains(ErrorMessages.Text("Готово 0 Осталось 1 Ошибок 0","OK 0 Left 1 Err 0")),
                 "Tray counts must be current-session only, ordered OK Left Err");
 
             Stage("testing shutdown");
@@ -384,7 +384,7 @@ internal sealed partial class UiScenario
             if(corrupt) File.WriteAllText(data.SessionPath,"{invalid checkpoint");
             else data.Save(savedRows,options);
             string before=File.ReadAllText(data.SessionPath);
-            string title=corrupt?ErrorMessages.Text("Ошибка восстановления","Session recovery error"):"Restore previous session";
+            string title=corrupt?ErrorMessages.Text("Ошибка восстановления","Session recovery error"):ErrorMessages.Text("Восстановить предыдущую сессию","Restore previous session");
             int button=corrupt?1:6;
             uint thread=GetCurrentThreadId();
             Exception? failure=null;

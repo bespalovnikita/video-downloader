@@ -304,7 +304,7 @@ Reorder / drag/drop / download selected остаются заблокирова�
 
 ## Трей и цвета состояний
 
-- Tooltip NotifyIcon.Text обновляется из session stats, содержит OK → Left → Err и скорость при активном скачивании; длина ограничена 63 символами.
+- Tooltip NotifyIcon.Text обновляется из session stats, содержит «Готово» → «Осталось» → «Ошибок» (OK → Left → Err при нерусской UI-локали) и скорость при активном скачивании; длина ограничена 63 символами.
 - Queue и Downloads статусы раскрашиваются WPF DataTriggers по стабильному `Status`, а не по тексту ошибок или процентам.
 - Цвета доступны в тёмной теме: completed=green, queued=grey, running=cyan, interrupted=amber, failed=red.
 

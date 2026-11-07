@@ -525,7 +525,7 @@ internal sealed partial class SubscriptionController : IDisposable
                             Control<TextBlock>("SubscriptionCheckDetailText").Text=$"Успешных проверок: {succeeded}; ошибок: {failed}; добавлено в очередь: {queued}.";
                             Status((cancelled?"Проверка отменена.":"Проверка завершена.")+
                                 $" Успешных проверок: {succeeded} (полных: {fullChecks}; по окну новых: {recentChecks}); ошибок: {failed}; добавлено в очередь: {queued}. "+
-                                "Новые материалы — во «Входящих». Скачивание только кнопкой Start."+
+                                "Новые материалы — во «Входящих». Скачивание только кнопкой «Скачать всю очередь»."+
                                 (queueError.Length>0?" "+queueError:""),failed>0);
                         }
                     }
@@ -617,7 +617,7 @@ internal sealed partial class SubscriptionController : IDisposable
         {
             int count=await QueueCandidatesAsync(selected);
             await ReloadAsync();
-            Status(count>0?$"В обычной очереди: {count}. Запуск только кнопкой Start.":"В очередь ничего не добавлено. Материалы остаются во «Входящих».");
+            Status(count>0?$"В обычной очереди: {count}. Запуск только кнопкой «Скачать всю очередь».":"В очередь ничего не добавлено. Материалы остаются во «Входящих».");
         }
         catch(Exception e)
         {

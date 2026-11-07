@@ -91,8 +91,8 @@ internal sealed partial class MediaSelectionDialog
         foreach(var button in new[]{_startPreviousFrame,_endPreviousFrame})if(button is not null)button.Content="−"+suffix;
         foreach(var button in new[]{_startNextFrame,_endNextFrame})if(button is not null)button.Content="+"+suffix;
         _stepStatus.Text=FragmentTimelineTiming.KnownFps(fps)
-            ?"Шаг: один кадр по сетке "+fps!.Value.ToString("0.###",System.Globalization.CultureInfo.InvariantCulture)+" FPS. Поля времени округляются до миллисекунд."
-            :"FPS выбранного видео неизвестен или различается между форматами; шаг — 0.1 секунды.";
+            ?"Шаг: один кадр по сетке "+fps!.Value.ToString("0.###",System.Globalization.CultureInfo.InvariantCulture)+" кадр/с. Поля времени округляются до миллисекунд."
+            :"Частота кадров выбранного видео неизвестна или различается между форматами; шаг — 0.1 секунды.";
         _timelineStatus.Text=!_editable?"Шкала недоступна: строка защищена от изменения.":!individual
             ?"Дождитесь метаданных отдельного видео.":duration is null
             ?"Источник не сообщил длительность: задайте диапазон полями времени; пошаговая настройка остаётся доступной."

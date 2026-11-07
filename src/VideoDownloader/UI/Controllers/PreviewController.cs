@@ -234,13 +234,13 @@ internal sealed class PreviewController : IDisposable
         if(receivedTitle.Length>0 && !string.Equals(receivedTitle,data.Url,StringComparison.Ordinal))_selectedKnownTitle=receivedTitle;
         _title.Text=DisplayTitle(data.Url,data.Title,"Название пока недоступно");
         var summary=new List<string>();
-        if(data.PlaylistTitle.Length>0)summary.Add("Playlist: "+data.PlaylistTitle);
+        if(data.PlaylistTitle.Length>0)summary.Add("Плейлист: "+data.PlaylistTitle);
         if(data.Uploader.Length>0)summary.Add(data.Uploader);
         if(data.Duration>0)summary.Add(TimeSpan.FromSeconds(data.Duration).ToString(@"hh\:mm\:ss"));
         if(data.Extractor.Length>0)summary.Add(data.Extractor);
         _metadata.Text=string.Join(" · ",summary);
         _metadata.ToolTip=null;
-        _formats.Text=$"{(data.MaxHeight>0?data.MaxHeight+"p ":"")}{data.MaxFps:0} FPS · {data.Codecs} · {data.DynamicRange}";
+        _formats.Text=$"{(data.MaxHeight>0?data.MaxHeight+"p ":"")}{data.MaxFps:0} кадр/с · {data.Codecs} · {data.DynamicRange}";
         SetGallery(data);
     }
 

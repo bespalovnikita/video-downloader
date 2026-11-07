@@ -25,9 +25,9 @@ public static class DependencyCenter
     public static string Inspect()
     {
         string yt=Executable("yt-dlp.exe"), ffmpeg=Executable("ffmpeg.exe"),probe=Executable("ffprobe.exe");
-        return $"yt-dlp: {(File.Exists(yt)?"installed":"missing")}\n"+
-               $"FFmpeg: {(File.Exists(ffmpeg)?"installed":"missing")}\n"+
-               $"ffprobe: {(File.Exists(probe)?"installed":"missing")}";
+        return $"yt-dlp: {(File.Exists(yt)?ErrorMessages.Text("установлен","installed"):ErrorMessages.Text("не найден","missing"))}\n"+
+               $"FFmpeg: {(File.Exists(ffmpeg)?ErrorMessages.Text("установлен","installed"):ErrorMessages.Text("не найден","missing"))}\n"+
+               $"ffprobe: {(File.Exists(probe)?ErrorMessages.Text("установлен","installed"):ErrorMessages.Text("не найден","missing"))}";
     }
     public static void ValidateDownloadTools(string ytDlp) =>
         ValidateDownloadTools(ytDlp,Executable("ffmpeg.exe"),Executable("ffprobe.exe"));

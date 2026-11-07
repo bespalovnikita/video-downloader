@@ -60,7 +60,7 @@ public static class Program
         }
         catch(Exception error)
         {
-            System.Windows.Forms.MessageBox.Show(ExceptionDetails(error),"Video Downloader update recovery",
+            System.Windows.Forms.MessageBox.Show(ExceptionDetails(error),ErrorMessages.Text("Восстановление обновления Video Downloader","Video Downloader update recovery"),
                 System.Windows.Forms.MessageBoxButtons.OK,System.Windows.Forms.MessageBoxIcon.Warning);
             singleton.ReleaseMutex();return;
         }

@@ -58,9 +58,9 @@ internal sealed partial class UiScenario
                         Require(((TextBox)dialog.FindName("DuplicateUrl")!).Text==promptedUrls[position],
                             "The dialog must show the exact duplicate URL in input order.");
                         Require(((TextBlock)dialog.FindName("CounterLabel")!).Text==
-                            $"Previously downloaded URL ({position+1}/2)",
+                            ErrorMessages.Text($"Ссылка уже скачивалась ({position+1}/2)",$"Previously downloaded URL ({position+1}/2)"),
                             "The dialog must report the duplicate position and total.");
-                        Require(((TextBlock)dialog.FindName("CompletedAtLabel")!).Text.StartsWith("Last downloaded: ",StringComparison.Ordinal),
+                        Require(((TextBlock)dialog.FindName("CompletedAtLabel")!).Text.StartsWith(ErrorMessages.Text("Последнее скачивание: ","Last downloaded: "),StringComparison.Ordinal),
                             "Known success dates must reach the dialog.");
                         Answer(dialog,answers[position]);
                     }

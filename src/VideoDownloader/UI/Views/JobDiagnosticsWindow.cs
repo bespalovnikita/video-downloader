@@ -236,7 +236,7 @@ internal sealed class JobDiagnosticsWindow:Window
             }
             if(_closed || _stop.IsCancellationRequested)return;
             var result=await _service.ExportAsync(_target,snapshot,destination.Path,_stop.Token,overwrite);
-            if(!_closed)_status.Text=$"ZIP сохранён: {result.Events} событий, {DownloadFormat.Bytes(result.Bytes)}. "+
+            if(!_closed)_status.Text=$"ZIP сохранён: {result.Events} событий, {DisplayValueConverter.Bytes(result.Bytes)}. "+
                 string.Join("; ",result.Components.Select(component=>component.Component+": "+component.Status));
         }
         catch(OperationCanceledException) when(_stop.IsCancellationRequested){ }

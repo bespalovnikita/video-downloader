@@ -266,7 +266,7 @@ internal sealed partial class SubscriptionController
         {
             await Task.Run(()=>_store.SetSchedule(source.Id,enabled,interval));
             await ReloadAsync(notify:false);
-            Status(enabled?"Расписание сохранено. Первая проверка — через выбранный интервал; скачивание запускается отдельно кнопкой Start.":"Проверки этой подписки по расписанию выключены.");
+            Status(enabled?"Расписание сохранено. Первая проверка — через выбранный интервал; скачивание запускается отдельно кнопкой «Скачать всю очередь».":"Проверки этой подписки по расписанию выключены.");
         }
         catch(Exception error){Status("Не удалось сохранить расписание: "+DisplayError(error),true);}
         finally{_mutation=false;UpdateButtons();}

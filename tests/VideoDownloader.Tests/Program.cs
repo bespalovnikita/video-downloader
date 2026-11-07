@@ -65,9 +65,9 @@ var temp=Path.Combine(Path.GetTempPath(),"video-downloader-native-tests-"+Guid.N
 Directory.CreateDirectory(temp);
 try
 {
-    Assert(DownloadFormat.Tray(12,5,2,2.5*1024*1024,true,false)=="VD | OK 12 Left 5 Err 2 | 2.5 MB/s","Correct tray field order");
+    Assert(DownloadFormat.Tray(12,5,2,2.5*1024*1024,true,false)==ErrorMessages.Text("VD | Готово 12 Осталось 5 Ошибок 2 | ","VD | OK 12 Left 5 Err 2 | ")+DisplayValueConverter.Speed(2.5*1024*1024),"Correct tray field order");
     Assert(DownloadFormat.Tray(int.MaxValue,int.MaxValue,int.MaxValue,double.MaxValue,true,false).Length<=63,"Windows tray limit");
-    Assert(DownloadFormat.Tray(1,2,3,300,true,true).EndsWith("Paused"),"Pause indicator");
+    Assert(DownloadFormat.Tray(1,2,3,300,true,true).EndsWith(ErrorMessages.Text("Пауза","Paused")),"Pause indicator");
     Assert(Math.Abs(DownloadCoordinator.ParseSize("1.5MiB/s")-1.5*1024*1024)<1,"Native progress speed parser");
     Assert(Math.Abs(DownloadCoordinator.ParseSize("550 KiB/s")-550*1024)<1,"Progress KiB parser");
     var data=new AppPersistence(Path.Combine(temp,"localdata"));

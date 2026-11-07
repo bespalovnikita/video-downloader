@@ -62,7 +62,7 @@ public sealed partial class NativeWindow
     private string? ApplyMediaSelection(DownloadItem row,DownloadSelection? selection)
     {
         if(!CanEditMediaSelection(row))return "Эта строка уже выполняется, удаляется или недоступна для изменения. Закройте окно и дождитесь завершения операции.";
-        if(selection!=null && !selection.TryValidate(row.Url,ReadOptions(),out string error))return error;
+        if(selection!=null && !selection.TryValidate(row.Url,ReadOptions(),out string error))return ErrorMessages.ForDisplay(error);
         var previous=row.Selection;
         row.Selection=selection;
         SaveCheckpoint();

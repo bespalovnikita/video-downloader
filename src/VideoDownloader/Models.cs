@@ -59,8 +59,8 @@ public sealed class DownloadItem : INotifyPropertyChanged
         "Interrupted" => ErrorMessages.Text("Прервано",State),
         "Cancelled" => ErrorMessages.Text("Отменено",State),
         "Cancelling — waiting for cleanup" => ErrorMessages.Text("Отмена — ожидается очистка",State),
-        "Cleanup failed — Remove to retry" => ErrorMessages.Text("Ошибка очистки — повторите Remove",State),
-        "Removal pending — use Remove" => ErrorMessages.Text("Ожидается удаление — нажмите Remove",State),
+        "Cleanup failed — Remove to retry" => ErrorMessages.Text("Ошибка очистки — повторите удаление",State),
+        "Removal pending — use Remove" => ErrorMessages.Text("Ожидается удаление — нажмите «Удалить выбранные»",State),
         _ => State
     };
     [JsonIgnore] public string StateToolTip => ErrorMessage.Length==0 ? StateLabel : StateLabel+Environment.NewLine+ErrorMessage;
@@ -172,8 +172,8 @@ public static class DownloadFormat
     }
     public static string Tray(int ok,int left,int errors,double speed,bool running,bool paused)
     {
-        string s=$"VD | OK {ok} Left {left} Err {errors}";
-        s+=running ? paused ? " | Paused" : $" | {Speed(speed)}" : " | Finished";
+        string s=ErrorMessages.Text($"VD | Готово {ok} Осталось {left} Ошибок {errors}",$"VD | OK {ok} Left {left} Err {errors}");
+        s+=running ? paused ? ErrorMessages.Text(" | Пауза"," | Paused") : $" | {DisplayValueConverter.Display(Speed(speed))}" : ErrorMessages.Text(" | Завершено"," | Finished");
         return s.Length <= 63 ? s : s[..63];
     }
 }

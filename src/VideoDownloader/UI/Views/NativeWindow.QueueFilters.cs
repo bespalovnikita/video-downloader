@@ -22,7 +22,7 @@ public sealed partial class NativeWindow
         F<Button>("ClearQueueButton").Content=ErrorMessages.Text("Очистить всю очередь","Clear all");
         F<Button>("ClearQueueButton").ToolTip=ErrorMessages.Text("Удаляет строки всей очереди, включая скрытые фильтром. Скачанные файлы сохраняются.",
             "Clears the whole queue, including filtered-out rows. Downloaded files are kept.");
-        F<Button>("RetryFailedButton").Content=ErrorMessages.Text("↻ Все ошибки","↻ All failed");
+        F<Button>("RetryFailedButton").Content=ErrorMessages.Text("Повторить ошибки","↻ All failed");
         F<Button>("RetryFailedButton").ToolTip=ErrorMessages.Text("Повторить все задания с ошибками, включая скрытые фильтром.",
             "Retry all failed tasks, including filtered-out rows.");
         F<Button>("StartButton").Content=ErrorMessages.Text("▶ Скачать всю очередь","▶ Start all");

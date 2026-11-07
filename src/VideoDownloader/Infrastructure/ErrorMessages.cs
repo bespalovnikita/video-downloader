@@ -48,9 +48,9 @@ internal static class ErrorMessages
     // mistaken for HTTP codes or an extractor's diagnostic text.
     private static readonly Rule[] BeforeHttp =
     [
-        RuleFor(@"^Fragment merge failed: Embedded covers cannot be preserved", "Склейка этого контейнера со встроенной обложкой пока не поддерживается. Выключите Embed thumbnail либо сохраните отдельные фрагменты."),
+        RuleFor(@"^Fragment merge failed: Embedded covers cannot be preserved", "Склейка этого контейнера со встроенной обложкой пока не поддерживается. Выключите «Встроить обложку» либо сохраните отдельные фрагменты."),
         RuleFor(@"^Fragment merge failed:", "Не удалось склеить выбранные фрагменты. Проверьте совместимость дорожек и параметры перекодирования либо сохраните отдельные файлы. Исходная диагностика доступна в подробностях ошибки."),
-        RuleFor(@"\bunsupported URL\b|\bno suitable extractor\b", "Этот адрес не поддерживается yt-dlp. Проверьте ссылку и обновите yt-dlp в разделе Dependencies."),
+        RuleFor(@"\bunsupported URL\b|\bno suitable extractor\b", "Этот адрес не поддерживается yt-dlp. Проверьте ссылку и обновите yt-dlp в разделе «Компоненты»."),
         RuleFor(@"\bDRM[- ]protected\b|\bprotected (?:with|by) DRM\b|\bDRM protection\b", "Материал защищён DRM. Приложение не может скачать его обычным способом."),
         RuleFor(@"\bnot (?:available|accessible) in your (?:country|region)\b|\bgeo[- ]restrict|\bgeographic restriction", "Материал недоступен в вашем регионе. Проверьте доступность видео в браузере."),
         RuleFor(@"\bconfirm you(?:'|’)re not a bot\b|\bnot a bot\b|\bcaptcha\b", "Сайт требует проверку пользователя. Откройте видео в браузере и при необходимости укажите актуальный файл cookies."),
@@ -60,6 +60,8 @@ internal static class ErrorMessages
         RuleFor(@"\bvideo has been removed\b|\bvideo (?:has been )?deleted\b|\bremoved by (?:the )?uploader\b", "Видео удалено с сайта. Проверьте исходную ссылку."),
         RuleFor(@"\brequested format is not available\b|\bno suitable quality available\b", "Выбранный формат или качество недоступны. Выберите другое качество, кодек или профиль и повторите загрузку."),
         RuleFor(@"\bvideo unavailable\b|\bthis video is unavailable\b", "Видео недоступно. Проверьте исходную ссылку и доступ к ней в браузере."),
+        RuleFor(@"\bcookie file is missing\b", "Не найден файл cookies. Выберите существующий файл или очистите поле «Файл cookies»."),
+        RuleFor(@"\bchoose an output directory\b", "Выберите папку загрузок перед запуском."),
         RuleFor(@"\bfilename template must be relative\b", "Шаблон имени должен задавать относительный путь без «..», буквы диска и начального разделителя папок."),
         RuleFor(@"\bno ownership manifest\b", "Нет списка файлов, принадлежащих этой загрузке. Автоматическое удаление заблокировано; удалите нужные файлы вручную."),
         RuleFor(@"\brefusing deletion outside download folder\b|\b(?:stage|destination) (?:path )?escaped its folder\b|\bunknown staging directory\b", "Операция с файлами за пределами известной папки загрузки заблокирована. Проверьте папку назначения и исходную диагностику."),
@@ -71,12 +73,12 @@ internal static class ErrorMessages
         RuleFor(@"\b(?:invalid|empty) session checkpoint\b|\binvalid or duplicate checkpoint\b|\bsession checkpoint exceeds\b|\binvalid subscription folder in session checkpoint\b", "Сохранённая сессия повреждена или имеет неподдерживаемый формат. Исходный файл сохранён; проверьте диагностику и резервную копию."),
         RuleFor(@"\bcannot acquire download-history lock\b", "Файл истории занят другой операцией. Дождитесь её завершения и повторите действие."),
         RuleFor(@"\bno JPEG/PNG thumbnail was provided\b|\bno (?:usable )?thumbnail\b", "yt-dlp не предоставил подходящую обложку. Текстовые метаданные могут быть доступны без изображения."),
-        RuleFor(@"\b(?:WebP|AVIF)[\s\S]*thumbnail (?:needs|requires) FFmpeg\b", "Для этой обложки нужен FFmpeg. Установите его в разделе Dependencies; текстовые метаданные доступны без изображения."),
+        RuleFor(@"\b(?:WebP|AVIF)[\s\S]*thumbnail (?:needs|requires) FFmpeg\b", "Для этой обложки нужен FFmpeg. Установите его в разделе «Компоненты»; текстовые метаданные доступны без изображения."),
         RuleFor(@"\bFFmpeg could not (?:convert|start for thumbnail conversion)\b", "Не удалось преобразовать обложку с помощью FFmpeg. Проверьте FFmpeg; текстовые метаданные доступны без изображения."),
         RuleFor(@"\b(?:thumbnail|image)[\s\S]*(?:exceeds|dimensions limit)|\binvalid thumbnail size\b", "Размер обложки превышает ограничение предпросмотра. Текстовые метаданные доступны без изображения."),
         RuleFor(@"\bthumbnail (?:response is not|image is damaged|has no image frame)\b", "Сайт вернул неподдерживаемое или повреждённое изображение обложки. Текстовые метаданные доступны без изображения."),
         RuleFor(@"\bno ffmpeg or ffprobe binary in package\b", "В скачанном архиве не найдены FFmpeg и ffprobe. Повторите установку или установите их вручную."),
-        RuleFor(@"\b(?:ffmpeg|ffprobe)(?:\.exe)?[\s\S]*(?:not found|missing|not installed)\b", "Не найдены FFmpeg или ffprobe. Установите FFmpeg в разделе Dependencies и повторите действие."),
+        RuleFor(@"\b(?:ffmpeg|ffprobe)(?:\.exe)?[\s\S]*(?:not found|missing|not installed)\b", "Не найдены FFmpeg или ffprobe. Установите FFmpeg в разделе «Компоненты» и повторите действие."),
         RuleFor(@"\b(?:yt-dlp|ffmpeg|ffprobe)(?:\.exe)?[\s\S]*(?:cannot start|could not start)\b|\bcannot start yt-dlp\b", "Не удалось запустить инструмент обработки медиа. Проверьте наличие yt-dlp, FFmpeg и ffprobe и права на запуск."),
         RuleFor(@"\bno space left on device\b|\bnot enough space on (?:the )?disk\b|\bdisk (?:is )?full\b", "На диске недостаточно свободного места. Освободите место или выберите другую папку назначения."),
         RuleFor(@"\bpermission denied\b|\baccess (?:is )?denied\b|\baccess to (?:the )?path[^\r\n]*? is denied\b", "Нет доступа к файлу или папке. Проверьте права доступа и выберите доступную папку назначения."),
@@ -127,10 +129,20 @@ internal static class ErrorMessages
             var context=Context.Match(raw);
             if (context.Success)
                 return context.Groups["prefix"].Value + ForRussian(context.Groups["detail"].Value,depth+1);
-            return raw;
+            return LocalizeControlReferences(raw);
         }
-        return Translate(raw);
+        return raw.StartsWith("MP3 поддерживает одну аудиодорожку.",StringComparison.Ordinal)
+            ? LocalizeControlReferences(raw) : Translate(raw);
     }
+
+    // Old saved diagnostics can mention the former English control captions.
+    // Rewrite those references only for display; the original remains available.
+    private static string LocalizeControlReferences(string raw) => raw
+        .Replace("«MP3 only»","«Только MP3»",StringComparison.Ordinal)
+        .Replace("контейнер Auto или MKV","контейнер «Авто» или MKV",StringComparison.Ordinal)
+        .Replace("Выберите Auto/MKV","Выберите «Авто»/MKV",StringComparison.Ordinal)
+        .Replace("Нажмите Install FFmpeg в разделе Dependencies","Нажмите «Установить FFmpeg» в разделе «Компоненты»",StringComparison.Ordinal)
+        .Replace("Повторите Start.","Повторите запуск кнопкой «Скачать всю очередь».",StringComparison.Ordinal);
 
     internal static string ForLog(string message)
     {

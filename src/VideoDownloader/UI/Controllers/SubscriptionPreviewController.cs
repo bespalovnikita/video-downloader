@@ -96,7 +96,7 @@ internal sealed class SubscriptionPreviewController : IDisposable
         }
         var formats=new List<string>();
         if(data.MaxHeight>0)formats.Add(data.MaxHeight+"p");
-        if(double.IsFinite(data.MaxFps) && data.MaxFps>0)formats.Add(data.MaxFps.ToString("0.#",CultureInfo.CurrentCulture)+" FPS");
+        if(double.IsFinite(data.MaxFps) && data.MaxFps>0)formats.Add(data.MaxFps.ToString("0.#",CultureInfo.CurrentCulture)+" кадр/с");
         if(data.Codecs.Length>0)formats.Add(data.Codecs);
         if(data.DynamicRange.Length>0)formats.Add(data.DynamicRange);
         if(formats.Count>0)details.Add("Форматы: "+string.Join(" · ",formats));

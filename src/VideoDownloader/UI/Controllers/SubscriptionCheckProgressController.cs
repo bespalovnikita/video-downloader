@@ -162,7 +162,7 @@ internal sealed class SubscriptionCheckProgressController
         var details=new List<string>();
         if(_items is { } items)details.Add(_recentWindow?$"Материалов в проверенном окне: {items}":$"Материалов в полном списке: {items}");
         else details.Add(_recentWindow?"Окно: до 20 новых материалов. Сравниваем точные URL.":"Число материалов станет известно после полного обхода.");
-        if(_bytes is { } bytes)details.Add($"Получено метаданных: {DownloadFormat.Bytes(bytes)}");
+        if(_bytes is { } bytes)details.Add($"Получено метаданных: {DisplayValueConverter.Bytes(bytes)}");
         Control<TextBlock>("SubscriptionCheckDetailText").Text=string.Join(" · ",details);
     }
 
