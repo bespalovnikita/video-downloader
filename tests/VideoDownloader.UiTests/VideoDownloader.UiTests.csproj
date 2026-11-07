@@ -10,6 +10,8 @@
     <AssemblyName>VideoDownloader.UiTests</AssemblyName>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="..\VideoDownloader.Tests\QueueCapacityRecoveryFixture.cs" Link="QueueCapacityRecoveryFixture.cs" />
+    <Content Include="..\fixtures\legacy\**\*" Link="fixtures\legacy\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <ProjectReference Include="..\..\src\VideoDownloader\VideoDownloader.csproj" />
   </ItemGroup>
 </Project>

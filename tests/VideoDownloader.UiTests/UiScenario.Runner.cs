@@ -90,6 +90,8 @@ internal sealed partial class UiScenario
             UiScenario.TestPortableQueueTransfer(root);
             Stage("testing ordinary ingress capacity before mutation and nested active-session dispatch");
             UiScenario.TestOrdinaryQueueCapacity(root);
+            Stage("testing expanded legacy checkpoint recovery, protected export and explicit reduction/owned cleanup");
+            UiScenario.TestExpandedQueueRecovery(root);
             Stage("testing startup recovery dialogs and empty-queue settings");
             VerifyStartupRecovery(root,Stage);
             using var input=File.OpenRead(Path.Combine(AppContext.BaseDirectory,"ui","MainWindow.xaml"));
