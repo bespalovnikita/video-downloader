@@ -47,13 +47,18 @@ internal sealed partial class UiScenario
         try
         {
             owner.Show();
-            foreach(int expected in new[]{1,2})
+            int scenario=0;
+            foreach(var (firstSeconds,lastSeconds,expected,grid,steps) in new[]{
+                (.042,.083,new[]{1},(double?)24,1),(.083,.125,new[]{2},(double?)24,2),
+                (.042,.084,new[]{2},(double?)null,0),(.042,.126,new[]{2,3},(double?)null,0)})
             {
-                var row=new DownloadItem{Url=origin.Url,Title="Frame grid "+expected};
-                string output=Path.Combine(root,"output-"+expected);Directory.CreateDirectory(output);
+                scenario++;
+                var row=new DownloadItem{Url=origin.Url,Title="Frame semantics "+scenario};
+                string output=Path.Combine(root,"output-"+scenario);Directory.CreateDirectory(output);
                 var options=new DownloadOptions{Output=output,Threads="1",Container="MP4",EmbedMetadata=false,EmbedChapters=false};
+                var v24=new MediaFormat("fixture","mp4",160,90,24,"avc1","none","",null,false);
                 var metadata=new PreviewData(row.Url,row.Title,"fixture","",4/24d,"fixture",90,24,"H264","SDR","",DateTime.UtcNow)
-                    {FormatsLoaded=true,Formats=[new MediaFormat("fixture","mp4",160,90,24,"avc1","none","",null,false)]};
+                    {FormatsLoaded=true,Formats=grid is null?[v24,v24 with{Id="v30",Fps=30}]:[v24]};
                 MediaClipRequest? playedRequest=null;
                 Task<MediaClipResult> Played(MediaClipRequest request,CancellationToken token)
                 {
@@ -62,21 +67,25 @@ internal sealed partial class UiScenario
                 }
                 dialog=new MediaSelectionDialog(owner,row,()=>options,selection=>{row.Selection=selection;return null;},frames.GetFrameAsync,Played);
                 dialog.Show();dialog.ReceiveMetadata(metadata);
-                Control<TextBox>(dialog,"MediaSectionStartBox").Text="0";
-                Control<TextBox>(dialog,"MediaSectionEndBox").Text=expected==1?"0.083":"0.125";
-                for(int step=0;step<expected;step++)Control<Button>(dialog,"MediaSectionStartNextFrameButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-                Require(Control<TextBox>(dialog,"MediaSectionStartBox").Text==DownloadSection.FormatTimestamp(expected/24d),
-                    "The actual +frame control must produce the millisecond grid label");
+                Control<TextBox>(dialog,"MediaSectionStartBox").Text=steps>0?"0":DownloadSection.FormatTimestamp(firstSeconds);
+                Control<TextBox>(dialog,"MediaSectionEndBox").Text=DownloadSection.FormatTimestamp(lastSeconds);
+                for(int step=0;step<steps;step++)Control<Button>(dialog,"MediaSectionStartNextFrameButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                Require(Control<TextBox>(dialog,"MediaSectionStartBox").Text==DownloadSection.FormatTimestamp(firstSeconds),
+                    "The actual editor must retain the stepped or raw millisecond label");
+                if(grid is null)Require(Control<TextBlock>(dialog,"MediaSectionStepStatus").Text.Contains("0.1",StringComparison.Ordinal),
+                    "The real mixed-FPS editor must disclose its seconds fallback");
                 var start=Control<Image>(dialog,"MediaSectionStartFrame");var end=Control<Image>(dialog,"MediaSectionEndFrame");
-                PumpUntil(()=>FrameId(start)==expected && FrameId(end)==expected,"Both actual decoded PNG cards must identify the selected source frame");
+                PumpUntil(()=>FrameId(start)==expected[0] && FrameId(end)==expected[^1],"Both actual decoded PNG cards must identify the selected source frame");
                 Control<Button>(dialog,"PreviewMediaClipStartButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                 PumpUntil(()=>playedRequest is not null,"The actual playback button must use the shared boundary conversion");
-                Require(Math.Abs(playedRequest!.StartSeconds-expected/24d)<1e-12 && Math.Abs(playedRequest.EndSeconds-(expected+1)/24d)<1e-12,
-                    "Playback must receive the same restored grid boundaries as export; actual clip pixels are checked by native media tests");
+                double playedStart=grid is null?firstSeconds:expected[0]/24d;
+                double playedEnd=grid is null?lastSeconds:(expected[^1]+1)/24d;
+                Require(Math.Abs(playedRequest!.StartSeconds-playedStart)<1e-12 && Math.Abs(playedRequest.EndSeconds-playedEnd)<1e-12,
+                    "Playback must retain raw boundaries without a common grid and restore only the explicit grid context");
                 Control<Button>(dialog,"ApplyMediaSelectionButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-                Require(!dialog.IsVisible && row.Selection?.FrameRate==24,"Apply must capture the inferred automatic frame grid");dialog=null;
-                var persistence=new AppPersistence(Path.Combine(root,"profile-"+expected));persistence.Save([row],options);
-                var restored=persistence.Restore()!.Queue.Single();Require(restored.Selection?.FrameRate==24,"Restart must retain frame semantics");
+                Require(!dialog.IsVisible && row.Selection is not null && row.Selection.FrameRate==grid,"Apply must capture only the actual common frame grid");dialog=null;
+                var persistence=new AppPersistence(Path.Combine(root,"profile-"+scenario));persistence.Save([row],options);
+                var restored=persistence.Restore()!.Queue.Single();Require(restored.Selection?.FrameRate==grid,"Restart must retain frame semantics");
                 var engine=new DownloadCoordinator(DependencyCenter.Executable("yt-dlp.exe"),persistence,options,_=>{},_=>{});
                 try
                 {
@@ -87,9 +96,10 @@ internal sealed partial class UiScenario
                 Require(restored.Status=="Completed" && restored.IsPartialResult && persistence.ReadHistory().Count==0,
                     "Actual publication must remain partial and leave full-video history empty: "+restored.RawError);
                 int[] actual=Await(Task.Run(()=>FragmentFrameFixture.Decode(ffmpeg,restored.Path)));
-                Require(actual.SequenceEqual([expected]),"+frame → Apply → restart → actual export must contain exactly the frame shown by both cards");
+                Require(grid is null?actual.Length>0 && actual[0]==expected[0]:actual.SequenceEqual(expected),
+                    "The actual export must preserve the raw start without a grid, and the exact selected frame with a grid");
             }
-            Console.WriteLine("PASS: actual WPF +frame/Apply/restart and real yt-dlp publication decode source IDs 1 and 2 with matching actual boundary PNGs");
+            Console.WriteLine("PASS: actual WPF common-grid/mixed-FPS fields, boundary PNGs, playback requests, Apply/restart and real yt-dlp publication");
         }
         finally
         {
