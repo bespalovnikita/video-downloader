@@ -33,6 +33,7 @@ internal sealed partial class UiScenario
             ResetSelectedOwnedFiles(Path.Combine(root,"selected"),fixture);
             ResetQueuedMetadataCallback(Path.Combine(root,"queued-metadata"),fixture);
             ResetActiveAttempt(Path.Combine(root,"active"),fixture);
+            ResetHonorsStopDuringMetadataJoin(Path.Combine(root,"late-stop"),fixture);
             ResetRejectsIncompatibleActivePlan(Path.Combine(root,"active-plan-refusal"),fixture);
             ResetProtectedOwnedFile(Path.Combine(root,"protected"),fixture);
             Console.WriteLine("PASS: guarded selected reset, No/Yes confirmation, exact owned deletion, fresh metadata and stale Dispatcher rejection, same-engine native restart/child join and protected-file recovery");
@@ -236,6 +237,76 @@ internal sealed partial class UiScenario
         ResetUi.Require(File.Exists(row.Path) && File.Exists(keeper.Path) && row.CompletedSelection==selection &&
             !ui.Data.ReadHistory().ContainsKey(row.Url) && ui.Data.ReadHistory().ContainsKey(keeper.Url),
             "Fresh partial success must retain the selected fragment without recording the cancelled attempt or a false full-URL success.");
+    }
+
+    private static void ResetHonorsStopDuringMetadataJoin(string root,string fixture)
+    {
+        using var metadataHeld=new ManualResetEventSlim();using var releaseMetadata=new ManualResetEventSlim();
+        using var ui=new ResetUi(root,fixture,new DownloadOptions{Output=Path.Combine(root,"output"),Threads="2",Container="MP4"});
+        string firstGate=Path.Combine(root,"first-gate"),keeperGate=Path.Combine(root,"keeper-gate"),restartGate=Path.Combine(root,"unexpected-restart");
+        var row=new DownloadItem{Url="https://startup-download.invalid/reset-stop-first-timer-slow"};
+        ui.Subject.SessionState.TryAdd(row);ui.Subject.Reindex();Environment.SetEnvironmentVariable("VD_NATIVE_SESSION_TIMER_GATE",firstGate);
+        ui.Click("StartButton");
+        ResetUi.Until(()=>row.Status=="Running" && ResetUi.Pid(firstGate)>0,"The late-Stop scenario must own its first native child.");
+        var original=ui.Subject.SessionState.Coordinator;var originalRun=ui.Subject.SessionState.RunningTask;
+        var originalStarted=ui.Subject.SessionState.StartedAt;int oldPid=ResetUi.Pid(firstGate);string oldStage=row.StageDir;
+        Environment.SetEnvironmentVariable("VD_NATIVE_SESSION_TIMER_GATE",keeperGate);
+        string keeperUrl="https://startup-download.invalid/reset-stop-keeper-timer-slow";ui.Subject.ReceiveArguments([keeperUrl]);
+        ResetUi.Until(()=>ui.Subject.SessionState.Queue.Any(item=>item.Url==keeperUrl && item.Status=="Running") && ResetUi.Pid(keeperGate)>0,
+            "A second real worker must keep the old session alive during Reset.");
+        var keeper=ui.Subject.SessionState.Queue.Single(item=>item.Url==keeperUrl);int keeperPid=ResetUi.Pid(keeperGate);
+        var service=(PreviewService)ResetUi.Field(ui.Subject.Preview,"_service")!;
+        long generation=service.Generation(row.Url);int firstNotification=0;
+        var callbackFinished=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        void HoldMetadata(PreviewData data,bool final,long _)
+        {
+            if(data.Url!=row.Url || !final || Interlocked.Exchange(ref firstNotification,1)!=0)return;
+            metadataHeld.Set();
+            try{releaseMetadata.Wait();}finally{callbackFinished.TrySetResult();}
+        }
+        service.ResultAvailable+=HoldMetadata;
+        try
+        {
+            ui.Subject.Preview.RequestRow(row,true);
+            ResetUi.Until(()=>metadataHeld.IsSet,"A genuine selected metadata result must hold the sole worker before Reset.");
+            Environment.SetEnvironmentVariable("VD_NATIVE_SESSION_TIMER_GATE",restartGate);
+            Task? fullReset=null;
+            var resetMethod=typeof(NativeWindow).GetMethod("ResetRowsAsync",BindingFlags.NonPublic|BindingFlags.Instance)
+                ??throw new MissingMethodException(typeof(NativeWindow).FullName,"ResetRowsAsync");
+            // Capture the full owner task, including its post-cleanup admission.
+            // Waiting only for _queueItemActionTask would miss a new session
+            // incorrectly started after an explicit Stop during the join.
+            ResetUi.Confirm(6,()=>
+            {
+                var begin=ui.Window.Dispatcher.BeginInvoke(new Action(()=>
+                    fullReset=(Task)resetMethod.Invoke(ui.Subject,new object[]{new[]{row}})!));
+                ResetUi.Until(()=>begin.Task.IsCompleted,"The full Reset operation must enter its real Dispatcher.");begin.Task.GetAwaiter().GetResult();
+            });
+            ResetUi.Until(()=>ui.Busy && !ResetUi.Alive(oldPid) && service.Generation(row.Url)>generation,
+                "Reset must join its own native attempt and then wait for the held metadata worker.");
+            ResetUi.Require(fullReset is not null && !fullReset.IsCompleted && !callbackFinished.Task.IsCompleted &&
+                ReferenceEquals(original,ui.Subject.SessionState.Coordinator) && ResetUi.Alive(keeperPid) &&
+                ui.Control<Button>("StopButton").IsEnabled,"The controlled join must leave the real Stop action available in the original session.");
+            long beforeStop=ui.Subject.SessionState.StopVersion;ui.Click("StopButton");
+            ResetUi.Require(ui.Subject.SessionState.StopVersion>beforeStop,"The actual Stop event must revoke the pending restart intent.");
+            releaseMetadata.Set();
+            ResetUi.Until(()=>fullReset!.IsCompleted,"The complete Reset task must return after Stop without awaiting a newly started download.");
+            fullReset!.GetAwaiter().GetResult();
+            ResetUi.Until(()=>ui.Subject.SessionState.Coordinator is null && originalRun?.IsCompleted==true && !ui.Busy,
+                "Stop must join both original workers while Reset finishes without replacement.");
+            ResetUi.Require(row.Status=="Queued" && row.DeferredToNextStart && row.AttemptFinished && row.StageDir.Length==0 &&
+                row.RunDir.Length==0 && row.ResumeState is null && row.Path.Length==0 && row.OwnedPaths.Count==0 && row.CleanupPaths.Count==0 &&
+                !Directory.Exists(oldStage) && !File.Exists(restartGate+".started") && !ResetUi.Alive(oldPid) && !ResetUi.Alive(keeperPid) &&
+                keeper.Status=="Interrupted" && ui.Subject.SessionState.Stopping && ui.Subject.SessionState.StartedAt==originalStarted &&
+                ReferenceEquals(originalRun,ui.Subject.SessionState.RunningTask) && !ui.Data.ReadHistory().ContainsKey(row.Url) &&
+                !ui.Data.ReadHistory().ContainsKey(keeper.Url),
+                "A late Stop must leave reset work queued for explicit Start, preserve the old session identity and prevent any new native attempt or false success.");
+        }
+        finally
+        {
+            releaseMetadata.Set();service.ResultAvailable-=HoldMetadata;
+            if(metadataHeld.IsSet)ResetUi.Until(()=>callbackFinished.Task.IsCompleted,"The test metadata gate must always release its background callback.");
+        }
     }
 
     private static void ResetRejectsIncompatibleActivePlan(string root,string fixture)
