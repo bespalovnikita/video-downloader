@@ -39,7 +39,17 @@ internal sealed partial class UiScenario
         }
         static int Calls(string path)
         {
-            try { return File.Exists(path)?File.ReadAllLines(path).Count(line=>!string.IsNullOrWhiteSpace(line)):0; }
+            try
+            {
+                // Reading readiness must not deny the fixture's concurrent
+                // append on Windows and turn a valid scan into an IO failure.
+                using var stream=new FileStream(path,FileMode.Open,FileAccess.Read,FileShare.ReadWrite|FileShare.Delete);
+                using var reader=new StreamReader(stream);
+                int count=0;
+                while(reader.ReadLine() is {} line)
+                    if(!string.IsNullOrWhiteSpace(line))count++;
+                return count;
+            }
             catch(IOException) { return 0; } // the fixture can be appending right now
         }
 
