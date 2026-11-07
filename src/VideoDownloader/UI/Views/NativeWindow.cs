@@ -101,6 +101,7 @@ public sealed partial class NativeWindow : IDisposable
         InitializeJournalControls();
         InitializeMediaSelectionControls();
         InitializeQueueFilters();
+        InitializeQueueItemActions();
         InitializeHistoryControls();
         InitializeJobDiagnostics();
         K("ShowVideoTitlesCheck").Checked+=(_,_)=>SaveCheckpoint();
@@ -176,12 +177,12 @@ public sealed partial class NativeWindow : IDisposable
         T("HeaderStats").Text=ErrorMessages.Text($"{metrics.Active} активных · {DisplayValueConverter.Speed(metrics.Speed)} · {metrics.Successful}/{metrics.Total}",$"{metrics.Active} active · {DisplayValueConverter.Speed(metrics.Speed)} · {metrics.Successful}/{metrics.Total}");
         F<ProgressBar>("OverallProgress").Value=metrics.Progress;
         T("SessionStats").Text=SessionState.StartedAt.HasValue
-            ? ErrorMessages.Text($"Сеанс: {metrics.Successful} готово · {metrics.Left} осталось · {metrics.Failed} ошибок · {DisplayValueConverter.Bytes(metrics.Transferred)} · {SessionState.Elapsed:hh\\:mm\\:ss}",$"Session: {metrics.Successful} OK · {metrics.Left} left · {metrics.Failed} errors · {DisplayValueConverter.Bytes(metrics.Transferred)} · {SessionState.Elapsed:hh\\:mm\\:ss}")
+            ? ErrorMessages.Text($"Сеанс: {metrics.Successful} готово · {metrics.Left} осталось · {metrics.Skipped} пропущено · {metrics.Failed} ошибок · {DisplayValueConverter.Bytes(metrics.Transferred)} · {SessionState.Elapsed:hh\\:mm\\:ss}",$"Session: {metrics.Successful} OK · {metrics.Left} left · {metrics.Skipped} skipped · {metrics.Failed} errors · {DisplayValueConverter.Bytes(metrics.Transferred)} · {SessionState.Elapsed:hh\\:mm\\:ss}")
             : ErrorMessages.Text($"Сеанс: ожидание · {metrics.Total} ссылок",$"Session: idle · {metrics.Total} URLs");
         string title=SessionState.StartedAt.HasValue
             ? DownloadFormat.Tray(metrics.Successful,metrics.Left,metrics.Failed,metrics.Speed,running,paused) : ErrorMessages.Text("Video Downloader | Готово","Video Downloader | Ready");
         _lifecycle.UpdateStatus(title);
-        F<Button>("StartButton").IsEnabled=!running && !_startingSession && SessionState.Queue.Any(x=>x.Status!="Completed" && x.CanResume);
+        F<Button>("StartButton").IsEnabled=!running && !_startingSession && !_queueItemActionBusy && SessionState.Queue.Any(x=>x.Status is not ("Completed" or "Skipped") && x.CanResume);
         F<Button>("StopButton").IsEnabled=running;
         F<Button>("PauseButton").IsEnabled=running;
         F<Button>("PauseButton").Content=paused?ErrorMessages.Text("Продолжить","Resume"):ErrorMessages.Text("Пауза","Pause");
@@ -212,6 +213,7 @@ public sealed partial class NativeWindow : IDisposable
         if(metrics.ActiveChanged) RefreshQueueView();
         _queueFilters?.RefreshSummary();
         RefreshQueueFilterActions();
+        RefreshQueueItemActions();
         RefreshMediaSelectionState();
         RefreshAppUpdateControls();
         RefreshJobDiagnosticActions();
@@ -540,7 +542,7 @@ public sealed partial class NativeWindow : IDisposable
     private void PollClipboard()=>_ingress.PollClipboard();
     private async Task StartAsync(IEnumerable<DownloadItem>? custom=null)
     {
-        if(_closing || _disposed || _restoringSession || _startingSession || _appUpdateHandoff || _checkpointReadOnly || _profileBackupReplaying || RejectProfileBackupMutation())return;
+        if(_closing || _disposed || _restoringSession || _startingSession || _queueItemActionBusy || _appUpdateHandoff || _checkpointReadOnly || _profileBackupReplaying || RejectProfileBackupMutation())return;
         _startingSession=true;
         try { await StartSessionCoreAsync(custom); }
         finally { _startingSession=false;UpdateState();_preview.BackfillLocalPosters(); }
@@ -557,20 +559,22 @@ public sealed partial class NativeWindow : IDisposable
             return;
         }
         if(SessionState.Coordinator?.IsRunning==true) return;
-        var pending=(custom??SessionState.Queue.Where(i=>i.Status!="Completed")).Where(i=>i.CanResume).Distinct().ToList();
+        var pending=(custom??SessionState.Queue.Where(i=>i.Status is not ("Completed" or "Skipped"))).Where(i=>i.CanResume).Distinct().ToList();
         if(pending.Count==0)return;
         var options=ReadOptions();
-        var requested=pending.ToDictionary(row=>row,row=>(row.Url,row.Selection));
+        var requested=pending.ToDictionary(row=>row,row=>(row.Url,row.Selection,row.ResumeState,row.Status,row.StageDir,row.RunDir));
         void RequireCurrentPlan(IEnumerable<DownloadItem> plan)
         {
             if(SessionState.Coordinator?.IsRunning==true || plan.Any(row=>!SessionState.Queue.Contains(row) || !row.CanResume ||
-                !requested.TryGetValue(row,out var original) || !string.Equals(row.Url,original.Url,StringComparison.Ordinal) || row.Selection!=original.Selection))
+                !requested.TryGetValue(row,out var original) || !string.Equals(row.Url,original.Url,StringComparison.Ordinal) ||
+                row.Selection!=original.Selection || row.ResumeState!=original.ResumeState || row.Status!=original.Status ||
+                row.StageDir!=original.StageDir || row.RunDir!=original.RunDir))
                 throw new InvalidOperationException("Состав очереди или параметры задания изменились. Повторите Start.");
         }
         try
         {
             AudioTrackSelection.Validate(options);
-            foreach(var row in pending)row.Selection?.Validate(row.Url,options);
+            foreach(var row in pending)row.Selection?.Validate(row.Url,row.ResumeState?.Plan.ToOptions()??options);
             DependencyCenter.ValidateDownloadTools(_ytDlp);
             if(!string.IsNullOrWhiteSpace(options.Cookies)&&!File.Exists(options.Cookies))
                 throw new FileNotFoundException("Cookie file is missing.",options.Cookies);
@@ -581,15 +585,24 @@ public sealed partial class NativeWindow : IDisposable
             await _preview.CancelLocalPostersAsync(pending);
             if(_closing || _disposed || _appUpdateHandoff || _checkpointReadOnly || RejectProfileBackupMutation())return;
             RequireCurrentPlan(pending);
-            var approved=ConfirmDuplicates(pending,true);
-            if(approved==null||approved.Count==0)return;
+            var approved=ConfirmDuplicates(pending,false);
+            if(approved==null)return;
             if(_closing || _disposed || _appUpdateHandoff || _checkpointReadOnly || RejectProfileBackupMutation())return;
+            RequireCurrentPlan(pending);
+            await (_queueItemActionTask=DiscardDeclinedRowsAsync(pending.Except(approved).ToArray()));
+            if(approved.Count==0 || _closing || _disposed || _appUpdateHandoff || _checkpointReadOnly || RejectProfileBackupMutation())return;
             RequireCurrentPlan(approved);
             options.PinOutputDirectory();
+            await Task.Run(()=>
+            {
+                foreach(var row in approved.Where(row=>row.ResumeState is not null))DownloadResumeStore.Validate(row);
+            });
+            if(_closing || _disposed || _appUpdateHandoff || _checkpointReadOnly || RejectProfileBackupMutation())return;
+            RequireCurrentPlan(approved);
             OwnedFiles.NoReparseAncestors(Path.Combine(options.OutputDirectory,"__validation__"));
             var outputRoots=approved.ToDictionary(row=>row,row=>
             {
-                string output=SubscriptionNames.ResolveOutputDirectory(options.OutputDirectory,row.SubscriptionName);
+                string output=row.ResumeState?.Plan.OutputRoot??SubscriptionNames.ResolveOutputDirectory(options.OutputDirectory,row.SubscriptionName);
                 OwnedFiles.NoReparseAncestors(Path.Combine(output,"__validation__"));
                 return output;
             });
@@ -601,13 +614,19 @@ public sealed partial class NativeWindow : IDisposable
             Directory.CreateDirectory(options.OutputDirectory);
             SessionState.SetOptions(options);
             // Validate retained staging before resetting any attempt or ownership.
-            foreach(var row in approved.Where(row=>row.StageDir.Length>0))
+            foreach(var row in approved.Where(row=>row.StageDir.Length>0 && row.ResumeState is null))
             {
                 try { OwnedFiles.DeleteStage(row.StageDir,row.RunDir);row.StageDir=""; }
                 catch(Exception e) {DownloadCleanup.Failed(row,e.Message);SaveCheckpoint();throw;}
             }
             foreach(var row in approved)
             {
+                if(row.ResumeState is not null)
+                {
+                    row.Status="Queued";row.State="Queued";row.RawError="";row.Speed="";row.ETA="";
+                    row.AttemptFinished=false;row.DeferredToNextStart=false;
+                    continue;
+                }
                 row.Status="Queued";row.State="Queued";row.RawError="";row.Progress=0;
                 row.Speed="";row.Downloaded="";row.ETA="";row.TransferredBytes=0;
                 // An explicit retry is a new attempt; previous successful files
@@ -653,13 +672,13 @@ public sealed partial class NativeWindow : IDisposable
     }
     private async Task RemoveRowsAsync(IEnumerable<DownloadItem> rows)
     {
-        if(_closing || _disposed || _appUpdateHandoff || QueueRemovalBlocked || RejectProfileBackupMutation())return;
+        if(_closing || _disposed || _appUpdateHandoff || _queueItemActionBusy || QueueRemovalBlocked || RejectProfileBackupMutation())return;
         var selected=rows.Where(SessionState.Queue.Contains).Distinct().ToArray();
         if(selected.Length==0)return;
         if(selected.Any(x=>x.Status!="Queued") &&
             MessageBox.Show(_window,ErrorMessages.Text($"Удалить выбранные ссылки ({selected.Length})?\nИх активные задачи будут остановлены, а принадлежащие им готовые файлы — удалены без возможности восстановления.\nОстальные загрузки продолжатся.",$"Remove {selected.Length} selected URL(s)?\nActive jobs will be stopped; finished files belonging to them will be permanently deleted.\nOther downloads continue."),
                 ErrorMessages.Text("Удалить загрузки","Delete downloads"),MessageBoxButton.YesNo,MessageBoxImage.Warning)!=MessageBoxResult.Yes)return;
-        if(_closing || _disposed || _appUpdateHandoff || QueueRemovalBlocked || RejectProfileBackupMutation())return;
+        if(_closing || _disposed || _appUpdateHandoff || _queueItemActionBusy || QueueRemovalBlocked || RejectProfileBackupMutation())return;
         var alreadyPending=selected.Where(row=>row.PendingRemoval).ToHashSet();
         var cancelledWorkers=new HashSet<DownloadItem>();
         foreach(var row in selected)
@@ -709,20 +728,47 @@ public sealed partial class NativeWindow : IDisposable
     {
         SessionState.Forget(row);
     }
-    private async Task ClearRowsAsync(IReadOnlyCollection<DownloadItem> candidates)
+    private Task ClearRowsAsync(IReadOnlyCollection<DownloadItem> candidates)
     {
-        if(_startingSession || SessionState.Coordinator?.IsRunning==true || RejectProfileBackupMutation())return;
-        await _preview.CancelLocalPostersAsync(candidates);
-        if(_closing || _disposed || _appUpdateHandoff || QueueRemovalBlocked || _startingSession ||
+        if(_queueItemActionBusy || _queueClearTask?.IsCompleted==false || _startingSession || SessionState.Coordinator?.IsRunning==true || QueueRemovalBlocked || RejectProfileBackupMutation())return Task.CompletedTask;
+        return _queueClearTask=ClearRowsCoreAsync(candidates);
+    }
+    private async Task ClearRowsCoreAsync(IReadOnlyCollection<DownloadItem> candidates)
+    {
+        bool ownsMutation=false;
+        try
+        {
+        var eligible=SessionState.ClearCandidates().ToHashSet();
+        var selected=candidates.Where(row=>eligible.Contains(row) && SessionState.Queue.Contains(row)).ToArray();
+        await _preview.CancelLocalPostersAsync(selected);
+        if(_closing || _disposed || _appUpdateHandoff || QueueRemovalBlocked || _startingSession || _queueItemActionBusy ||
             SessionState.Coordinator?.IsRunning==true || RejectProfileBackupMutation())return;
-        foreach(var row in candidates)
-            if (SessionState.Queue.Contains(row) && row.CanResume && row.StageDir.Length==0 && row.CleanupPaths.Count==0) ForgetRow(row);
-        if(candidates.Any(SessionState.Queue.Contains))
+        // Waiting for an optional reader must not veto a new explicit Start.
+        // If Start won during that await, the checks above retire this Clear.
+        // Reserve the mutation barrier only for actual retained-file deletion.
+        _queueItemActionBusy=true;ownsMutation=true;UpdateState();
+        eligible=SessionState.ClearCandidates().ToHashSet();
+        foreach(var row in selected.Where(eligible.Contains))
+        {
+            if(!SessionState.Queue.Contains(row) || !row.CanResume || row.CleanupPaths.Count>0)continue;
+            if(row.ResumeState is not null)
+            {
+                try { await Task.Run(()=>DownloadResumeStore.DeleteRetained(row)); }
+                catch(Exception error)
+                {
+                    DownloadCleanup.Failed(row,error.Message);Log("Could not clear retained download: "+error);continue;
+                }
+            }
+            if(SessionState.Queue.Contains(row) && row.StageDir.Length==0)ForgetRow(row);
+        }
+        if(selected.Any(row=>eligible.Contains(row) && SessionState.Queue.Contains(row)))
             MessageBox.Show(_window,ErrorMessages.Text("Задачи, ожидающие очистки, сохранены. Нажмите «Удалить выбранные» для повторной попытки.",
                 "Downloads awaiting cleanup were kept. Use Remove to retry."),
                 ErrorMessages.Text("Ожидается очистка","Cleanup pending"),MessageBoxButton.OK,MessageBoxImage.Warning);
         Reindex();
         SaveReducedRecoveryQueue();
+        }
+        finally { if(ownsMutation)_queueItemActionBusy=false;UpdateState(); }
     }
     private void MoveItem(DownloadItem item,int index)
     {

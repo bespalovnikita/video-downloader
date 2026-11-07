@@ -86,6 +86,8 @@ internal sealed partial class UiScenario
             UiScenario.TestDownloadsActiveFirst(root);
             Stage("testing queue search/status/subscription views and scoped actions while active");
             UiScenario.TestQueueFilters(root);
+            Stage("testing selected Skip/Resume, retained progress, worker handoff and skipped-aware Clear");
+            UiScenario.TestQueueSkipResume(root);
             Stage("testing duplicate-history dialog choices");
             UiScenario.TestDuplicateHistoryChoices(root);
             Stage("testing portable queue clipboard and file transfer");
@@ -221,8 +223,16 @@ internal sealed partial class UiScenario
             // actual session collection, while assertions below inspect the UI.
             controller.SessionState.Queue.Add(pending);
             Action<DownloadItem> notify=controller.Subject.OnRowChanged;
+            using var cleanupEntered=new ManualResetEventSlim();
+            using var allowCleanup=new ManualResetEventSlim();
+            int cleanupGateTimedOut=0;
             var cancelSession=new DownloadCoordinator("must-not-launch",new AppPersistence(Path.Combine(root,"cancel-profile")),
-                new DownloadOptions{Output=Path.Combine(root,"cancel-output"),Threads="1"},notify,_=>{});
+                new DownloadOptions{Output=Path.Combine(root,"cancel-output"),Threads="1"},notify,_=>{},trace:record=>
+                {
+                    if(record.Event!="queued_cleanup_start")return;
+                    cleanupEntered.Set();
+                    if(!allowCleanup.Wait(TimeSpan.FromSeconds(10)))Interlocked.Exchange(ref cleanupGateTimedOut,1);
+                });
             try
             {
                 cancelSession.Add(pending);controller.SessionState.AttachCoordinator(cancelSession);
@@ -234,8 +244,11 @@ internal sealed partial class UiScenario
                     "Subscription import must stay queued until Start without entering the active coordinator");
                 controller.SessionState.Queue.Remove(deferred);
                 queue.SelectedItem=pending;remove.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                Require(cleanupEntered.Wait(TimeSpan.FromSeconds(5)),"The real queued cleanup owner must start before its acknowledgement is released");
+                Require(Volatile.Read(ref cleanupGateTimedOut)==0,"The controlled queued cleanup gate must not expire before the pending-removal assertion");
                 Require(queue.Items.Contains(pending) && pending.PendingRemoval && !pending.AttemptFinished,
                     "Remove must retain the row while cancellation is unacknowledged");
+                allowCleanup.Set();
                 var task=cancelSession.RunAsync();
                 var cancellationFrame=new System.Windows.Threading.DispatcherFrame();
                 var deadline=DateTime.UtcNow.AddSeconds(10);
@@ -249,6 +262,7 @@ internal sealed partial class UiScenario
             }
             finally
             {
+                allowCleanup.Set();
                 cancelSession.DisposeAsync().AsTask().GetAwaiter().GetResult();
                 controller.SessionState.AttachCoordinator(null);
             }

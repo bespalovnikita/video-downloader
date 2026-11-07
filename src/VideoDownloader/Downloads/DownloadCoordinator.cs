@@ -6,15 +6,16 @@ using System.Threading.Channels;
 namespace VideoDownloader.Native;
 
 /// <summary>Native C# yt-dlp session. No pwsh, ThreadJob, live text files, or polling IPC.</summary>
-public sealed class DownloadCoordinator : IAsyncDisposable
+public sealed partial class DownloadCoordinator : IAsyncDisposable
 {
     private readonly string _ytDlp;
     private readonly AppPersistence _data;
-    private readonly Channel<DownloadItem> _queue=Channel.CreateUnbounded<DownloadItem>(
+    private readonly Channel<DownloadAttempt> _queue=Channel.CreateUnbounded<DownloadAttempt>(
         new UnboundedChannelOptions { SingleReader=false,SingleWriter=false });
     private readonly ConcurrentDictionary<string,CancellationTokenSource> _itemCancels=new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string,byte> _queued=new(StringComparer.Ordinal);
-    private readonly ConcurrentDictionary<string,DownloadItem> _items=new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string,DownloadAttempt> _attempts=new(StringComparer.Ordinal);
+    private readonly ConcurrentBag<Task> _queuedCleanups=new();
     private readonly ConcurrentDictionary<string,string> _outputRoots=new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string,DownloadSelection> _selections=new(StringComparer.Ordinal);
     // Tombstones outlive a worker's CTS registration and prevent cancellation races.
@@ -26,13 +27,14 @@ public sealed class DownloadCoordinator : IAsyncDisposable
     private readonly Action<JournalRecord>? _trace;
     private readonly ConcurrentDictionary<string,string> _traceJobIds=new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string,(int Attempt,int Invocation,string? Quality)> _diagnosticAttempts=new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string,int> _invocations=new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string,JobDiagnosticSettings> _diagnosticPlans=new(StringComparer.Ordinal);
     private readonly Stopwatch _traceClock=Stopwatch.StartNew();
     private long _traceSequence;
     public string TraceSessionId { get; }=Guid.NewGuid().ToString("N")[..8];
     private readonly string _stageRoot=Path.Combine(Path.GetTempPath(),"vd-native-"+Guid.NewGuid().ToString("N"));
     internal string StagingDirectory=>_stageRoot;
     private readonly WindowsDownloadPause _pause=new();
-    private readonly YtDlpArguments _arguments;
     private readonly object _completionGate=new();
 
     private int _outstanding;
@@ -50,58 +52,91 @@ public sealed class DownloadCoordinator : IAsyncDisposable
     {
         AudioTrackSelection.Validate(options);
         _ytDlp=ytDlp;_data=data;_options=options.Snapshot();_changed=changed;_log=log;_trace=trace;
-        _arguments=new YtDlpArguments(_options);
         _options.PinOutputDirectory();
         OwnedFiles.NoReparseAncestors(Path.Combine(_options.OutputDirectory,"__check__"));
         Directory.CreateDirectory(_stageRoot);
     }
-    public bool Add(DownloadItem item)
+    public bool Add(DownloadItem item)=>Admit(item,false);
+    private bool Admit(DownloadItem item,bool resume)
     {
-        if (!IsRunning || _stop.IsCancellationRequested) return false;
-        var selection=item.Selection;
-        selection?.Validate(item.Url,_options);
-        string outputRoot=AdmissionOutputRoot(item);
-        OwnedFiles.NoReparseAncestors(Path.Combine(outputRoot,"__check__"));
-        if (!IsRunning || _stop.IsCancellationRequested || !_queued.TryAdd(item.Url,0)) return false;
-        Interlocked.Increment(ref _outstanding);
-        item.AttemptFinished=false;
-        item.OutputRoot=outputRoot;
-        _outputRoots[item.Url]=outputRoot;
-        if(selection is not null)_selections[item.Url]=selection;
-        _items[item.Url]=item;
-        Trace(item,JournalLevel.Information,"job_queued",$"url={DownloadProgressTrace.Quoted(item.Url)} outstanding={Outstanding}",worker:"");
-        if (!_queue.Writer.TryWrite(item))
+        lock(_completionGate)
         {
-            Trace(item,JournalLevel.Warning,"queue_rejected","reason=ingress_closed",worker:"");
-            _queued.TryRemove(item.Url,out _);
-            _items.TryRemove(item.Url,out _);
-            _outputRoots.TryRemove(item.Url,out _);
-            _selections.TryRemove(item.Url,out _);
-            item.AttemptFinished=true;
-            Interlocked.Decrement(ref _outstanding);
-            return false;
+            if(!IsRunning || _stop.IsCancellationRequested || item.PendingRemoval || item.CleanupError.Length>0)return false;
+            DownloadResumeStore.ValidatePersisted(item);
+            var options=item.ResumeState?.Plan.ToOptions()??_options;
+            var selection=item.ResumeState?.Selection??item.Selection;
+            selection?.Validate(item.Url,options);
+            string outputRoot=AdmissionOutputRoot(item);
+            OwnedFiles.NoReparseAncestors(Path.Combine(outputRoot,"__check__"));
+            if(_attempts.TryGetValue(item.Url,out var previous) && !previous.Finished.Task.IsCompleted)return false;
+            if(!resume && !_queued.TryAdd(item.Url,0))return false;
+            if(resume)
+            {
+                if(item.Status!="Skipped" || !item.AttemptFinished || _cancelled.ContainsKey(item.Url))return false;
+                _queued[item.Url]=0;
+            }
+            var attempt=new DownloadAttempt(item,_stop.Token);
+            _attempts[item.Url]=attempt;
+            Interlocked.Increment(ref _outstanding);
+            item.AttemptFinished=false;item.OutputRoot=outputRoot;
+            item.Status="Queued";item.State="Queued";item.Speed="";item.ETA="";
+            _outputRoots[item.Url]=outputRoot;
+            if(selection is not null)_selections[item.Url]=selection;else _selections.TryRemove(item.Url,out _);
+            if(_trace is not null)
+            {
+                var diagnostic=JobDiagnosticSettings.Capture(options,selection);
+                _diagnosticPlans[item.Url]=diagnostic with
+                {
+                    Parallel=_options.Parallel,
+                    // The minimal retained plan stores resolved parameters,
+                    // not an old display/profile preset identifier.
+                    Profile=item.ResumeState is null?diagnostic.Profile:"неизвестно"
+                };
+            }
+            // Queued/resumed belongs to the new generation before its first
+            // invocation; it must not inherit the previous attempt's key.
+            _diagnosticAttempts.TryRemove(item.Url,out _);
+            Trace(item,JournalLevel.Information,resume?"job_resumed":"job_queued",$"url={DownloadProgressTrace.Quoted(item.Url)} outstanding={Outstanding}",worker:"");
+            if(!_queue.Writer.TryWrite(attempt))
+            {
+                _attempts.TryRemove(item.Url,out _);_queued.TryRemove(item.Url,out _);
+                _outputRoots.TryRemove(item.Url,out _);_selections.TryRemove(item.Url,out _);
+                _diagnosticPlans.TryRemove(item.Url,out _);
+                item.AttemptFinished=true;Interlocked.Decrement(ref _outstanding);attempt.Finished.TrySetResult(false);attempt.Stop.Dispose();
+                return false;
+            }
+            return true;
         }
-        return true;
     }
-    internal string AdmissionOutputRoot(DownloadItem item)=>SubscriptionNames.ResolveOutputDirectory(_options.OutputDirectory,item.SubscriptionName);
-    public bool IsPending(DownloadItem item) => _items.TryGetValue(item.Url,out var owned) &&
-        ReferenceEquals(item,owned) && !item.AttemptFinished;
+    internal string AdmissionOutputRoot(DownloadItem item)=>item.ResumeState?.Plan.OutputRoot??
+        SubscriptionNames.ResolveOutputDirectory(_options.OutputDirectory,item.SubscriptionName);
+    public bool IsPending(DownloadItem item)=>_attempts.TryGetValue(item.Url,out var owned) &&
+        ReferenceEquals(item,owned.Row) && !owned.Finished.Task.IsCompleted;
     public void Cancel(DownloadItem item)
     {
         Trace(item,JournalLevel.Information,"cancel_requested",$"status={item.Status}");
-        // Serializes cancellation with the final success/ownership transition.
-        // If success wins, the GUI sees Completed and deletes OwnedPaths.
-        // If cancellation wins, the worker must not mark it Completed.
-        lock (_completionGate)
+        lock(_completionGate)
         {
             _cancelled[item.Url]=0;
-            if (_itemCancels.TryGetValue(item.Url,out var cts))
+            if(_attempts.TryGetValue(item.Url,out var attempt) && ReferenceEquals(attempt.Row,item) && !attempt.Finished.Task.IsCompleted)
             {
-                try { cts.Cancel(); } catch (ObjectDisposedException) { }
-            }
-            else if (item.Status=="Queued")
-            {
-                item.Status="Interrupted"; item.State="Cancelled"; _changed(item);
+                attempt.Reason=AttemptStopReason.Cancel;
+                try{attempt.Stop.Cancel();}catch(ObjectDisposedException){}
+                if(!attempt.Started)
+                {
+                    attempt.Started=true;
+                    var cleanup=Task.Run(()=>
+                    {
+                        try
+                        {
+                            Trace(item,JournalLevel.Information,"queued_cleanup_start",category:"cleanup",worker:"");
+                            DownloadCleanup.Retry(item);
+                        }
+                        catch(Exception error){_log("Queued cancellation cleanup failed: "+error.Message);}
+                        finally{lock(_completionGate)FinishQueuedAttempt(attempt,false);}
+                    });
+                    _queuedCleanups.Add(cleanup);
+                }
             }
         }
     }
@@ -144,6 +179,7 @@ public sealed class DownloadCoordinator : IAsyncDisposable
         {
             _queue.Writer.TryComplete();
             await Task.WhenAll(workers).ConfigureAwait(false);
+            await Task.WhenAll(_queuedCleanups.ToArray()).ConfigureAwait(false);
             IsRunning=false;
             Trace(null,JournalLevel.Information,"session_complete",$"completed={Completed} outstanding={Outstanding} stopped={_stop.IsCancellationRequested}");
             // A failed cleanup remains on disk, with its paths in the checkpoint.
@@ -154,79 +190,102 @@ public sealed class DownloadCoordinator : IAsyncDisposable
     }
     private async Task WorkerAsync(int slot)
     {
-        await foreach(var item in _queue.Reader.ReadAllAsync())
+        await foreach(var attempt in _queue.Reader.ReadAllAsync())
         {
-            using var linked=CancellationTokenSource.CreateLinkedTokenSource(_stop.Token);
+            var item=attempt.Row;
+            lock(_completionGate)
+            {
+                if(attempt.Started || attempt.Finished.Task.IsCompleted || !_attempts.TryGetValue(item.Url,out var current) || !ReferenceEquals(current,attempt))continue;
+                attempt.Started=true;
+            }
+            var linked=attempt.Stop;
             _itemCancels[item.Url]=linked;
             try
             {
-                if (_cancelled.ContainsKey(item.Url) || linked.IsCancellationRequested)
+                Trace(item,JournalLevel.Information,"job_claimed",$"url={DownloadProgressTrace.Quoted(item.Url)}",worker:"T"+slot);
+                DownloadResult result;
+                if(_cancelled.ContainsKey(item.Url) || linked.IsCancellationRequested)
+                    result=new DownloadResult(false,true,"",[],"",item.TransferredBytes);
+                else
                 {
-                    item.Status="Interrupted";item.State="Cancelled";continue;
+                    item.Slot="T"+slot;item.Status="Running";item.State="Starting";_changed(item);
+                    Trace(item,JournalLevel.Information,"job_start",$"url={DownloadProgressTrace.Quoted(item.Url)}");
+                    if(_cancelled.ContainsKey(item.Url))linked.Cancel();
+                    result=await DownloadAsync(item,attempt).ConfigureAwait(false);
                 }
-                item.Slot="T"+slot;item.Status="Running";item.State="Starting";_changed(item);
-                Trace(item,JournalLevel.Information,"job_start",$"url={DownloadProgressTrace.Quoted(item.Url)}");
-                // Cancellation can arrive between the previous check and CTS registration.
-                if (_cancelled.ContainsKey(item.Url)) linked.Cancel();
-                var result=await DownloadAsync(item,linked.Token).ConfigureAwait(false);
                 bool cancelled=result.Cancelled || linked.IsCancellationRequested || _cancelled.ContainsKey(item.Url);
-                lock (_completionGate)
+                while(true)
                 {
-                    // A cancellation issued after Publish but before this lock
-                    // must still clean the published files.
-                    cancelled |= _cancelled.ContainsKey(item.Url) || linked.IsCancellationRequested;
-                    if (cancelled)
+                    bool clean=false;
+                    lock(_completionGate)
                     {
-                        if (item.CleanupError.Length==0)
+                        cancelled|=_cancelled.ContainsKey(item.Url) || linked.IsCancellationRequested;
+                        if(attempt.Reason==AttemptStopReason.Skip && item.CleanupError.Length==0 && !item.PendingRemoval)
                         {
-                            DownloadCleanup.Retry(item);
-                            item.Status="Interrupted";item.State="Cancelled";
+                            item.Status="Skipped";item.State="Skipped";item.Speed="";item.ETA="";item.Slot="";
+                            break;
+                        }
+                        if(cancelled && item.CleanupError.Length==0 &&
+                            (item.OwnedPaths.Count>0 || item.CleanupPaths.Count>0 || item.StageDir.Length>0 || item.Path.Length>0))
+                        {attempt.Finalizing=true;clean=true;}
+                        else if(cancelled)
+                        {
+                            if(item.CleanupError.Length==0){item.Status="Interrupted";item.State="Cancelled";}
+                            break;
+                        }
+                        else if(result.Success && item.CleanupError.Length==0 && !item.PendingRemoval)
+                        {
+                            item.Path=result.Path;item.OwnedPaths=result.OwnedPaths.ToList();item.CleanupPaths=[];
+                            item.OutputRoot=_outputRoots[item.Url];item.CompletedSelection=_selections.GetValueOrDefault(item.Url);
+                            item.Status="Completed";item.State="Done";item.Progress=100;item.Speed="";item.ETA="";
+                            try{if(!item.IsPartialResult)_data.AppendSuccess(item);}
+                            catch(Exception e){_log($"WARNING: Could not append successful URL to history: {e.Message}");}
+                            Interlocked.Increment(ref _completed);WriteResult("success",$"{item.Url} | {item.Path}");
+                            break;
+                        }
+                        else
+                        {
+                            if(item.CleanupError.Length==0)
+                            {
+                                item.Status="Failed";item.State="Failed";item.RawError=result.Error;item.Speed="";item.ETA="";
+                                WriteResult("error",$"{item.Url} | {result.Error}");
+                            }
+                            break;
                         }
                     }
-                    else if (result.Success && item.CleanupError.Length==0 && !item.PendingRemoval)
-                    {
-                        item.Path=result.Path;item.OwnedPaths=result.OwnedPaths.ToList();
-                        item.CleanupPaths=[];
-                        item.OutputRoot=_outputRoots[item.Url];
-                        item.CompletedSelection=_selections.GetValueOrDefault(item.Url);
-                        item.Status="Completed";item.State="Done";
-                        item.Progress=100;item.Speed="";item.ETA="";
-                        try { if(!item.IsPartialResult)_data.AppendSuccess(item); }
-                        catch(Exception e) { _log($"WARNING: Could not append successful URL to history: {e.Message}"); }
-                        Interlocked.Increment(ref _completed);
-                        WriteResult("success",$"{item.Url} | {item.Path}");
-                    }
-                    else if (item.CleanupError.Length==0)
-                    {
-                        item.Status="Failed";item.State="Failed";
-                        item.RawError=result.Error;item.Speed="";item.ETA="";
-                        WriteResult("error",$"{item.Url} | {result.Error}");
-                    }
+                    // Filesystem cleanup may cross a slow/remote volume. The
+                    // finalizing attempt cannot be resumed and owns this work;
+                    // other rows' Skip/Cancel must not wait on a shared FS lock.
+                    if(clean)DownloadCleanup.Retry(item);
                 }
             }
-            catch (OperationCanceledException)
+            catch(OperationCanceledException)
             {
-                item.Status="Interrupted";item.State="Cancelled";
+                item.Status=attempt.Reason==AttemptStopReason.Skip?"Skipped":"Interrupted";
+                item.State=attempt.Reason==AttemptStopReason.Skip?"Skipped":"Cancelled";
             }
             catch(Exception ex)
             {
-                if (item.CleanupPaths.Count>0 || item.CleanupError.Length>0)
-                    DownloadCleanup.Failed(item,ex.Message);
-                else {item.Status="Failed";item.State="Failed";item.RawError=ex.Message;}
-                WriteResult("error",$"{item.Url} | {ex.Message}");
-                _log($"ERROR {item.Url}: {ex.Message}");
+                if(item.CleanupPaths.Count>0 || item.CleanupError.Length>0)DownloadCleanup.Failed(item,ex.Message);
+                else{item.Status="Failed";item.State="Failed";item.RawError=ex.Message;}
+                WriteResult("error",$"{item.Url} | {ex.Message}");_log($"ERROR {item.Url}: {ex.Message}");
             }
             finally
             {
-                if (item.CleanupError.Length>0) DownloadCleanup.Failed(item,item.CleanupError);
-                item.AttemptFinished=true;
-                Trace(item,item.Status=="Failed" || item.CleanupError.Length>0 ? JournalLevel.Error : JournalLevel.Information,
-                    "job_finished",$"status={item.Status} state={DownloadProgressTrace.Quoted(item.State)} shown_pct={DownloadProgressTrace.Number(item.Progress)} transferred={item.TransferredBytes}"+
-                    (item.RawError.Length>0 ? " error="+DownloadProgressTrace.Quoted(item.RawError) : "")+
-                    (item.CleanupError.Length>0 ? " cleanup_error="+DownloadProgressTrace.Quoted(item.CleanupError) : ""));
-                _changed(item);
-                _itemCancels.TryRemove(item.Url,out _);
-                Interlocked.Decrement(ref _outstanding);
+                lock(_completionGate)
+                {
+                    if(item.CleanupError.Length>0)DownloadCleanup.Failed(item,item.CleanupError);
+                    item.AttemptFinished=true;item.Speed="";item.ETA="";
+                    Trace(item,item.Status=="Failed" || item.CleanupError.Length>0?JournalLevel.Error:JournalLevel.Information,
+                        "job_finished",$"status={item.Status} state={DownloadProgressTrace.Quoted(item.State)} shown_pct={DownloadProgressTrace.Number(item.Progress)} transferred={item.TransferredBytes}"+
+                        (item.RawError.Length>0?" error="+DownloadProgressTrace.Quoted(item.RawError):"")+
+                        (item.CleanupError.Length>0?" cleanup_error="+DownloadProgressTrace.Quoted(item.CleanupError):""));
+                    _itemCancels.TryRemove(item.Url,out _);Interlocked.Decrement(ref _outstanding);
+                    // Completion is signalled only after the last mutation and
+                    // process/pipes join. A new generation can now safely enter.
+                    attempt.Finished.TrySetResult(item.Status=="Skipped");
+                    attempt.Stop.Dispose();_changed(item);
+                }
             }
         }
     }
@@ -259,26 +318,33 @@ public sealed class DownloadCoordinator : IAsyncDisposable
                 TraceSessionId,item==null?"":_traceJobIds.GetOrAdd(item.Url,DownloadTraceIdentity.JobId),worker??item?.Slot??"",
                 Identity:item is null?"":DownloadTraceIdentity.DiagnosticIdentity(item.Url),Event:eventName,
                 Attempt:numbers.Attempt>0?numbers.Attempt:null,Invocation:numbers.Invocation>0?numbers.Invocation:null,
-                Settings:item is not null && (eventName is "job_queued" or "attempt_start" || level is JournalLevel.Error or JournalLevel.Warning)
-                    ?JobDiagnosticSettings.Capture(_options,_selections.GetValueOrDefault(item.Url),numbers.Quality):null);
+                Settings:item is not null && (eventName is "job_queued" or "job_resumed" or "attempt_start" || level is JournalLevel.Error or JournalLevel.Warning) &&
+                    _diagnosticPlans.TryGetValue(item.Url,out var captured)
+                    ?captured with{Quality=numbers.Quality??captured.Quality}:null);
             _trace(record);
         }
         catch(Exception) { /* Diagnostics must not change a download's outcome. */ }
     }
 
-    private async Task<DownloadResult> DownloadAsync(DownloadItem item,CancellationToken ct)
+    private async Task<DownloadResult> DownloadAsync(DownloadItem item,DownloadAttempt owner)
     {
+        CancellationToken ct=owner.Stop.Token;
         string outputRoot=_outputRoots[item.Url];
         OwnedFiles.NoReparseAncestors(Path.Combine(outputRoot,"__check__"));
-        string stage=Path.Combine(_stageRoot,Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(stage);
-        item.RunDir=_stageRoot;item.StageDir=stage;item.OutputRoot=outputRoot;
+        bool retained=item.ResumeState is not null;
+        DownloadResumeStore.Validated? validated=retained?DownloadResumeStore.Validate(item,requireMatchingSelection:false):null;
+        var options=validated?.State.Plan.ToOptions()??_options;
+        var arguments=new YtDlpArguments(options);
+        string stage=retained?item.StageDir:Path.Combine(_stageRoot,Guid.NewGuid().ToString("N"));
+        if(!retained)Directory.CreateDirectory(stage);
+        if(!retained){item.RunDir=_stageRoot;item.StageDir=stage;}
+        item.OutputRoot=outputRoot;
         _changed(item);
         string mediaPath="";
         var reportedMedia=new ConcurrentQueue<string>();
         var subtitleManifests=new ConcurrentQueue<string>();
         var streamed=new Dictionary<string,long>(StringComparer.Ordinal);
-        long transferred=0;
+        long transferred=retained?item.TransferredBytes:0;
         var progressTrace=new DownloadProgressTrace();
         var progressPlan=new DownloadProgressPlan();
         var fragmentPlans=new Dictionary<int,DownloadProgressPlan>();
@@ -298,15 +364,22 @@ public sealed class DownloadCoordinator : IAsyncDisposable
         }
         DownloadProgressPlan FragmentPlan(int index)
         {if(!fragmentPlans.TryGetValue(index,out var plan))fragmentPlans[index]=plan=new DownloadProgressPlan();return plan;}
-        string[] qualities=_arguments.QualityLevels(selection).ToArray();
+        string[] qualities=arguments.QualityLevels(selection).ToArray();
+        if(validated is not null)
+        {
+            int from=Array.IndexOf(qualities,validated.Quality);
+            if(from>=0)qualities=qualities[from..];
+        }
         try
         {
-            OwnedFiles.ValidateTemplate(_options.FilenameTemplate);
+            OwnedFiles.ValidateTemplate(options.FilenameTemplate);
+            if(!retained)DownloadResumeStore.Create(item,options,selection,qualities[0]);
             foreach(var q in qualities)
             {
                 for (int attempt=0;attempt<=3;attempt++)
                 {
                     ct.ThrowIfCancellationRequested();
+                    DownloadResumeStore.UpdateQuality(item,q);
                     launch++;
                     double previousShown=item.Progress;
                     if(launch>1)
@@ -325,8 +398,9 @@ public sealed class DownloadCoordinator : IAsyncDisposable
                     if(selectedFragments>1)streamed.Clear();
                     bool postprocessing=false;
                     int subtitleManifestCount=0;
-                    _diagnosticAttempts[item.Url]=(attempt+1,launch,q);
-                    Trace(item,JournalLevel.Information,"attempt_start",$"attempt={attempt+1} invocation={launch} quality={DownloadProgressTrace.Quoted(q)} previous_shown_pct={DownloadProgressTrace.Number(previousShown)} transferred={transferred}");
+                    int invocation=_invocations.AddOrUpdate(item.Url,1,(_,before)=>before+1);
+                    _diagnosticAttempts[item.Url]=(attempt+1,invocation,q);
+                    Trace(item,JournalLevel.Information,"attempt_start",$"attempt={attempt+1} invocation={invocation} quality={DownloadProgressTrace.Quoted(q)} previous_shown_pct={DownloadProgressTrace.Number(previousShown)} transferred={transferred}");
                     var errors=new ConcurrentQueue<string>();
                     void Line(string line,string source)
                     {
@@ -367,13 +441,20 @@ public sealed class DownloadCoordinator : IAsyncDisposable
                                 {
                                     int fragment=FragmentIndex(progress.SectionStart,progress.SectionEnd);
                                     string component=selectedFragments>1?fragment.ToString(CultureInfo.InvariantCulture)+":"+progress.Component:progress.Component;
-                                    streamed.TryGetValue(component,out long previous);
+                                    string counterKey=DownloadResumeStore.ComponentIdentity(component);
+                                    if(!streamed.TryGetValue(component,out long previous) && retained)
+                                        previous=validated!.State.ComponentBytes.GetValueOrDefault(counterKey);
                                     long bytes=Math.Max(0,progress.DownloadedBytes);
                                     // A retry can reset a component counter. Keep
                                     // its new baseline and count the retried bytes;
                                     // identical final samples still contribute zero.
                                     transferred+=bytes<previous ? bytes : bytes-previous;
                                     streamed[component]=bytes;
+                                    if(item.ResumeState is {} resume && (resume.ComponentBytes.Count<2048 || resume.ComponentBytes.ContainsKey(counterKey)))
+                                    {
+                                        var counters=new Dictionary<string,long>(resume.ComponentBytes,StringComparer.Ordinal){[counterKey]=bytes};
+                                        item.ResumeState=resume with{ComponentBytes=counters};
+                                    }
                                     item.TransferredBytes=transferred;
                                     // Separate pipe readers may deliver a final sample of
                                     // an earlier range after its media marker. Count its
@@ -414,7 +495,7 @@ public sealed class DownloadCoordinator : IAsyncDisposable
                                 break;
                         }
                     }
-                    int exitCode=await RunProcessAsync(item,q,attempt+1,_arguments.Build(item.Url,stage,q,selection),Line,ct).ConfigureAwait(false);
+                    int exitCode=await RunProcessAsync(item,q,attempt+1,arguments.Build(item.Url,stage,q,selection),Line,ct).ConfigureAwait(false);
                     ct.ThrowIfCancellationRequested();
                     if (exitCode==0)
                     {
@@ -445,18 +526,18 @@ public sealed class DownloadCoordinator : IAsyncDisposable
                             OwnedFiles.RegularOrAbsent(path);
                             if(!File.Exists(path) || new FileInfo(path).Length==0)
                                 return new DownloadResult(false,false,"",[],"A reported media file is absent or empty.",transferred);
-                            if(!_options.AudioOnly && _options.Container!="Auto" &&
-                                !Path.GetExtension(path).Equals("."+_options.Container,StringComparison.OrdinalIgnoreCase))
-                                return new DownloadResult(false,false,"",[],"yt-dlp did not produce the requested container: "+_options.Container,transferred);
+                            if(!options.AudioOnly && options.Container!="Auto" &&
+                                !Path.GetExtension(path).Equals("."+options.Container,StringComparison.OrdinalIgnoreCase))
+                                return new DownloadResult(false,false,"",[],"yt-dlp did not produce the requested container: "+options.Container,transferred);
                         }
                         string publishStage=stage;
-                        if(selection?.IsPartial==true && (_options.WriteSubs || _options.AutoSubs || _options.EmbedSubs))
+                        if(selection?.IsPartial==true && (options.WriteSubs || options.AutoSubs || options.EmbedSubs))
                         {
                             item.State="Processing";item.ProgressDetail="Субтитры выбранных фрагментов";_changed(item);
                             var subtitles=new SubtitleTimelineService(DependencyCenter.Executable(OperatingSystem.IsWindows()?"ffmpeg.exe":"ffmpeg"),
                                 DependencyCenter.Executable(OperatingSystem.IsWindows()?"ffprobe.exe":"ffprobe"),
                                 (start,stdout,stderr,token)=>RunProcessingToolAsync(item,start,stdout,stderr,token),()=>_pause.IsPaused);
-                            await subtitles.ProcessAsync(stage,media,selection.EffectiveSections,subtitleManifests.ToArray(),_options.EmbedSubs,ct,
+                            await subtitles.ProcessAsync(stage,media,selection.EffectiveSections,subtitleManifests.ToArray(),options.EmbedSubs,ct,
                                 selection.EffectiveSections.Select(selection.SectionBounds).ToArray()).ConfigureAwait(false);
                             Trace(item,JournalLevel.Information,"subtitle_timeline_ready",$"fragments={media.Length}");
                         }
@@ -466,7 +547,7 @@ public sealed class DownloadCoordinator : IAsyncDisposable
                                 DependencyCenter.Executable(OperatingSystem.IsWindows()?"ffprobe.exe":"ffprobe"),
                                 (start,stdout,stderr,token)=>RunProcessingToolAsync(item,start,stdout,stderr,token),()=>_pause.IsPaused);
                             Trace(item,JournalLevel.Information,"fragment_merge_start",$"fragments={media.Length} allow_reencode={selection.AllowMergeReencode}");
-                            var joined=await merger.MergeAsync(stage,media,selection.AllowMergeReencode,_options.EmbedMetadata,_options.EmbedChapters,ct,
+                            var joined=await merger.MergeAsync(stage,media,selection.AllowMergeReencode,options.EmbedMetadata,options.EmbedChapters,ct,
                                 (detail,processing)=>{item.State=processing?"Processing":"Merging";item.ProgressDetail=detail;item.Speed="";item.ETA="";_changed(item);}).ConfigureAwait(false);
                             publishStage=joined.PublishStage;mediaPath=joined.MediaPath;
                             Trace(item,JournalLevel.Information,"fragment_merge_ready",$"fragments={media.Length} reencoded={joined.Reencoded} duration={DownloadProgressTrace.Number(joined.DurationSeconds)}");
@@ -475,7 +556,13 @@ public sealed class DownloadCoordinator : IAsyncDisposable
                         // so even a failed rollback retains exact cleanup paths.
                         item.State="Publishing";item.Speed="";item.ETA="";_changed(item);
                         Trace(item,JournalLevel.Information,"publishing",$"attempt={attempt+1} quality={DownloadProgressTrace.Quoted(q)}");
-                        var published=OwnedFiles.Publish(publishStage,outputRoot,mediaPath,
+                        (string Path,List<string> OwnedPaths) published;
+                        lock(_completionGate)
+                        {
+                            ct.ThrowIfCancellationRequested();
+                            owner.Publishing=true;
+                        }
+                        published=OwnedFiles.Publish(publishStage,outputRoot,mediaPath,
                             paths=>item.CleanupPaths=paths.ToList(),renameCollisions:true);
                         Trace(item,JournalLevel.Information,"published",$"attempt={attempt+1} files={published.OwnedPaths.Count}");
                         if (ct.IsCancellationRequested || _cancelled.ContainsKey(item.Url))
@@ -517,8 +604,22 @@ public sealed class DownloadCoordinator : IAsyncDisposable
         catch(OperationCanceledException) { return new DownloadResult(false,true,"",[],"",transferred); }
         finally
         {
-            // Staged partial files never touch the destination folder.
-            try { OwnedFiles.DeleteStage(stage,_stageRoot);item.StageDir=""; }
+            // Skip retains exactly this attempt's own partial data. Cancel,
+            // Stop, failure and success keep their original cleanup semantics.
+            bool keep;
+            lock(_completionGate)
+            {
+                owner.Finalizing=true;
+                keep=owner.Reason==AttemptStopReason.Skip && item.CleanupError.Length==0 && !item.PendingRemoval && item.ResumeState is not null;
+            }
+            try
+            {
+                if(!keep)
+                {
+                    if(item.ResumeState is not null)DownloadResumeStore.DeleteRetained(item);
+                    else{OwnedFiles.DeleteStage(stage,item.RunDir);item.StageDir="";}
+                }
+            }
             catch(Exception e) when (e is IOException or UnauthorizedAccessException)
             {
                 DownloadCleanup.Failed(item,"Could not remove partial staging files: "+e.Message);
@@ -558,6 +659,7 @@ public sealed class DownloadCoordinator : IAsyncDisposable
         };
         foreach(string arg in args) psi.ArgumentList.Add(arg);
         await _pause.WaitForResumeAsync(token).ConfigureAwait(false);
+        token.ThrowIfCancellationRequested();
         using var child=ManagedChildProcess.Start(psi);
         var process=child.Process;
         _pause.Register(item.Url,process);
@@ -595,6 +697,16 @@ public sealed class DownloadCoordinator : IAsyncDisposable
         try
         {
             if (_runTask!=null) await _runTask.ConfigureAwait(false);
+            else
+            {
+                // Add/Cancel may precede RunAsync (or a start can be aborted).
+                // Still retire queued generations and join their actual cleanup
+                // tasks, including the final callback, before disposing tokens.
+                foreach(var attempt in _attempts.Values)
+                    if(!attempt.Finished.Task.IsCompleted)Cancel(attempt.Row);
+                await Task.WhenAll(_queuedCleanups.ToArray()).ConfigureAwait(false);
+                IsRunning=false;
+            }
         }
         finally { _stop.Dispose(); }
     }

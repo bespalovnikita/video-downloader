@@ -24,7 +24,7 @@ public sealed partial class NativeWindow
     }
     private bool CanUseProfileBackup(bool ownBarrier=false,bool allowAutomatic=true)=>!_closing && !_disposed &&
         (!_profileBackupBusy || ownBarrier) && !_profileBackupRecoveryRequired && !_profileBackupReplaying &&
-        !_checkpointReadOnly && !_legacyEngineBlocked && !_restoringSession && !_startingSession && !_appUpdateBusy && !_appUpdateHandoff &&
+        !_checkpointReadOnly && !_legacyEngineBlocked && !_restoringSession && !_startingSession && !_queueItemActionBusy && !_appUpdateBusy && !_appUpdateHandoff &&
         !_dependencyOperationRunning && (_subscriptions?.HasActiveWork!=true || allowAutomatic && _subscriptions.IsAutomaticCheckActive) &&
         SessionState.Coordinator?.IsRunning!=true &&
         SessionState.RunningTask?.IsCompleted!=false &&

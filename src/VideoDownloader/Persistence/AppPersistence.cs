@@ -35,10 +35,11 @@ public sealed class AppPersistence
         foreach (var row in session.Queue)
         {
             if (!ValidUrl(row.Url) || !seen.Add(row.Url) ||
-                row.Status is not ("Queued" or "Running" or "Completed" or "Failed" or "Interrupted"))
+                row.Status is not ("Queued" or "Running" or "Completed" or "Failed" or "Interrupted" or "Skipped"))
                 throw new InvalidDataException("Invalid or duplicate checkpoint URL/status.");
             if (row.Status == "Running") { row.Status="Interrupted"; row.State="Interrupted"; }
             if (row.Status == "Completed") { row.State="Done"; row.Progress=100; }
+            if (row.Status == "Skipped") { row.State="Skipped"; row.Speed="";row.ETA="";row.Slot=""; }
             row.OwnedPaths ??= new List<string>();
             row.CleanupPaths ??= new List<string>();
             if (row.SubscriptionId is null || row.SubscriptionName is null ||
@@ -48,6 +49,7 @@ public sealed class AppPersistence
             {
                 row.Selection?.ValidatePersisted(row.Url);
                 row.CompletedSelection?.ValidatePersisted(row.Url);
+                DownloadResumeStore.ValidatePersisted(row);
             }
             catch(ArgumentException error){throw new InvalidDataException("Invalid format or section in session checkpoint.",error);}
         }

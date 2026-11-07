@@ -190,7 +190,7 @@ internal sealed class QueueFilterController:IDisposable
         {
             var previousStatus=_status.SelectedItem as Choice;
             var statuses=new List<Choice>{new(null,ErrorMessages.Text("Все статусы","All statuses"))};
-            string[] standard=["Queued","Starting","Running","Completed","Failed","Interrupted","Cancelled"];
+            string[] standard=["Queued","Starting","Running","Skipped","Completed","Failed","Interrupted","Cancelled"];
             foreach(string id in standard.Concat(_rows.Select(row=>row.Status)).Distinct(StringComparer.Ordinal))
                 statuses.Add(new(id,StatusLabel(id)));
             if(previousStatus?.Id is {} oldStatus && statuses.All(choice=>choice.Id!=oldStatus))statuses.Add(previousStatus);
@@ -220,7 +220,7 @@ internal sealed class QueueFilterController:IDisposable
         "Queued"=>ErrorMessages.Text("В очереди","Queued"),"Starting"=>ErrorMessages.Text("Запуск","Starting"),
         "Running"=>ErrorMessages.Text("Выполняется","Running"),"Completed"=>ErrorMessages.Text("Готово","Completed"),
         "Failed"=>ErrorMessages.Text("Ошибка","Failed"),"Interrupted"=>ErrorMessages.Text("Прервано","Interrupted"),
-        "Cancelled"=>ErrorMessages.Text("Отменено","Cancelled"),_=>status
+        "Cancelled"=>ErrorMessages.Text("Отменено","Cancelled"),"Skipped"=>ErrorMessages.Text("Пропущено","Skipped"),_=>status
     };
     internal void Reset()
     {
@@ -238,8 +238,8 @@ internal sealed class QueueFilterController:IDisposable
         _empty.Text=ErrorMessages.Text("Ничего не найдено.\nИзмените поиск или сбросьте фильтры.","No matching rows.\nChange the search or reset filters.");
         _reset.IsEnabled=IsFiltering || _query.Text.Length>0;
         _scope.Text=IsFiltering
-            ? ErrorMessages.Text("Фильтры меняют только список. «Скачать всю очередь» и очистка действуют на всю очередь, включая скрытые строки.",
-                "Filters change this list only. Start and Clear all apply to the whole queue, including hidden rows.")
+            ? ErrorMessages.Text("Фильтры меняют только список. Запуск и очистка учитывают скрытые строки. Пропущенные продолжаются отдельно; очистка сохраняет их, пока есть другие строки.",
+                "Filters change this list only. Start and Clear include hidden rows. Resume skipped tasks explicitly; Clear keeps them while other rows remain.")
             : ErrorMessages.Text("Поиск по названию или URL · Ctrl+F. Esc сбрасывает фильтры.","Search title or URL · Ctrl+F. Esc resets filters.");
         RefreshPresentation();
     }

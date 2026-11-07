@@ -88,7 +88,16 @@ internal sealed partial class UiScenario
             }
             int ScanCalls()
             {
-                try { return File.Exists(calls)?File.ReadAllLines(calls).Length:0; }
+                try
+                {
+                    // This readiness poll must allow the native scanner to
+                    // append its call before it produces the JSON response.
+                    using var stream=new FileStream(calls,FileMode.Open,FileAccess.Read,FileShare.ReadWrite|FileShare.Delete);
+                    using var reader=new StreamReader(stream);
+                    int count=0;
+                    while(reader.ReadLine() is not null)count++;
+                    return count;
+                }
                 catch(IOException){return 0;}
             }
             controller=new SubscriptionController(window,store,executable,

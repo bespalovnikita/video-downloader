@@ -325,6 +325,9 @@
                 <DataTrigger Binding="{Binding Status}" Value="Interrupted">
                     <Setter Property="Foreground" Value="#FBBF24"/>
                 </DataTrigger>
+                <DataTrigger Binding="{Binding Status}" Value="Skipped">
+                    <Setter Property="Foreground" Value="#C4B5FD"/>
+                </DataTrigger>
                 <DataTrigger Binding="{Binding Status}" Value="Failed">
                     <Setter Property="Foreground" Value="#FB7185"/>
                 </DataTrigger>
@@ -442,6 +445,8 @@
                         <Button x:Name="PortableQueueButton" Content="Перенос очереди" ToolTip="Скопировать очередь или сохранить её для другого клиента Windows / Android"/>
                         <Button x:Name="SubscriptionsButton" Content="Подписки" ToolTip="Проверки каналов и плейлистов, расписание, новые материалы и исходный набор"/>
                         <Button x:Name="RemoveQueueButton" Content="Удалить выбранные"/>
+                        <Button x:Name="SkipQueueItemsButton" Content="Пропустить выбранные" IsEnabled="False"/>
+                        <Button x:Name="ResumeQueueItemsButton" Content="Продолжить выбранные" IsEnabled="False"/>
                         <Button x:Name="QueueDiagnosticsButton" Content="Диагностика…" IsEnabled="False"
                                 ToolTip="События, попытки и диагностический пакет одной выбранной строки"/>
                         <Button x:Name="ClearQueueButton" Content="Очистить всю очередь"/>
@@ -528,7 +533,7 @@
                         <TextBlock Text="Загрузки" Style="{StaticResource SectionTitle}"/>
                     </DockPanel>
 
-                    <DataGrid x:Name="DownloadGrid" Grid.Row="1" SelectionMode="Single" Tag="{Binding IsChecked, ElementName=ShowVideoTitlesCheck}">
+                    <DataGrid x:Name="DownloadGrid" Grid.Row="1" SelectionMode="Extended" Tag="{Binding IsChecked, ElementName=ShowVideoTitlesCheck}">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="Поток" Binding="{Binding Slot}" Width="52" ElementStyle="{StaticResource GridTextStyle}"/>
                             <DataGridTextColumn Header="Состояние" Binding="{Binding StateLabel}" Width="110" ElementStyle="{StaticResource DownloadStatusTextStyle}"/>
