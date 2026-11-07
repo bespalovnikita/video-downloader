@@ -119,6 +119,8 @@ public sealed record DownloadSelection(string Url,DownloadSection? Section=null,
         ValidatePersisted(url);
         if(IsMerged && (options.WriteSubs || options.AutoSubs || options.EmbedSubs))
             throw new ArgumentException("Склейка фрагментов пока не переносит субтитры. Выключите субтитры либо выберите отдельные файлы.");
+        if(IsPartial && options.Sponsor && (options.WriteSubs || options.AutoSubs || options.EmbedSubs))
+            throw new ArgumentException("Удаление SponsorBlock дополнительно меняет временную шкалу фрагмента. Выключите SponsorBlock либо субтитры.");
         if(Format is null)return;
         if(options.AudioOnly && (!Format.IsAudioOnly || AudioFormat is not null))
             throw new ArgumentException("Для «MP3 only» выберите аудиоформат без видео или автоматический формат.");

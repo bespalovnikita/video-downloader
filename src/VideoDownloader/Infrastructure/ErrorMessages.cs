@@ -48,6 +48,9 @@ internal static class ErrorMessages
     // mistaken for HTTP codes or an extractor's diagnostic text.
     private static readonly Rule[] BeforeHttp =
     [
+        RuleFor(@"^Clipped subtitles: Unsupported clipped subtitle format:", "Формат субтитров фрагмента не поддерживается. Нужны WebVTT, SRT, ASS или SSA. Выключите субтитры либо выберите другой источник; новые файлы не опубликованы."),
+        RuleFor(@"^Clipped subtitles: This container cannot embed", "Этот контейнер не поддерживает встраивание субтитров фрагмента. Выберите MP4, MKV или WebM либо выключите встраивание."),
+        RuleFor(@"^Clipped subtitles:", "Не удалось подготовить субтитры выбранных фрагментов. Новые файлы не опубликованы. Проверьте исходную диагностику в подробностях ошибки; можно повторить загрузку без субтитров."),
         RuleFor(@"^Fragment merge failed: Embedded covers cannot be preserved", "Склейка этого контейнера со встроенной обложкой пока не поддерживается. Выключите «Встроить обложку» либо сохраните отдельные фрагменты."),
         RuleFor(@"^Fragment merge failed:", "Не удалось склеить выбранные фрагменты. Проверьте совместимость дорожек и параметры перекодирования либо сохраните отдельные файлы. Исходная диагностика доступна в подробностях ошибки."),
         RuleFor(@"\bunsupported URL\b|\bno suitable extractor\b", "Этот адрес не поддерживается yt-dlp. Проверьте ссылку и обновите yt-dlp в разделе «Компоненты»."),
