@@ -731,6 +731,7 @@
                                     <Button x:Name="UpdateYtDlpButton" Content="Update yt-dlp"/>
                                     <Button x:Name="RegisterProtocolButton" Content="Register protocol"/>
                                     <Button x:Name="OpenAppSettingsButton" Content="📁 Открыть папку настроек" ToolTip="Открыть %LOCALAPPDATA%\VideoDownloader в Проводнике"/>
+                                    <Button x:Name="OpenProfileBackupButton" Content="Резервная копия…" ToolTip="Настройки, подписки и история Windows без cookies, локальных путей и файлов загрузок"/>
                                 </WrapPanel>
                             </StackPanel>
                         </Expander>

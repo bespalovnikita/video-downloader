@@ -35,7 +35,7 @@ public sealed partial class NativeWindow
 
     private async Task ExportPortableQueueAsync(bool toFile)
     {
-        if(_closing || _disposed)return;
+        if(_closing || _disposed || RejectProfileBackupMutation())return;
         var entries=SessionState.Queue.Select(row=>new PortableQueueEntry(row.Url,row.Title)).ToArray();
         if(entries.Length==0)
         {
@@ -51,7 +51,7 @@ public sealed partial class NativeWindow
         try
         {
             string text=await Task.Run(()=>PortableQueueCodec.Encode(entries));
-            if(_closing || _disposed || _appUpdateHandoff)return;
+            if(_closing || _disposed || _appUpdateHandoff || RejectProfileBackupMutation())return;
             if(file!=null)
             {
                 await Task.Run(()=>WritePortableQueueFile(file,text));
@@ -74,19 +74,19 @@ public sealed partial class NativeWindow
         }
     }
 
-    internal Task ImportPortableTextAsync(string text)=>ImportPortableAsync(()=>PortableQueueCodec.Decode(text));
-    internal Task ImportPortableFileAsync(string file)=>ImportPortableAsync(()=>PortableQueueCodec.Decode(ReadPortableQueueFile(file)));
+    internal Task ImportPortableTextAsync(string text,bool profileReplay=false)=>ImportPortableAsync(()=>PortableQueueCodec.Decode(text),profileReplay);
+    internal Task ImportPortableFileAsync(string file,bool profileReplay=false)=>ImportPortableAsync(()=>PortableQueueCodec.Decode(ReadPortableQueueFile(file)),profileReplay);
 
-    private async Task ImportPortableAsync(Func<IReadOnlyList<PortableQueueEntry>> decode)
+    private async Task ImportPortableAsync(Func<IReadOnlyList<PortableQueueEntry>> decode,bool profileReplay)
     {
         await _portableIngressGate.WaitAsync();
         try
         {
-            if(_closing || _disposed || _appUpdateHandoff)return;
+            if(_closing || _disposed || _appUpdateHandoff || (profileReplay?!CanReplayProfileArguments():RejectProfileBackupMutation()))return;
             if(_checkpointReadOnly || _legacyEngineBlocked)
                 throw new InvalidOperationException("Очередь недоступна для сохранения. Сначала устрани ошибку восстановления или заверши прежний движок.");
             var entries=await Task.Run(decode);
-            if(_closing || _disposed)return;
+            if(_closing || _disposed || (profileReplay?!CanReplayProfileArguments():RejectProfileBackupMutation()))return;
             if(_checkpointReadOnly || _legacyEngineBlocked)
                 throw new InvalidOperationException("Очередь недоступна для сохранения.");
             var added=SessionState.ImportPortable(entries,ReadOptions());

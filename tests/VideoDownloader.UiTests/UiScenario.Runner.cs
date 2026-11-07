@@ -50,6 +50,8 @@ internal sealed partial class UiScenario
             UiScenario.TestJournalProfiles(root);
             Stage("testing per-job diagnostics, typed attempts, private ZIP and cancelled owner lifetime");
             UiScenario.TestJobDiagnostics(root);
+            Stage("testing actual Windows profile backup ZIP, reviewed restore, rollback and late mutation guards");
+            UiScenario.TestProfileBackup(root);
             Stage("testing filename-template tooltip and reference dialog");
             UiScenario.TestFilenameTemplateHelp(root);
             Stage("testing audio-track controls and saved settings");

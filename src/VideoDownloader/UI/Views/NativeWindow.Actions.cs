@@ -123,6 +123,7 @@ public sealed partial class NativeWindow
         F<Button>("SubscriptionsButton").Click+=(_,_)=>OpenSubscriptions();
         F<Button>("ClearQueueButton").Click+=(_,_)=>
         {
+            if(RejectProfileBackupMutation())return;
             if (SessionState.Coordinator?.IsRunning==true)return;
             var candidates=SessionState.Queue.ToArray();
             if(candidates.Length>0 && ConfirmClearEntireQueue(candidates) && !_closing && !_disposed &&
@@ -139,13 +140,15 @@ public sealed partial class NativeWindow
         F<Button>("TrayButton").Click+=(_,_)=>_lifecycle.Hide();
         F<Button>("PickOutputButton").Click+=(_,_)=>
         {
+            if(RejectProfileBackupMutation())return;
             using var picker=new Forms.FolderBrowserDialog{Description="Download folder"};
-            if(picker.ShowDialog()==Forms.DialogResult.OK)B("OutputBox").Text=picker.SelectedPath;
+            if(picker.ShowDialog()==Forms.DialogResult.OK && !RejectProfileBackupMutation())B("OutputBox").Text=picker.SelectedPath;
         };
         F<Button>("PickCookiesButton").Click+=(_,_)=>
         {
+            if(RejectProfileBackupMutation())return;
             using var picker=new Forms.OpenFileDialog{Filter="Cookie text files|*.txt|All files|*.*"};
-            if(picker.ShowDialog()==Forms.DialogResult.OK)B("CookiesBox").Text=picker.FileName;
+            if(picker.ShowDialog()==Forms.DialogResult.OK && !RejectProfileBackupMutation())B("CookiesBox").Text=picker.FileName;
         };
         C("ProfileCombo").SelectionChanged+=(_,_)=>ApplyProfile(Pick(C("ProfileCombo")));
         F<Button>("RefreshDepsButton").Click+=(_,_)=>RefreshDependencyLabel();
@@ -220,6 +223,7 @@ public sealed partial class NativeWindow
     }
     private void ApplyProfile(string name)
     {
+        if(!_applyingProfileBackup && RejectProfileBackupMutation())return;
         string id=ProfileCatalog.ToId(name);
         if (name!=id && name!=ProfileCatalog.Display(id)) return;
         var options=ReadOptions();
@@ -229,7 +233,7 @@ public sealed partial class NativeWindow
     private void RefreshDependencyLabel()=>T("DependencyStatus").Text=DependencyCenter.Inspect();
     private async Task DependencyOperation(string progress,Func<CancellationToken,Task<string>> task)
     {
-        if(_closing || _disposed || _appUpdateHandoff || _dependencyOperationRunning)return;
+        if(_closing || _disposed || _appUpdateHandoff || _dependencyOperationRunning || RejectProfileBackupMutation())return;
         _dependencyOperationRunning=true;
         RefreshAppUpdateControls();
         T("DependencyStatus").Text=progress;
@@ -260,6 +264,14 @@ public sealed partial class NativeWindow
     private async void OnClosing(object? sender,System.ComponentModel.CancelEventArgs e)
     {
         if (_disposed) return; // internal test shutdown, not a user window close
+        if(_profileBackupWindow is {IsBusy:true} backup)
+        {
+            e.Cancel=true;if(_profileBackupClosePending)return;
+            _profileBackupClosePending=true;bool exitRequested=_lifecycle.ExitRequested;
+            try{await backup.CancelAndWaitAsync();}
+            finally{_profileBackupClosePending=false;}
+            if(!_disposed)_=Dispatcher.BeginInvoke(()=>{if(exitRequested)_lifecycle.RequestExit();else _window.Close();});return;
+        }
         if (_closeReady) return;
         if (_closing) { e.Cancel=true; return; }
         if (!_lifecycle.ExitRequested)
@@ -279,6 +291,7 @@ public sealed partial class NativeWindow
         e.Cancel=true;
         _closing=true;
         Task diagnosticsStopped=StopJobDiagnosticsAsync();
+        DisposeProfileBackup();
         DisposeDiskSpace();
         SessionState.MarkStopping();
         _tick.Stop();_ingress.Stop();
@@ -309,6 +322,7 @@ public sealed partial class NativeWindow
     {
         if(_disposed)return;
         DisposeJobDiagnostics();
+        DisposeProfileBackup();
         DisposeSubscriptions();
         FlushJournal();
         _disposed=true;

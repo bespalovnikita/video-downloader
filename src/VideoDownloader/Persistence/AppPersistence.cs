@@ -18,10 +18,12 @@ public sealed class AppPersistence
     {
         _dir = directory ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"VideoDownloader");
         Directory.CreateDirectory(_dir);
+        ProfileBackupTransaction.RecoverPending(_dir);
         _history = new SuccessfulDownloadHistory(HistoryPath);
     }
 
-    public SessionSnapshot? Restore()
+    public SessionSnapshot? Restore()=>ProfileBackupTransaction.Access(_dir,RestoreCore);
+    private SessionSnapshot? RestoreCore()
     {
         if (!File.Exists(SessionPath)) return null;
         if (new FileInfo(SessionPath).Length > MaxCheckpointBytes) throw new InvalidDataException("Session checkpoint exceeds 16 MiB.");
@@ -70,9 +72,12 @@ public sealed class AppPersistence
 
     public void Save(IReadOnlyCollection<DownloadItem> queue, DownloadOptions settings)
     {
-        using var json=new CheckpointBuffer();
-        SerializeCheckpoint(json,queue,settings,DateTime.UtcNow);
-        AtomicWrite(SessionPath,Encoding.UTF8.GetString(json.GetBuffer(),0,checked((int)json.Length)));
+        ProfileBackupTransaction.Access(_dir,()=>
+        {
+            using var json=new CheckpointBuffer();
+            SerializeCheckpoint(json,queue,settings,DateTime.UtcNow);
+            AtomicWrite(SessionPath,Encoding.UTF8.GetString(json.GetBuffer(),0,checked((int)json.Length)));return 0;
+        });
     }
     internal static void ValidateCanSave(IReadOnlyCollection<DownloadItem> queue,DownloadOptions settings)
     {
@@ -129,10 +134,12 @@ public sealed class AppPersistence
         && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps)
         && !string.IsNullOrEmpty(uri.Host);
 
-    public Dictionary<string,DateTimeOffset?> ReadHistory() => _history.ReadHistory();
-    public void AppendSuccess(string url) => _history.AppendSuccess(url);
+    public Dictionary<string,DateTimeOffset?> ReadHistory() => ProfileBackupTransaction.Access(_dir,_history.ReadHistory);
+    public void AppendSuccess(string url) => ProfileBackupTransaction.Access(_dir,()=>{_history.AppendSuccess(url);return 0;});
+    internal IReadOnlyList<DownloadHistoryEntry> ReadBackupHistory(CancellationToken cancellationToken)=>
+        ProfileBackupTransaction.Access(_dir,()=>_history.ReadBackup(cancellationToken));
     public DownloadHistoryLibrary ReadHistoryLibrary(string query="",int limit=5000,CancellationToken cancellationToken=default)=>
-        _history.ReadLibrary(query,limit,cancellationToken);
+        ProfileBackupTransaction.Access(_dir,()=>_history.ReadLibrary(query,limit,cancellationToken));
     public void AppendSuccess(DownloadItem item)
     {
         if(item.IsPartialResult)return;
@@ -141,6 +148,6 @@ public sealed class AppPersistence
         string source=item.SubscriptionName;
         if(source.Length==0 && Uri.TryCreate(item.Url,UriKind.Absolute,out var address))source=address.Host;
         var media=item.OwnedPaths.Where(HistoryFileAccess.IsSupportedMediaPath).Prepend(item.Path).Distinct(StringComparer.OrdinalIgnoreCase);
-        _history.AppendSuccess(item.Url,item.Title,source,media);
+        ProfileBackupTransaction.Access(_dir,()=>{_history.AppendSuccess(item.Url,item.Title,source,media);return 0;});
     }
 }

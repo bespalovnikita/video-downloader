@@ -58,7 +58,7 @@ public sealed partial class NativeWindow : IDisposable
     // production worker. Normal startup always resolves the packaged yt-dlp.
     internal NativeWindow(Window window,AppPersistence? persistence,string ytDlpExecutable,
         IAppUpdateService? updateService=null,bool? automaticUpdates=null,IDiskSpaceProvider? diskSpaceProvider=null,
-        TimeProvider? subscriptionClock=null,bool automaticSubscriptionChecks=true)
+        TimeProvider? subscriptionClock=null,bool automaticSubscriptionChecks=true,WindowsProfileBackup? profileBackup=null)
     {
         _window=window;
         _storage=persistence??new AppPersistence();
@@ -81,9 +81,10 @@ public sealed partial class NativeWindow : IDisposable
         B("OutputBox").Text=new DownloadOptions().Output;
         _panelLayout=new PanelLayoutController(_window,SaveCheckpoint);
         _preview=new PreviewController(_window,_storage,_ytDlp,
-            ()=>SessionState.Queue.Concat(SessionState.Downloads),SaveCheckpoint,Log);
+            ()=>_profileBackupBusy || _profileBackupRecoveryRequired || _profileBackupReplaying?Array.Empty<DownloadItem>():SessionState.Queue.Concat(SessionState.Downloads),SaveCheckpoint,Log);
         _lifecycle=new WindowLifecycleController(_window,()=>OpenFolder(B("OutputBox").Text));
-        _ingress=new InputIngressController(_window,AddUrls,()=>Check(K("WatchClipboardCheck")),_lifecycle.Activate,Log,
+        _ingress=new InputIngressController(_window,AddUrls,()=>!_profileBackupBusy && !_profileBackupRecoveryRequired && !_profileBackupReplaying &&
+            !_checkpointReadOnly && !_legacyEngineBlocked && Check(K("WatchClipboardCheck")),_lifecycle.Activate,Log,
             text=>_ = ImportPortableTextAsync(text),file=>_ = ImportPortableFileAsync(file));
         BindActions();
         C("AudioTrackCombo").SelectionChanged+=(_,_)=>B("AudioLanguagesBox").IsEnabled=AudioTrackSelection.ToId(Pick(C("AudioTrackCombo")))=="Languages";
@@ -138,6 +139,7 @@ public sealed partial class NativeWindow : IDisposable
         InitializeAppUpdates(updateService,automatic:automaticUpdates??(persistence is null));
         InitializeDiskSpace(diskSpaceProvider);
         InitializeSubscriptionScheduling(subscriptionClock,automaticSubscriptionChecks);
+        InitializeProfileBackup(profileBackup);
         UpdateState();
         FlushJournal();
         _tick.Start();_ingress.Start();
@@ -195,12 +197,13 @@ public sealed partial class NativeWindow : IDisposable
         RefreshAppUpdateControls();
         RefreshJobDiagnosticActions();
         PollDiskSpace();
+        RefreshProfileBackupControls();
     }
     internal void OnRowChanged(DownloadItem item)
     {
         _=Dispatcher.BeginInvoke(()=>
         {
-            if (_disposed) return;
+            if (_disposed || _profileBackupBusy || _profileBackupRecoveryRequired || _profileBackupReplaying) return;
             if (item.Status=="Completed" && item.AttemptFinished && item.CleanupError.Length==0 && !item.IsPartialResult)
                 RecordSubscriptionSuccess(item.Url);
             if (!SessionState.Queue.Contains(item)) return;
@@ -251,6 +254,7 @@ public sealed partial class NativeWindow : IDisposable
     };
     internal void ApplyOptions(DownloadOptions o)
     {
+        if(!_applyingProfileBackup && RejectProfileBackupMutation())return;
         C("LogProfileCombo").SelectedItem=JournalProfileCatalog.Display(o.LogProfile);
         C("AudioTrackCombo").SelectedItem=AudioTrackSelection.Display(o.AudioTrack);
         _panelLayout.Apply(o.QueuePanelWidth,o.PreviewPanelWidth);
@@ -319,18 +323,24 @@ public sealed partial class NativeWindow : IDisposable
     private bool _legacyEngineBlocked;
     internal void SaveCheckpoint()
     {
-        if (_restoringSession || _checkpointReadOnly || _disposed) return;
+        if (_restoringSession || _checkpointReadOnly || _disposed || _profileBackupBusy || _profileBackupRecoveryRequired || _profileBackupReplaying) return;
+        SaveCheckpointCore(SessionState.Queue.ToArray(),ReadOptions());
+    }
+    // Backup calls this with a frozen queue/options snapshot on a worker only
+    // after its scheduling lease has joined all profile readers and writers.
+    private void SaveCheckpointCore(IReadOnlyList<DownloadItem> rows,DownloadOptions options)
+    {
         try
         {
             // Save on meaningful changes, not every progress tick.
-            var fingerprint=System.Text.Json.JsonSerializer.Serialize(SessionState.Queue.Select(i=>new{
+            var fingerprint=System.Text.Json.JsonSerializer.Serialize(rows.Select(i=>new{
                 i.Url,i.Title,i.Status,i.Path,i.Order,i.OwnedPaths,i.OutputRoot,i.RunDir,i.StageDir,
                 i.CleanupPaths,i.CleanupError,i.PendingRemoval,i.AttemptFinished,i.DeferredToNextStart,
                 i.SubscriptionId,i.SubscriptionName,i.Selection,i.CompletedSelection
             }),AppPersistence.Json)+
-                ":"+System.Text.Json.JsonSerializer.Serialize(ReadOptions(),AppPersistence.Json)+":"+SessionState.Queue.Count;
+                ":"+System.Text.Json.JsonSerializer.Serialize(options,AppPersistence.Json)+":"+rows.Count;
             if (fingerprint==_lastSavedSnapshot) return;
-            _storage.Save(SessionState.Queue,ReadOptions());_lastSavedSnapshot=fingerprint;
+            _storage.Save(rows.ToArray(),options);_lastSavedSnapshot=fingerprint;
         }
         catch(Exception e)
         {
@@ -367,6 +377,7 @@ public sealed partial class NativeWindow : IDisposable
     }
     internal List<DownloadItem>? ConfirmDuplicates(List<DownloadItem> candidate,bool removeRejected)
     {
+        if(RejectProfileBackupMutation())return null;
         Dictionary<string,DateTimeOffset?> history;
         try { history=_storage.ReadHistory(); }
         catch(Exception e)
@@ -392,6 +403,7 @@ public sealed partial class NativeWindow : IDisposable
             if (choice==DuplicateChoice.Yes)approved.Add(item);
             else rejected.Add(item);
         }
+        if(RejectProfileBackupMutation())return null;
         if(removeRejected)
         {
             foreach(var item in rejected)SessionState.RejectQueueEntry(item);
@@ -401,6 +413,7 @@ public sealed partial class NativeWindow : IDisposable
     }
     internal void Reindex()
     {
+        if(_profileBackupBusy || _profileBackupRecoveryRequired)return;
         SessionState.Reindex();
         RefreshQueueView(true);
         UpdateState();SaveCheckpoint();
@@ -408,7 +421,7 @@ public sealed partial class NativeWindow : IDisposable
     private static IReadOnlyList<string> ParseUrls(string text)=>InputIngressController.ParseUrls(text);
     internal void AddUrls(IEnumerable<string> urls,bool clipboard=false,bool selectNew=false)
     {
-        if (_closing || _disposed || _appUpdateHandoff) return;
+        if (_closing || _disposed || _appUpdateHandoff || RejectProfileBackupMutation()) return;
         var rows=urls.Where(AppPersistence.ValidUrl).Distinct(StringComparer.Ordinal)
             .Where(url=>!SessionState.Queue.Any(i=>string.Equals(i.Url,url,StringComparison.Ordinal)))
             .Select(url=>new DownloadItem{Url=url}).ToList();
@@ -423,7 +436,7 @@ public sealed partial class NativeWindow : IDisposable
         }
         // A modal duplicate dialog pumps the dispatcher: IPC/clipboard may
         // have added these URLs, completed the session, or closed the window.
-        if (_closing || _disposed || _appUpdateHandoff) return;
+        if (_closing || _disposed || _appUpdateHandoff || RejectProfileBackupMutation()) return;
         var added=new List<DownloadItem>();
         foreach(var row in rows)
         {
@@ -448,14 +461,14 @@ public sealed partial class NativeWindow : IDisposable
     private void PollClipboard()=>_ingress.PollClipboard();
     private async Task StartAsync(IEnumerable<DownloadItem>? custom=null)
     {
-        if(_closing || _disposed || _startingSession || _appUpdateHandoff)return;
+        if(_closing || _disposed || _startingSession || _appUpdateHandoff || _checkpointReadOnly || _profileBackupReplaying || RejectProfileBackupMutation())return;
         _startingSession=true;
         try { await StartSessionCoreAsync(custom); }
         finally { _startingSession=false;UpdateState(); }
     }
     private async Task StartSessionCoreAsync(IEnumerable<DownloadItem>? custom)
     {
-        if (_closing || _disposed) return;
+        if (_closing || _disposed || _checkpointReadOnly || RejectProfileBackupMutation()) return;
         if (_legacyEngineBlocked)
         {
             MessageBox.Show(_window,
@@ -480,7 +493,7 @@ public sealed partial class NativeWindow : IDisposable
             OwnedFiles.ValidateTemplate(options.FilenameTemplate);
             var approved=ConfirmDuplicates(pending,true);
             if(approved==null||approved.Count==0)return;
-            if(_closing || _disposed || _appUpdateHandoff)return;
+            if(_closing || _disposed || _appUpdateHandoff || _checkpointReadOnly || RejectProfileBackupMutation())return;
             if(approved.Any(row=>!string.Equals(row.Url,requested[row].Url,StringComparison.Ordinal) ||
                 row.Selection!=requested[row].Selection))
                 throw new InvalidOperationException("Параметры задания изменились во время подтверждения. Повторите Start.");
@@ -493,6 +506,7 @@ public sealed partial class NativeWindow : IDisposable
                 return output;
             });
             if(!await ConfirmDiskSpaceBeforeStartAsync(approved,options,outputRoots))return;
+            if(_closing || _disposed || _appUpdateHandoff || _checkpointReadOnly || RejectProfileBackupMutation())return;
             Directory.CreateDirectory(options.OutputDirectory);
             SessionState.SetOptions(options);
             // Validate retained staging before resetting any attempt or ownership.
@@ -548,11 +562,13 @@ public sealed partial class NativeWindow : IDisposable
     }
     private void RemoveRows(IEnumerable<DownloadItem> rows)
     {
+        if(RejectProfileBackupMutation())return;
         var selected=rows.Where(SessionState.Queue.Contains).Distinct().ToArray();
         if(selected.Length==0)return;
         if(selected.Any(x=>x.Status!="Queued") &&
             MessageBox.Show(_window,$"Remove {selected.Length} selected URL(s)?\nActive jobs will be stopped; finished files belonging to them will be permanently deleted.\nOther downloads continue.",
                 "Delete downloads",MessageBoxButton.YesNo,MessageBoxImage.Warning)!=MessageBoxResult.Yes)return;
+        if(RejectProfileBackupMutation())return;
         foreach(var row in selected)
         {
             try
@@ -580,6 +596,7 @@ public sealed partial class NativeWindow : IDisposable
     }
     private void ClearRows(IReadOnlyCollection<DownloadItem> candidates)
     {
+        if(RejectProfileBackupMutation())return;
         foreach(var row in candidates)
             if (SessionState.Queue.Contains(row) && row.CanResume && row.StageDir.Length==0 && row.CleanupPaths.Count==0) ForgetRow(row);
         if(candidates.Any(SessionState.Queue.Contains))
@@ -590,11 +607,18 @@ public sealed partial class NativeWindow : IDisposable
     }
     private void MoveItem(DownloadItem item,int index)
     {
-        if(!QueueFiltersActive && SessionState.Move(item,index))Reindex();
+        if(!RejectProfileBackupMutation() && !QueueFiltersActive && SessionState.Move(item,index))Reindex();
     }
     public void ReceiveArguments(IEnumerable<string> args)
     {
-        if(!_closing && !_disposed && !_appUpdateHandoff)_ingress.ReceiveArguments(args);
+        if(_closing || _disposed || _appUpdateHandoff)return;
+        if(_profileBackupBusy || _profileBackupReplaying){DeferProfileArguments(args);return;}
+        if(_profileBackupRecoveryRequired || _checkpointReadOnly || _legacyEngineBlocked)
+        {
+            _profileBackupIngressWarning="Аргументы не приняты: профиль недоступен для сохранения. Повторите передачу после восстановления доступа к профилю.";
+            T("ClipboardHint").Text=_profileBackupIngressWarning;return;
+        }
+        if(!_closing && !_disposed && !_appUpdateHandoff && !RejectProfileBackupMutation())_ingress.ReceiveArguments(args);
     }
     private static IReadOnlyList<string> ReadInputFile(string file)=>InputIngressController.ReadInputFile(file);
 }

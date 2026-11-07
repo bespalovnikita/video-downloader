@@ -6,7 +6,7 @@ namespace VideoDownloader.Native;
 /// <summary>Local subscription state. This class never enumerates or downloads media.</summary>
 public sealed class SubscriptionStore
 {
-    private const long MaxFileBytes = 128L * 1024 * 1024;
+    internal const long MaxFileBytes = 128L * 1024 * 1024;
     private static readonly JsonSerializerOptions Json = new() { WriteIndented = false };
     private static readonly string[] DefinitionProperties =
     ["Id", "Url", "Title", "ShortName", "FeedUrl", "DownloadExisting", "Initialized", "Paused",
@@ -22,7 +22,8 @@ public sealed class SubscriptionStore
         Path = System.IO.Path.Combine(System.IO.Path.GetFullPath(directory), "subscriptions.json");
     }
 
-    public SubscriptionSnapshot Read() => Locked(ReadCore);
+    public SubscriptionSnapshot Read() => ProfileBackupTransaction.Access(System.IO.Path.GetDirectoryName(Path)!,()=>Locked(ReadCore));
+    internal static void ValidateBackupSnapshot(SubscriptionSnapshot snapshot)=>Validate(snapshot);
 
     public SubscriptionDefinition Add(string url, bool downloadExisting, string feedUrl = "", string shortName = "")
     {
@@ -348,7 +349,8 @@ public sealed class SubscriptionStore
         if (url.Length > 0) RequireUrl(url);
     }
 
-    private T Update<T>(Func<SubscriptionSnapshot, T> action, CancellationToken cancellationToken = default) => Locked(() =>
+    private T Update<T>(Func<SubscriptionSnapshot, T> action, CancellationToken cancellationToken = default) =>
+        ProfileBackupTransaction.Access(System.IO.Path.GetDirectoryName(Path)!,()=>Locked(() =>
     {
         cancellationToken.ThrowIfCancellationRequested();
         var snapshot = ReadCore();
@@ -356,7 +358,7 @@ public sealed class SubscriptionStore
         Validate(snapshot);
         WriteCore(snapshot, cancellationToken);
         return result;
-    }, cancellationToken);
+    }, cancellationToken));
 
     private static T Locked<T>(Func<T> action, CancellationToken cancellationToken = default)
     {
