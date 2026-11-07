@@ -48,6 +48,11 @@ internal static class ErrorMessages
     // mistaken for HTTP codes or an extractor's diagnostic text.
     private static readonly Rule[] BeforeHttp =
     [
+        RuleFor(@"^The retained download data is no longer available\.", "Временные данные пропущенной загрузки недоступны. Сбросьте элемент, чтобы скачать его заново."),
+        RuleFor(@"^The retained download belongs to a different format or fragment\.", "Сохранённые данные относятся к другому формату или фрагменту. Сначала сбросьте загрузку, затем измените параметры."),
+        RuleFor(@"^The previous owner of this retained download is still running\.", "Прежний процесс ещё владеет временными данными. Дождитесь его завершения и повторите продолжение."),
+        RuleFor(@"^The previous retained-download owner could not be verified\.", "Не удалось проверить прежний процесс загрузки. Временные данные сохранены; проверьте исходную диагностику."),
+        RuleFor(@"^(?:Retained (?:download|component|staging|ownership)|No retained download state|A retained state)", "Не удалось проверить сохранённые данные загрузки или их принадлежность. Файлы сохранены; проверьте исходную диагностику и повторите сброс после устранения причины."),
         RuleFor(@"^Clipped subtitles: Unsupported clipped subtitle format:", "Формат субтитров фрагмента не поддерживается. Нужны WebVTT, SRT, ASS или SSA. Выключите субтитры либо выберите другой источник; новые файлы не опубликованы."),
         RuleFor(@"^Clipped subtitles: This container cannot embed", "Этот контейнер не поддерживает встраивание субтитров фрагмента. Выберите MP4, MKV или WebM либо выключите встраивание."),
         RuleFor(@"^Clipped subtitles:", "Не удалось подготовить субтитры выбранных фрагментов. Новые файлы не опубликованы. Проверьте исходную диагностику в подробностях ошибки; можно повторить загрузку без субтитров."),

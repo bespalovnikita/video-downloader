@@ -171,6 +171,14 @@ internal sealed class QueueSessionController
         row.DeferredToNextStart=true;
         return false;
     }
+    internal bool TryResumeActive(DownloadCoordinator expected,DownloadItem row)
+    {
+        if(!ReferenceEquals(Coordinator,expected) || !expected.IsRunning || !Queue.Contains(row) || !expected.Resume(row))return false;
+        _urls.Add(row.Url);_finalStates.Remove(row.Url);row.DeferredToNextStart=false;
+        return true;
+    }
+    internal DownloadItem[] ClearCandidates()=>Queue.Any(row=>row.Status!="Skipped")
+        ?Queue.Where(row=>row.Status!="Skipped").ToArray():Queue.ToArray();
     internal void Begin(DownloadCoordinator coordinator,DownloadOptions options,IReadOnlyList<DownloadItem> rows)
     {
         Options=options;Coordinator=coordinator;StartedAt=_timeProvider.GetLocalNow().DateTime;Stopping=false;
@@ -197,7 +205,7 @@ internal sealed class QueueSessionController
     {
         if(!Queue.Contains(row))return false;
         if(!Downloads.Contains(row))Downloads.Add(row);
-        if(row.Status is not ("Completed" or "Failed" or "Interrupted"))return false;
+        if(row.Status is not ("Completed" or "Failed" or "Interrupted" or "Skipped"))return false;
         string final=row.Status+":"+row.CleanupError;
         if(_finalStates.TryGetValue(row.Url,out string? before) && before==final)return false;
         _finalStates[row.Url]=final;
@@ -211,14 +219,15 @@ internal sealed class QueueSessionController
         int active=rows.Count(row=>row.Status=="Running");
         bool activeChanged=active!=_lastActive;_lastActive=active;
         bool running=Coordinator?.IsRunning==true;
-        return new QueueSessionMetrics(active,rows.Count(row=>row.Status is not ("Completed" or "Failed")),
+        var participating=rows.Where(row=>row.Status!="Skipped").ToArray();
+        return new QueueSessionMetrics(active,rows.Count(row=>row.Status is not ("Completed" or "Failed" or "Skipped")),
             rows.Count(row=>row.Status=="Completed"),rows.Count(row=>row.Status=="Failed"),rows.Length,
             rows.Where(row=>row.Status=="Running").Sum(row=>DownloadCoordinator.ParseSize(row.Speed)),
-            rows.Sum(row=>row.TransferredBytes),rows.Length==0?0:rows.Sum(row=>
-                row.Status is "Completed" or "Failed"?100:row.Progress)/(double)rows.Length,
-            running,running && Coordinator!.IsPaused,activeChanged);
+            rows.Sum(row=>row.TransferredBytes),participating.Length==0?0:participating.Sum(row=>
+                row.Status is "Completed" or "Failed"?100:row.Progress)/(double)participating.Length,
+            running,running && Coordinator!.IsPaused,activeChanged,rows.Length-participating.Length);
     }
 }
 
 internal sealed record QueueSessionMetrics(int Active,int Left,int Successful,int Failed,int Total,
-    double Speed,long Transferred,double Progress,bool Running,bool Paused,bool ActiveChanged);
+    double Speed,long Transferred,double Progress,bool Running,bool Paused,bool ActiveChanged,int Skipped=0);

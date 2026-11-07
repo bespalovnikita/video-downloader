@@ -22,7 +22,7 @@ public sealed partial class NativeWindow
     private bool CanEditMediaSelection(DownloadItem row)=>!_disposed && !_closing && !_appUpdateHandoff && !_profileBackupBusy && !_profileBackupRecoveryRequired && !_profileBackupReplaying &&
         !(_startingSession && SessionState.Coordinator?.IsRunning!=true) &&
         !_checkpointReadOnly && !_legacyEngineBlocked &&
-        !_restoringSession && SessionState.Queue.Contains(row) && !row.PendingRemoval && row.CleanupError.Length==0 &&
+        !_restoringSession && !_queueItemActionBusy && SessionState.Queue.Contains(row) && row.ResumeState is null && !row.PendingRemoval && row.CleanupError.Length==0 &&
         row.Status is not ("Running" or "Starting") &&
         !(SessionState.Coordinator?.IsRunning==true && SessionState.Urls.Contains(row.Url,StringComparer.Ordinal));
 
@@ -35,7 +35,8 @@ public sealed partial class NativeWindow
         summary.Text=row==null ? "Выберите одну строку очереди." :
             "Следующая попытка: "+(row.Selection?.Summary??"автоматический формат · всё видео")+
             (row.CompletedSelection is {} completed ? "\nСохранённый результат: "+completed.Summary : "")+
-            (row.Status=="Completed"?"\nДля новой попытки: меню строки → Download selected или Retry URL.":"");
+            (row.ResumeState is not null?"\nСохранены частичные данные. Чтобы изменить формат, сначала сбросьте загрузку.":
+                row.Status=="Completed"?"\nДля новой попытки: меню строки → «Скачать выбранные строки» или «Скачать повторно».":"");
         summary.ToolTip=row?.Url;
         if(_mediaSelectionDialog is {} editor)editor.SetEditable(CanEditMediaSelection(editor.Row));
     }

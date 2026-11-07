@@ -35,7 +35,7 @@ public sealed partial class NativeWindow
         if(automatic)_=CheckAppUpdateAsync(true);
     }
     private bool CanInstallAppUpdate()=>!_disposed && !_closing && !_appUpdateHandoff && !_restoringSession &&
-        !_checkpointReadOnly && !_legacyEngineBlocked && !_startingSession && !_dependencyOperationRunning && !HasJobDiagnosticWork && !_preview.HasLocalPosterWork &&
+        !_checkpointReadOnly && !_legacyEngineBlocked && !_startingSession && !_queueItemActionBusy && !_dependencyOperationRunning && !HasJobDiagnosticWork && !_preview.HasLocalPosterWork &&
         !_profileBackupBusy && !_profileBackupRecoveryRequired && !_profileBackupReplaying && _window.IsEnabled && _mediaSelectionDialog is null && _subscriptions?.HasActiveWork!=true &&
         _subscriptions?.IsSchedulingSuspended!=true && SessionState.Coordinator?.IsRunning!=true &&
         SessionState.RunningTask?.IsCompleted!=false &&
