@@ -42,7 +42,8 @@ internal static class ErrorMessagesTests
                 "Other UI languages must retain the exact original diagnostic");
             Require(ErrorMessages.ForLog(denied)==denied,"Other UI languages must keep original log entries exactly");
             foreach(string reference in new[]{"MP3 поддерживает одну аудиодорожку. Отключите «MP3 only».",
-                "Для обработки медиа нажмите Install FFmpeg в разделе Dependencies.","Параметры задания изменились. Повторите Start."})
+                "Для обработки медиа нажмите Install FFmpeg в разделе Dependencies.","Параметры задания изменились. Повторите Start.",
+                "The retained download data is no longer available. Reset the item to start again."})
                 Require(ErrorMessages.ForDisplay(reference)==reference,
                     "Control-caption references in saved diagnostics must remain exact outside Russian UI locales.");
             Require(ErrorMessages.ForDisplay(null)=="" && ErrorMessages.ForDisplay("")=="",
@@ -51,6 +52,11 @@ internal static class ErrorMessagesTests
             CultureInfo.CurrentUICulture=CultureInfo.GetCultureInfo("ru-RU");
             var cases=new (string Diagnostic,string Expected)[]
             {
+                ("The retained download data is no longer available. Reset the item to start again.","Сбросьте"),
+                ("The retained download belongs to a different format or fragment. Reset it before changing the selection.","формату"),
+                ("The previous owner of this retained download is still running.","Прежний процесс"),
+                ("The previous retained-download owner could not be verified.","проверить"),
+                ("Retained ownership proof does not match this download.","принадлежность"),
                 ("HTTP Error 400: Bad Request","400"),
                 ("HTTP/1.1 401 Unauthorized","авторизац"),
                 ("Response status code does not indicate success: 403 (Forbidden).","403"),

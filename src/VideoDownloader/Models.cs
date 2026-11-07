@@ -58,6 +58,8 @@ public sealed class DownloadItem : INotifyPropertyChanged
         "Failed" => ErrorMessages.Text("Ошибка",State),
         "Interrupted" => ErrorMessages.Text("Прервано",State),
         "Cancelled" => ErrorMessages.Text("Отменено",State),
+        "Skipped" => ErrorMessages.Text("Пропущено",State),
+        "Skipping" => ErrorMessages.Text("Пропускаем — сохраняем прогресс",State),
         "Cancelling — waiting for cleanup" => ErrorMessages.Text("Отмена — ожидается очистка",State),
         "Cleanup failed — Remove to retry" => ErrorMessages.Text("Ошибка очистки — повторите удаление",State),
         "Removal pending — use Remove" => ErrorMessages.Text("Ожидается удаление — нажмите «Удалить выбранные»",State),
@@ -84,6 +86,8 @@ public sealed class DownloadItem : INotifyPropertyChanged
     public bool PendingRemoval { get; set; }
     public bool AttemptFinished { get; set; }
     public bool DeferredToNextStart { get; set; }
+    [JsonIgnore(Condition=JsonIgnoreCondition.WhenWritingNull)] public DownloadResumeState? ResumeState { get; set; }
+    [JsonIgnore] public bool CanResumeRetained=>ResumeState is not null && !PendingRemoval && CleanupError.Length==0;
     [JsonIgnore] public bool CanResume => !PendingRemoval && CleanupError.Length == 0;
     public long TransferredBytes { get; set; }
     public string DisplayState { get => State; set => State = value; }

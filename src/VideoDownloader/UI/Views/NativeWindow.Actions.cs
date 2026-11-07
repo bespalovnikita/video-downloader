@@ -127,9 +127,9 @@ public sealed partial class NativeWindow
         F<Button>("SubscriptionsButton").Click+=(_,_)=>OpenSubscriptions();
         F<Button>("ClearQueueButton").Click+=async(_,_)=>
         {
-            if(RejectProfileBackupMutation())return;
+            if(_closing || _disposed || _appUpdateHandoff || _queueItemActionBusy || QueueRemovalBlocked || RejectProfileBackupMutation())return;
             if (SessionState.Coordinator?.IsRunning==true)return;
-            var candidates=SessionState.Queue.ToArray();
+            var candidates=SessionState.ClearCandidates();
             if(candidates.Length>0 && ConfirmClearEntireQueue(candidates) && !_closing && !_disposed &&
                 !_appUpdateHandoff && SessionState.Coordinator?.IsRunning!=true)
             {await ClearRowsAsync(candidates);}
@@ -193,12 +193,18 @@ public sealed partial class NativeWindow
         var downloadSelected=new MenuItem{Header=ErrorMessages.Text("Скачать выбранные строки","Download selected rows")};
         downloadSelected.Click+=(_,_)=>{var rows=SelectedVisibleQueueRows();if(rows.Length>0)_ = StartAsync(rows);};
         queueMenu.Items.Add(downloadSelected);
+        var skipSelected=new MenuItem{Header=ErrorMessages.Text("Пропустить выбранные строки","Skip selected rows")};
+        skipSelected.Click+=async(_,_)=>await SkipRowsAsync(SelectedVisibleQueueRows());queueMenu.Items.Add(skipSelected);
+        var resumeSelected=new MenuItem{Header=ErrorMessages.Text("Продолжить выбранные строки","Resume selected rows")};
+        resumeSelected.Click+=async(_,_)=>await ResumeRowsAsync(SelectedVisibleQueueRows());queueMenu.Items.Add(resumeSelected);
         var removeSelected=new MenuItem{Header=ErrorMessages.Text("Удалить выбранные строки","Remove selected rows")};
         removeSelected.Click+=async(_,_)=>await RemoveRowsAsync(SelectedVisibleQueueRows());queueMenu.Items.Add(removeSelected);
         queueMenu.Opened+=(_,_)=>
         {
             bool selected=HasVisibleQueueSelection;
             downloadSelected.IsEnabled=selected && SessionState.Coordinator?.IsRunning!=true;
+            skipSelected.IsEnabled=!QueueItemActionsBlocked() && SelectedVisibleQueueRows().Any(CanSkipQueueItem);
+            resumeSelected.IsEnabled=!QueueItemActionsBlocked() && SelectedVisibleQueueRows().Any(CanContinueQueueItem);
             removeSelected.IsEnabled=selected;
         };
         Q.ContextMenu=queueMenu;
@@ -215,6 +221,15 @@ public sealed partial class NativeWindow
         DownloadAction(ErrorMessages.Text("Копировать путь","Copy path"),row=>{if(row.Path.Length>0)Clipboard.SetText(row.Path);});
         DownloadAction(ErrorMessages.Text("Открыть ссылку","Open URL"),row=>OpenUrl(row.Url));
         DownloadAction(ErrorMessages.Text("Скачать повторно","Retry URL"),row=>{_ = StartAsync([row]);});
+        var skipDownloads=new MenuItem{Header=ErrorMessages.Text("Пропустить выбранные загрузки","Skip selected downloads")};
+        skipDownloads.Click+=async(_,_)=>await SkipRowsAsync(SelectedDownloadRows());downloadMenu.Items.Add(skipDownloads);
+        var resumeDownloads=new MenuItem{Header=ErrorMessages.Text("Продолжить выбранные загрузки","Resume selected downloads")};
+        resumeDownloads.Click+=async(_,_)=>await ResumeRowsAsync(SelectedDownloadRows());downloadMenu.Items.Add(resumeDownloads);
+        downloadMenu.Opened+=(_,_)=>
+        {
+            skipDownloads.IsEnabled=!QueueItemActionsBlocked() && SelectedDownloadRows().Any(CanSkipQueueItem);
+            resumeDownloads.IsEnabled=!QueueItemActionsBlocked() && SelectedDownloadRows().Any(CanContinueQueueItem);
+        };
         DownloadAction(ErrorMessages.Text("Показать ошибку","Show error"),row=>MessageBox.Show(_window,row.ErrorMessage,
             ErrorMessages.Text("Ошибка скачивания","Download error")));
         DownloadAction(ErrorMessages.Text("Исходная диагностика","Show raw error"),row=>MessageBox.Show(_window,row.RawError,
@@ -237,7 +252,7 @@ public sealed partial class NativeWindow
     private void RefreshDependencyLabel()=>T("DependencyStatus").Text=DependencyCenter.Inspect();
     private async Task DependencyOperation(string progress,Func<CancellationToken,Task<string>> task)
     {
-        if(_closing || _disposed || _appUpdateHandoff || _dependencyOperationRunning || RejectProfileBackupMutation())return;
+        if(_closing || _disposed || _appUpdateHandoff || _dependencyOperationRunning || _queueItemActionBusy || RejectProfileBackupMutation())return;
         _dependencyOperationRunning=true;
         RefreshAppUpdateControls();
         T("DependencyStatus").Text=progress;
@@ -311,6 +326,7 @@ public sealed partial class NativeWindow
         {
             SessionState.Coordinator?.Stop();
             if (SessionState.RunningTask!=null) await SessionState.RunningTask;
+            if (_queueItemActionTask!=null) await _queueItemActionTask;
         }
         catch(Exception error) { Log("Shutdown cleanup failed: "+error.Message); }
         await diagnosticsStopped;

@@ -86,6 +86,8 @@ internal sealed partial class UiScenario
             UiScenario.TestDownloadsActiveFirst(root);
             Stage("testing queue search/status/subscription views and scoped actions while active");
             UiScenario.TestQueueFilters(root);
+            Stage("testing selected Skip/Resume, retained progress, worker handoff and skipped-aware Clear");
+            UiScenario.TestQueueSkipResume(root);
             Stage("testing duplicate-history dialog choices");
             UiScenario.TestDuplicateHistoryChoices(root);
             Stage("testing portable queue clipboard and file transfer");
