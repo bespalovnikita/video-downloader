@@ -5,8 +5,11 @@ import android.app.Instrumentation
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
+import android.os.Process
+import android.provider.DocumentsContract
 import android.os.SystemClock
 import androidx.compose.ui.test.hasScrollAction
 import androidx.compose.ui.test.hasTestTag
@@ -146,6 +149,14 @@ class PrimaryOutputInstrumentedTest {
                 MediaPublisher(context).publish(stage, listOf(subtitle, video, second), second, Settings(outputTreeUri = tree), "", "", { false }) { published = it }
             }
             assertEquals(published.last(), batch.primaryUri)
+            assertEquals("SAF access must come from the explicit tree grant", PackageManager.PERMISSION_GRANTED,
+                context.checkUriPermission(Uri.parse(tree), Process.myPid(), Process.myUid(),
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION))
+            val ungrantedDocument = DocumentsContract.buildDocumentUri(OutputDocumentsProvider.AUTHORITY,
+                DocumentsContract.getDocumentId(Uri.parse(batch.primaryUri)))
+            assertEquals("A tree grant must not grant the standalone document URI", PackageManager.PERMISSION_DENIED,
+                context.checkUriPermission(ungrantedDocument, Process.myPid(), Process.myUid(), Intent.FLAG_GRANT_READ_URI_PERMISSION))
+            assertThrows(SecurityException::class.java) { context.contentResolver.openInputStream(ungrantedDocument)?.close() }
             assertTrue(published.all { Uri.parse(it).lastPathSegment!!.matches(Regex("[a-f0-9-]{36}")) })
             runBlocking(Dispatchers.IO) {
                 graph.repository.update { SubscriptionRules.recordSuccess(it.copy(queue = it.queue + task), task.id, batch.uris, primaryOutputUri = batch.primaryUri) }

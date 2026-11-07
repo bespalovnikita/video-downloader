@@ -1,5 +1,7 @@
 package ru.bespalov.video.core
 
+import kotlinx.serialization.EncodeDefault
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
 import java.util.UUID
 
@@ -55,6 +57,8 @@ data class DownloadTask(
     val pendingRemoval: Boolean = false,
     val settingsSnapshot: Settings? = null,
     val archiveDate: String = "",
+    @OptIn(ExperimentalSerializationApi::class)
+    @EncodeDefault(EncodeDefault.Mode.NEVER)
     @Serializable(with = PrimaryOutputUriSerializer::class)
     val primaryOutputUri: String = "",
 )
@@ -97,6 +101,8 @@ data class SuccessRecord(
     val completedAtUtc: Long = System.currentTimeMillis(),
     val subscriptionId: String = "",
     val outputUris: List<String> = emptyList(),
+    @OptIn(ExperimentalSerializationApi::class)
+    @EncodeDefault(EncodeDefault.Mode.NEVER)
     @Serializable(with = PrimaryOutputUriSerializer::class)
     val primaryOutputUri: String = "",
 )

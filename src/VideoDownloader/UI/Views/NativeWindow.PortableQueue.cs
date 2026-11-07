@@ -82,11 +82,11 @@ public sealed partial class NativeWindow
         await _portableIngressGate.WaitAsync();
         try
         {
-            if(_closing || _disposed || _appUpdateHandoff || (profileReplay?!CanReplayProfileArguments():RejectProfileBackupMutation()))return;
+            if(_closing || _disposed || _appUpdateHandoff || _restoringSession || (profileReplay?!CanReplayProfileArguments():RejectProfileBackupMutation()))return;
             if(_checkpointReadOnly || _legacyEngineBlocked)
                 throw new InvalidOperationException("Очередь недоступна для сохранения. Сначала устрани ошибку восстановления или заверши прежний движок.");
             var entries=await Task.Run(decode);
-            if(_closing || _disposed || (profileReplay?!CanReplayProfileArguments():RejectProfileBackupMutation()))return;
+            if(_closing || _disposed || _restoringSession || (profileReplay?!CanReplayProfileArguments():RejectProfileBackupMutation()))return;
             if(_checkpointReadOnly || _legacyEngineBlocked)
                 throw new InvalidOperationException("Очередь недоступна для сохранения.");
             var added=SessionState.ImportPortable(entries,ReadOptions());

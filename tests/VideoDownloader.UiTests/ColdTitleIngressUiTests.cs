@@ -200,7 +200,41 @@ internal sealed partial class UiScenario
             Require(thumbnails.Requests==5 && thumbnails.Errors.IsEmpty && !File.Exists(storage.HistoryPath) &&
                 ui.SessionState.Coordinator==null && ui.SessionState.Downloads.Count==0,
                 "Cached display must not repeat HTTP acquisition, start downloads or record success");
-            Console.WriteLine("PASS: cold URL/TXT/InternetShortcut/subscription title+HTTP PNG before selection/Start; existing subscription preview recovery; cached WPF images; 6 metadata-only children, 5 HTTP images, 0 downloads");
+            controller.Dispose();window.Close();controller=null;window=null;
+
+            // Restored rows must request cold metadata after the restore
+            // barrier is down, independently of selection and explicit Start.
+            var recoveryStorage=new AppPersistence(Path.Combine(root,"restored-profile"));
+            recoveryStorage.Save([new DownloadItem{Url=urls[0]}],new DownloadOptions{Output=Path.Combine(root,"restored-output")});
+            using var restoredInput=File.OpenRead(Path.Combine(AppContext.BaseDirectory,"ui","MainWindow.xaml"));
+            using var restoredReader=XmlReader.Create(restoredInput);
+            window=(Window)XamlReader.Load(restoredReader);
+            uint thread=GetCurrentThreadId();bool restoredQuestion=false;
+            string restoreTitle=ErrorMessages.Text("Восстановить предыдущую сессию","Restore previous session");
+            var restoreObserver=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(20)};
+            restoreObserver.Tick+=(_,_)=>{if(DismissDialog(thread,restoreTitle,6))restoredQuestion=true;};
+            using(var watchdog=new CancellationTokenSource())
+            {
+                _=Task.Delay(TimeSpan.FromSeconds(8),watchdog.Token).ContinueWith(task=>
+                {if(!task.IsCanceled)DismissDialog(thread,restoreTitle,7);},TaskScheduler.Default);
+                restoreObserver.Start();
+                try{controller=new UiScenario(window,recoveryStorage,executable!);}
+                finally{restoreObserver.Stop();watchdog.Cancel();}
+            }
+            window.Show();var resumed=controller;
+            Require(restoredQuestion && !resumed.Subject.CheckpointReadOnly && resumed.Q.SelectedItem==null && resumed.D.SelectedItem==null,
+                "A valid queue must leave restoration with its original idle selection and writable checkpoint");
+            PumpUntil(()=>resumed.SessionState.Queue.Single().Title==titles[0] && resumed._preview.GetCached(urls[0]) is {} cached &&
+                cached.ThumbnailBase64==thumbnails.Encoded,"The restored URL must fetch a genuine cold title and HTTP PNG without selection/Start");
+            Require(thumbnails.Requests==6 && thumbnails.Errors.IsEmpty && resumed.SessionState.Coordinator==null &&
+                resumed.SessionState.RunningTask==null && resumed.SessionState.Downloads.Count==0 && resumed.Q.SelectedItem==null &&
+                resumed._preview.SelectedUrl.Length==0 && !File.Exists(recoveryStorage.HistoryPath),
+                "Cold restored prefetch must add one HTTP image and no download, history or selected preview");
+            var finalCalls=File.ReadAllLines(callsFile,Encoding.UTF8).Where(line=>!string.IsNullOrWhiteSpace(line)).ToArray();
+            using(var last=JsonDocument.Parse(finalCalls.Last()))
+                Require(finalCalls.Length==7 && last.RootElement.GetProperty("Url").GetString()==urls[0] &&
+                    last.RootElement.GetProperty("MetadataOnly").GetBoolean(),"The restored URL must launch its own metadata-only child against the new empty cache");
+            Console.WriteLine("PASS: cold URL/TXT/InternetShortcut/subscription/restored title+HTTP PNG before selection/Start; failed-preview recovery; cached WPF images; 7 metadata-only children, 6 HTTP images, 0 downloads");
         }
         finally
         {

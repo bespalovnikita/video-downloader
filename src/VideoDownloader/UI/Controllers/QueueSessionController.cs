@@ -51,6 +51,14 @@ internal sealed class QueueSessionController
     {
         return AddBatch([row],Options).Count!=0;
     }
+    // AppPersistence has already validated the durable input and reconciled
+    // legacy results. Recovery can expand it beyond today's writer budget;
+    // retain those rows so the UI can expose ownership and explicit cleanup.
+    internal void RestoreValidated(IReadOnlyList<DownloadItem> rows)
+    {
+        if(Queue.Count!=0)throw new InvalidOperationException("Recovery requires an empty queue.");
+        foreach(var row in rows)Queue.Add(row);
+    }
     // One persistence preflight per ingress batch, including a single live Add.
     // The dispatcher owns admission; workers still own their result fields.
     internal IReadOnlyList<DownloadItem> AddBatch(IEnumerable<DownloadItem> rows,DownloadOptions settings,
