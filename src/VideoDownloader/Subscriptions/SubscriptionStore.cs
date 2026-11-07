@@ -6,7 +6,7 @@ namespace VideoDownloader.Native;
 /// <summary>Local subscription state. This class never enumerates or downloads media.</summary>
 public sealed class SubscriptionStore
 {
-    private const long MaxFileBytes = 128L * 1024 * 1024;
+    internal const long MaxFileBytes = 128L * 1024 * 1024;
     private static readonly JsonSerializerOptions Json = new() { WriteIndented = false };
     private static readonly string[] DefinitionProperties =
     ["Id", "Url", "Title", "ShortName", "FeedUrl", "DownloadExisting", "Initialized", "Paused",

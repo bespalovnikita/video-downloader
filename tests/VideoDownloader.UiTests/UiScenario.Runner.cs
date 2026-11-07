@@ -50,6 +50,8 @@ internal sealed partial class UiScenario
             UiScenario.TestJournalProfiles(root);
             Stage("testing per-job diagnostics, typed attempts, private ZIP and cancelled owner lifetime");
             UiScenario.TestJobDiagnostics(root);
+            Stage("testing actual Windows profile backup ZIP, reviewed restore, rollback and late mutation guards");
+            UiScenario.TestProfileBackup(root);
             Stage("testing filename-template tooltip and reference dialog");
             UiScenario.TestFilenameTemplateHelp(root);
             Stage("testing audio-track controls and saved settings");
@@ -82,8 +84,6 @@ internal sealed partial class UiScenario
             UiScenario.TestDuplicateHistoryChoices(root);
             Stage("testing portable queue clipboard and file transfer");
             UiScenario.TestPortableQueueTransfer(root);
-            Stage("testing actual Windows profile backup ZIP, reviewed restore, rollback and late mutation guards");
-            UiScenario.TestProfileBackup(root);
             Stage("testing startup recovery dialogs and empty-queue settings");
             VerifyStartupRecovery(root,Stage);
             using var input=File.OpenRead(Path.Combine(AppContext.BaseDirectory,"ui","MainWindow.xaml"));

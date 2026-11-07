@@ -127,7 +127,7 @@ internal sealed class WindowsProfileBackup
             DownloadOptions settings=document.Settings.Apply(localOptions);
             byte[] session=SessionBytes(before["session.json"],document.Settings,settings,currentQueue);
             byte[] subscriptionBytes=JsonSerializer.SerializeToUtf8Bytes(merged,AppPersistence.Json);
-            if(subscriptionBytes.Length>ProfileBackupTransaction.MaxProfileBytes)throw new InvalidDataException("Восстановленные подписки превышают допустимый объём.");
+            if(subscriptionBytes.LongLength>SubscriptionStore.MaxFileBytes)throw new InvalidDataException("Восстановленные подписки превышают предел хранилища 128 МиБ.");
             using var history=new MemoryStream();
             if(before["successful-downloads.jsonl"] is {} previous)history.Write(previous);
             int addedHistory=0;
@@ -155,6 +155,8 @@ internal sealed class WindowsProfileBackup
         using var lease=plan.Lease();
         if(!string.Equals(ProfileBackupTransaction.Root(plan.ProfileRoot),_root,OperatingSystem.IsWindows()?StringComparison.OrdinalIgnoreCase:StringComparison.Ordinal))
             throw new InvalidDataException("План принадлежит другому профилю.");
+        if(!plan.After.TryGetValue("subscriptions.json",out var subscriptions) || subscriptions.LongLength>SubscriptionStore.MaxFileBytes)
+            throw new InvalidDataException("Восстановленные подписки превышают предел хранилища 128 МиБ.");
         ProfileBackupTransaction.Apply(plan,cancellationToken,_checkpoint);
     },cancellationToken);
 
@@ -209,7 +211,22 @@ internal sealed class WindowsProfileBackup
         var idMap=new Dictionary<string,string>(StringComparer.Ordinal);addedSources=0;addedItems=0;
         foreach(var source in imported.Sources)
         {
-            if(sourceByUrl.TryGetValue(source.Url,out var existing)){idMap.Add(source.Id,existing.Id);continue;}
+            if(sourceByUrl.TryGetValue(source.Url,out var existing))
+            {
+                idMap.Add(source.Id,existing.Id);
+                if(!existing.Initialized && source.Initialized)
+                {
+                    // The imported snapshot supplies the baseline for a local
+                    // source that has never completed discovery. Keep local
+                    // consent, naming and scan preferences, and retain a newer
+                    // local failed attempt while recording the imported success.
+                    existing.Initialized=true;existing.LastSuccessUtc=source.LastSuccessUtc;
+                    foreach(var attempted in new[]{source.LastAttemptUtc,source.LastSuccessUtc})
+                        if(attempted.HasValue && (!existing.LastAttemptUtc.HasValue || attempted.Value>existing.LastAttemptUtc.Value))
+                            existing.LastAttemptUtc=attempted;
+                }
+                continue;
+            }
             string id;
             if(policy==BackupSubscriptionsPolicy.Replace && currentByUrl.TryGetValue(source.Url,out var sameSource))id=sameSource.Id;
             else if(sourceIds.Add(source.Id))id=source.Id;

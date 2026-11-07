@@ -83,6 +83,8 @@ internal static class ProfileBackupTests
             Require((await service.LoadAsync(archivePath,None)).Summary==archive.Summary,"A real saved ZIP round-trips its summary");
             await InvalidArchives(root,service,archive);
             await RestoreMerge(root,archive);
+            await MergeUninitializedSource(root);
+            await MergedSubscriptionsByteLimit(root,archive);
             await LowerCaseCheckpoint(root,archive);
             await RestoreReplaceAndStale(root,archive);
             await ReplaceQueueProvenance(root);
@@ -208,6 +210,74 @@ internal static class ProfileBackupTests
         await Refuses(()=>service.CreateAsync(options,cancelled.Token),"Cancellation is observed before export work");
         await Refuses(()=>service.PrepareRestoreAsync(archive,options,[new DownloadItem{Status="Running"}],BackupSubscriptionsPolicy.Merge,None),"Active queue rows block restore preparation");
         await Refuses(()=>service.PrepareRestoreAsync(archive,options,[new DownloadItem{CleanupPaths=["pending"]}],BackupSubscriptionsPolicy.Merge,None),"Unfinished cleanup blocks restore preparation");
+    }
+
+    private static async Task MergeUninitializedSource(string root)
+    {
+        const string url="https://initialization.invalid/source",itemUrl="https://initialization.invalid/discovered";
+        var success=DateTimeOffset.Parse("2025-01-02T00:00:00Z");var attempt=success.AddHours(1);var localAttempt=success.AddYears(1);
+        var imported=NewProfile(root,"initialized-export");imported.Save([],new());
+        var source=ScheduledSource("remote",url,11);source.Title="Imported title";source.ShortName="Imported";
+        source.FeedUrl="https://initialization.invalid/imported-feed";source.LastSuccessUtc=success;source.LastAttemptUtc=attempt;
+        WriteSubscriptions(imported,[source],[Item(source.Id,itemUrl,"Queued")]);
+        var archive=await new WindowsProfileBackup(imported).CreateAsync(new(),None);
+        foreach(bool hasLocalAttempt in new[]{false,true})
+        {
+            var local=NewProfile(root,"uninitialized-merge-"+hasLocalAttempt);string mediaRoot=Path.Combine(root,"uninitialized-media-"+hasLocalAttempt);
+            Directory.CreateDirectory(mediaRoot);string media=Path.Combine(mediaRoot,"keep.mp4");File.WriteAllText(media,"KEEP LOCAL MEDIA");
+            var options=new DownloadOptions{Output=mediaRoot};
+            DownloadItem[] queue=[new(){Url="https://initialization.invalid/local-job",Status="Completed",SubscriptionId="local",SubscriptionName="Local",
+                Path=media,OutputRoot=mediaRoot,OwnedPaths=[media]}];local.Save(queue,options);
+            var current=new SubscriptionDefinition{Id="local",Url=url,Title="Local title",ShortName="Local",FeedUrl="https://initialization.invalid/local-feed",
+                Initialized=false,Paused=true,DownloadExisting=true,ScheduleEnabled=true,ScheduleIntervalMinutes=120,
+                LastAttemptUtc=hasLocalAttempt?localAttempt:null,LastError="Local failed scan",LastWarning="Local warning"};
+            WriteSubscriptions(local,[current],[]);byte[] subscriptionsBefore=File.ReadAllBytes(SubscriptionPath(local));
+            string queueBefore=JsonNode.Parse(File.ReadAllBytes(local.SessionPath))!["Queue"]!.ToJsonString();
+            var service=new WindowsProfileBackup(local);using var plan=await service.PrepareRestoreAsync(archive,options,queue,BackupSubscriptionsPolicy.Merge,None);
+            Require(plan.Summary is {AddedSources:0,AddedItems:1,ReplacedSources:0} && subscriptionsBefore.SequenceEqual(File.ReadAllBytes(SubscriptionPath(local))),
+                "An unscanned exact local source accepts an imported baseline in preview without a write or a duplicate definition");
+            await service.RestoreAsync(plan,None);
+            var snapshot=new SubscriptionStore(Path.GetDirectoryName(local.SessionPath)!).Read();var restored=snapshot.Subscriptions.Single();
+            Require(restored is {Id:"local",Title:"Local title",ShortName:"Local",Paused:true,DownloadExisting:true,ScheduleEnabled:true,ScheduleIntervalMinutes:120,
+                Initialized:true,LastError:"Local failed scan",LastWarning:"Local warning"} && restored.FeedUrl==current.FeedUrl &&
+                restored.LastSuccessUtc==success && restored.LastAttemptUtc==(hasLocalAttempt?localAttempt:attempt),
+                "Imported initialization/success metadata fills the local baseline while local naming, feed, consent/preferences and a later failed attempt survive");
+            Require(snapshot.Items.Single() is {SubscriptionId:"local",State:"New",InitialQueuePending:false} && snapshot.Items.Single().Url==itemUrl &&
+                JsonNode.Parse(File.ReadAllBytes(local.SessionPath))!["Queue"]!.ToJsonString()==queueBefore && File.ReadAllText(media)=="KEEP LOCAL MEDIA",
+                "Baseline reconciliation maps discoveries without enqueue/start, changing queue ownership or touching local media");
+        }
+    }
+
+    private static async Task MergedSubscriptionsByteLimit(string root,ProfileBackupArchive archive)
+    {
+        var local=NewProfile(root,"merged-subscription-byte-limit");local.Save([],new());
+        var snapshot=new SubscriptionSnapshot{Subscriptions=[Source("large-local","https://byte-limit.invalid/local")]};
+        byte[] small=JsonSerializer.SerializeToUtf8Bytes(snapshot);string text=Encoding.UTF8.GetString(small);
+        string marker="\"LastWarning\":\"\"";int split=text.IndexOf(marker,StringComparison.Ordinal)+marker.Length-1;
+        Require(split>=marker.Length-1,"The actual store fixture has its ordinary LastWarning string");
+        const int remaining=256;long padding=SubscriptionStore.MaxFileBytes-small.LongLength-remaining;
+        string path=SubscriptionPath(local);
+        using(var output=new FileStream(path,FileMode.CreateNew,FileAccess.Write,FileShare.Read))
+        {
+            output.Write(small.AsSpan(0,split));byte[] block=Enumerable.Repeat((byte)'x',8192).ToArray();long left=padding;
+            while(left>0){int count=(int)Math.Min(block.Length,left);output.Write(block,0,count);left-=count;}
+            output.Write(small.AsSpan(split));output.Flush(true);
+        }
+        Require(new FileInfo(path).Length==SubscriptionStore.MaxFileBytes-remaining,"The real current subscriptions file fits the canonical 128 MiB store limit");
+        byte[] previousSession=File.ReadAllBytes(local.SessionPath);string before;
+        using(var input=File.OpenRead(path))before=Convert.ToHexString(SHA256.HashData(input));
+        var service=new WindowsProfileBackup(local);
+        Exception error=await Refuses(()=>service.PrepareRestoreAsync(archive,new(),[],BackupSubscriptionsPolicy.Merge,None),
+            "Actual serialized current+imported subscriptions above 128 MiB must fail before a restore preview exists");
+        Require(error is InvalidDataException && error.Message.Contains("Восстановленные подписки",StringComparison.Ordinal) &&
+            error.Message.Contains("128 МиБ",StringComparison.Ordinal),"The merged serialized byte limit is enforced by the canonical SubscriptionStore capacity");
+        using(var input=File.OpenRead(path))Require(Convert.ToHexString(SHA256.HashData(input))==before,"Oversize merge never changes the current subscriptions bytes");
+        Require(File.ReadAllBytes(local.SessionPath).SequenceEqual(previousSession) && !File.Exists(local.HistoryPath) && !service.RecoveryRequired &&
+            !Directory.EnumerateFileSystemEntries(Path.GetDirectoryName(path)!,".profile-restore*").Any(),
+            "An oversized preview creates no transaction and leaves all current profile files untouched");
+        var readable=new SubscriptionStore(Path.GetDirectoryName(path)!).Read();
+        Require(readable.Subscriptions.Single().LastWarning.Length==padding,"The unchanged near-limit current file remains readable by the actual store");
+        File.Delete(path);
     }
 
     private static async Task LowerCaseCheckpoint(string root,ProfileBackupArchive archive)
