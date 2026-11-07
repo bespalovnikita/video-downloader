@@ -6,6 +6,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.*
 import org.junit.Test
 import java.nio.file.Files
@@ -32,6 +33,29 @@ class PrimaryOutputTest {
                 assertTrue(PublicationCleanup.hasSuccessfulPublication(restored.state.value.queue.single(), restored.state.value.history))
             }
         } finally { directory.deleteRecursively() }
+    }
+
+    @Test fun reencodingLegacyStateOmitsEmptyPrimaryMarkersButKeepsRecordedPrimary() {
+        val json = JsonStateRepository.JSON
+        val legacy = json.decodeFromString<AppState>("""{
+            "queue": [{"id":"legacy", "url":"https://example.org/video", "outputUris":["$sidecar", "$video"]}],
+            "history": [{"url":"https://example.org/video", "completedAtUtc":123, "outputUris":["$sidecar", "$video"]}]
+        }""")
+        assertEquals("", legacy.queue.single().primaryOutputUri)
+        assertEquals("", legacy.history.single().primaryOutputUri)
+        val reencoded = json.parseToJsonElement(json.encodeToString(legacy)).jsonObject
+        for (key in listOf("queue", "history")) {
+            assertFalse("Re-saving legacy $key must not add bytes for an empty marker",
+                reencoded.getValue(key).jsonArray.single().jsonObject.containsKey("primaryOutputUri"))
+        }
+        val modern = legacy.copy(queue = legacy.queue.map { it.copy(primaryOutputUri = video) },
+            history = legacy.history.map { it.copy(primaryOutputUri = video) })
+        val encodedModern = json.encodeToString(modern)
+        val recorded = json.parseToJsonElement(encodedModern).jsonObject
+        for (key in listOf("queue", "history")) {
+            assertEquals(video, recorded.getValue(key).jsonArray.single().jsonObject.getValue("primaryOutputUri").jsonPrimitive.content)
+        }
+        assertEquals(modern, json.decodeFromString<AppState>(encodedModern))
     }
 
     @Test fun aPrimaryCannotExpandThePublishedManifest() {
