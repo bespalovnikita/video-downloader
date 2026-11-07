@@ -11,7 +11,7 @@ internal static partial class FragmentMergeTests
     internal static async Task RunAsync()
     {
         string root=Path.Combine(Path.GetTempPath(),"vd-fragment-merge-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(root);
-        try {Models(root);await ActualMerge(root);await ActualTrackPreservation(root);await OwnedCancellation(root);await CoordinatorFailureAndRetry(root);Console.WriteLine("PASS: actual fragment stream copy/reencode, ordered frames/audio, bounded owned children, immutable merge checkpoints");}
+        try {Models(root);await ActualMerge(root);await ActualTrackPreservation(root);await ActualOpus(root);await OwnedCancellation(root);await CoordinatorFailureAndRetry(root);Console.WriteLine("PASS: actual fragment stream copy/reencode, ordered frames/audio, bounded owned children, immutable merge checkpoints");}
         finally{Directory.Delete(root,true);}
     }
     internal static DownloadSelection Plan(string url,bool encode=false)=>new(url,new DownloadSection(5,7),DurationSeconds:8)
@@ -75,9 +75,14 @@ internal static partial class FragmentMergeTests
         string timestamp=time.ToString(CultureInfo.InvariantCulture);
         byte[] pixel=await Tool(ToolPath("ffmpeg"),new[]{"-hide_banner","-loglevel","error","-ss",timestamp,"-i",path,"-frames:v","1","-vf","scale=1:1","-f","rawvideo","-pix_fmt","rgb24","pipe:1"});
         Require(pixel.Length==3 && (blue?pixel[2]>200 && pixel[0]<80:pixel[0]>200 && pixel[2]<80),"Merged frames must retain exact user range order");
+        await AssertAudio(path,time,frequency);
+    }
+    private static async Task AssertAudio(string path,double time,int frequency)
+    {
+        string timestamp=time.ToString(CultureInfo.InvariantCulture);
         byte[] audio=await Tool(ToolPath("ffmpeg"),new[]{"-hide_banner","-loglevel","error","-ss",timestamp,"-i",path,"-t","0.1","-vn","-ar","8000","-ac","1","-f","s16le","pipe:1"});
         double Energy(int hz){double real=0,imaginary=0;for(int i=0;i<audio.Length/2;i++){double sample=BitConverter.ToInt16(audio,i*2);real+=sample*Math.Cos(2*Math.PI*hz*i/8000);imaginary+=sample*Math.Sin(2*Math.PI*hz*i/8000);}return real*real+imaginary*imaginary;}
-        Require(audio.Length>1000 && Energy(frequency)>10*Energy(frequency==440?880:440),"The source audio must stay aligned with each ordered colour fragment");
+        Require(audio.Length>1000 && Energy(frequency)>10*Energy(frequency==440?880:440),"The source audio must stay aligned with each ordered fragment");
     }
     private static async Task<byte[]> Tool(string executable,IEnumerable<string> arguments)
     {
