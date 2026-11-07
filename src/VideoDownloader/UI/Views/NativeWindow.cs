@@ -730,19 +730,23 @@ public sealed partial class NativeWindow : IDisposable
     }
     private Task ClearRowsAsync(IReadOnlyCollection<DownloadItem> candidates)
     {
-        if(_queueItemActionBusy || _startingSession || SessionState.Coordinator?.IsRunning==true || QueueRemovalBlocked || RejectProfileBackupMutation())return Task.CompletedTask;
-        _queueItemActionBusy=true;UpdateState();
-        return _queueItemActionTask=ClearRowsCoreAsync(candidates);
+        if(_queueItemActionBusy || _queueClearTask?.IsCompleted==false || _startingSession || SessionState.Coordinator?.IsRunning==true || QueueRemovalBlocked || RejectProfileBackupMutation())return Task.CompletedTask;
+        return _queueClearTask=ClearRowsCoreAsync(candidates);
     }
     private async Task ClearRowsCoreAsync(IReadOnlyCollection<DownloadItem> candidates)
     {
+        bool ownsMutation=false;
         try
         {
         var eligible=SessionState.ClearCandidates().ToHashSet();
         var selected=candidates.Where(row=>eligible.Contains(row) && SessionState.Queue.Contains(row)).ToArray();
         await _preview.CancelLocalPostersAsync(selected);
-        if(_closing || _disposed || _appUpdateHandoff || QueueRemovalBlocked || _startingSession ||
+        if(_closing || _disposed || _appUpdateHandoff || QueueRemovalBlocked || _startingSession || _queueItemActionBusy ||
             SessionState.Coordinator?.IsRunning==true || RejectProfileBackupMutation())return;
+        // Waiting for an optional reader must not veto a new explicit Start.
+        // If Start won during that await, the checks above retire this Clear.
+        // Reserve the mutation barrier only for actual retained-file deletion.
+        _queueItemActionBusy=true;ownsMutation=true;UpdateState();
         eligible=SessionState.ClearCandidates().ToHashSet();
         foreach(var row in selected.Where(eligible.Contains))
         {
@@ -764,7 +768,7 @@ public sealed partial class NativeWindow : IDisposable
         Reindex();
         SaveReducedRecoveryQueue();
         }
-        finally { _queueItemActionBusy=false;UpdateState(); }
+        finally { if(ownsMutation)_queueItemActionBusy=false;UpdateState(); }
     }
     private void MoveItem(DownloadItem item,int index)
     {
