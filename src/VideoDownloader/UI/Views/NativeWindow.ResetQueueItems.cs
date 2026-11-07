@@ -52,11 +52,17 @@ public sealed partial class NativeWindow
         var declined=selected.Except(approved).ToArray();
         var ready=new List<DownloadItem>();
         var expected=SessionState.Coordinator;
+        var restartOptions=(expected?.IsRunning==true?SessionState.Options:ReadOptions()).Snapshot();
         await RunQueueItemActionAsync(async()=>
         {
-            foreach(var row in selected)_resettingQueueItems.Add(row);
             try
             {
+                // Reject deterministic admission failures for the whole batch
+                // while every original file, reader and worker is untouched.
+                if(approved.Count>0)await Task.Run(()=>ValidateResetDownloadPlan(approved,restartOptions));
+                if(QueueItemActionsBlocked(true) || !CurrentSelection() ||
+                    SessionState.Coordinator?.IsRunning==true && !ReferenceEquals(expected,SessionState.Coordinator))return;
+                foreach(var row in selected)_resettingQueueItems.Add(row);
                 if(_mediaSelectionDialog is {} editor && selected.Contains(editor.Row))editor.Close();
                 var joins=selected.Select(row=>expected?.IsPending(row)==true
                     ?expected.CancelAndWaitAsync(row):Task.FromResult(false)).ToArray();
@@ -111,8 +117,23 @@ public sealed partial class NativeWindow
         foreach(var row in ready)RequestRowPreview(row,true);
         if(expected?.IsRunning==true && ReferenceEquals(expected,SessionState.Coordinator))
         {
+            int deferred=0;
             foreach(var row in ready)
-                if(!SessionState.TryRestartActive(expected,row))row.DeferredToNextStart=true;
+            {
+                try
+                {
+                    if(SessionState.TryRestartActive(expected,row))continue;
+                }
+                catch(Exception error){Log("Reset admission failed for "+row.Url+": "+error);}
+                // A late filesystem/session change must not escape an async
+                // button handler or discard another successfully reset row.
+                row.DeferredToNextStart=true;deferred++;
+            }
+            if(deferred>0 && !_disposed && !_closing)
+                MessageBox.Show(_window,ErrorMessages.Text(
+                    $"Сброшено, но не запущено заданий: {deferred}. Они сохранены в очереди до следующего запуска; подробности доступны в журнале.",
+                    $"Reset tasks that could not start: {deferred}. They remain queued for the next Start; details are available in the log."),
+                    ErrorMessages.Text("Задания оставлены в очереди","Tasks kept in queue"),MessageBoxButton.OK,MessageBoxImage.Warning);
             UpdateState();SaveCheckpoint();
         }
         else if(SessionState.Coordinator?.IsRunning!=true)
@@ -120,12 +141,29 @@ public sealed partial class NativeWindow
             // Let the previous Start's dispatcher continuation finish its
             // teardown when resetting the last active task ended that session.
             await System.Windows.Threading.Dispatcher.Yield(DispatcherPriority.Background);
-            if(!QueueItemActionsBlocked())await StartWithConfirmationAsync(ready,ready.ToHashSet());
+            if(!QueueItemActionsBlocked())await StartWithConfirmationAsync(ready,ready.ToHashSet(),restartOptions);
         }
         else
         {
             foreach(var row in ready)row.DeferredToNextStart=true;
             SaveCheckpoint();
+        }
+    }
+
+    private void ValidateResetDownloadPlan(IReadOnlyList<DownloadItem> rows,DownloadOptions options)
+    {
+        AudioTrackSelection.Validate(options);
+        foreach(var row in rows)row.Selection?.Validate(row.Url,options);
+        DependencyCenter.ValidateDownloadTools(_ytDlp);
+        if(!string.IsNullOrWhiteSpace(options.Cookies) && !File.Exists(options.Cookies))
+            throw new FileNotFoundException("Cookie file is missing.",options.Cookies);
+        if(string.IsNullOrWhiteSpace(options.Output))throw new ArgumentException("Choose an output directory.");
+        OwnedFiles.ValidateTemplate(options.FilenameTemplate);
+        options.PinOutputDirectory();
+        foreach(var row in rows)
+        {
+            string output=SubscriptionNames.ResolveOutputDirectory(options.OutputDirectory,row.SubscriptionName);
+            OwnedFiles.NoReparseAncestors(Path.Combine(output,"__validation__"));
         }
     }
 }

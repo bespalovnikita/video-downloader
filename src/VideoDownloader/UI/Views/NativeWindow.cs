@@ -542,14 +542,14 @@ public sealed partial class NativeWindow : IDisposable
     private void ShowPreview(string url)=>_preview.Show(url);
     private void PollClipboard()=>_ingress.PollClipboard();
     private Task StartAsync(IEnumerable<DownloadItem>? custom=null)=>StartWithConfirmationAsync(custom,null);
-    private async Task StartWithConfirmationAsync(IEnumerable<DownloadItem>? custom,IReadOnlySet<DownloadItem>? duplicateConsents)
+    private async Task StartWithConfirmationAsync(IEnumerable<DownloadItem>? custom,IReadOnlySet<DownloadItem>? duplicateConsents,DownloadOptions? preparedOptions=null)
     {
         if(_closing || _disposed || _restoringSession || _startingSession || _queueItemActionBusy || _appUpdateHandoff || _checkpointReadOnly || _profileBackupReplaying || RejectProfileBackupMutation())return;
         _startingSession=true;
-        try { await StartSessionCoreAsync(custom,duplicateConsents); }
+        try { await StartSessionCoreAsync(custom,duplicateConsents,preparedOptions); }
         finally { _startingSession=false;UpdateState();_preview.BackfillLocalPosters(); }
     }
-    private async Task StartSessionCoreAsync(IEnumerable<DownloadItem>? custom,IReadOnlySet<DownloadItem>? duplicateConsents=null)
+    private async Task StartSessionCoreAsync(IEnumerable<DownloadItem>? custom,IReadOnlySet<DownloadItem>? duplicateConsents=null,DownloadOptions? preparedOptions=null)
     {
         if (_closing || _disposed || _restoringSession || _checkpointReadOnly || RejectProfileBackupMutation()) return;
         if (_legacyEngineBlocked)
@@ -563,7 +563,7 @@ public sealed partial class NativeWindow : IDisposable
         if(SessionState.Coordinator?.IsRunning==true) return;
         var pending=(custom??SessionState.Queue.Where(i=>i.Status is not ("Completed" or "Skipped"))).Where(i=>i.CanResume).Distinct().ToList();
         if(pending.Count==0)return;
-        var options=ReadOptions();
+        var options=preparedOptions?.Snapshot()??ReadOptions();
         var requested=pending.ToDictionary(row=>row,row=>(row.Url,row.Selection,row.ResumeState,row.Status,row.StageDir,row.RunDir));
         void RequireCurrentPlan(IEnumerable<DownloadItem> plan)
         {
