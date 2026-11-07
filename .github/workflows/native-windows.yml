@@ -67,6 +67,14 @@ jobs:
           name: Subscription-progress-preview
           path: ${{ runner.temp }}/subscription-progress.png
           if-no-files-found: error
+      - name: Upload waveform rendering diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Waveform-rendering-diagnostics
+          path: ${{ runner.temp }}/media-waveform-window.png
+          if-no-files-found: ignore
+          retention-days: 3
       - name: Publish native portable EXE
         shell: pwsh
         run: pwsh -NoProfile -File ./scripts/build.ps1 -Task Publish
