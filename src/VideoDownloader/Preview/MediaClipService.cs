@@ -143,7 +143,10 @@ internal sealed class MediaClipService:IDisposable
                 var filters=new List<string>();
                 if(hasVideo)
                 {
-                    filters.Add("[0:v:0]trim=start="+Number(inputs[0].FilterSeek)+":duration="+Number(length)+",setpts=PTS-STARTPTS,scale=w='min(640,iw)':h='min(360,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2[v]");
+                    // duration counts from the first retained PTS, which can be
+                    // later than the requested seek. Keep the requested end on
+                    // the input timeline instead of extending a raw interval.
+                    filters.Add("[0:v:0]trim=start="+Number(inputs[0].FilterSeek)+":end="+Number(inputs[0].FilterSeek+length)+",setpts=PTS-STARTPTS,scale=w='min(640,iw)':h='min(360,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2[v]");
                 }
                 // Keep the same requested source origin as the video. A late
                 // audio track must keep its leading gap instead of moving its
@@ -156,8 +159,9 @@ internal sealed class MediaClipService:IDisposable
                 else Add(start,"-vn");
                 // A single trimmed frame has no following timestamp from which
                 // the encoder can infer duration. Retain its nominal duration;
-                // longer previews keep the existing source timestamp behavior.
-                if(hasVideo && FragmentTimelineTiming.KnownFps(video!.Fps) && length<=1/video.Fps+1e-9)
+                // Multiple-frame previews retain the inferred output frame rate.
+                if(hasVideo && FragmentTimelineTiming.KnownFps(video!.Fps) &&
+                    FragmentTimelineTiming.FrameSample(end,true,video.Fps,known)<=FragmentTimelineTiming.FrameSample(begin,false,video.Fps,known))
                     Add(start,"-r",Number(video.Fps));
                 if(hasAudio)Add(start,"-map","[a]","-c:a","aac","-b:a","128k","-ar","48000","-ac","2");
                 else Add(start,"-an");

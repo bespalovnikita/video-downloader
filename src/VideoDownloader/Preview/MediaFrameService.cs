@@ -73,7 +73,9 @@ internal sealed class MediaFrameService:IDisposable
             double? known=request.DurationSeconds??source.Duration;
             if(known is {} maximum && request.Seconds>maximum)
                 return Failure("Выбранное время выходит за длительность материала.");
-            double seek=FragmentTimelineTiming.FrameSample(request.Seconds,request.IsEnd,request.FrameRate??source.Fps,known);
+            double boundary=FragmentTimelineTiming.Boundary(request.Seconds,request.FrameRate,known);
+            double seek=FragmentTimelineTiming.FrameSample(boundary,request.IsEnd,
+                FragmentTimelineTiming.KnownFps(source.Fps)?source.Fps:request.FrameRate,known);
             var cookies=await MediaFrameCookies.CreateAsync(source,deadline.Token).ConfigureAwait(false);
             PreparedManifestMedia? prepared=null;
             if(source.IsHls || source.IsDash)
