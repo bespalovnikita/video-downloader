@@ -12,6 +12,7 @@ internal static class DependencyInstallTests
 {
     internal static async Task RunAsync()
     {
+        if(OperatingSystem.IsWindows())DaclComparison();
         string root=Path.Combine(Path.GetTempPath(),"vd-dependency-test-"+Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
         var before=Directory.GetDirectories(Path.GetTempPath(),"vd-ffmpeg-*").ToHashSet();
@@ -110,7 +111,7 @@ internal static class DependencyInstallTests
                 Require(kind=="directory"?File.ReadAllText(Path.Combine(probe,"foreign.txt"))=="foreign sentinel":
                     File.ReadAllText(probe)=="previous ffprobe","Second destination must retain its original content: "+kind);
                 Require(File.ReadAllText(Path.Combine(target,"foreign.txt"))=="unrelated sentinel","Unrelated files must remain untouched");
-                if(firstAcl is not null)Require(new FileInfo(ffmpeg).GetAccessControl().GetSecurityDescriptorSddlForm(AccessControlSections.Access)==firstAcl,
+                if(firstAcl is not null)Require(SameDacl(firstAcl,new FileInfo(ffmpeg).GetAccessControl().GetSecurityDescriptorSddlForm(AccessControlSections.Access)),
                     "Rollback must retain an existing component's explicit Windows DACL");
                 if(kind is "sharing" or "acl" or "fault" or "missing" or "cancel")
                     Require(replaced==1,"The real second-target refusal or cancellation must follow the first replacement: "+kind);
@@ -128,7 +129,7 @@ internal static class DependencyInstallTests
                     restored.SetSecurityDescriptorSddlForm(originalDacl,AccessControlSections.Access);
                     new FileInfo(probe).SetAccessControl(restored);
                     string actual=new FileInfo(probe).GetAccessControl().GetSecurityDescriptorSddlForm(AccessControlSections.Access);
-                    Require(actual==originalDacl,$"ACL fixture must restore its original DACL before retry; expected={originalDacl}; actual={actual}");
+                    Require(SameDacl(originalDacl,actual),$"ACL fixture must restore its original DACL before retry; expected={originalDacl}; actual={actual}");
                 }
                 if(kind=="readonly")File.SetAttributes(probe,File.GetAttributes(probe)&~FileAttributes.ReadOnly);
             }
@@ -137,7 +138,7 @@ internal static class DependencyInstallTests
                 await DependencyCenter.InstallFfmpegAsync(new Uri(server.BaseUrl+"ok"),target,TimeSpan.FromSeconds(5),CancellationToken.None);
                 Require(File.ReadAllText(ffmpeg)=="ffmpeg fixture" && File.ReadAllText(probe)=="ffprobe fixture",
                     "A retry after releasing the Windows lock/ACL denial must install the full pair");
-                if(firstAcl is not null)Require(new FileInfo(ffmpeg).GetAccessControl().GetSecurityDescriptorSddlForm(AccessControlSections.Access)==firstAcl,
+                if(firstAcl is not null)Require(SameDacl(firstAcl,new FileInfo(ffmpeg).GetAccessControl().GetSecurityDescriptorSddlForm(AccessControlSections.Access)),
                     "A successful retry must also preserve the existing component's explicit Windows DACL");
             }
         }
@@ -161,6 +162,30 @@ internal static class DependencyInstallTests
             "Incomplete rollback must preserve actual old backups and unknown changed destination bytes");
         Console.WriteLine("PASS: real loopback ZIP component pair rollback, missing files, cancellation, foreign directory and read-only preservation"+
             (OperatingSystem.IsWindows()?", Windows sharing lock and ACL denial":"; Windows sharing/ACL cases require Windows"));
+    }
+
+    private static bool SameDacl(string expected,string actual)
+    {
+        static byte[] Bytes(string sddl)
+        {
+            var descriptor=new RawSecurityDescriptor(sddl);
+            // SetNamedSecurityInfo can compute this bookkeeping flag during
+            // restoration. Preserve every ACE byte and all other control bits,
+            // including protection and the auto-inherit-required flag.
+            descriptor.SetFlags(descriptor.ControlFlags & ~ControlFlags.DiscretionaryAclAutoInherited);
+            byte[] bytes=new byte[descriptor.BinaryLength];descriptor.GetBinaryForm(bytes,0);return bytes;
+        }
+        return Bytes(expected).SequenceEqual(Bytes(actual));
+    }
+
+    private static void DaclComparison()
+    {
+        const string acl="(A;ID;FA;;;SY)(A;ID;FR;;;BA)";
+        Require(SameDacl("D:"+acl,"D:AI"+acl),"Computed AutoInherited alone must not change DACL equality");
+        foreach(string changed in new[]{"D:P"+acl,"D:AR"+acl,"D:(D;;WD;;;BA)"+acl,
+            "D:"+acl.Replace("FA","FR",StringComparison.Ordinal),"D:"+acl.Replace("BA","BU",StringComparison.Ordinal),
+            "D:"+acl.Replace("A;ID;","A;;",StringComparison.Ordinal)})
+            Require(!SameDacl("D:"+acl,changed),"DACL equality must preserve protection, inheritance controls, deny ACEs, masks and SIDs: "+changed);
     }
 
     private static void Require(bool condition,string message) {if(!condition)throw new InvalidOperationException(message);}
