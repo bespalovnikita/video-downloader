@@ -8,6 +8,7 @@ internal abstract record YtDlpOutputEvent
 {
     internal sealed record Title(string Value) : YtDlpOutputEvent;
     internal sealed record MediaPath(string Value) : YtDlpOutputEvent;
+    internal sealed record Subtitles(string Value) : YtDlpOutputEvent;
     internal sealed record Plan(string MediaId,IReadOnlyList<string> FormatIds,int MediaIndex,int MediaCount) : YtDlpOutputEvent
     {
         internal double? SectionStart {get;init;}
@@ -38,6 +39,8 @@ internal static class YtDlpOutputParser
             return new YtDlpOutputEvent.Title(line[13..].Trim());
         if (line.StartsWith("__VD_FILE__:",StringComparison.Ordinal))
             return new YtDlpOutputEvent.MediaPath(line[12..].Trim());
+        if (line.StartsWith("__VD_SUBTITLES__:",StringComparison.Ordinal))
+            return new YtDlpOutputEvent.Subtitles(line[17..]);
         if (line.StartsWith("__VD_PLAN__:",StringComparison.Ordinal))
             return ParsePlan(line[12..]);
         if (line.StartsWith("__VD_PROGRESS__|",StringComparison.Ordinal))

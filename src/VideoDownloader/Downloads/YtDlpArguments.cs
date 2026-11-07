@@ -58,7 +58,15 @@ internal sealed class YtDlpArguments(DownloadOptions options)
         if (options.WriteSubs || options.EmbedSubs || options.AutoSubs)
             args.AddRange(["--sub-langs",options.SubtitleLangs]);
         if (options.AutoSubs) args.Add("--write-auto-subs");
-        if (options.EmbedSubs) args.Add("--embed-subs");
+        if(selection?.IsPartial==true && (options.WriteSubs || options.AutoSubs || options.EmbedSubs))
+        {
+            // yt-dlp cuts AV, but leaves subtitle timestamps on the source
+            // timeline. The coordinator clips these owned sidecars before
+            // embedding. Project only keys/paths/extensions, never signed URLs.
+            args.AddRange(["--sub-format","vtt/srt/ass/ssa/best","--print",
+                "after_move:__VD_SUBTITLES__:%(requested_subtitles)l|%(.{filepath,section_start,section_end,requested_subtitles.:.ext,requested_subtitles.:.filepath})j"]);
+        }
+        else if (options.EmbedSubs) args.Add("--embed-subs");
         if (options.EmbedThumbnail) args.AddRange(["--write-thumbnail","--embed-thumbnail"]);
         if (options.EmbedMetadata) args.Add("--embed-metadata");
         if (options.EmbedChapters) args.Add("--embed-chapters");

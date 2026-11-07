@@ -275,6 +275,7 @@ public sealed class DownloadCoordinator : IAsyncDisposable
         _changed(item);
         string mediaPath="";
         var reportedMedia=new ConcurrentQueue<string>();
+        var subtitleManifests=new ConcurrentQueue<string>();
         var streamed=new Dictionary<string,long>(StringComparer.Ordinal);
         long transferred=0;
         var progressTrace=new DownloadProgressTrace();
@@ -316,11 +317,13 @@ public sealed class DownloadCoordinator : IAsyncDisposable
                     // media marker to a later zero-exit invocation.
                     mediaPath="";
                     reportedMedia.Clear();
+                    subtitleManifests.Clear();
                     progressPlan.Reset();
                     fragmentPlans.Clear();
                     fragmentPercent.Clear();
                     if(selectedFragments>1)streamed.Clear();
                     bool postprocessing=false;
+                    int subtitleManifestCount=0;
                     _diagnosticAttempts[item.Url]=(attempt+1,launch,q);
                     Trace(item,JournalLevel.Information,"attempt_start",$"attempt={attempt+1} invocation={launch} quality={DownloadProgressTrace.Quoted(q)} previous_shown_pct={DownloadProgressTrace.Number(previousShown)} transferred={transferred}");
                     var errors=new ConcurrentQueue<string>();
@@ -346,6 +349,10 @@ public sealed class DownloadCoordinator : IAsyncDisposable
                                     _changed(item);
                                 }
                                 Trace(item,JournalLevel.Information,"media_reported",$"attempt={attempt+1} stream={source}");break;
+                            case YtDlpOutputEvent.Subtitles subtitles:
+                                if(Interlocked.Increment(ref subtitleManifestCount)<=DownloadSectionSet.MaximumCount+1)
+                                    subtitleManifests.Enqueue(subtitles.Value.Length<=65536?subtitles.Value:"");
+                                break;
                             case YtDlpOutputEvent.Plan plan:
                                 lock(streamed)
                                     if(selectedFragments>1)FragmentPlan(FragmentIndex(plan.SectionStart,plan.SectionEnd)).Begin(plan);
@@ -442,6 +449,15 @@ public sealed class DownloadCoordinator : IAsyncDisposable
                                 return new DownloadResult(false,false,"",[],"yt-dlp did not produce the requested container: "+_options.Container,transferred);
                         }
                         string publishStage=stage;
+                        if(selection?.IsPartial==true && (_options.WriteSubs || _options.AutoSubs || _options.EmbedSubs))
+                        {
+                            item.State="Processing";item.ProgressDetail="Субтитры выбранных фрагментов";_changed(item);
+                            var subtitles=new SubtitleTimelineService(DependencyCenter.Executable(OperatingSystem.IsWindows()?"ffmpeg.exe":"ffmpeg"),
+                                DependencyCenter.Executable(OperatingSystem.IsWindows()?"ffprobe.exe":"ffprobe"),
+                                (start,stdout,stderr,token)=>RunProcessingToolAsync(item,start,stdout,stderr,token),()=>_pause.IsPaused);
+                            await subtitles.ProcessAsync(stage,media,selection.EffectiveSections,subtitleManifests.ToArray(),_options.EmbedSubs,ct).ConfigureAwait(false);
+                            Trace(item,JournalLevel.Information,"subtitle_timeline_ready",$"fragments={media.Length}");
+                        }
                         if(selection?.IsMerged==true)
                         {
                             var merger=new FragmentMergeService(DependencyCenter.Executable(OperatingSystem.IsWindows()?"ffmpeg.exe":"ffmpeg"),

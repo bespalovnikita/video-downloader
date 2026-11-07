@@ -2,6 +2,7 @@ using System.IO;
 using System.Text.Json;
 using VideoDownloader.Native;
 
+if (SubtitleTimelineTests.TryRunFixture(args)) return;
 if (ProfileBackupTests.TryRunFixture(args)) return;
 if (JobDiagnosticsTests.TryRunFixture(args)) return;
 if (MediaWaveformServiceTests.TryRunFixture(args)) return;
@@ -30,6 +31,7 @@ await NativeContractTests.RunAsync();
 await AudioTrackSelectionTests.RunAsync();
 await DownloadSelectionTests.RunAsync();
 await DownloadSelectionTests.RunNativeMediaAsync();
+await SubtitleTimelineTests.RunAsync();
 FragmentTimelineTests.Run();
 await FragmentMergeTests.RunAsync();
 await MultipleFragmentTests.RunAsync();
