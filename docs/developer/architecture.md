@@ -962,6 +962,8 @@ flowchart TD
 | `VideoDownloader-<дата-время>-success.txt` и `-error.txt` | `DownloadCoordinator` в базовой папке вывода текущей сессии | Пользовательский журнал итогов; он не заменяет постоянную историю JSONL |
 | Staging в `%TEMP%` | Работник отдельной попытки загрузки | Публикация и безопасная очистка; пути незавершённой попытки сохраняются в `session.json` |
 
+Обычные URL/TXT/clipboard/InternetShortcut/аргументы проходят `QueueSessionController.AddBatch` с текущими настройками UI. После диалогов истории повторяются ordinal-дедупликация и проверка активного владельца. До изменения observable queue и прежних строк один `AppPersistence.ValidateCanSave` сериализует будущий checkpoint, включая окончательные Order, deferred, pinned OutputRoot для live Add, названия, выбор форматов и настройки. Лимиты — 16 МиБ UTF-8 JSON и 100 000 строк; это не фиксированная ёмкость в URL. Отказ не запускает preview/ingress/SaveCheckpoint и не переводит профиль в read-only. Названия существующих строк подписки проверяются в том же prospective снимке. Восстановление проверенной очереди использует один batch вместо полной повторной сериализации на каждую строку; состояния legacy/cleanup остаются восстановленными `AppPersistence`.
+
 ```mermaid
 flowchart TD
     Launch["Запуск UI"] --> Read["Прочитать session.json до запуска таймеров"]
