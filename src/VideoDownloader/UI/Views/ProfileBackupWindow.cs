@@ -26,12 +26,13 @@ internal sealed record ProfileBackupFilePickers(Func<Window,string?> Open,Func<W
 internal sealed class ProfileBackupWindow:Window
 {
     private readonly WindowsProfileBackup _service;
-    private readonly Func<CancellationToken,Task<IDisposable>> _enter;
+    private readonly Func<CancellationToken,Task<IAsyncDisposable>> _enter;
     private readonly Func<DownloadOptions> _options;
     private readonly Func<IReadOnlyList<DownloadItem>> _rows;
-    private readonly Action<DownloadOptions> _applied;
+    private readonly Func<DownloadOptions,Task> _applied;
     private readonly Action<Exception> _failed;
     private readonly ProfileBackupFilePickers _pickers;
+    private readonly Func<string> _ingressWarning;
     private readonly Button _create,_open,_restore,_confirm,_cancel;
     private readonly ComboBox _policy;
     private readonly TextBlock _summary,_changes,_status;
@@ -40,16 +41,17 @@ internal sealed class ProfileBackupWindow:Window
     private ProfileRestorePlan? _plan;
     private CancellationTokenSource? _stop;
     private Task _operation=Task.CompletedTask;
-    private bool _closed,_closeRequested,_recoveryRequired;
+    private bool _closed,_closeRequested,_recoveryRequired,_failureReported;
     internal bool IsBusy=>_stop is not null;
     internal Task ActiveOperation=>_operation;
 
-    internal ProfileBackupWindow(Window owner,WindowsProfileBackup service,Func<CancellationToken,Task<IDisposable>> enter,
-        Func<DownloadOptions> options,Func<IReadOnlyList<DownloadItem>> rows,Action<DownloadOptions> applied,
-        Action<Exception> failed,ProfileBackupFilePickers? pickers=null)
+    internal ProfileBackupWindow(Window owner,WindowsProfileBackup service,Func<CancellationToken,Task<IAsyncDisposable>> enter,
+        Func<DownloadOptions> options,Func<IReadOnlyList<DownloadItem>> rows,Func<DownloadOptions,Task> applied,
+        Action<Exception> failed,ProfileBackupFilePickers? pickers=null,Func<string>? ingressWarning=null)
     {
         _service=service;_enter=enter;_options=options;_rows=rows;_applied=applied;_failed=failed;
         _pickers=pickers??ProfileBackupFilePickers.Windows;
+        _ingressWarning=ingressWarning??(()=>"");
         Name="ProfileBackupWindow";Title="Резервная копия Windows";Owner=owner;Width=740;Height=650;MinWidth=540;MinHeight=450;
         WindowStartupLocation=WindowStartupLocation.CenterOwner;Background=owner.Background;Foreground=owner.Foreground;FontFamily=owner.FontFamily;
         Resources.MergedDictionaries.Add(owner.Resources);NameScope.SetNameScope(this,new NameScope());
@@ -91,29 +93,34 @@ internal sealed class ProfileBackupWindow:Window
         // A file picker pumps the dispatcher before the first await. Publish
         // the join task first so owner-close cannot mistake that nested modal
         // operation for an already completed one.
+        var stop=new CancellationTokenSource();_stop=stop;_failureReported=false;_confirmation.Visibility=Visibility.Collapsed;RefreshControls();
         var joined=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);_operation=joined.Task;
         _=CompleteAsync();
-        async Task CompleteAsync(){try{await RunAsync(action);}finally{joined.TrySetResult();}}
+        // A raised WPF event can also originate on its owning thread without a
+        // SynchronizationContext. Start inside a real dispatcher operation so
+        // every async continuation, including the maintenance lease, stays UI.
+        async Task CompleteAsync(){try{await Dispatcher.InvokeAsync(()=>RunAsync(action,stop)).Task.Unwrap();}finally{joined.TrySetResult();}}
     }
-    private async Task RunAsync(Func<CancellationToken,Task> action)
+    private async Task RunAsync(Func<CancellationToken,Task> action,CancellationTokenSource stop)
     {
-        var stop=new CancellationTokenSource();_stop=stop;_confirmation.Visibility=Visibility.Collapsed;RefreshControls();
-        try{await action(stop.Token);}
+        try{stop.Token.ThrowIfCancellationRequested();await action(stop.Token);}
         catch(OperationCanceledException) when(stop.IsCancellationRequested){if(!_closed)_status.Text="Операция отменена. Проверьте состав копии перед новой попыткой.";}
         catch(Exception error)
         {
-            _failed(error);_plan?.Dispose();_plan=null;
+            ReportFailure(error);_plan?.Dispose();_plan=null;
             _recoveryRequired=error is ProfileRestoreException {RecoveryRequired:true} || _service.RecoveryRequired;
             if(!_closed)_status.Text=_recoveryRequired
                 ?"Работа с профилем заблокирована. Перезапустите приложение для завершения восстановления. "+SafeError(error)
+                :error is ProfileRestoreException {Applied:true}?"Профиль восстановлен, но завершение операции требует внимания: "+SafeError(error)
                 :"Операция не выполнена: "+SafeError(error);
         }
         finally
         {
             if(ReferenceEquals(_stop,stop))_stop=null;stop.Dispose();
-            if(!_closed){RefreshControls();if(_closeRequested)Close();}
+            if(!_closed){string warning=_ingressWarning();if(warning.Length>0)_status.Text+="\n"+warning;RefreshControls();if(_closeRequested)Close();}
         }
     }
+    private void ReportFailure(Exception error){if(!_failureReported){_failureReported=true;_failed(error);}}
     private static string SafeError(Exception error)
     {string value=JournalSanitizer.Redact(ErrorMessages.ForException(error),multiline:false);return value.Length>800?value[..800]:value;}
     private void ShowArchive(ProfileBackupArchive archive)
@@ -126,7 +133,7 @@ internal sealed class ProfileBackupWindow:Window
     private async Task CreateAsync(CancellationToken token)
     {
         string? destination=_pickers.Save(this);if(destination is null)return;token.ThrowIfCancellationRequested();
-        using var busy=await _enter(token);_status.Text="Собираем и сохраняем копию…";
+        await using var busy=await _enter(token);_status.Text="Собираем и сохраняем копию…";
         var archive=await _service.CreateAsync(_options(),token);token.ThrowIfCancellationRequested();
         await _service.SaveAsync(archive,destination,token);
         _plan?.Dispose();_plan=null;_archive=null;ShowArchive(archive);
@@ -136,13 +143,14 @@ internal sealed class ProfileBackupWindow:Window
     private async Task LoadAsync(CancellationToken token)
     {
         string? source=_pickers.Open(this);if(source is null)return;token.ThrowIfCancellationRequested();
-        using var busy=await _enter(token);_status.Text="Читаем и проверяем копию…";
+        _status.Text="Читаем и проверяем копию…";
         _plan?.Dispose();_plan=null;_archive=null;_summary.Text="Проверяем выбранную копию…";_changes.Text="Изменения ещё не подготовлены.";
         var archive=await _service.LoadAsync(source,token);token.ThrowIfCancellationRequested();
+        await using var busy=await _enter(token);token.ThrowIfCancellationRequested();
         _archive=archive;ShowArchive(archive);await PrepareCoreAsync(token);
     }
     private async Task PrepareAsync(CancellationToken token)
-    {using var busy=await _enter(token);await PrepareCoreAsync(token);}
+    {await using var busy=await _enter(token);await PrepareCoreAsync(token);}
     private async Task PrepareCoreAsync(CancellationToken token)
     {
         _plan?.Dispose();_plan=null;if(_archive is null)return;
@@ -164,9 +172,10 @@ internal sealed class ProfileBackupWindow:Window
         var plan=_plan;if(plan is null)return;
         if(plan.Summary.Policy!=(_policy.SelectedIndex==1?BackupSubscriptionsPolicy.Replace:BackupSubscriptionsPolicy.Merge))
             throw new InvalidOperationException("Режим подписок изменился. Откройте копию повторно для нового сравнения.");
-        using var busy=await _enter(token);_status.Text="Восстанавливаем профиль…";
-        await _service.RestoreAsync(plan,token);_applied(plan.Settings);
-        _plan=null;plan.Dispose();_status.Text="Профиль восстановлен. Очередь сохранена; загрузки и проверки сами не запускаются.";
+        await using var busy=await _enter(token);_status.Text="Восстанавливаем профиль…";
+        try{await _service.RestoreAsync(plan,token);await _applied(plan.Settings);}
+        catch(Exception error){ReportFailure(error);throw;}
+        _plan=null;plan.Dispose();_status.Text="Профиль восстановлен. Очередь сохранена; загрузки сами не запускаются. У импортированных подписок расписание выключено.";
         _changes.Text="Восстановление завершено. Для нового сравнения откройте копию повторно.";
     }
     private void RefreshControls()

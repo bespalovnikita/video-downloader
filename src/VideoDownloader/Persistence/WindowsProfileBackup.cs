@@ -49,7 +49,8 @@ internal sealed class WindowsProfileBackup
             string shortName=BackupPrivacy.Text(source.ShortName,80,ref sanitized);
             if(shortName.Length>0)shortName=SubscriptionNames.Normalize(shortName);
             sources.Add(new(source.Id,source.Url,BackupPrivacy.Text(source.Title,4096,ref sanitized),shortName,feed,
-                source.DownloadExisting,source.Initialized,source.Paused,source.LastAttemptUtc,source.LastSuccessUtc));
+                source.DownloadExisting,source.Initialized,source.Paused,source.LastAttemptUtc,source.LastSuccessUtc,
+                source.ScheduleIntervalMinutes));
             retainedIds.Add(source.Id);
         }
         foreach(var item in stored.Items)
@@ -121,7 +122,8 @@ internal sealed class WindowsProfileBackup
             var before=ProfileBackupTransaction.ReadFiles(_root);
             var currentSubscriptions=new SubscriptionStore(_root).Read();
             var known=_storage.ReadBackupHistory(cancellationToken).ToDictionary(entry=>entry.Url,entry=>entry.CompletedAtUtc,StringComparer.Ordinal);
-            var merged=MergeSubscriptions(currentSubscriptions,document.Subscriptions,policy,out int addedSources,out int addedItems);
+            var reserved=currentQueue.Select(row=>row.SubscriptionId).Where(id=>!string.IsNullOrEmpty(id)).ToHashSet(StringComparer.Ordinal);
+            var merged=MergeSubscriptions(currentSubscriptions,document.Subscriptions,policy,out int addedSources,out int addedItems,reserved);
             DownloadOptions settings=document.Settings.Apply(localOptions);
             byte[] session=SessionBytes(before["session.json"],document.Settings,settings,currentQueue);
             byte[] subscriptionBytes=JsonSerializer.SerializeToUtf8Bytes(merged,AppPersistence.Json);
@@ -182,27 +184,41 @@ internal sealed class WindowsProfileBackup
             ??throw new InvalidDataException("В checkpoint отсутствуют настройки.");
         var options=node[key] as JsonObject??throw new InvalidDataException("Неверные настройки checkpoint.");
         var restored=JsonSerializer.SerializeToNode(portable,Json)!.AsObject();
-        foreach(var property in restored)options[property.Key]=property.Value?.DeepClone();
+        void Set(string name,JsonNode? value)
+        {
+            string existing=options.Select(pair=>pair.Key).SingleOrDefault(candidate=>candidate.Equals(name,StringComparison.OrdinalIgnoreCase))??name;
+            options[existing]=value;
+        }
+        foreach(var property in restored)Set(property.Key,property.Value?.DeepClone());
         // Local-only values are taken from this GUI, never from the archive.
-        options["Output"]=settings.Output;options["Cookies"]=settings.Cookies;options["WatchClipboard"]=settings.WatchClipboard;
+        Set("Output",JsonValue.Create(settings.Output));Set("Cookies",JsonValue.Create(settings.Cookies));Set("WatchClipboard",JsonValue.Create(settings.WatchClipboard));
         byte[] bytes=JsonSerializer.SerializeToUtf8Bytes(node,AppPersistence.Json);
         if(bytes.Length>AppPersistence.MaxCheckpointBytes)throw new InvalidDataException("Восстановленный checkpoint превышает 16 МиБ.");
         return bytes;
     }
     private static SubscriptionSnapshot MergeSubscriptions(SubscriptionSnapshot current,PortableSubscriptions imported,
-        BackupSubscriptionsPolicy policy,out int addedSources,out int addedItems)
+        BackupSubscriptionsPolicy policy,out int addedSources,out int addedItems,IReadOnlySet<string>? reservedQueueIds=null)
     {
         var result=policy==BackupSubscriptionsPolicy.Merge?current:new SubscriptionSnapshot();
         var sourceByUrl=result.Subscriptions.ToDictionary(source=>source.Url,StringComparer.Ordinal);
-        var sourceIds=result.Subscriptions.Select(source=>source.Id).ToHashSet(StringComparer.Ordinal);
+        var currentByUrl=current.Subscriptions.ToDictionary(source=>source.Url,StringComparer.Ordinal);
+        // Replacing definitions must not give an unrelated imported source the
+        // identity still referenced by an untouched local queue row.
+        var sourceIds=current.Subscriptions.Select(source=>source.Id).ToHashSet(StringComparer.Ordinal);
+        if(reservedQueueIds is not null)sourceIds.UnionWith(reservedQueueIds);
         var idMap=new Dictionary<string,string>(StringComparer.Ordinal);addedSources=0;addedItems=0;
         foreach(var source in imported.Sources)
         {
             if(sourceByUrl.TryGetValue(source.Url,out var existing)){idMap.Add(source.Id,existing.Id);continue;}
-            string id=sourceIds.Add(source.Id)?source.Id:Guid.NewGuid().ToString("N");sourceIds.Add(id);idMap.Add(source.Id,id);
+            string id;
+            if(policy==BackupSubscriptionsPolicy.Replace && currentByUrl.TryGetValue(source.Url,out var sameSource))id=sameSource.Id;
+            else if(sourceIds.Add(source.Id))id=source.Id;
+            else{do{id=Guid.NewGuid().ToString("N");}while(!sourceIds.Add(id));}
+            sourceIds.Add(id);idMap.Add(source.Id,id);
             var restored=new SubscriptionDefinition{Id=id,Url=source.Url,Title=source.Title,ShortName=source.ShortName,FeedUrl=source.FeedUrl,
                 DownloadExisting=source.DownloadExisting,Initialized=source.Initialized,Paused=source.Paused,
-                LastAttemptUtc=source.LastAttemptUtc,LastSuccessUtc=source.LastSuccessUtc};
+                LastAttemptUtc=source.LastAttemptUtc,LastSuccessUtc=source.LastSuccessUtc,
+                ScheduleEnabled=false,ScheduleIntervalMinutes=source.ScheduleIntervalMinutes};
             result.Subscriptions.Add(restored);sourceByUrl.Add(restored.Url,restored);addedSources++;
         }
         var keys=result.Items.Select(item=>(item.SubscriptionId,item.Url)).ToHashSet();
@@ -252,7 +268,7 @@ internal sealed class WindowsProfileBackup
             cancellationToken.ThrowIfCancellationRequested();
             int unixType=(entry.ExternalAttributes>>16)&0xf000;
             if(!Entries.Contains(entry.FullName,StringComparer.Ordinal) || files.ContainsKey(entry.FullName) ||
-                unixType is not (0 or 0x8000) || (entry.ExternalAttributes&0x400)!=0 || entry.Length<0 ||
+                unixType is not (0 or 0x8000) || (entry.ExternalAttributes&(0x8|0x10|0x40|0x400))!=0 || entry.Length<0 ||
                 entry.Length>(entry.FullName=="manifest.json"?32*1024:MaxPayloadBytes) || total+entry.Length>MaxArchiveBytes ||
                 entry.Length>1024*1024 && (entry.CompressedLength==0 || entry.Length/Math.Max(1,entry.CompressedLength)>200))
                 throw new InvalidDataException("Небезопасный путь, тип, размер или степень сжатия записи резервной копии.");

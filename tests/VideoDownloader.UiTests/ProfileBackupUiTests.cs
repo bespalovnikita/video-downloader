@@ -63,6 +63,7 @@ internal sealed partial class UiScenario
         var publicSource=sourceStore.Add("https://backup-ui.invalid/channel",true,shortName:"Канал");
         sourceStore.ApplyScan(publicSource.Id,new("Канал Ёж",[new("https://backup-ui.invalid/Video?id=AbC","Материал Ёж")],"",""),[]);
         sourceStore.MarkQueued(publicSource.Id,["https://backup-ui.invalid/Video?id=AbC"]);
+        sourceStore.SetSchedule(publicSource.Id,true,11);
         sourceStore.Add("https://backup-ui.invalid/private?token=source-secret",false);
         sourceStorage.AppendSuccess("https://backup-ui.invalid/success");sourceStorage.AppendSuccess("https://backup-ui.invalid/private-success?token=history-secret");
         var sourceView=View();using(var sourceSubject=new NativeWindow(sourceView,sourceStorage,"must-not-launch",automaticUpdates:false))
@@ -147,7 +148,11 @@ internal sealed partial class UiScenario
                 !Control<Button>(owner,"RetryFailedButton").IsEnabled,"An actual restore transaction must freeze main-window writers.");
             var watch=Stopwatch.StartNew();subject.SaveCheckpoint();watch.Stop();
             Require(watch.Elapsed<TimeSpan.FromMilliseconds(250),"SaveCheckpoint must skip the held profile mutex instead of blocking the WPF dispatcher.");
-            subject.ReceiveArguments(["https://backup-ui.invalid/late-ipc"]);subject.AddUrls(["https://backup-ui.invalid/late-add"]);
+            const string deferredFirst="https://backup-ui.invalid/late-ipc",deferredCase="https://backup-ui.invalid/Case?v=AbC";
+            string deferredFile=Path.Combine(root,"deferred-input.txt");File.WriteAllText(deferredFile,"https://backup-ui.invalid/deferred-file");
+            subject.ReceiveArguments([deferredFirst,deferredCase,"https://backup-ui.invalid/case?v=AbC"]);
+            subject.ReceiveArguments([deferredFirst,deferredFile,PortableQueueCodec.Encode([new("https://backup-ui.invalid/deferred-portable","Deferred portable")])]);
+            subject.AddUrls(["https://backup-ui.invalid/late-add"]);
             subject.Preview.ReceiveReady(new(queued.Url,"late metadata must not rewrite row","","",1,"",0,0,"","","",DateTime.UtcNow));
             subject.Input.PollClipboard();subject.ImportPortableTextAsync(PortableQueueCodec.Encode([new("https://backup-ui.invalid/late-portable","")])).GetAwaiter().GetResult();
             Require(subject.QueueSubscriptionUrls(["https://backup-ui.invalid/late-subscription"]).Count==0,"Late subscription offers must be rejected while restoring.");
@@ -157,9 +162,15 @@ internal sealed partial class UiScenario
                 "Late IPC, explicit actions, portable import and metadata callbacks must preserve queue state/ownership and never start work.");
             held.Release();PumpUntil(()=>!current.IsBusy,"The real restore did not complete after its checkpoint was released.");
             Require(Status(current).Contains("восстановлен",StringComparison.Ordinal) && !subject.ProfileBackupBusy,"Successful restore must re-enable the main window.");
+            Require(subject.SessionState.Queue.Select(row=>row.Url).SequenceEqual(new[]{completed.Url,queued.Url,deferredFirst,deferredCase,"https://backup-ui.invalid/case?v=AbC",
+                "https://backup-ui.invalid/deferred-file","https://backup-ui.invalid/deferred-portable"}) &&
+                storage.Restore()!.Queue.Select(row=>row.Url).SequenceEqual(subject.SessionState.Queue.Select(row=>row.Url)) && subject.SessionState.Coordinator is null,
+                "Deferred original IPC groups must replay once, in order with exact URL dedup, ordinary file/portable ingress and a saved checkpoint after restore.");
+            queueBefore=JsonSerializer.Serialize(subject.SessionState.Queue,AppPersistence.Json);
             var restored=subject.ReadOptions();var local=localStore.Read();
             Require(restored.Quality=="1080" && restored.Codec=="H264" && restored.Output==localOutput && restored.Cookies==localCookies && restored.WatchClipboard &&
                 local.Subscriptions.Count==1 && local.Subscriptions.Single().Url==publicSource.Url && local.Items.Single().State=="New" &&
+                !local.Subscriptions.Single().ScheduleEnabled && local.Subscriptions.Single().ScheduleIntervalMinutes==11 &&
                 File.ReadAllBytes(storage.HistoryPath).Take(originalHistory.Length).SequenceEqual(originalHistory) && storage.ReadHistory().Count==2 &&
                 JsonSerializer.Serialize(subject.SessionState.Queue,AppPersistence.Json)==queueBefore && File.ReadAllText(media).StartsWith("owned media",StringComparison.Ordinal) &&
                 subject.SessionState.Coordinator is null && subject.SessionState.StartedAt is null,
@@ -167,9 +178,35 @@ internal sealed partial class UiScenario
 
             subject.SaveCheckpoint();Load(current);before=Files(storage);held.Arm("pointer");Confirm(current);
             PumpUntil(()=>held.Entered,"Cancellation test did not reach the actual durable restore pointer.");
+            subject.ReceiveArguments(["https://backup-ui.invalid/cancelled-restore-ipc"]);
+            subject.ReceiveArguments([new string('x',PortableQueueCodec.ClipboardTextLimit+1),"https://backup-ui.invalid/overflow-must-not-add"]);
             Click(current,"CancelProfileBackupOperationButton");held.Release();PumpUntil(()=>!current.IsBusy,"Cancelled restore did not join rollback.");
-            Require(EqualFiles(before) && !service.RecoveryRequired && Status(current).Contains("отменена",StringComparison.Ordinal),
-                "Cancellation after the durable pointer must join rollback and retain the original profile bytes.");
+            Require(before.Where(pair=>pair.Key!=storage.SessionPath).All(pair=>pair.Value is null?!File.Exists(pair.Key):pair.Value.SequenceEqual(File.ReadAllBytes(pair.Key))) &&
+                !service.RecoveryRequired && Status(current).Contains("отменена",StringComparison.Ordinal) && Status(current).Contains("Лимит",StringComparison.Ordinal) &&
+                subject.SessionState.Queue.Last().Url=="https://backup-ui.invalid/cancelled-restore-ipc" &&
+                subject.SessionState.Queue.All(row=>row.Url!="https://backup-ui.invalid/overflow-must-not-add") &&
+                storage.Restore()!.Queue.Last().Url=="https://backup-ui.invalid/cancelled-restore-ipc" && subject.SessionState.Coordinator is null,
+                "Verified cancellation must replay accepted IPC once after rollback, keep history/subscriptions, and visibly reject an entire oversized group.");
+
+            Load(current);held.Arm("pointer");Confirm(current);PumpUntil(()=>held.Entered,"Replay cursor test did not enter the real profile transaction.");
+            string firstPortable=Path.Combine(root,"accepted-prefix.vdqueue"),laterText=Path.Combine(root,"retry-suffix.txt");
+            File.WriteAllText(firstPortable,PortableQueueCodec.Encode([new("https://backup-ui.invalid/replay-prefix","")]));
+            File.WriteAllText(laterText,"https://backup-ui.invalid/replay-suffix");subject.ReceiveArguments([firstPortable,laterText]);
+            using(var locked=new FileStream(laterText,FileMode.Open,FileAccess.ReadWrite,FileShare.None))
+            {
+                Click(current,"CancelProfileBackupOperationButton");held.Release();PumpUntil(()=>!current.IsBusy,"A locked later argument did not release the replay barrier.");
+                Require(Status(current).Contains("Отложенные аргументы",StringComparison.Ordinal) &&
+                    subject.SessionState.Queue.Count(row=>row.Url=="https://backup-ui.invalid/replay-prefix")==1 &&
+                    subject.SessionState.Queue.All(row=>row.Url!="https://backup-ui.invalid/replay-suffix") &&
+                    storage.Restore()!.Queue.Any(row=>row.Url=="https://backup-ui.invalid/replay-prefix"),
+                    "A failed later input must keep its suffix pending and checkpoint the already accepted prefix.");
+            }
+            File.WriteAllText(firstPortable,PortableQueueCodec.Encode([new("https://backup-ui.invalid/prefix-must-not-reopen","")]));
+            Load(current);
+            Require(subject.SessionState.Queue.Count(row=>row.Url=="https://backup-ui.invalid/replay-prefix")==1 &&
+                subject.SessionState.Queue.Last().Url=="https://backup-ui.invalid/replay-suffix" &&
+                subject.SessionState.Queue.All(row=>row.Url!="https://backup-ui.invalid/prefix-must-not-reopen") && subject.SessionState.Coordinator is null,
+                "Retry must resume at the first unprocessed argument, never reopen a successfully handled portable file, and never start a session.");
             Load(current);before=Files(storage);held.Arm("staged");Confirm(current);PumpUntil(()=>held.Entered,"Close test did not enter actual restore.");
             var closing=current;closing.Close();Require(closing.IsVisible && closing.IsBusy,"Closing must wait for its in-flight profile operation to join.");
             held.Release();PumpUntil(()=>!closing.IsVisible && !subject.ProfileBackupBusy,"Close did not join cancellation before releasing the profile gate.");current=null;
@@ -192,6 +229,7 @@ internal sealed partial class UiScenario
         }
         finally{held.Release();current?.RequestCancellation();current?.Close();subject.Dispose();owner.Close();}
         TestProfileBackupMainCloseUi(root,export);
+        TestProfileBackupSchedulingUi(root,export);
         TestProfileBackupRecoveryUi(root,export);
         Console.WriteLine("PASS: real WPF backup export/load/preview/explicit confirmation, filesystem restore/rollback/cancel/close, local paths, append-only history and late mutation guards");
     }
@@ -213,14 +251,17 @@ internal sealed partial class UiScenario
     private static void TestProfileBackupRecoveryUi(string root,string archive)
     {
         string directory=Path.Combine(root,"recovery-required");var storage=new AppPersistence(directory);storage.Save([],new DownloadOptions());
+        Action? deferredArguments=null;
         var service=new WindowsProfileBackup(storage,stage=>
         {
             if(stage!="published:session.json")return;
             File.WriteAllText(storage.SessionPath,"foreign change during restore must be preserved");
+            deferredArguments?.Invoke();
             throw new IOException("injected transaction failure after a foreign profile change");
         });
         using var stream=File.OpenRead(Path.Combine(AppContext.BaseDirectory,"ui","MainWindow.xaml"));using var reader=XmlReader.Create(stream);
         var owner=(Window)XamlReader.Load(reader);using var subject=new NativeWindow(owner,storage,"must-not-launch",automaticUpdates:false,profileBackup:service);
+        deferredArguments=()=>subject.Dispatcher.Invoke(()=>subject.ReceiveArguments(["https://backup-ui.invalid/recovery-must-not-replay"]));
         subject.ProfileBackupPickers=new(_=>archive,_=>null);
         try
         {
@@ -236,6 +277,8 @@ internal sealed partial class UiScenario
             Click("OpenProfileBackupButton");Join();Click("RestoreProfileBackupButton");Click("ConfirmProfileRestoreButton");Join();subject.UpdateState();
             if(!subject.CheckpointReadOnly || !service.RecoveryRequired || !((TextBlock)backup.FindName("ProfileBackupStatus")!).Text.Contains("Перезапустите",StringComparison.Ordinal) ||
                 ((Button)backup.FindName("CreateProfileBackupButton")!).IsEnabled || ((Button)owner.FindName("StartButton")!).IsEnabled ||
+                !((TextBlock)backup.FindName("ProfileBackupStatus")!).Text.Contains("Отложенные аргументы",StringComparison.Ordinal) ||
+                subject.SessionState.Queue.Count!=0 || subject.SessionState.Coordinator is not null ||
                 File.ReadAllText(storage.SessionPath)!="foreign change during restore must be preserved")
                 throw new InvalidOperationException("A real incomplete rollback must block writers and explain restart without overwriting the foreign change.");
             subject.SaveCheckpoint();if(File.ReadAllText(storage.SessionPath)!="foreign change during restore must be preserved")

@@ -19,7 +19,7 @@ public sealed partial class NativeWindow
 
     private void MediaRowSelectionChanged(object sender,SelectionChangedEventArgs e)=>RefreshMediaSelectionState();
 
-    private bool CanEditMediaSelection(DownloadItem row)=>!_disposed && !_closing && !_appUpdateHandoff && !_profileBackupBusy && !_profileBackupRecoveryRequired &&
+    private bool CanEditMediaSelection(DownloadItem row)=>!_disposed && !_closing && !_appUpdateHandoff && !_profileBackupBusy && !_profileBackupRecoveryRequired && !_profileBackupReplaying &&
         !(_startingSession && SessionState.Coordinator?.IsRunning!=true) &&
         !_checkpointReadOnly && !_legacyEngineBlocked &&
         !_restoringSession && SessionState.Queue.Contains(row) && !row.PendingRemoval && row.CleanupError.Length==0 &&

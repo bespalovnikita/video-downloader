@@ -81,9 +81,10 @@ public sealed partial class NativeWindow : IDisposable
         B("OutputBox").Text=new DownloadOptions().Output;
         _panelLayout=new PanelLayoutController(_window,SaveCheckpoint);
         _preview=new PreviewController(_window,_storage,_ytDlp,
-            ()=>_profileBackupBusy || _profileBackupRecoveryRequired?Array.Empty<DownloadItem>():SessionState.Queue.Concat(SessionState.Downloads),SaveCheckpoint,Log);
+            ()=>_profileBackupBusy || _profileBackupRecoveryRequired || _profileBackupReplaying?Array.Empty<DownloadItem>():SessionState.Queue.Concat(SessionState.Downloads),SaveCheckpoint,Log);
         _lifecycle=new WindowLifecycleController(_window,()=>OpenFolder(B("OutputBox").Text));
-        _ingress=new InputIngressController(_window,AddUrls,()=>!_profileBackupBusy && !_profileBackupRecoveryRequired && Check(K("WatchClipboardCheck")),_lifecycle.Activate,Log,
+        _ingress=new InputIngressController(_window,AddUrls,()=>!_profileBackupBusy && !_profileBackupRecoveryRequired && !_profileBackupReplaying &&
+            !_checkpointReadOnly && !_legacyEngineBlocked && Check(K("WatchClipboardCheck")),_lifecycle.Activate,Log,
             text=>_ = ImportPortableTextAsync(text),file=>_ = ImportPortableFileAsync(file));
         BindActions();
         C("AudioTrackCombo").SelectionChanged+=(_,_)=>B("AudioLanguagesBox").IsEnabled=AudioTrackSelection.ToId(Pick(C("AudioTrackCombo")))=="Languages";
@@ -202,7 +203,7 @@ public sealed partial class NativeWindow : IDisposable
     {
         _=Dispatcher.BeginInvoke(()=>
         {
-            if (_disposed || _profileBackupBusy || _profileBackupRecoveryRequired) return;
+            if (_disposed || _profileBackupBusy || _profileBackupRecoveryRequired || _profileBackupReplaying) return;
             if (item.Status=="Completed" && item.AttemptFinished && item.CleanupError.Length==0 && !item.IsPartialResult)
                 RecordSubscriptionSuccess(item.Url);
             if (!SessionState.Queue.Contains(item)) return;
@@ -322,18 +323,24 @@ public sealed partial class NativeWindow : IDisposable
     private bool _legacyEngineBlocked;
     internal void SaveCheckpoint()
     {
-        if (_restoringSession || _checkpointReadOnly || _disposed || _profileBackupBusy || _profileBackupRecoveryRequired) return;
+        if (_restoringSession || _checkpointReadOnly || _disposed || _profileBackupBusy || _profileBackupRecoveryRequired || _profileBackupReplaying) return;
+        SaveCheckpointCore(SessionState.Queue.ToArray(),ReadOptions());
+    }
+    // Backup calls this with a frozen queue/options snapshot on a worker only
+    // after its scheduling lease has joined all profile readers and writers.
+    private void SaveCheckpointCore(IReadOnlyList<DownloadItem> rows,DownloadOptions options)
+    {
         try
         {
             // Save on meaningful changes, not every progress tick.
-            var fingerprint=System.Text.Json.JsonSerializer.Serialize(SessionState.Queue.Select(i=>new{
+            var fingerprint=System.Text.Json.JsonSerializer.Serialize(rows.Select(i=>new{
                 i.Url,i.Title,i.Status,i.Path,i.Order,i.OwnedPaths,i.OutputRoot,i.RunDir,i.StageDir,
                 i.CleanupPaths,i.CleanupError,i.PendingRemoval,i.AttemptFinished,i.DeferredToNextStart,
                 i.SubscriptionId,i.SubscriptionName,i.Selection,i.CompletedSelection
             }),AppPersistence.Json)+
-                ":"+System.Text.Json.JsonSerializer.Serialize(ReadOptions(),AppPersistence.Json)+":"+SessionState.Queue.Count;
+                ":"+System.Text.Json.JsonSerializer.Serialize(options,AppPersistence.Json)+":"+rows.Count;
             if (fingerprint==_lastSavedSnapshot) return;
-            _storage.Save(SessionState.Queue,ReadOptions());_lastSavedSnapshot=fingerprint;
+            _storage.Save(rows.ToArray(),options);_lastSavedSnapshot=fingerprint;
         }
         catch(Exception e)
         {
@@ -454,7 +461,7 @@ public sealed partial class NativeWindow : IDisposable
     private void PollClipboard()=>_ingress.PollClipboard();
     private async Task StartAsync(IEnumerable<DownloadItem>? custom=null)
     {
-        if(_closing || _disposed || _startingSession || _appUpdateHandoff || _checkpointReadOnly || RejectProfileBackupMutation())return;
+        if(_closing || _disposed || _startingSession || _appUpdateHandoff || _checkpointReadOnly || _profileBackupReplaying || RejectProfileBackupMutation())return;
         _startingSession=true;
         try { await StartSessionCoreAsync(custom); }
         finally { _startingSession=false;UpdateState(); }
@@ -604,6 +611,13 @@ public sealed partial class NativeWindow : IDisposable
     }
     public void ReceiveArguments(IEnumerable<string> args)
     {
+        if(_closing || _disposed || _appUpdateHandoff)return;
+        if(_profileBackupBusy || _profileBackupReplaying){DeferProfileArguments(args);return;}
+        if(_profileBackupRecoveryRequired || _checkpointReadOnly || _legacyEngineBlocked)
+        {
+            _profileBackupIngressWarning="Аргументы не приняты: профиль недоступен для сохранения. Повторите передачу после восстановления доступа к профилю.";
+            T("ClipboardHint").Text=_profileBackupIngressWarning;return;
+        }
         if(!_closing && !_disposed && !_appUpdateHandoff && !RejectProfileBackupMutation())_ingress.ReceiveArguments(args);
     }
     private static IReadOnlyList<string> ReadInputFile(string file)=>InputIngressController.ReadInputFile(file);

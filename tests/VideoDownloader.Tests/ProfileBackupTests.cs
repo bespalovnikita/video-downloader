@@ -39,7 +39,7 @@ internal static class ProfileBackupTests
             var source=NewProfile(root,"source");
             var options=new DownloadOptions{Quality="1080",Threads="3",Output=Path.Combine(root,Secret),Cookies=Path.Combine(root,Secret+".txt"),WatchClipboard=true};
             source.Save([],options);
-            WriteSubscriptions(source,[Source("collision",PublicUrl),Source("case",PublicUrl.Replace("Watch","watch",StringComparison.Ordinal)),
+            WriteSubscriptions(source,[ScheduledSource("collision",PublicUrl,17),ScheduledSource("case",PublicUrl.Replace("Watch","watch",StringComparison.Ordinal),45),
                 Source("private","https://user:"+Secret+"@example.invalid/secret")],
                 [Item("collision","https://example.invalid/video?id=1","Queued"),
                  Item("collision","https://example.invalid/video?token="+Secret),
@@ -65,6 +65,8 @@ internal static class ProfileBackupTests
             var portable=JsonNode.Parse(entries["subscriptions.json"])!;
             Require(portable["Sources"]![0]!["Url"]!.GetValue<string>()==PublicUrl &&
                 portable["Sources"]![1]!["Url"]!.GetValue<string>()==PublicUrl.Replace("Watch","watch",StringComparison.Ordinal),"Exact URL identity and public parameters survive export");
+            Require(portable["Sources"]![0]!["ScheduleIntervalMinutes"]!.GetValue<int>()==17 &&
+                portable["Sources"]![0]!["ScheduleEnabled"] is null,"The archive preserves the source interval without its permission to run background checks");
             int hidden=0;
             int pathIndex=0;
             foreach(string path in new[]{"path=/etc/"+Secret,"file=/opt/Папка с пробелами/"+Secret,"['/custom/"+Secret+"']","\"/данные/"+Secret+"\"","path=//server/private share/"+Secret})
@@ -81,7 +83,10 @@ internal static class ProfileBackupTests
             Require((await service.LoadAsync(archivePath,None)).Summary==archive.Summary,"A real saved ZIP round-trips its summary");
             await InvalidArchives(root,service,archive);
             await RestoreMerge(root,archive);
+            await LowerCaseCheckpoint(root,archive);
             await RestoreReplaceAndStale(root,archive);
+            await ReplaceQueueProvenance(root);
+            await LegacyScheduleCompatibility(root,archive);
             await RollbackAndLiveOwner(root,archive);
             await WindowsProtectedTargets(root,archive);
             await CrashRecovery(root,archivePath,archive);
@@ -120,6 +125,8 @@ internal static class ProfileBackupTests
         await Mutate("history.json",b=>Edit(b,node=>node[0]!["Source"]="file=/opt/Папка с пробелами/"+Secret),"Checksummed arbitrary assignment paths reject the entire import");
         await Mutate("history.json",b=>Edit(b,node=>node[0]!["Source"]="path=//server/private share/"+Secret),"Checksummed forward-slash UNC/POSIX roots reject the entire import");
         await Mutate("subscriptions.json",b=>Edit(b,node=>node["Items"]![0]!["State"]="Unknown"),"Unknown subscription states are rejected");
+        await Mutate("subscriptions.json",b=>Edit(b,node=>node["Sources"]![0]!["ScheduleEnabled"]=true),"An archive cannot import permission for automatic checks");
+        await Mutate("subscriptions.json",b=>Edit(b,node=>node["Sources"]![0]!["ScheduleIntervalMinutes"]=4),"Invalid imported schedule intervals fail before preview");
         await Mutate("history.json",b=>Edit(b,node=>node.AsArray().Add(node[0]!.DeepClone())),"Duplicate exact history URLs reject the archive");
         await Mutate("settings.json",b=>Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(b).Insert(1,"\"quality\":\"720\",")),"Duplicate JSON properties with different case fail");
         await Mutate("settings.json",_=>[0xff,0xfe,0x7b],"Invalid UTF-8 fails");
@@ -131,6 +138,13 @@ internal static class ProfileBackupTests
         using(var output=File.Create(link))using(var zip=new ZipArchive(output,ZipArchiveMode.Create))
             foreach(var pair in original){var entry=zip.CreateEntry(pair.Key);if(pair.Key=="history.json")entry.ExternalAttributes=0xa1ff<<16;using var writer=entry.Open();writer.Write(pair.Value);}
         await Refuses(()=>service.LoadAsync(link,None),"Archive symlinks reject the entire archive");
+        foreach(int attributes in new[]{0x8,0x10,0x40,0x400})
+        {
+            string typed=Path.Combine(root,"attributes-"+attributes+".zip");
+            using(var output=File.Create(typed))using(var zip=new ZipArchive(output,ZipArchiveMode.Create))
+                foreach(var pair in original){var entry=zip.CreateEntry(pair.Key);if(pair.Key=="settings.json")entry.ExternalAttributes=attributes;using var writer=entry.Open();writer.Write(pair.Value);}
+            await Refuses(()=>service.LoadAsync(typed,None),"A fixed JSON filename cannot hide a volume, directory, device or reparse entry");
+        }
     }
 
     private static async Task RestoreMerge(string root,ProfileBackupArchive archive)
@@ -140,7 +154,7 @@ internal static class ProfileBackupTests
         var options=new DownloadOptions{Output=localRoot,Cookies=Path.Combine(root,"current-cookies.txt"),WatchClipboard=true};
         var row=new DownloadItem{Url="https://local.invalid/queue",Title="Current queue",Status="Completed",State="Done",Path=media,OutputRoot=localRoot,OwnedPaths=[media]};
         local.Save([row],options);
-        WriteSubscriptions(local,[Source("case","https://local.invalid/source"),Source("same-url",PublicUrl)],[Item("same-url","https://local.invalid/existing")]);
+        WriteSubscriptions(local,[ScheduledSource("case","https://local.invalid/source",120),ScheduledSource("same-url",PublicUrl,240)],[Item("same-url","https://local.invalid/existing")]);
         AppendHistory(local,PublicUrl,"OLD LOCAL",DateTimeOffset.Parse("2020-01-01T00:00:00Z"),[media]);
         byte[] historyBefore=File.ReadAllBytes(local.HistoryPath);var queueBefore=JsonNode.Parse(File.ReadAllBytes(local.SessionPath))!["Queue"]!.ToJsonString();
         var service=new WindowsProfileBackup(local);using var plan=await service.PrepareRestoreAsync(archive,options,[row],BackupSubscriptionsPolicy.Merge,None);
@@ -153,6 +167,10 @@ internal static class ProfileBackupTests
         var subscriptions=new SubscriptionStore(Path.GetDirectoryName(local.SessionPath)!).Read();
         Require(subscriptions.Subscriptions.Count==3 && subscriptions.Items.Count==2,"Merge preserves current sources and discoveries");
         Require(subscriptions.Subscriptions.Single(source=>source.Url.Contains("/watch?",StringComparison.Ordinal)).Id!="case","An imported source ID collision cannot refer to the unrelated local source");
+        Require(subscriptions.Subscriptions.Single(source=>source.Url.Contains("/watch?",StringComparison.Ordinal)) is {ScheduleEnabled:false,ScheduleIntervalMinutes:45} &&
+            subscriptions.Subscriptions.Single(source=>source.Id=="same-url") is {ScheduleEnabled:true,ScheduleIntervalMinutes:240} &&
+            subscriptions.Subscriptions.Single(source=>source.Id=="case") is {ScheduleEnabled:true,ScheduleIntervalMinutes:120},
+            "Newly imported schedules are disabled; merge deliberately preserves the local configuration and consent of existing exact sources");
         Require(subscriptions.Items.Single(item=>item.Url=="https://example.invalid/video?id=1") is {SubscriptionId:"same-url",State:"New",InitialQueuePending:false},"Imported queued items become idle discoveries and map onto the existing exact source");
         byte[] historyAfter=File.ReadAllBytes(local.HistoryPath);Require(historyAfter.AsSpan(0,historyBefore.Length).SequenceEqual(historyBefore),"Existing local history is an untouched prefix");
         var library=local.ReadHistoryLibrary("",100,None);
@@ -176,11 +194,95 @@ internal static class ProfileBackupTests
             Require(plan.Summary.ReplacedSources==1,"Replace preview counts displaced sources");await service.RestoreAsync(plan,None);
         }
         Require(new SubscriptionStore(Path.GetDirectoryName(local.SessionPath)!).Read().Subscriptions.Count==2,"Replace changes subscriptions");
+        var importedStore=new SubscriptionStore(Path.GetDirectoryName(local.SessionPath)!);var importedSources=importedStore.Read().Subscriptions;
+        Require(importedSources.All(source=>!source.ScheduleEnabled) && importedSources.Single(source=>source.Url==PublicUrl).ScheduleIntervalMinutes==17,
+            "Replace retains portable intervals but never imports background-check consent");
+        var clock=new BackupClock();var planner=new SubscriptionSchedulePlanner(clock);planner.Synchronize(importedSources);clock.Advance(TimeSpan.FromDays(30));
+        Require(planner.TakeDue() is null,"Imported definitions cannot become due after maintenance/restart without explicit local enable");
+        var enabled=importedSources.Single(source=>source.Url==PublicUrl);importedStore.SetSchedule(enabled.Id,true,enabled.ScheduleIntervalMinutes);
+        planner.Synchronize(importedStore.Read().Subscriptions);
+        Require(planner.TakeDue() is null && planner.NextCheckUtc(enabled.Id)==clock.GetUtcNow().AddMinutes(17),"Explicitly enabling an imported source starts a fresh full interval");
+        clock.Advance(TimeSpan.FromMinutes(17));Require(planner.TakeDue()==enabled.Id,"The original scheduler runs the explicitly enabled source after its restored interval");
         Require(local.ReadHistory().ContainsKey("https://local.invalid/history") && local.ReadHistory().ContainsKey("https://local.invalid/late"),"Replace never discards the success history");
         using var cancelled=new CancellationTokenSource();cancelled.Cancel();
         await Refuses(()=>service.CreateAsync(options,cancelled.Token),"Cancellation is observed before export work");
         await Refuses(()=>service.PrepareRestoreAsync(archive,options,[new DownloadItem{Status="Running"}],BackupSubscriptionsPolicy.Merge,None),"Active queue rows block restore preparation");
         await Refuses(()=>service.PrepareRestoreAsync(archive,options,[new DownloadItem{CleanupPaths=["pending"]}],BackupSubscriptionsPolicy.Merge,None),"Unfinished cleanup blocks restore preparation");
+    }
+
+    private static async Task LowerCaseCheckpoint(string root,ProfileBackupArchive archive)
+    {
+        var local=NewProfile(root,"lower-case-checkpoint");
+        var options=new DownloadOptions{Output=Path.Combine(root,"lower-local-output"),Cookies=Path.Combine(root,"lower-local-cookies.txt"),WatchClipboard=true};
+        local.Save([new DownloadItem{Url="https://legacy.invalid/queue",Title="Preserved queue"}],options);
+        var session=JsonNode.Parse(File.ReadAllBytes(local.SessionPath))!.AsObject();var settings=session["Settings"]!.AsObject();
+        foreach(string name in settings.Select(pair=>pair.Key).ToArray())
+        {var value=settings[name];settings.Remove(name);settings[char.ToLowerInvariant(name[0])+name[1..]]=value;}
+        settings["futureNativeFlag"]=true;
+        foreach(string name in session.Select(pair=>pair.Key).ToArray())
+        {var value=session[name];session.Remove(name);session[char.ToLowerInvariant(name[0])+name[1..]]=value;}
+        string queue=session["queue"]!.ToJsonString();File.WriteAllText(local.SessionPath,session.ToJsonString());
+        Require(local.Restore()!.Settings.Output==options.Output,"A lowercase legacy checkpoint is accepted by the existing persistence reader");
+        var service=new WindowsProfileBackup(local);using var plan=await service.PrepareRestoreAsync(archive,options,[],BackupSubscriptionsPolicy.Merge,None);
+        await service.RestoreAsync(plan,None);
+        byte[] bytes=File.ReadAllBytes(local.SessionPath);using var strict=WindowsProfileBackup.ParseJson(bytes);
+        var updated=JsonNode.Parse(bytes)!;
+        Require(updated["settings"]!["quality"]!.GetValue<string>()=="1080" && updated["settings"]!["output"]!.GetValue<string>()==options.Output &&
+            updated["settings"]!["cookies"]!.GetValue<string>()==options.Cookies && updated["settings"]!["watchClipboard"]!.GetValue<bool>() &&
+            updated["settings"]!["futureNativeFlag"]!.GetValue<bool>() && updated["queue"]!.ToJsonString()==queue,
+            "Restore replaces existing option keys case-insensitively while preserving local values, unknown native fields and the current queue");
+        var roundTrip=await service.CreateAsync(local.Restore()!.Settings,None);
+        using var second=await service.PrepareRestoreAsync(roundTrip,options,[],BackupSubscriptionsPolicy.Merge,None);
+        await service.RestoreAsync(second,None);
+        Require(local.Restore()!.Settings.Quality=="1080","A restored lowercase checkpoint remains valid for another backup/restore round trip");
+    }
+
+    private static async Task LegacyScheduleCompatibility(string root,ProfileBackupArchive archive)
+    {
+        var local=NewProfile(root,"legacy-schedule");local.Save([],new());WriteSubscriptions(local,[Source("old","https://legacy.invalid/source")],[]);
+        var data=JsonNode.Parse(File.ReadAllBytes(SubscriptionPath(local)))!;
+        data["Subscriptions"]![0]!.AsObject().Remove("ScheduleEnabled");data["Subscriptions"]![0]!.AsObject().Remove("ScheduleIntervalMinutes");
+        File.WriteAllText(SubscriptionPath(local),data.ToJsonString());byte[] original=File.ReadAllBytes(SubscriptionPath(local));
+        var service=new WindowsProfileBackup(local);var exported=await service.CreateAsync(new(),None);
+        var portable=JsonNode.Parse(ReadZip(exported.ArchiveBytes)["subscriptions.json"])!;
+        Require(portable["Sources"]![0]!["ScheduleIntervalMinutes"]!.GetValue<int>()==30 && original.SequenceEqual(File.ReadAllBytes(SubscriptionPath(local))),
+            "Old v1 subscriptions export with the default interval without rewriting or enabling their schedules");
+        using var plan=await service.PrepareRestoreAsync(archive,new(),[],BackupSubscriptionsPolicy.Merge,None);await service.RestoreAsync(plan,None);
+        Require(new SubscriptionStore(Path.GetDirectoryName(local.SessionPath)!).Read().Subscriptions.Single(source=>source.Id=="old") is {ScheduleEnabled:false,ScheduleIntervalMinutes:30},
+            "Restoring alongside a legacy source preserves its opt-out/default interval");
+    }
+
+    private static async Task ReplaceQueueProvenance(string root)
+    {
+        const string oldUrl="https://provenance.invalid/old",newUrl="https://provenance.invalid/new",sameUrl="https://provenance.invalid/same";
+        var imported=NewProfile(root,"provenance-export");imported.Save([],new());
+        WriteSubscriptions(imported,[Source("occupied",newUrl),Source("remote-same",sameUrl),Source("queue-only","https://provenance.invalid/queue-new")],
+            [Item("occupied","https://provenance.invalid/new-item"),Item("remote-same","https://provenance.invalid/same-item"),
+                new SubscriptionItem{SubscriptionId="queue-only",Url="https://provenance.invalid/duplicate",Title="Duplicate",State="AlreadyProcessed",DuplicateSubscriptionId="occupied"}]);
+        var archive=await new WindowsProfileBackup(imported).CreateAsync(new(),None);
+        var local=NewProfile(root,"provenance-restore");string mediaRoot=Path.Combine(root,"provenance-media");Directory.CreateDirectory(mediaRoot);
+        string media=Path.Combine(mediaRoot,"keep.mp4");File.WriteAllText(media,"OWNED MEDIA");
+        DownloadItem[] queue=[new(){Url="https://provenance.invalid/old-job",SubscriptionId="occupied",SubscriptionName="Old",Status="Completed",Path=media,OutputRoot=mediaRoot,OwnedPaths=[media]},
+            new(){Url="https://provenance.invalid/same-job",SubscriptionId="local-same",SubscriptionName="Same"},
+            new(){Url="https://provenance.invalid/orphan-job",SubscriptionId="queue-only",SubscriptionName="Orphan"}];
+        var options=new DownloadOptions{Output=mediaRoot};local.Save(queue,options);
+        WriteSubscriptions(local,[Source("occupied",oldUrl),Source("local-same",sameUrl)],[]);
+        string originalQueue=JsonNode.Parse(File.ReadAllBytes(local.SessionPath))!["Queue"]!.ToJsonString();
+        var service=new WindowsProfileBackup(local);using var plan=await service.PrepareRestoreAsync(archive,options,queue,BackupSubscriptionsPolicy.Replace,None);
+        Require(plan.Summary is {AddedSources:3,AddedItems:3,ReplacedSources:2},"Replace preview counts definitions while preserving local queue provenance");
+        await service.RestoreAsync(plan,None);
+        var snapshot=new SubscriptionStore(Path.GetDirectoryName(local.SessionPath)!).Read();
+        string newId=snapshot.Subscriptions.Single(source=>source.Url==newUrl).Id;
+        string orphanId=snapshot.Subscriptions.Single(source=>source.Url=="https://provenance.invalid/queue-new").Id;
+        Require(newId!="occupied" && orphanId!="queue-only" && snapshot.Subscriptions.Single(source=>source.Url==sameUrl).Id=="local-same",
+            "Replace reserves displaced and queue-only IDs, while an exact local source URL retains its current identity");
+        Require(snapshot.Items.Single(item=>item.Url=="https://provenance.invalid/new-item").SubscriptionId==newId &&
+            snapshot.Items.Single(item=>item.Url=="https://provenance.invalid/same-item").SubscriptionId=="local-same" &&
+            snapshot.Items.Single(item=>item.Url=="https://provenance.invalid/duplicate") is {} duplicate &&
+            duplicate.SubscriptionId==orphanId && duplicate.DuplicateSubscriptionId==newId,
+            "Imported materials and duplicate provenance follow the remapped identities without falsely attributing local queue rows");
+        Require(JsonNode.Parse(File.ReadAllBytes(local.SessionPath))!["Queue"]!.ToJsonString()==originalQueue && File.ReadAllText(media)=="OWNED MEDIA",
+            "Replace never rewrites queue bytes, file ownership or physical local media to resolve subscription collisions");
     }
 
     private static async Task RollbackAndLiveOwner(string root,ProfileBackupArchive archive)
@@ -236,6 +338,9 @@ internal static class ProfileBackupTests
             {
                 var watch=Stopwatch.StartNew();while(!File.Exists(ready) && !process.HasExited && watch.Elapsed<TimeSpan.FromSeconds(12))await Task.Delay(20);
                 Require(File.Exists(ready),"Actual crash child reaches its durable publication latch: "+(process.HasExited?await process.StandardError.ReadToEndAsync():phase));
+                var construction=Stopwatch.StartNew();var liveObserver=new AppPersistence(directory);
+                Require(construction.Elapsed<TimeSpan.FromSeconds(2) && new WindowsProfileBackup(liveObserver).RecoveryRequired,
+                    "A secondary process can construct persistence for IPC forwarding without rolling back its live transaction owner");
             }
             finally{if(!process.HasExited)process.Kill(true);await process.WaitForExitAsync();}
             Require(File.Exists(Path.Combine(directory,".profile-restore.json")),"A killed writer leaves its durable recovery pointer");
@@ -323,6 +428,13 @@ internal static class ProfileBackupTests
     private static AppPersistence NewProfile(string root,string name)=>new(Path.Combine(root,name));
     private static string SubscriptionPath(AppPersistence storage)=>Path.Combine(Path.GetDirectoryName(storage.SessionPath)!,"subscriptions.json");
     private static SubscriptionDefinition Source(string id,string url)=>new(){Id=id,Url=url,Title="Source",Initialized=true};
+    private static SubscriptionDefinition ScheduledSource(string id,string url,int minutes)=>new(){Id=id,Url=url,Title="Source",Initialized=true,ScheduleEnabled=true,ScheduleIntervalMinutes=minutes};
+    private sealed class BackupClock:TimeProvider
+    {
+        private DateTimeOffset _now=DateTimeOffset.Parse("2026-01-01T00:00:00Z");
+        public override DateTimeOffset GetUtcNow()=>_now;
+        internal void Advance(TimeSpan span)=>_now+=span;
+    }
     private static SubscriptionItem Item(string id,string url,string state="New")=>new(){SubscriptionId=id,Url=url,Title="Video",State=state};
     private static void WriteSubscriptions(AppPersistence storage,SubscriptionDefinition[] sources,SubscriptionItem[] items)=>
         File.WriteAllText(SubscriptionPath(storage),JsonSerializer.Serialize(new SubscriptionSnapshot{Subscriptions=sources.ToList(),Items=items.ToList()}));
