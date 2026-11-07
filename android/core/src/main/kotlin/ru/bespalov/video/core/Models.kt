@@ -55,6 +55,8 @@ data class DownloadTask(
     val pendingRemoval: Boolean = false,
     val settingsSnapshot: Settings? = null,
     val archiveDate: String = "",
+    @Serializable(with = PrimaryOutputUriSerializer::class)
+    val primaryOutputUri: String = "",
 )
 
 @Serializable
@@ -95,6 +97,8 @@ data class SuccessRecord(
     val completedAtUtc: Long = System.currentTimeMillis(),
     val subscriptionId: String = "",
     val outputUris: List<String> = emptyList(),
+    @Serializable(with = PrimaryOutputUriSerializer::class)
+    val primaryOutputUri: String = "",
 )
 
 @Serializable
