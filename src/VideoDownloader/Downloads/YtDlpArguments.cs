@@ -42,7 +42,7 @@ internal sealed class YtDlpArguments(DownloadOptions options)
         if (options.Sponsor) args.AddRange(["--sponsorblock-remove","sponsor"]);
         if(selection?.IsPartial==true)
         {
-            foreach(var section in selection.EffectiveSections)args.AddRange(["--download-sections",section.Argument]);
+            foreach(var section in selection.EffectiveSections)args.AddRange(["--download-sections",selection.SectionArgument(section)]);
             args.Add("--force-keyframes-at-cuts");
         }
         if (format!=null) args.AddRange(["-f",format]);

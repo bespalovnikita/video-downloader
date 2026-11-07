@@ -75,7 +75,6 @@ public sealed record DownloadSection(double StartSeconds,double EndSeconds)
         return hours.ToString("00",CultureInfo.InvariantCulture)+":"+((int)(seconds/60)%60).ToString("00",CultureInfo.InvariantCulture)+":"+
             (seconds%60).ToString("00.###",CultureInfo.InvariantCulture);
     }
-    internal string Argument=>"*"+StartSeconds.ToString("0.###",CultureInfo.InvariantCulture)+"-"+EndSeconds.ToString("0.###",CultureInfo.InvariantCulture);
 }
 
 /// <summary>Immutable per-row selection. The exact URL binds format IDs to the metadata that supplied them.</summary>
@@ -88,6 +87,20 @@ public sealed record DownloadSelection(string Url,DownloadSection? Section=null,
     // String IDs keep previous snapshots readable and reject unknown modes.
     public string FragmentOutputMode { get; init; }="Separate";
     public bool AllowMergeReencode { get; init; }
+    // An automatic pick can use a frame grid only when the video's catalogue
+    // reports one common FPS. Missing in legacy snapshots means no inferred grid.
+    [JsonIgnore(Condition=JsonIgnoreCondition.WhenWritingNull)] public double? FrameRate { get; init; }
+    [JsonIgnore] internal double? EffectiveFrameRate=>Format is {HasVideo:true} video && FragmentTimelineTiming.KnownFps(video.Fps)
+        ?video.Fps:Format is null?FrameRate:null;
+    internal (double Start,double End) SectionBounds(DownloadSection section)=>
+        (FragmentTimelineTiming.Boundary(section.StartSeconds,EffectiveFrameRate,DurationSeconds),
+            FragmentTimelineTiming.Boundary(section.EndSeconds,EffectiveFrameRate,DurationSeconds));
+    internal string SectionArgument(DownloadSection section)
+    {
+        var bounds=SectionBounds(section);
+        return "*"+bounds.Start.ToString("0.#########",CultureInfo.InvariantCulture)+"-"+
+            bounds.End.ToString("0.#########",CultureInfo.InvariantCulture);
+    }
     [JsonIgnore] public bool IsMerged=>FragmentOutputMode=="Merged";
     [JsonIgnore] public IReadOnlyList<DownloadSection> EffectiveSections=>Sections is not null?Sections:Section is {} single?new[]{single}:Array.Empty<DownloadSection>();
     [JsonIgnore] public bool IsPartial=>Sections is not null || Section is not null;
@@ -117,6 +130,9 @@ public sealed record DownloadSelection(string Url,DownloadSection? Section=null,
     }
     internal void ValidatePersisted(string url)
     {
+        if(FrameRate is {} fps && (!FragmentTimelineTiming.KnownFps(fps) ||
+            Format is not null && (!Format.HasVideo || Format.Fps!=fps)))
+            throw new ArgumentException("Некорректная частота кадров сохранённого выбора.");
         if(FragmentOutputMode is not ("Separate" or "Merged") || AllowMergeReencode && !IsMerged)
             throw new ArgumentException("Некорректный режим сохранения фрагментов.");
         if(!AppPersistence.ValidUrl(Url) || !string.Equals(Url,url,StringComparison.Ordinal))

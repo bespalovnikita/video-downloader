@@ -33,6 +33,7 @@ await DownloadSelectionTests.RunAsync();
 await DownloadSelectionTests.RunNativeMediaAsync();
 await SubtitleTimelineTests.RunAsync();
 FragmentTimelineTests.Run();
+await FragmentFrameConsistencyTests.RunAsync();
 await FragmentMergeTests.RunAsync();
 await MultipleFragmentTests.RunAsync();
 await MediaFrameProxyTests.RunAsync();

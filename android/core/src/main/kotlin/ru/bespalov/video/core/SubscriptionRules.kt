@@ -115,17 +115,18 @@ object SubscriptionRules {
     }
 
     fun recordSuccess(state: AppState, taskId: String, outputUris: List<String>, title: String? = null,
-        now: Long = System.currentTimeMillis()): AppState {
+        now: Long = System.currentTimeMillis(), primaryOutputUri: String = ""): AppState {
         val task = state.queue.singleOrNull { it.id == taskId } ?: error("Задание не найдено.")
         require(outputUris.isNotEmpty() && outputUris.all { it.isNotBlank() }) { "Успех требует опубликованного медиафайла." }
+        require(primaryOutputUri.isEmpty() || primaryOutputUri in outputUris) { "Основной файл должен входить в опубликованные результаты." }
         check(!task.pendingRemoval && task.status !in setOf(DownloadStatus.CANCELLING, DownloadStatus.CLEANUP_REQUIRED, DownloadStatus.PAUSED)) {
             "Отмена или очистка задания имеет приоритет перед успехом."
         }
         val changed = state.copy(queue = state.queue.map {
             if (it.id == taskId) it.copy(status = DownloadStatus.COMPLETED, progress = 100f,
-                title = title?.takeIf(String::isNotBlank) ?: it.title, outputUris = outputUris,
+                title = title?.takeIf(String::isNotBlank) ?: it.title, outputUris = outputUris, primaryOutputUri = primaryOutputUri,
                 rawError = "", speed = "", eta = "", runId = "", stageDirectory = "") else it
-        }, history = state.history + SuccessRecord(task.url, now, task.subscriptionId, outputUris))
+        }, history = state.history + SuccessRecord(task.url, now, task.subscriptionId, outputUris, primaryOutputUri))
         return reconcileSuccess(changed)
     }
 
