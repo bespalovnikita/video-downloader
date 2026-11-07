@@ -20,6 +20,7 @@ public sealed partial class NativeWindow : IDisposable
 {
     private readonly Window _window;
     private readonly QueueSessionController _queueSession=new();
+    private readonly DownloadsViewController _downloadsView;
     private readonly AppPersistence _storage;
     private readonly PreviewController _preview;
     private readonly PanelLayoutController _panelLayout;
@@ -65,7 +66,7 @@ public sealed partial class NativeWindow : IDisposable
         _ytDlp=ytDlpExecutable;
         _journal=new DiagnosticJournal(Path.Combine(Path.GetDirectoryName(_storage.SessionPath)!,"logs"));
         Q.ItemsSource=SessionState.Queue;
-        D.ItemsSource=SessionState.Downloads;
+        _downloadsView=new DownloadsViewController(D,SessionState.Downloads);
         foreach(var (control,values) in new (string,string[])[]{
             ("QualityCombo",["Best","2160","1440","1080","720"]),
             ("CodecCombo",["Auto","H264","VP9","AV1"]),
@@ -190,7 +191,7 @@ public sealed partial class NativeWindow : IDisposable
             T("HeaderStatus").Text="● Ready";
             T("HeaderStatus").Foreground=Brushes.LightGray;
         }
-        if(metrics.ActiveChanged) { RefreshQueueView(); D.Items.Refresh(); }
+        if(metrics.ActiveChanged) RefreshQueueView();
         _queueFilters?.RefreshSummary();
         RefreshQueueFilterActions();
         RefreshMediaSelectionState();

@@ -78,6 +78,8 @@ internal sealed partial class UiScenario
             UiScenario.TestDiskSpaceControls(root);
             Stage("testing completed queue playback and finished session clock");
             UiScenario.TestQueuePlaybackAndTimer(root);
+            Stage("testing active-first Downloads, background row transitions and preserved manual sorting/selection");
+            UiScenario.TestDownloadsActiveFirst(root);
             Stage("testing queue search/status/subscription views and scoped actions while active");
             UiScenario.TestQueueFilters(root);
             Stage("testing duplicate-history dialog choices");

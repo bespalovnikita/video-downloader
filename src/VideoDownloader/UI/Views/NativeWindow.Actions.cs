@@ -327,6 +327,7 @@ public sealed partial class NativeWindow
         FlushJournal();
         _disposed=true;
         _queueFilters?.Dispose();
+        _downloadsView.Dispose();
         DisposeDiskSpace();
         DisposeMediaSelection();
         DisposeHistory();

@@ -83,6 +83,7 @@ dotnet run --no-build --configuration Release --project tests/VideoDownloader.Te
 
 | Поведение | Основные тесты |
 | --- | --- |
+| Активные загрузки сверху: живые переходы статусов, пауза, ручная сортировка, выделение и неизменность исходных коллекций | [DownloadsActiveFirstUiTests](../../tests/VideoDownloader.UiTests/DownloadsActiveFirstUiTests.cs), [реальный fast/slow coordinator](../../tests/VideoDownloader.UiTests/QueuePlaybackAndTimerUiTests.cs) |
 | Аргументы yt-dlp, обработка процесса, финальный файл и отмена | [NativeContractTests](../../tests/VideoDownloader.Tests/NativeContractTests.cs), [LifecycleRegressionTests](../../tests/VideoDownloader.Tests/LifecycleRegressionTests.cs), [ReviewRegressionTests](../../tests/VideoDownloader.Tests/ReviewRegressionTests.cs) |
 | Языки звука, оригинальная дорожка, отсутствие подстановки и настройки UI | [AudioTrackSelectionTests](../../tests/VideoDownloader.Tests/AudioTrackSelectionTests.cs), [AudioTrackUiTests](../../tests/VideoDownloader.UiTests/AudioTrackUiTests.cs) |
 | Диапазон времени, каталог реальных форматов, снимок попытки, строгие ID и временные повторы | [DownloadSelectionTests](../../tests/VideoDownloader.Tests/DownloadSelectionTests.cs) |
