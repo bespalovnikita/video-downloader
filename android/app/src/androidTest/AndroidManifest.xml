@@ -20,5 +20,19 @@
                 android:readPermission="ru.bespalov.videodownloader.test.permission.CLEANUP_DOCUMENTS"
                 android:writePermission="ru.bespalov.videodownloader.test.permission.CLEANUP_DOCUMENTS" />
         </provider>
+        <!-- Plain ContentProvider implements the fixture's SAF calls. Document
+             paths require explicit URI grants; /control stays independently accessible. -->
+        <provider
+            android:name="ru.bespalov.videodownloader.OutputDocumentsProvider"
+            android:authorities="ru.bespalov.videodownloader.test.outputs"
+            android:exported="true"
+            android:grantUriPermissions="true">
+            <path-permission android:pathPrefix="/tree/"
+                android:readPermission="ru.bespalov.videodownloader.test.permission.CLEANUP_DOCUMENTS"
+                android:writePermission="ru.bespalov.videodownloader.test.permission.CLEANUP_DOCUMENTS" />
+            <path-permission android:pathPrefix="/document/"
+                android:readPermission="ru.bespalov.videodownloader.test.permission.CLEANUP_DOCUMENTS"
+                android:writePermission="ru.bespalov.videodownloader.test.permission.CLEANUP_DOCUMENTS" />
+        </provider>
     </application>
 </manifest>
