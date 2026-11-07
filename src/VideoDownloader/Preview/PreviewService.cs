@@ -78,7 +78,7 @@ public sealed partial class PreviewService : IDisposable
     public PreviewData? Get(string url)
     {
         if(Volatile.Read(ref _disposed)!=0)return null;
-        if(Peek(url) is {} cached)return cached;
+        if(Peek(url) is {} cached)return CachedResult(cached);
         string path=CacheFile(url);
         if (!File.Exists(path)) return null;
         try
@@ -114,13 +114,16 @@ public sealed partial class PreviewService : IDisposable
                 }
                 CacheInMemory(entry);_thumbnailErrors[url]=Str(root,"ThumbnailError");
                 _fetchVersions[url]=validImages && root.TryGetProperty("PreviewFetchVersion",out var storedVersion) && storedVersion.TryGetInt32(out int versionNumber)?versionNumber:0;
-                return entry;
+                return CachedResult(entry);
             }
         }
         catch(Exception error) { Log("Preview cache unavailable for "+DiagnosticField(url)+": stage=cache_read "+ErrorDetails(error)); }
         try { File.Delete(path); } catch(IOException){} catch(UnauthorizedAccessException){}
         return null;
     }
+    // Preserve Get's retry signal after installation without evicting the
+    // known metadata needed by a failed refresh or a later local image merge.
+    private PreviewData? CachedResult(PreviewData data)=>data.ThumbnailBase64.Length==0 && ThumbnailConverterRetry(data)?null:data;
     private bool ValidGallery(PreviewData entry)
     {
         if(entry.ThumbnailsBase64 is null || entry.ThumbnailsBase64.Length>MaxImages)return false;
