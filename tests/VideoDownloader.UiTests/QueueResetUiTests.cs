@@ -33,6 +33,7 @@ internal sealed partial class UiScenario
             ResetSelectedOwnedFiles(Path.Combine(root,"selected"),fixture);
             ResetQueuedMetadataCallback(Path.Combine(root,"queued-metadata"),fixture);
             ResetActiveAttempt(Path.Combine(root,"active"),fixture);
+            ResetRejectsIncompatibleActivePlan(Path.Combine(root,"active-plan-refusal"),fixture);
             ResetProtectedOwnedFile(Path.Combine(root,"protected"),fixture);
             Console.WriteLine("PASS: guarded selected reset, No/Yes confirmation, exact owned deletion, fresh metadata and stale Dispatcher rejection, same-engine native restart/child join and protected-file recovery");
         }
@@ -235,6 +236,77 @@ internal sealed partial class UiScenario
         ResetUi.Require(File.Exists(row.Path) && File.Exists(keeper.Path) && row.CompletedSelection==selection &&
             !ui.Data.ReadHistory().ContainsKey(row.Url) && ui.Data.ReadHistory().ContainsKey(keeper.Url),
             "Fresh partial success must retain the selected fragment without recording the cancelled attempt or a false full-URL success.");
+    }
+
+    private static void ResetRejectsIncompatibleActivePlan(string root,string fixture)
+    {
+        using var ui=new ResetUi(root,fixture,new DownloadOptions{Output=Path.Combine(root,"output"),Threads="1",Container="WebM"});
+        string original=Path.Combine(root,"previous-output");Directory.CreateDirectory(original);
+        string compatibleFile=Path.Combine(original,"compatible.webm"),manualFile=Path.Combine(original,"manual.mp4"),
+            foreign=Path.Combine(original,"unowned.mp4");
+        File.WriteAllText(compatibleFile,"compatible completed sentinel");File.WriteAllText(manualFile,"manual completed sentinel");
+        File.WriteAllText(foreign,"foreign completed sentinel");
+        var keeper=new DownloadItem{Url="https://startup-download.invalid/reset-plan-keeper-timer-slow"};
+        // The first selected row is compatible with both settings snapshots.
+        // Validating and deleting per row would already destroy it before the
+        // second selected row reveals the active WebM incompatibility.
+        var compatible=new DownloadItem{Url="https://startup-download.invalid/reset-compatible-completed",Status="Completed",State="Done",
+            Progress=100,AttemptFinished=true,Path=compatibleFile,OwnedPaths=[compatibleFile],OutputRoot=original};
+        var manual=new DownloadItem{Url="https://startup-download.invalid/reset-incompatible-completed",Status="Completed",State="Done",
+            Progress=100,AttemptFinished=true,Path=manualFile,OwnedPaths=[manualFile],OutputRoot=original};
+        var selection=new DownloadSelection(manual.Url,Format:new MediaFormat("18","mp4",640,360,30,
+            "avc1.640028","mp4a.40.2","en",1024,false));
+        manual.Selection=selection;manual.CompletedSelection=selection;
+        ui.Subject.SessionState.AddBatch([keeper,compatible,manual],ui.Subject.ReadOptions());ui.Subject.Reindex();
+        var metadata=new HashSet<string>(StringComparer.Ordinal);
+        ui.Subject.Preview.Changed+=(data,final)=>{if(final)metadata.Add(data.Url);};
+        ui.Subject.Preview.RequestRow(compatible);ui.Subject.Preview.RequestRow(manual);
+        ResetUi.Until(()=>metadata.Contains(compatible.Url) && metadata.Contains(manual.Url) &&
+            File.Exists(ui.Cache(compatible.Url)) && File.Exists(ui.Cache(manual.Url)),
+            "Both completed results must have durable metadata before active-plan refusal is tested.");
+        ui.Data.AppendSuccess("https://startup-download.invalid/reset-plan-history-sentinel");
+        byte[] history=File.ReadAllBytes(ui.Data.HistoryPath),compatibleCache=File.ReadAllBytes(ui.Cache(compatible.Url)),
+            manualCache=File.ReadAllBytes(ui.Cache(manual.Url));
+        var compatibleMetadata=ui.Subject.Preview.GetCached(compatible.Url);var manualMetadata=ui.Subject.Preview.GetCached(manual.Url);
+        string gate=Path.Combine(root,"keeper-gate");Environment.SetEnvironmentVariable("VD_NATIVE_SESSION_TIMER_GATE",gate);
+        ui.Click("StartButton");
+        ResetUi.Until(()=>keeper.Status=="Running" && ResetUi.Pid(gate)>0,"The WebM session must own its real keeper child before Reset.");
+        var engine=ui.Subject.SessionState.Coordinator;int keeperPid=ResetUi.Pid(gate);string keeperStage=keeper.StageDir;
+        // UI changes must not replace the already pinned active-session plan.
+        // A preflight against these newer MP4 controls would miss the defect.
+        ui.Subject.ApplyOptions(new DownloadOptions{Output=Path.Combine(root,"output"),Threads="1",Container="MP4"});
+        ResetUi.Require(ui.Subject.SessionState.Options.Container=="WebM" && ui.Subject.ReadOptions().Container=="MP4" &&
+            selection.TryValidate(manual.Url,ui.Subject.ReadOptions(),out _) &&
+            !selection.TryValidate(manual.Url,ui.Subject.SessionState.Options,out _),
+            "The fixture must be compatible with current controls and incompatible only with the actual active plan.");
+        ResetUi.Select(ui.Control<DataGrid>("QueueGrid"),compatible,manual);
+        int warnings=0;uint thread=GetCurrentThreadId();
+        var responder=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(20)};
+        responder.Tick+=(_,_)=>{if(DismissDialog(thread,ErrorMessages.Text("Операция с очередью не завершена","Queue operation did not finish"),1))warnings++;};
+        responder.Start();
+        try
+        {
+            ResetUi.Confirm(6,()=>ui.Click("ResetQueueItemsButton"));
+            ResetUi.Until(()=>warnings>0 && !ui.Busy,"Incompatible active settings must produce an explicit preflight refusal.");
+            ResetUi.Require(ReferenceEquals(engine,ui.Subject.SessionState.Coordinator) && engine!.Outstanding==1 && engine.IsPending(keeper) &&
+                keeper.Status=="Running" && keeper.StageDir==keeperStage && ResetUi.Alive(keeperPid) &&
+                ui.Subject.SessionState.Queue.Contains(compatible) && ui.Subject.SessionState.Queue.Contains(manual) &&
+                compatible.Status=="Completed" && manual.Status=="Completed" && compatible.Path==compatibleFile && manual.Path==manualFile &&
+                compatible.OwnedPaths.SequenceEqual(new[]{compatibleFile}) && manual.OwnedPaths.SequenceEqual(new[]{manualFile}) &&
+                compatible.CleanupPaths.Count==0 && manual.CleanupPaths.Count==0 && !compatible.PendingRemoval && !manual.PendingRemoval &&
+                compatible.ResumeState is null && manual.ResumeState is null && compatible.StageDir.Length==0 && manual.StageDir.Length==0 &&
+                ReferenceEquals(manual.Selection,selection) && ReferenceEquals(manual.CompletedSelection,selection),
+                "Batch preflight must refuse before cancelling any worker, resetting any compatible earlier row or creating another native attempt.");
+            ResetUi.Require(File.ReadAllText(compatibleFile)=="compatible completed sentinel" && File.ReadAllText(manualFile)=="manual completed sentinel" &&
+                File.ReadAllText(foreign)=="foreign completed sentinel" && ReferenceEquals(compatibleMetadata,ui.Subject.Preview.GetCached(compatible.Url)) &&
+                ReferenceEquals(manualMetadata,ui.Subject.Preview.GetCached(manual.Url)) &&
+                File.ReadAllBytes(ui.Cache(compatible.Url)).SequenceEqual(compatibleCache) && File.ReadAllBytes(ui.Cache(manual.Url)).SequenceEqual(manualCache) &&
+                File.ReadAllBytes(ui.Data.HistoryPath).SequenceEqual(history),
+                "The refused reset must preserve all old owned/unowned bytes, exact metadata caches and successful history.");
+        }
+        finally{responder.Stop();}
+        // Dispose cancels the keeper; no release is needed to prove admission
+        // refusal, and no fake container output is published by this scenario.
     }
 
     private static void ResetProtectedOwnedFile(string root,string fixture)
