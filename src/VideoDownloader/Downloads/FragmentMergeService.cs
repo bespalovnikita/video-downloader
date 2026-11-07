@@ -85,7 +85,7 @@ internal sealed partial class FragmentMergeService
             if(!File.Exists(destination) || new FileInfo(destination).Length==0)throw FragmentMediaProbe.Invalid("FFmpeg did not create a merged media file.");
             var result=await ProbeAsync(destination,budget.Token).ConfigureAwait(false);ValidateMedia(result);
             double expected=inputs.Sum(item=>item.Duration);
-            string expectedDemuxer=encoding.Muxer switch{"mp4" or "mov" or "3gp"=>"mov","webm"=>"matroska","adts"=>"aac",_=>encoding.Muxer};
+            string expectedDemuxer=encoding.Muxer switch{"mp4" or "mov" or "3gp"=>"mov","webm"=>"matroska","opus"=>"ogg","adts"=>"aac",_=>encoding.Muxer};
             if(result.Demuxer!=expectedDemuxer || !SameTrackShape(original[0],result) || !SameAudioChannels(original[0],result) || original[0].Cover is not null && result.Cover is null ||
                 Math.Abs(result.Duration-expected)>Math.Max(.35,inputs.Length*.03))
                 throw FragmentMediaProbe.Invalid($"Merged media did not preserve all tracks and the full ordered duration (container {result.Demuxer}/{expectedDemuxer}; audio languages {string.Join(",",result.Audio.Select(track=>track.Language))}/{string.Join(",",original[0].Audio.Select(track=>track.Language))}; duration {Number(result.Duration)}/{Number(expected)}).");
