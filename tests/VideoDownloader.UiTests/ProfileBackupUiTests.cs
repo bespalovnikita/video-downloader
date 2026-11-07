@@ -150,8 +150,10 @@ internal sealed partial class UiScenario
             Require(watch.Elapsed<TimeSpan.FromMilliseconds(250),"SaveCheckpoint must skip the held profile mutex instead of blocking the WPF dispatcher.");
             const string deferredFirst="https://backup-ui.invalid/late-ipc",deferredCase="https://backup-ui.invalid/Case?v=AbC";
             string deferredFile=Path.Combine(root,"deferred-input.txt");File.WriteAllText(deferredFile,"https://backup-ui.invalid/deferred-file");
-            subject.ReceiveArguments([deferredFirst,deferredCase,"https://backup-ui.invalid/case?v=AbC"]);
+            subject.ReceiveArguments([deferredFirst,deferredCase,"https://backup-ui.invalid/case?v=AbC",
+                "https://backup-ui.invalid/queue.vdqueue","https://backup-ui.invalid/watch?v=queue.vdqueue"]);
             subject.ReceiveArguments([deferredFirst,deferredFile,PortableQueueCodec.Encode([new("https://backup-ui.invalid/deferred-portable","Deferred portable")])]);
+            subject.ReceiveArguments(["videodownloader://"+Uri.EscapeDataString("https://backup-ui.invalid/protocol.vdqueue")]);
             subject.AddUrls(["https://backup-ui.invalid/late-add"]);
             subject.Preview.ReceiveReady(new(queued.Url,"late metadata must not rewrite row","","",1,"",0,0,"","","",DateTime.UtcNow));
             subject.Input.PollClipboard();subject.ImportPortableTextAsync(PortableQueueCodec.Encode([new("https://backup-ui.invalid/late-portable","")])).GetAwaiter().GetResult();
@@ -163,9 +165,10 @@ internal sealed partial class UiScenario
             held.Release();PumpUntil(()=>!current.IsBusy,"The real restore did not complete after its checkpoint was released.");
             Require(Status(current).Contains("восстановлен",StringComparison.Ordinal) && !subject.ProfileBackupBusy,"Successful restore must re-enable the main window.");
             Require(subject.SessionState.Queue.Select(row=>row.Url).SequenceEqual(new[]{completed.Url,queued.Url,deferredFirst,deferredCase,"https://backup-ui.invalid/case?v=AbC",
-                "https://backup-ui.invalid/deferred-file","https://backup-ui.invalid/deferred-portable"}) &&
+                "https://backup-ui.invalid/queue.vdqueue","https://backup-ui.invalid/watch?v=queue.vdqueue",
+                "https://backup-ui.invalid/deferred-file","https://backup-ui.invalid/deferred-portable","https://backup-ui.invalid/protocol.vdqueue"}) &&
                 storage.Restore()!.Queue.Select(row=>row.Url).SequenceEqual(subject.SessionState.Queue.Select(row=>row.Url)) && subject.SessionState.Coordinator is null,
-                "Deferred original IPC groups must replay once, in order with exact URL dedup, ordinary file/portable ingress and a saved checkpoint after restore.");
+                "Deferred IPC must replay once in exact order; HTTP/query/protocol URLs ending .vdqueue stay ordinary URLs, files use normal imports, and the saved queue never auto-starts.");
             queueBefore=JsonSerializer.Serialize(subject.SessionState.Queue,AppPersistence.Json);
             var restored=subject.ReadOptions();var local=localStore.Read();
             Require(restored.Quality=="1080" && restored.Codec=="H264" && restored.Output==localOutput && restored.Cookies==localCookies && restored.WatchClipboard &&
