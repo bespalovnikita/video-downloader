@@ -414,6 +414,15 @@
 
                     <DockPanel Grid.Row="0">
                         <TextBlock Text="Очередь" Style="{StaticResource SectionTitle}" DockPanel.Dock="Left"/>
+                        <Button x:Name="ToggleQueueFiltersButton" DockPanel.Dock="Right" Margin="8,0,0,4"
+                                Padding="6,3" MinWidth="30" AutomationProperties.Name="Показать поиск и фильтры очереди"
+                                ToolTip="Показать поиск и фильтры очереди · Ctrl+F">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="&#xE721;" FontFamily="Segoe MDL2 Assets" FontSize="13" VerticalAlignment="Center"/>
+                                <TextBlock x:Name="QueueActiveFiltersBadge" Margin="5,0,0,0" FontWeight="SemiBold"
+                                           VerticalAlignment="Center" Visibility="Collapsed"/>
+                            </StackPanel>
+                        </Button>
                         <TextBlock x:Name="QueueCount" Text="0 ссылок" Foreground="{StaticResource MutedBrush}" HorizontalAlignment="Right"/>
                     </DockPanel>
 
@@ -445,6 +454,7 @@
                     <StackPanel Grid.Row="3" Margin="0,0,0,8">
                         <TextBlock x:Name="MainSubscriptionScheduleStatusText" Text="Проверки по расписанию выключены."
                                    TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" FontSize="11" Margin="0,0,0,6"/>
+                        <StackPanel x:Name="QueueFilterPanel" Visibility="Collapsed">
                         <DockPanel Margin="0,0,0,4">
                             <Button x:Name="ResetQueueFiltersButton" Content="Сбросить фильтры" DockPanel.Dock="Right" Padding="7,3"/>
                             <TextBlock Text="Поиск в очереди" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}"/>
@@ -460,6 +470,7 @@
                                       AutomationProperties.Name="Подписка очереди" ToolTip="Фильтр по подписке, закреплённой за заданием"/>
                         </Grid>
                         <TextBlock x:Name="QueueFilterScopeHint" Style="{StaticResource MutedText}" TextWrapping="Wrap"/>
+                        </StackPanel>
                     </StackPanel>
 
                     <Grid Grid.Row="4">

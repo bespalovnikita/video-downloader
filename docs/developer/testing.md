@@ -109,7 +109,7 @@ dotnet run --no-build --configuration Release --project tests/VideoDownloader.Te
 | Стабильный Release, SHA-256 ZIP, отмена тела HTTP-ответа, таймаут и ожидание исходного процесса | [AppUpdateClientTests](../../tests/VideoDownloader.Tests/AppUpdateClientTests.cs) |
 | Владение файлами пакета, чужие коллизии, ZIP traversal, откат и восстановление после убийства установщика | [AppUpdateInstallerTests](../../tests/VideoDownloader.Tests/AppUpdateInstallerTests.cs) |
 | Настоящие кнопки обновления, занятость, повторная проверка очистки перед handoff и отмена при Dispose | [AppUpdateUiTests](../../tests/VideoDownloader.UiTests/AppUpdateUiTests.cs) |
-| Поиск очереди, статусы и подписки, URL identity, сохранность списка фрагментов/готовых файлов, видимое выделение и глобальные действия | [QueueFilterUiTests](../../tests/VideoDownloader.UiTests/QueueFilterUiTests.cs) |
+| Свёрнутая панель поиска, освобождение места, индикатор активных фильтров и сохранение условий, статусы/подписки, URL identity, сохранность фрагментов/готовых файлов, видимое выделение и глобальные действия | [QueueFilterUiTests](../../tests/VideoDownloader.UiTests/QueueFilterUiTests.cs) |
 | Атомарная замена checkpoint, временные и постоянные Windows-блокировки | [AtomicWriteTests](../../tests/VideoDownloader.Tests/AtomicWriteTests.cs) |
 | Чтение старых checkpoint и результатов | [LegacyCompatibilityTests](../../tests/VideoDownloader.Tests/LegacyCompatibilityTests.cs), [legacy fixtures](../../tests/fixtures/legacy/) |
 | Источники, окно новинок, полный fallback, RSS и состояния | [SubscriptionScannerTests](../../tests/VideoDownloader.Tests/SubscriptionScannerTests.cs), [SubscriptionStoreTests](../../tests/VideoDownloader.Tests/SubscriptionStoreTests.cs) |

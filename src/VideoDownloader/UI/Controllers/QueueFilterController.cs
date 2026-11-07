@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Windows;
+using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Data;
 using System.Windows.Input;
@@ -21,6 +22,9 @@ internal sealed class QueueFilterController:IDisposable
     private readonly ComboBox _status,_subscription;
     private readonly Button _reset;
     private readonly TextBlock _count,_empty,_scope;
+    private readonly FrameworkElement? _panel;
+    private readonly Button? _toggle;
+    private readonly TextBlock? _badge;
     private readonly Action _changed;
     private readonly ListCollectionView _view;
     private readonly DispatcherTimer _refresh=new(){Interval=TimeSpan.FromMilliseconds(120)};
@@ -28,18 +32,22 @@ internal sealed class QueueFilterController:IDisposable
     private bool _updatingChoices,_choicesDirty=true,_disposed;
     private string _text="";
     private string? _statusId,_subscriptionId;
+    private bool _expanded;
 
     internal bool IsRefreshing {get;private set;}
     internal bool IsFiltering=>_text.Length>0 || _statusId is not null || _subscriptionId is not null;
+    internal bool IsExpanded=>_expanded;
+    internal int ActiveFilterCount=>(_text.Length>0?1:0)+(_statusId is not null?1:0)+(_subscriptionId is not null?1:0);
     internal int VisibleCount=>_view.Count;
     internal bool HasSelection=>_grid.SelectedItems.Cast<DownloadItem>().Any(IncludesRow);
 
     internal QueueFilterController(Window window,DataGrid grid,ObservableCollection<DownloadItem> rows,
         TextBox query,ComboBox status,ComboBox subscription,Button reset,TextBlock count,
-        TextBlock empty,TextBlock scope,Action changed)
+        TextBlock empty,TextBlock scope,Action changed,FrameworkElement? panel=null,Button? toggle=null,TextBlock? badge=null)
     {
         _window=window;_grid=grid;_rows=rows;_query=query;_status=status;_subscription=subscription;
         _reset=reset;_count=count;_empty=empty;_scope=scope;_changed=changed;
+        _panel=panel;_toggle=toggle;_badge=badge;
         _view=new ListCollectionView(rows){Filter=Includes};
         _grid.IsSynchronizedWithCurrentItem=false;
         _grid.ItemsSource=_view;
@@ -50,6 +58,7 @@ internal sealed class QueueFilterController:IDisposable
         reset.Click+=ResetClicked;
         rows.CollectionChanged+=RowsChanged;grid.SelectionChanged+=SelectionChanged;
         window.PreviewKeyDown+=WindowKeyDown;
+        if(_toggle is not null)_toggle.Click+=ToggleClicked;
         _refresh.Tick+=RefreshTick;
         foreach(var row in rows)Observe(row);
         Refresh();
@@ -78,7 +87,43 @@ internal sealed class QueueFilterController:IDisposable
     private void WindowKeyDown(object sender,KeyEventArgs e)
     {
         if(e.Key!=Key.F || Keyboard.Modifiers!=ModifierKeys.Control)return;
+        SetExpanded(true);
         _query.Focus();_query.SelectAll();e.Handled=true;
+    }
+    private void ToggleClicked(object sender,RoutedEventArgs e)
+    {
+        if(_disposed)return;
+        bool expand=!_expanded;
+        // Apply an edit still waiting on debounce before hiding its controls.
+        // Closing presentation never clears the user's active criteria.
+        if(!expand)Refresh();
+        SetExpanded(expand);
+        if(expand){_query.Focus();_query.SelectAll();}
+        else _toggle?.Focus();
+    }
+    private void SetExpanded(bool expanded)
+    {
+        if(_disposed)return;_expanded=expanded;RefreshPresentation();
+        if(expanded)_panel?.UpdateLayout();
+    }
+    private void RefreshPresentation()
+    {
+        if(_panel is not null)_panel.Visibility=_expanded?Visibility.Visible:Visibility.Collapsed;
+        int active=ActiveFilterCount;
+        if(_badge is not null)
+        {
+            _badge.Text=active.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            _badge.Visibility=active>0?Visibility.Visible:Visibility.Collapsed;
+        }
+        if(_toggle is null)return;
+        string action=_expanded?ErrorMessages.Text("Скрыть поиск и фильтры очереди","Hide queue search and filters"):
+            ErrorMessages.Text("Показать поиск и фильтры очереди","Show queue search and filters");
+        string state=active>0?ErrorMessages.Text($" · применено фильтров: {active}. Сворачивание сохраняет условия поиска.",
+            $" · active filters: {active}. Collapsing preserves the search criteria."):"";
+        _toggle.ToolTip=action+" · Ctrl+F"+state;
+        AutomationProperties.SetName(_toggle,action);
+        AutomationProperties.SetItemStatus(_toggle,(_expanded?ErrorMessages.Text("Развёрнуто","Expanded"):
+            ErrorMessages.Text("Свёрнуто","Collapsed"))+state);
     }
     private void RefreshTick(object? sender,EventArgs e){_refresh.Stop();Refresh();}
     private void SelectionChanged(object sender,SelectionChangedEventArgs e)
@@ -196,6 +241,7 @@ internal sealed class QueueFilterController:IDisposable
             ? ErrorMessages.Text("Фильтры меняют только список. «Скачать всю очередь» и очистка действуют на всю очередь, включая скрытые строки.",
                 "Filters change this list only. Start and Clear all apply to the whole queue, including hidden rows.")
             : ErrorMessages.Text("Поиск по названию или URL · Ctrl+F. Esc сбрасывает фильтры.","Search title or URL · Ctrl+F. Esc resets filters.");
+        RefreshPresentation();
     }
     public void Dispose()
     {
@@ -204,6 +250,7 @@ internal sealed class QueueFilterController:IDisposable
         _status.SelectionChanged-=ChoiceChanged;_subscription.SelectionChanged-=ChoiceChanged;
         _reset.Click-=ResetClicked;_rows.CollectionChanged-=RowsChanged;_grid.SelectionChanged-=SelectionChanged;
         _window.PreviewKeyDown-=WindowKeyDown;
+        if(_toggle is not null)_toggle.Click-=ToggleClicked;
         foreach(var row in _observed)row.PropertyChanged-=RowChanged;
         _observed.Clear();
     }

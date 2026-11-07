@@ -65,6 +65,10 @@ internal sealed partial class UiScenario
             var subscription=Control<ComboBox>(window,"QueueSubscriptionFilter");
             var count=Control<TextBlock>(window,"QueueCount");
             var empty=Control<TextBlock>(window,"QueueEmptyFilterHint");
+            var panel=Control<FrameworkElement>(window,"QueueFilterPanel");
+            var badge=Control<TextBlock>(window,"QueueActiveFiltersBadge");
+            Require(panel.Visibility==Visibility.Collapsed && panel.DesiredSize.Height==0 && badge.Visibility==Visibility.Collapsed,
+                "Search and filters must occupy no panel height on startup, while their header button stays available.");
             string[] urls=["https://title-ingress.invalid/Video?token=AbC","https://title-ingress.invalid/video?token=AbC",
                 "https://title-ingress.invalid/Shortcut?token=XyZ","https://title-ingress.invalid/SubscriptionPreview?token=AbC"];
             var rows=urls.Select(url=>new DownloadItem{Url=url}).ToArray();
@@ -100,6 +104,10 @@ internal sealed partial class UiScenario
             int processes=File.ReadAllLines(calls).Length,http=thumbnails.Requests;
             Require(queue.ItemsSource is ListCollectionView && queue.Items.Count==4 && count.Text=="Показано 4 из 4",
                 "The actual grid must use a view of all underlying rows and display visible/total counts");
+            window.UpdateLayout();double collapsedHeight=queue.ActualHeight;
+            Click(window,"ToggleQueueFiltersButton");window.UpdateLayout();
+            Require(panel.Visibility==Visibility.Visible && panel.ActualHeight>60 && collapsedHeight-queue.ActualHeight>60,
+                "Opening the real search panel must allocate its controls' space from the queue grid only while shown.");
             search.Focus();search.Text="ёжик";
             PumpUntil(()=>queue.Items.Count==1,"Unicode title search must filter the real grid");
             Require(ReferenceEquals(queue.Items[0],rows[0]) && ReferenceEquals(queue.SelectedItem,rows[0]) &&
@@ -108,6 +116,15 @@ internal sealed partial class UiScenario
                 Control<TextBlock>(window,"MediaSelectionSummary").Text.Contains("Фрагментов: 2",StringComparison.Ordinal) &&
                 ReferenceEquals(rows[0].Selection,planned) && planned.EffectiveSections.SequenceEqual(plannedRanges),
                 "A surviving multi-fragment row must retain its ordered plan, editor summary and independent preview");
+            search.Text+=" "; // Collapse must flush the pending search debounce.
+            Click(window,"ToggleQueueFiltersButton");window.UpdateLayout();
+            Require(panel.Visibility==Visibility.Collapsed && panel.DesiredSize.Height==0 &&
+                Math.Abs(queue.ActualHeight-collapsedHeight)<2 && badge.Visibility==Visibility.Visible && badge.Text=="1" &&
+                queue.Items.Count==1 && ReferenceEquals(queue.SelectedItem,rows[0]),
+                "Collapsing must return grid space and retain pending/applied search and its selected row, with a visible active-filter badge.");
+            Click(window,"ToggleQueueFiltersButton");window.UpdateLayout();
+            Require(panel.Visibility==Visibility.Visible && search.IsKeyboardFocusWithin && search.Text=="ёжик ",
+                "Reopening search must focus the existing draft without resetting its criteria or selecting another video.");
             Require(!Control<Button>(window,"MoveUpButton").IsEnabled && !queue.AllowDrop &&
                 Control<TextBlock>(window,"QueueFilterScopeHint").Text.Contains("скрытые",StringComparison.Ordinal),
                 "Filtered order and whole-queue action scope must be visibly unambiguous");
@@ -129,6 +146,7 @@ internal sealed partial class UiScenario
             Require(queue.Items.Count==4 && empty.Visibility==Visibility.Collapsed,"Reset must restore the whole view without reordering it");
             subscription.SelectedValue="source-A";status.SelectedValue="Queued";
             Require(queue.Items.Cast<DownloadItem>().SequenceEqual(rows.Take(2)),"Status and exact subscription IDs must combine");
+            Require(badge.Visibility==Visibility.Visible && badge.Text=="2","The header must count status and subscription criteria independently.");
             subscription.SelectedValue="source-B";
             Require(queue.Items.Count==0,"Subscriptions with equal display names must remain independent by ID");
             status.SelectedValue="Failed";
@@ -140,6 +158,7 @@ internal sealed partial class UiScenario
             subscription.SelectedValue="";status.SelectedIndex=0;
             Require(queue.Items.Count==1 && ReferenceEquals(queue.Items[0],rows[3]),"No-subscription is distinct from all subscriptions");
             Click(window,"ResetQueueFiltersButton");
+            Require(badge.Visibility==Visibility.Collapsed,"Reset must clear the header's active-filter indicator as well as the predicate.");
             search.Text="incoming title";PumpUntil(()=>queue.Items.Count==0,"The unmatched title filter must start empty");
             rows[0].Title="Incoming TITLE from metadata";
             PumpUntil(()=>queue.Items.Count==1 && ReferenceEquals(queue.Items[0],rows[0]),"Late metadata titles must update search without a new request");
@@ -217,6 +236,11 @@ internal sealed partial class UiScenario
             var runningSession=subject.SessionState.Coordinator;
             search.Clear();status.SelectedValue="Running";
             PumpUntil(()=>queue.Items.Count==1 && ReferenceEquals(queue.Items[0],slow),"Filters must remain usable while downloading");
+            Click(window,"ToggleQueueFiltersButton");
+            Require(panel.Visibility==Visibility.Collapsed && badge.Visibility==Visibility.Visible && badge.Text=="1" &&
+                ReferenceEquals(subject.SessionState.Coordinator,runningSession) && slow.Status=="Running",
+                "Closing filters during a real transfer must preserve the active view and session without pausing or restarting it.");
+            Click(window,"ToggleQueueFiltersButton");
             Require(!Control<Button>(window,"ClearQueueButton").IsEnabled && !queue.AllowDrop,"Active session guards must remain enabled under filters");
             Click(window,"ClearQueueButton");Require(subject.SessionState.Queue.Count==2,"A raised clear event must not bypass active-session guards");
             Clipboard.SetText("https://startup-download.invalid/filter-live");Click(window,"PasteClipboardButton");

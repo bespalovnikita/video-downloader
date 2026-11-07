@@ -15,7 +15,8 @@ public sealed partial class NativeWindow
     {
         _queueFilters=new QueueFilterController(_window,Q,SessionState.Queue,B("QueueSearchBox"),C("QueueStatusFilter"),
             C("QueueSubscriptionFilter"),F<Button>("ResetQueueFiltersButton"),T("QueueCount"),T("QueueEmptyFilterHint"),
-            T("QueueFilterScopeHint"),RefreshQueueFilterActions);
+            T("QueueFilterScopeHint"),RefreshQueueFilterActions,F<FrameworkElement>("QueueFilterPanel"),
+            F<Button>("ToggleQueueFiltersButton"),T("QueueActiveFiltersBadge"));
         F<Button>("RemoveQueueButton").Content=ErrorMessages.Text("Удалить выбранные","Remove selected");
         F<Button>("RemoveQueueButton").ToolTip=ErrorMessages.Text("Только выбранные видимые строки; скрытые строки не затрагиваются.",
             "Only selected visible rows; hidden rows are not affected.");
