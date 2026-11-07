@@ -35,7 +35,7 @@ public sealed partial class NativeWindow
         summary.Text=row==null ? "Выберите одну строку очереди." :
             "Следующая попытка: "+(row.Selection?.Summary??"автоматический формат · всё видео")+
             (row.CompletedSelection is {} completed ? "\nСохранённый результат: "+completed.Summary : "")+
-            (row.ResumeState is not null?"\nСохранены частичные данные. Чтобы изменить формат, сначала сбросьте загрузку.":
+            (row.ResumeState is not null?"\nСохранены частичные данные с закреплённым форматом. Для другого формата удалите строку и добавьте ссылку заново.":
                 row.Status=="Completed"?"\nДля новой попытки: меню строки → «Скачать выбранные строки» или «Скачать повторно».":"");
         summary.ToolTip=row?.Url;
         if(_mediaSelectionDialog is {} editor)editor.SetEditable(CanEditMediaSelection(editor.Row));
