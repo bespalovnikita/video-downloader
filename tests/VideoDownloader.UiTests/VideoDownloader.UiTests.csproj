@@ -10,6 +10,7 @@
     <AssemblyName>VideoDownloader.UiTests</AssemblyName>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="..\VideoDownloader.Tests\FragmentFrameFixture.cs" Link="FragmentFrameFixture.cs" />
     <ProjectReference Include="..\..\src\VideoDownloader\VideoDownloader.csproj" />
   </ItemGroup>
 </Project>

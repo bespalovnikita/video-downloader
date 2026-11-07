@@ -31,6 +31,7 @@ await AudioTrackSelectionTests.RunAsync();
 await DownloadSelectionTests.RunAsync();
 await DownloadSelectionTests.RunNativeMediaAsync();
 FragmentTimelineTests.Run();
+await FragmentFrameConsistencyTests.RunAsync();
 await FragmentMergeTests.RunAsync();
 await MultipleFragmentTests.RunAsync();
 await MediaFrameProxyTests.RunAsync();

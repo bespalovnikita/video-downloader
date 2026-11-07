@@ -17,7 +17,7 @@ internal sealed partial class MediaSelectionDialog
         internal long Generation;
         internal CancellationTokenSource? Cancellation;
     }
-    private sealed record FrameContext(bool Editable,bool Loaded,bool Collection,double? Duration,string? Format,bool? HasVideo);
+    private sealed record FrameContext(bool Editable,bool Loaded,bool Collection,double? Duration,string? Format,bool? HasVideo,double? FrameRate);
     private Func<MediaFrameRequest,CancellationToken,Task<MediaFrameResult>>? _framePreview;
     private BoundaryFrame? _startFrame,_endFrame;
     private Button? _refreshFrames;
@@ -62,7 +62,7 @@ internal sealed partial class MediaSelectionDialog
         var format=_mode.SelectedIndex==1?_primary.SelectedItem as FormatChoice:null;
         double? duration=_metadata is {Duration:>0} data && double.IsFinite(data.Duration)?data.Duration:null;
         return new(_editable,_metadata?.FormatsLoaded==true,_metadata?.IsCollection==true,duration,
-            _mode.SelectedIndex==1?format?.Id??"":null,format?.Format?.HasVideo);
+            _mode.SelectedIndex==1?format?.Id??"":null,format?.Format?.HasVideo,TimelineFps());
     }
     private void RefreshFrameState()
     {
@@ -107,7 +107,7 @@ internal sealed partial class MediaSelectionDialog
         if(_framePreview is null){frame.Status.Text="Предпросмотр кадров недоступен.";return;}
         frame.Status.Text="Готовим кадр…";
         var cancel=new CancellationTokenSource();frame.Cancellation=cancel;
-        var request=new MediaFrameRequest(Row.Url,seconds,context.Format,context.Duration,frame.IsEnd);
+        var request=new MediaFrameRequest(Row.Url,seconds,context.Format,context.Duration,frame.IsEnd,context.FrameRate);
         _=LoadFrameAsync(frame,frame.Generation,request,cancel);
     }
     private bool IsCurrentFrame(BoundaryFrame frame,long generation,CancellationTokenSource cancel)=>

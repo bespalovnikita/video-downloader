@@ -91,7 +91,7 @@ internal sealed partial class UiScenario
             Require(probe.Calls.Length==0,"Typing must not synchronously start a frame request on the UI thread.");
             PumpUntil(()=>probe.Calls.Length==1,"A valid start must request a frame even with an empty end.");
             var first=probe.Calls[0];
-            Require(first.Request.Url==row.Url && first.Request.Seconds==3 && !first.Request.IsEnd && first.Request.DurationSeconds==12,
+            Require(first.Request.Url==row.Url && first.Request.Seconds==3 && !first.Request.IsEnd && first.Request.DurationSeconds==12 && first.Request.FrameRate==25,
                 "Debounced input must retain only the latest timestamp and the exact captured URL.");
             first.Success(red);
             PumpUntil(()=>Pixel(firstImage)==Colors.Red,"The start card must render the decoded red PNG pixels.");

@@ -24,6 +24,7 @@ object BackupImport {
                 transferredBytes = 0,
                 rawError = "",
                 outputUris = emptyList(),
+                primaryOutputUri = "",
                 stageDirectory = "",
                 runId = "",
                 deferredNextStart = true,
@@ -31,7 +32,7 @@ object BackupImport {
                 settingsSnapshot = null,
                 archiveDate = "",
             ) },
-            history = imported.history.map { it.copy(outputUris = emptyList()) },
+            history = imported.history.map { it.copy(outputUris = emptyList(), primaryOutputUri = "") },
         )
         JsonStateRepository.validate(sanitized)
         return sanitized

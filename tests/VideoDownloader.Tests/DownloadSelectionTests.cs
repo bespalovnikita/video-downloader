@@ -100,6 +100,21 @@ internal static class DownloadSelectionTests
         new DownloadSelection(url,Format:Combined).Validate(url,options);
         new DownloadSelection(url,Format:Audio).Validate(url,options);
         new DownloadSelection(url,Format:Audio).Validate(url,new DownloadOptions {AudioOnly=true});
+        foreach(double invalidFps in new[]{double.NaN,double.PositiveInfinity,0,-1,1001})
+            Refuses(()=>new DownloadSelection(url,new DownloadSection(.042,.083)){FrameRate=invalidFps}.ValidatePersisted(url),
+                "Persisted inferred frame rates must be finite and bounded");
+        var grid=new DownloadSelection(url,new DownloadSection(.042,.083)){FrameRate=24};
+        Require(grid.SectionArgument(grid.Section!)=="*0.041666667-0.083333333",
+            "Export must recover exact nominal boundaries from rounded 24 FPS labels");
+        var restoredGrid=JsonSerializer.Deserialize<DownloadSelection>(JsonSerializer.Serialize(grid,AppPersistence.Json),AppPersistence.Json)!;
+        Require(restoredGrid.FrameRate==24 && restoredGrid.SectionArgument(restoredGrid.Section!)==grid.SectionArgument(grid.Section!),
+            "The inferred automatic frame grid must survive checkpoint JSON");
+        Require(new DownloadSelection(url,new DownloadSection(.042,.083)).SectionArgument(new(.042,.083))=="*0.042-0.083",
+            "A legacy automatic selection without inferred FPS must retain its millisecond boundaries");
+        Require(!JsonSerializer.Serialize(new DownloadSelection(url,new DownloadSection(.042,.083)),AppPersistence.Json)
+            .Contains("FrameRate",StringComparison.OrdinalIgnoreCase),"An absent frame grid must not add null fields to a legacy checkpoint");
+        Refuses(()=>new DownloadSelection(url,Format:Combined){FrameRate=24}.ValidatePersisted(url),
+            "An inferred FPS must not override the explicit selected format's pinned FPS");
         foreach(var invalid in new[] {
             new DownloadSelection(url+"?different",Format:Combined),new DownloadSelection(url.ToUpperInvariant(),Format:Combined),
             new DownloadSelection(url,Format:Video),new DownloadSelection(url,Format:Combined,AudioFormat:Audio),

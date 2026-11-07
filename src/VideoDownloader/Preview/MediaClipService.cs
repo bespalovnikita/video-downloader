@@ -154,6 +154,11 @@ internal sealed class MediaClipService:IDisposable
                 Add(start,"-filter_complex",string.Join(';',filters));
                 if(hasVideo)Add(start,"-map","[v]","-c:v","libx264","-preset","veryfast","-crf","28","-pix_fmt","yuv420p","-threads","2");
                 else Add(start,"-vn");
+                // A single trimmed frame has no following timestamp from which
+                // the encoder can infer duration. Retain its nominal duration;
+                // longer previews keep the existing source timestamp behavior.
+                if(hasVideo && FragmentTimelineTiming.KnownFps(video!.Fps) && length<=1/video.Fps+1e-9)
+                    Add(start,"-r",Number(video.Fps));
                 if(hasAudio)Add(start,"-map","[a]","-c:a","aac","-b:a","128k","-ar","48000","-ac","2");
                 else Add(start,"-an");
                 Add(start,"-sn","-dn","-map_metadata","-1","-map_chapters","-1","-t",Number(length),"-fs",MaxClipBytes.ToString(CultureInfo.InvariantCulture),"-movflags","+faststart","-f","mp4",path);
@@ -168,7 +173,7 @@ internal sealed class MediaClipService:IDisposable
                 OwnedFiles.RegularOrAbsent(path);
                 if(!File.Exists(path) || new FileInfo(path).Length is <=0 or >MaxClipBytes)return Failure("Фрагмент превышает ограничение объёма предпросмотра.");
                 var probe=await ProbeAsync(path,deadline.Token).ConfigureAwait(false);
-                if(probe.Video!=hasVideo || probe.Audio!=hasAudio || probe.Duration<Math.Max(.02,length-.35) || probe.Duration>length+.35)
+                if(probe.Video!=hasVideo || probe.Audio!=hasAudio || probe.Duration<Math.Max(Math.Min(.02,length),length-.35) || probe.Duration>length+.35)
                     return Failure("Источник не предоставил полный короткий фрагмент с выбранными дорожками.");
                 deadline.Token.ThrowIfCancellationRequested();
                 var owned=lease;MediaClipPreview? clip=null;
@@ -232,7 +237,7 @@ internal sealed class MediaClipService:IDisposable
         double duration=double.Parse(json.RootElement.GetProperty("format").GetProperty("duration").GetString()!,CultureInfo.InvariantCulture);
         return(streams.Contains("video"),streams.Contains("audio"),duration);
     }
-    private static string Number(double value)=>value.ToString("0.######",CultureInfo.InvariantCulture);
+    private static string Number(double value)=>value.ToString("0.#########",CultureInfo.InvariantCulture);
     private static void Add(ProcessStartInfo start,params string[] values){foreach(string value in values)start.ArgumentList.Add(value);}
     public void Dispose()
     {

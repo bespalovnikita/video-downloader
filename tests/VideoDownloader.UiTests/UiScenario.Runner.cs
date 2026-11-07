@@ -68,6 +68,8 @@ internal sealed partial class UiScenario
             UiScenario.TestMediaSectionFrames(root);
             Stage("testing draggable fragment timeline, frame steps and synchronized range");
             UiScenario.TestFragmentTimeline(root);
+            Stage("testing actual frame-grid buttons, boundary PNGs, checkpoint and yt-dlp publication");
+            UiScenario.TestFragmentFrameConsistency(root);
             Stage("testing short video/audio clip controls, source positions and playback lifetime");
             UiScenario.TestMediaClipPlayback(root);
             Stage("testing measured audio waveforms, source-time boundary gestures and cancellation");
@@ -88,6 +90,8 @@ internal sealed partial class UiScenario
             UiScenario.TestDuplicateHistoryChoices(root);
             Stage("testing portable queue clipboard and file transfer");
             UiScenario.TestPortableQueueTransfer(root);
+            Stage("testing ordinary ingress capacity before mutation and nested active-session dispatch");
+            UiScenario.TestOrdinaryQueueCapacity(root);
             Stage("testing startup recovery dialogs and empty-queue settings");
             VerifyStartupRecovery(root,Stage);
             using var input=File.OpenRead(Path.Combine(AppContext.BaseDirectory,"ui","MainWindow.xaml"));

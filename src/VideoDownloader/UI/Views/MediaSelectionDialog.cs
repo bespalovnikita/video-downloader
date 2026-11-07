@@ -237,7 +237,7 @@ internal sealed partial class MediaSelectionDialog : Window
             }
         }
         var selection=manual || section!=null ? new DownloadSelection(Row.Url,section,primary,audio,duration)
-            {Sections=sections.Length>1?new DownloadSectionSet(sections):null,
+            {Sections=sections.Length>1?new DownloadSectionSet(sections):null,FrameRate=manual?null:TimelineFps(),
                 FragmentOutputMode=_mergeDraft?"Merged":"Separate",AllowMergeReencode=_mergeDraft && _mergeReencodeDraft} : null;
         if(selection!=null && !selection.TryValidate(Row.Url,_options(),out error)){_error.Text=ErrorMessages.ForDisplay(error);return;}
         Commit(selection);
