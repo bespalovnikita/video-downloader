@@ -17,7 +17,7 @@ public sealed partial class NativeWindow
         F<Button>("QueueDiagnosticsButton").Click+=(_,_)=>
         {if(Q.SelectedItems.Count==1 && Q.SelectedItem is DownloadItem row && IsVisibleQueueRow(row))OpenJobDiagnostics(row);};
         F<Button>("DownloadDiagnosticsButton").Click+=(_,_)=>
-        {if(D.SelectedItem is DownloadItem row)OpenJobDiagnostics(row);};
+        {if(D.SelectedItems.Count==1 && D.SelectedItem is DownloadItem row)OpenJobDiagnostics(row);};
         Q.SelectionChanged+=(_,_)=>RefreshJobDiagnosticActions();D.SelectionChanged+=(_,_)=>RefreshJobDiagnosticActions();
         void AddMenu(DataGrid grid,string name,bool queue)
         {
@@ -39,7 +39,7 @@ public sealed partial class NativeWindow
         bool ready=!_closing && !_appUpdateHandoff;
         F<Button>("QueueDiagnosticsButton").IsEnabled=ready && Q.SelectedItems.Count==1 &&
             Q.SelectedItem is DownloadItem queue && IsVisibleQueueRow(queue) && AppPersistence.ValidUrl(queue.Url);
-        F<Button>("DownloadDiagnosticsButton").IsEnabled=ready && D.SelectedItem is DownloadItem download && AppPersistence.ValidUrl(download.Url);
+        F<Button>("DownloadDiagnosticsButton").IsEnabled=ready && D.SelectedItems.Count==1 && D.SelectedItem is DownloadItem download && AppPersistence.ValidUrl(download.Url);
     }
     private void OpenJobDiagnostics(DownloadItem row)
     {

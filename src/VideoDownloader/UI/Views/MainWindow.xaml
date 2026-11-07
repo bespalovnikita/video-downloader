@@ -533,7 +533,7 @@
                         <TextBlock Text="Загрузки" Style="{StaticResource SectionTitle}"/>
                     </DockPanel>
 
-                    <DataGrid x:Name="DownloadGrid" Grid.Row="1" SelectionMode="Single" Tag="{Binding IsChecked, ElementName=ShowVideoTitlesCheck}">
+                    <DataGrid x:Name="DownloadGrid" Grid.Row="1" SelectionMode="Extended" Tag="{Binding IsChecked, ElementName=ShowVideoTitlesCheck}">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="Поток" Binding="{Binding Slot}" Width="52" ElementStyle="{StaticResource GridTextStyle}"/>
                             <DataGridTextColumn Header="Состояние" Binding="{Binding StateLabel}" Width="110" ElementStyle="{StaticResource DownloadStatusTextStyle}"/>
