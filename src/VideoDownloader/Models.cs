@@ -70,7 +70,18 @@ public sealed class DownloadItem : INotifyPropertyChanged
         "Removal pending — use Remove" => ErrorMessages.Text("Ожидается удаление — нажмите «Удалить выбранные»",State),
         _ => State
     };
-    [JsonIgnore] public string StateToolTip => ErrorMessage.Length==0 ? StateLabel : StateLabel+Environment.NewLine+ErrorMessage;
+    [JsonIgnore] public string StateToolTip
+    {
+        get
+        {
+            string label=StateLabel;
+            if(RequeueRequested && Status=="Skipped" && ResumeState?.Selection?.IsPartial==true)
+                label+=Environment.NewLine+ErrorMessages.Text(
+                    "Фрагменты через FFmpeg могут скачиваться заново: возможность дозагрузки зависит от источника и загрузчика.",
+                    "FFmpeg fragments may restart: resuming depends on the source and downloader.");
+            return ErrorMessage.Length==0?label:label+Environment.NewLine+ErrorMessage;
+        }
+    }
     public string Slot { get => _slot; set { _slot = value; Changed(); } }
     // Format IDs are meaningful only for this exact URL, and never become
     // global settings or part of the portable queue exchange format.

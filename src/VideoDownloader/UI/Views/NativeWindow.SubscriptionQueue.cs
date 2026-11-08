@@ -10,9 +10,12 @@ public sealed partial class NativeWindow
         QueueSubscriptionUrls(urls,subscriptionId,subscriptionName,null);
 
     internal IReadOnlyList<string> QueueSubscriptionUrls(IEnumerable<string> urls,string subscriptionId,string subscriptionName,
-        IReadOnlyDictionary<string,string>? titles)
+        IReadOnlyDictionary<string,string>? titles)=>QueueSubscriptionUrls(urls,subscriptionId,subscriptionName,titles,false);
+
+    internal IReadOnlyList<string> QueueSubscriptionUrls(IEnumerable<string> urls,string subscriptionId,string subscriptionName,
+        IReadOnlyDictionary<string,string>? titles,bool requeueExisting)
     {
-        if (_closing || _disposed || _restoringSession || RejectProfileBackupMutation()) return [];
+        if (_closing || _disposed || _restoringSession || _queueItemActionBusy || _appUpdateHandoff || RejectProfileBackupMutation()) return [];
         if (_checkpointReadOnly || _legacyEngineBlocked)
             throw new InvalidOperationException("Очередь недоступна для сохранения. Сначала устраните ошибку восстановления или завершите прежний движок.");
         if ((subscriptionId.Length==0)!=(subscriptionName.Length==0) ||
@@ -33,17 +36,25 @@ public sealed partial class NativeWindow
             .Select(url=>new DownloadItem{Url=url,Title=discoveredTitles.GetValueOrDefault(url,""),
                 SubscriptionId=subscriptionId,SubscriptionName=subscriptionName}).ToList();
         var approved=ConfirmDuplicates(candidates,false);
-        if (approved==null || _restoringSession || RejectProfileBackupMutation()) return [];
+        if (approved==null || _closing || _disposed || _restoringSession || _queueItemActionBusy ||
+            _appUpdateHandoff || RejectProfileBackupMutation()) return [];
+        if (_checkpointReadOnly || _legacyEngineBlocked)
+            throw new InvalidOperationException("Очередь недоступна для сохранения. Сначала устраните ошибку восстановления или завершите прежний движок.");
         // The modal loop may have added an exact URL already. Deduplication,
         // title enrichment and the complete checkpoint budget commit together.
         foreach (var row in approved)row.DeferredToNextStart=SessionState.Coordinator?.IsRunning==true;
+        // Explicit selection can schedule a repeat of an existing terminal row.
+        // Keep its old status/ownership until Start, including Remove's warning
+        // and retained Skip data. Automatic offers retain their previous policy.
+        var requeues=requeueExisting?SessionState.Queue.Where(row=>requestedSet.Contains(row.Url) && row.CanResume &&
+            row.Status is "Completed" or "Skipped").ToArray():[];
         var titleUpdates=new Dictionary<DownloadItem,string>();
         foreach(var row in SessionState.Queue.Where(row=>requestedSet.Contains(row.Url) && row.CanResume && row.Status!="Completed"))
             if((string.IsNullOrWhiteSpace(row.Title) || string.Equals(row.Title,row.Url,StringComparison.Ordinal)) &&
                 discoveredTitles.TryGetValue(row.Url,out string? title))titleUpdates.Add(row,title);
-        SessionState.AddBatch(approved,ReadOptions(),titleUpdates);
+        SessionState.AddBatch(approved,ReadOptions(),titleUpdates,requeues);
         foreach (var row in SessionState.Queue.Where(row=>requestedSet.Contains(row.Url) &&
-            row.CanResume && row.Status!="Completed"))
+            row.CanResume && (row.Status!="Completed" || requeueExisting && row.RequeueRequested)))
         {
             _preview.RefreshKnownTitle(row);
             // An explicitly accepted URL may already be queued after an
@@ -54,8 +65,12 @@ public sealed partial class NativeWindow
         Reindex();
         if (_checkpointReadOnly)
             throw new IOException("Не удалось сохранить очередь. Материалы подписки остаются доступными для повторного добавления.");
-        var accepted=requested.Where(url=>SessionState.Queue.Any(row=>row.Url==url && row.CanResume && row.Status!="Completed")).ToArray();
+        var accepted=requested.Where(url=>SessionState.Queue.Any(row=>row.Url==url && row.CanResume &&
+            (row.Status!="Completed" || requeueExisting && row.RequeueRequested))).ToArray();
         T("ClipboardHint").Text=$"Из подписок принято {accepted.Length}. Загрузка начнётся по кнопке «Скачать всю очередь».";
+        if(SessionState.Queue.Any(row=>requestedSet.Contains(row.Url) && row.RequeueRequested &&
+            row.Status=="Skipped" && row.ResumeState?.Selection?.IsPartial==true))
+            T("ClipboardHint").Text+=" Фрагменты через FFmpeg могут скачиваться заново: дозагрузка зависит от источника и загрузчика.";
         return accepted;
     }
 

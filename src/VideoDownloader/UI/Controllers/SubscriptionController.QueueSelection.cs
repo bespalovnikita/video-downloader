@@ -80,7 +80,7 @@ internal sealed partial class SubscriptionController
             Text=string.Join(Environment.NewLine,items.GroupBy(item=>item.State,StringComparer.Ordinal)
                 .Select(group=>$"{group.First().StateLabel}: {group.Count()}"))
         });
-        var buttons=new WrapPanel{HorizontalAlignment=HorizontalAlignment.Right};
+        var buttons=new WrapPanel{HorizontalAlignment=System.Windows.HorizontalAlignment.Right};
         var onlyNew=new Button
         {
             Name="SubscriptionQueueSelectionNewOnlyButton",Content="Только новые",IsEnabled=newCount>0,IsDefault=newCount>0

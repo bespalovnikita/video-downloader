@@ -183,7 +183,8 @@ public sealed partial class NativeWindow : IDisposable
         string title=SessionState.StartedAt.HasValue
             ? DownloadFormat.Tray(metrics.Successful,metrics.Left,metrics.Failed,metrics.Speed,running,paused) : ErrorMessages.Text("Video Downloader | Готово","Video Downloader | Ready");
         _lifecycle.UpdateStatus(title);
-        F<Button>("StartButton").IsEnabled=!running && !_startingSession && !_queueItemActionBusy && SessionState.Queue.Any(x=>x.Status is not ("Completed" or "Skipped") && x.CanResume);
+        F<Button>("StartButton").IsEnabled=!running && !_startingSession && !_queueItemActionBusy && SessionState.Queue.Any(x=>
+            (x.Status is not ("Completed" or "Skipped") || x.RequeueRequested) && x.CanResume);
         F<Button>("StopButton").IsEnabled=running;
         F<Button>("PauseButton").IsEnabled=running;
         F<Button>("PauseButton").Content=paused?ErrorMessages.Text("Продолжить","Resume"):ErrorMessages.Text("Пауза","Pause");
@@ -404,7 +405,7 @@ public sealed partial class NativeWindow : IDisposable
             // Save on meaningful changes, not every progress tick.
             var fingerprint=System.Text.Json.JsonSerializer.Serialize(rows.Select(i=>new{
                 i.Url,i.Title,i.Status,i.Path,i.Order,i.OwnedPaths,i.OutputRoot,i.RunDir,i.StageDir,
-                i.CleanupPaths,i.CleanupError,i.PendingRemoval,i.AttemptFinished,i.DeferredToNextStart,
+                i.CleanupPaths,i.CleanupError,i.PendingRemoval,i.AttemptFinished,i.DeferredToNextStart,i.RequeueRequested,
                 i.SubscriptionId,i.SubscriptionName,i.Selection,i.CompletedSelection
             }),AppPersistence.Json)+
                 ":"+System.Text.Json.JsonSerializer.Serialize(options,AppPersistence.Json)+":"+rows.Count;
@@ -561,16 +562,17 @@ public sealed partial class NativeWindow : IDisposable
             return;
         }
         if(SessionState.Coordinator?.IsRunning==true) return;
-        var pending=(custom??SessionState.Queue.Where(i=>i.Status is not ("Completed" or "Skipped"))).Where(i=>i.CanResume).Distinct().ToList();
+        var pending=(custom??SessionState.Queue.Where(i=>i.Status is not ("Completed" or "Skipped") || i.RequeueRequested))
+            .Where(i=>i.CanResume).Distinct().ToList();
         if(pending.Count==0)return;
         var options=preparedOptions?.Snapshot()??ReadOptions();
-        var requested=pending.ToDictionary(row=>row,row=>(row.Url,row.Selection,row.ResumeState,row.Status,row.StageDir,row.RunDir));
+        var requested=pending.ToDictionary(row=>row,row=>(row.Url,row.Selection,row.ResumeState,row.Status,row.StageDir,row.RunDir,row.RequeueRequested));
         void RequireCurrentPlan(IEnumerable<DownloadItem> plan)
         {
             if(SessionState.Coordinator?.IsRunning==true || plan.Any(row=>!SessionState.Queue.Contains(row) || !row.CanResume ||
                 !requested.TryGetValue(row,out var original) || !string.Equals(row.Url,original.Url,StringComparison.Ordinal) ||
                 row.Selection!=original.Selection || row.ResumeState!=original.ResumeState || row.Status!=original.Status ||
-                row.StageDir!=original.StageDir || row.RunDir!=original.RunDir))
+                row.StageDir!=original.StageDir || row.RunDir!=original.RunDir || row.RequeueRequested!=original.RequeueRequested))
                 throw new InvalidOperationException("Состав очереди или параметры задания изменились. Повторите Start.");
         }
         try
@@ -625,6 +627,7 @@ public sealed partial class NativeWindow : IDisposable
             }
             foreach(var row in approved)
             {
+                row.RequeueRequested=false;
                 if(row.ResumeState is not null)
                 {
                     row.Status="Queued";row.State="Queued";row.RawError="";row.Speed="";row.ETA="";

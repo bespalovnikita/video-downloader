@@ -154,6 +154,7 @@ public sealed partial class NativeWindow
                     try { await Task.Run(()=>DownloadResumeStore.DeleteRetained(row)); }
                     catch(Exception error) {DownloadCleanup.Failed(row,error.Message);throw;}
                 }
+                row.RequeueRequested=false;
                 SessionState.RejectQueueEntry(row);
             }
             Reindex();

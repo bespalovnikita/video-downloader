@@ -7,7 +7,8 @@ public sealed partial class NativeWindow
         _window,new SubscriptionStore(Path.GetDirectoryName(_storage.SessionPath)!),_ytDlp,
         Path.Combine(AppContext.BaseDirectory,"ui","SubscriptionsWindow.xaml"),
         _storage.ReadHistory,()=>B("CookiesBox").Text.Trim(),QueueSubscriptionUrls,OpenUrl,Log,
-        urls=>_preview.PrefetchUrls(urls),_preview);
+        urls=>_preview.PrefetchUrls(urls),_preview,
+        queueSelectedUrls:(urls,id,name,titles)=>QueueSubscriptionUrls(urls,id,name,titles,true));
 
     private void OpenSubscriptions()
     {
