@@ -191,8 +191,11 @@ internal sealed partial class UiScenario
                 driver.TestControl<Image>("SubscriptionPreviewImage").Source is BitmapSource {PixelWidth:PreviewThumbnailServer.Width,PixelHeight:PreviewThumbnailServer.Height} &&
                 thumbnails.Requests==2,
                 "Selecting the inbox material must display its cached real PNG in the subscription panel without changing the main selection or requesting another image.");
-            Require(!driver.TestControl<Button>("QueueSubscriptionItemsButton").IsEnabled,
-                "Preview backfill must not turn an already processed material into a queue candidate.");
+            Require(driver.TestControl<Button>("QueueSubscriptionItemsButton").IsEnabled &&
+                store.Read().Items.Single(item=>item.Url==first).State=="Processed" && ui.SessionState.Queue.Count==0 &&
+                !events.Any(value=>value.StartsWith("queue:",StringComparison.Ordinal)),
+                "A processed material must allow explicit manual queueing, while cached preview selection preserves its history state and does not invoke queue acceptance.");
+            Idle();
             driver.TestInbox.SelectedItem=driver.TestInbox.Items.Cast<SubscriptionController.SubscriptionItemView>().Single(item=>item.Url==baseline);
             driver.TestControl<Button>("QueueSubscriptionItemsButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             PumpUntil(()=>!driver.TestIsMutating && store.Read().Items.Single(item=>item.Url==baseline).State=="Queued",
