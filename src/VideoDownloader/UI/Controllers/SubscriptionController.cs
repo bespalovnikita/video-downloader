@@ -22,6 +22,7 @@ internal sealed partial class SubscriptionController : IDisposable
     private readonly Func<Dictionary<string,DateTimeOffset?>> _readHistory;
     private readonly Func<string> _readCookies;
     private readonly QueueSubscriptionItems _queueUrls;
+    private readonly QueueSubscriptionItems _queueSelectedUrls;
     private readonly Action<string> _openUrl;
     private readonly Action<string> _log;
     private readonly Action<IEnumerable<string>>? _prefetchPreviews;
@@ -46,10 +47,12 @@ internal sealed partial class SubscriptionController : IDisposable
     internal SubscriptionController(Window owner,SubscriptionStore store,string ytDlp,string viewPath,
         Func<Dictionary<string,DateTimeOffset?>> readHistory,Func<string> readCookies,
         QueueSubscriptionItems queueUrls,Action<string> openUrl,Action<string> log,
-        Action<IEnumerable<string>>? prefetchPreviews=null,PreviewController? previews=null)
+        Action<IEnumerable<string>>? prefetchPreviews=null,PreviewController? previews=null,
+        QueueSubscriptionItems? queueSelectedUrls=null)
     {
         _owner=owner;_store=store;_ytDlp=ytDlp;_viewPath=viewPath;
-        _readHistory=readHistory;_readCookies=readCookies;_queueUrls=queueUrls;_openUrl=openUrl;_log=log;
+        _readHistory=readHistory;_readCookies=readCookies;_queueUrls=queueUrls;
+        _queueSelectedUrls=queueSelectedUrls??queueUrls;_openUrl=openUrl;_log=log;
         _prefetchPreviews=prefetchPreviews;_previews=previews;
         _checkProgress=new SubscriptionCheckProgressController(owner.Dispatcher,CurrentWindow,
             ()=>_cancellation?.IsCancellationRequested==true);
@@ -562,6 +565,7 @@ internal sealed partial class SubscriptionController : IDisposable
         var sources=reconciled.Subscriptions.ToDictionary(x=>x.Id,StringComparer.Ordinal);
         var acknowledgements=new List<(string Id,string[] Urls)>();
         var acceptedUrls=new HashSet<string>(StringComparer.Ordinal);
+        var queue=selection is null?_queueUrls:_queueSelectedUrls;
         Exception? acceptanceError=null;
         try
         {
@@ -576,7 +580,7 @@ internal sealed partial class SubscriptionController : IDisposable
                 var requested=group.Select(x=>x.Url).Distinct(StringComparer.Ordinal).ToArray();
                 var requestedKeys=requested.ToHashSet(StringComparer.Ordinal);
                 var titles=group.ToDictionary(x=>x.Url,x=>x.Title,StringComparer.Ordinal);
-                var accepted=_queueUrls(requested,source.Id,name,titles).Where(requestedKeys.Contains).Distinct(StringComparer.Ordinal).ToArray();
+                var accepted=queue(requested,source.Id,name,titles).Where(requestedKeys.Contains).Distinct(StringComparer.Ordinal).ToArray();
                 if (accepted.Length==0) continue;
                 acknowledgements.Add((group.Key,accepted));
                 acceptedUrls.UnionWith(accepted);
