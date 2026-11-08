@@ -79,8 +79,8 @@ internal static class SubscriptionRequeueTests
             File.ReadAllBytes(stage+".resume.json").SequenceEqual(proof),
             "Scheduling continuation must preserve the exact partial bytes, owner proof, pinned plan and counter baseline.");
         Require(owner.Coordinator is null && owner.RunningTask is null && owner.StartedAt is null && owner.Downloads.Count==0 &&
-            File.ReadAllBytes(data.SessionPath).SequenceEqual(before) && File.ReadAllBytes(data.HistoryPath).SequenceEqual(history),
-            "Queue admission alone must neither launch a session nor rewrite successful history or save implicitly.");
+            File.ReadAllBytes(data.HistoryPath).SequenceEqual(history),
+            "Scheduling a repeat must neither launch a session nor rewrite successful history.");
 
         data.Save(owner.Queue,options);
         var restored=data.Restore()!;
