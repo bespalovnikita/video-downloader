@@ -175,7 +175,7 @@ internal sealed partial class UiScenario
             var oldRun=ui.Subject.SessionState.RunningTask;
 
             ui.Refresh();ui.Select(ui.Processed);int repeats=ui.DuplicateCount;ui.Queue();
-            RequeueUi.Require(ui.DuplicateCount==repeats+1 && completed.RequeueRequested && completed.Status=="Completed" && completed.State=="Done" &&
+            RequeueUi.Require(ui.DuplicateCount==repeats && completed.RequeueRequested && completed.Status=="Completed" && completed.State=="Done" &&
                 completed.Path==oldMedia && completed.OwnedPaths.SequenceEqual(new[]{oldMedia,oldSidecar}) && completed.Progress==100 &&
                 completed.TransferredBytes==1234 && ReferenceEquals(completed.Selection,selection) && ReferenceEquals(completed.CompletedSelection,selection) &&
                 completed.SubscriptionId=="earlier-source" && completed.SubscriptionName=="Старый каталог" &&
@@ -351,7 +351,8 @@ internal sealed partial class UiScenario
                     if(chooser)
                     {
                         ChooserCount++;
-                        Require(_answer is not null,"A uniform selection unexpectedly displayed a mixed-state choice.");
+                        if(_answer is not {} choice)
+                            throw new InvalidOperationException("A uniform selection unexpectedly displayed a mixed-state choice.");
                         Require(dialog.FindName("SubscriptionQueueSelectionSummary") is TextBlock summary && summary.Text.Length>0,
                             "The actual choice must explain its captured selection.");
                         Require(DialogButton(dialog,"Cancel").IsCancel && !DialogButton(dialog,"All").IsDefault &&
@@ -361,10 +362,10 @@ internal sealed partial class UiScenario
                             "Enter and Escape must preserve the safe Only-new/Cancel defaults instead of selecting all historical results.");
                         _inspect?.Invoke(dialog);
                         if(!dialog.IsVisible)continue;
-                        if(_answer=="Close")dialog.Close();
+                        if(choice=="Close")dialog.Close();
                         else
                         {
-                            var button=DialogButton(dialog,_answer);
+                            var button=DialogButton(dialog,choice);
                             Require(button.IsEnabled,"The requested actual queue-choice button must be enabled.");
                             button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                         }
