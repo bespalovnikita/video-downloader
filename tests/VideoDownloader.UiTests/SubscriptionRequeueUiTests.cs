@@ -212,11 +212,12 @@ internal sealed partial class UiScenario
             ui.HistoryAnswer="YesAllButton";File.WriteAllText(gate,"release");ui.ClickMain("StartButton");
             RequeueUi.Until(()=>completed.Status=="Completed" && skipped.Status=="Completed" && !completed.RequeueRequested && !skipped.RequeueRequested &&
                 ui.Subject.SessionState.Coordinator is null && ui.Subject.SessionState.RunningTask?.IsCompleted==true &&
-                !ReferenceEquals(oldRun,ui.Subject.SessionState.RunningTask),"A single ordinary Start must actually repeat and resume both explicitly requeued rows.");
+                !ReferenceEquals(oldRun,ui.Subject.SessionState.RunningTask) && ui.Item(slowUrl).State=="Processed",
+                "A single ordinary Start must actually repeat/resume both explicitly requeued rows and deliver its subscription success acknowledgement.");
             RequeueUi.Require(completed.Path!=oldMedia && completed.Path.EndsWith("fixture (2).video.mp4",StringComparison.Ordinal) &&
                 File.Exists(completed.Path) && File.Exists(skipped.Path) && !Directory.Exists(stage) &&
                 File.ReadAllText(oldMedia)=="previous owned media" && File.ReadAllText(oldSidecar)=="previous owned subtitles" &&
-                ui.Data.ReadHistory().ContainsKey(slowUrl) && ui.Item(slowUrl).State=="Processed",
+                ui.Data.ReadHistory().ContainsKey(slowUrl) && File.ReadAllBytes(ui.Data.HistoryPath).Take(history.Length).SequenceEqual(history),
                 "A real accepted repeat must reserve a new media/sidecar name, preserve the previous publication, consume retained staging and record genuine success.");
         }
         finally
