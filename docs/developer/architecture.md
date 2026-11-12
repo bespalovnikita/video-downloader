@@ -751,11 +751,12 @@ flowchart TD
     KnownSuccess -->|"Нет"| Seen{"Материал уже известен этой подписке?"}
     Seen -->|"Да"| Retain["Сохранить прежнее состояние; обновить название"]
     Seen -->|"Нет"| First{"Первый успешный обход?"}
-    First -->|"Старый источник без InitialAction"| Baseline["Baseline: прежняя исходная отметка"]
+    First -->|"Да, legacy: нет InitialAction; DownloadExisting=false"| Baseline["Baseline: прежняя исходная отметка"]
+    First -->|"Да, legacy: нет InitialAction; DownloadExisting=true; только New без известного успеха"| Initial["InitialQueuePending: запросить приём исходного набора"]
     First -->|"Skip: по умолчанию"| Skipped["Skipped; можно выбрать для очереди позже"]
     First -->|"ManualDone"| ManualDone["Skipped + ManuallyCompleted: ручное Готово без файла и успеха"]
-    First -->|"Queue: все существующие"| Initial["InitialQueuePending: запросить приём всех URL, включая исторические"]
-    Success -->|"Первичный Queue и pending: явный повтор"| Initial
+    First -->|"Queue: все существующие URL, включая исторические"| Initial
+    Success -->|"Только первичный InitialAction=Queue и pending: явный повтор"| Initial
     First -->|"Нет"| Inbox["Ранее неизвестные URL: New во входящих"]
     Initial --> Accept["Главное окно подтверждает фактически принятые URL"]
     Inbox -->|"Выбраны вручную либо подтверждены после всей проверки"| Accept
