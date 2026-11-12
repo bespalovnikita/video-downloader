@@ -14,6 +14,9 @@ public sealed partial class NativeWindow
 
     private void InitializeJobDiagnostics()
     {
+        const string purpose="Посмотреть события и ошибки выбранной загрузки, скопировать сведения или сохранить отчёт для помощи.";
+        F<Button>("QueueDiagnosticsButton").ToolTip=purpose;
+        F<Button>("DownloadDiagnosticsButton").ToolTip=purpose;
         F<Button>("QueueDiagnosticsButton").Click+=(_,_)=>
         {if(Q.SelectedItems.Count==1 && Q.SelectedItem is DownloadItem row && IsVisibleQueueRow(row))OpenJobDiagnostics(row);};
         F<Button>("DownloadDiagnosticsButton").Click+=(_,_)=>
@@ -22,7 +25,7 @@ public sealed partial class NativeWindow
         void AddMenu(DataGrid grid,string name,bool queue)
         {
             if(grid.ContextMenu is not {} menu)return;
-            var entry=new MenuItem{Name=name,Header="Диагностика…"};
+            var entry=new MenuItem{Name=name,Header="Диагностика…",ToolTip=purpose};
             bool Available()=>grid.SelectedItems.Count==1 && grid.SelectedItem is DownloadItem row &&
                 AppPersistence.ValidUrl(row.Url) && (!queue || IsVisibleQueueRow(row)) && !_closing && !_disposed && !_appUpdateHandoff;
             entry.Click+=(_,_)=>{if(Available() && grid.SelectedItem is DownloadItem row)OpenJobDiagnostics(row);};
