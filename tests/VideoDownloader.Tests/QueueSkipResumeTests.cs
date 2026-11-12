@@ -197,7 +197,11 @@ internal static class QueueSkipResumeTests
         await using(var engine=Engine(data,Options(Path.Combine(root,"cancel-output")),resetTrace))
         {
             Require(engine.Add(cancelled),"Destructive cancellation fixture must be admitted");
-            Task running=engine.RunAsync();await WaitForPartial(cancelled,"Cancellation fixture must own a real partial");
+            Task running=engine.RunAsync();
+            await WaitForPartial(cancelled,"Cancellation fixture must own a real partial",()=>
+                "trace=["+string.Join(" | ",resetTrace.TakeLast(16).Select(record=>record.Event+":"+
+                    record.Message[..Math.Min(record.Message.Length,384)]))+"] requests=["+
+                string.Join(" | ",origin.Requests.TakeLast(16).Select(request=>request.Method+" "+request.Path+" from="+request.First))+"]");
             string stage=cancelled.StageDir;
             Require(await engine.CancelAndWaitAsync(cancelled).WaitAsync(TimeSpan.FromSeconds(15)),"Destructive cancellation must join the current attempt");
             Require(cancelled.Status=="Interrupted" && cancelled.AttemptFinished && cancelled.ResumeState is null &&
@@ -411,12 +415,28 @@ internal static class QueueSkipResumeTests
         try{return Directory.EnumerateFiles(row.StageDir,"*.part",SearchOption.AllDirectories).FirstOrDefault(path=>new FileInfo(path).Length>=64*1024);}
         catch(IOException){return null;}
     }
-    private static Task WaitForPartial(DownloadItem row,string message)=>Until(()=>Partial(row) is not null,TimeSpan.FromSeconds(25),message+" / "+Describe(row));
-    private static async Task Until(Func<bool> ready,TimeSpan timeout,string message)
+    private static Task WaitForPartial(DownloadItem row,string message,Func<string>? details=null)=>
+        Until(()=>Partial(row) is not null,TimeSpan.FromSeconds(25),message,()=>
+            Describe(row)+"; "+PartialSnapshot(row)+(details is null?"":"; "+details()));
+    private static string PartialSnapshot(DownloadItem row)
+    {
+        if(row.StageDir.Length==0)return "stage=<empty>";
+        try
+        {
+            if(!Directory.Exists(row.StageDir))return "stage=<absent>";
+            return "stageFiles=["+string.Join(" | ",Directory.EnumerateFiles(row.StageDir,"*",SearchOption.AllDirectories)
+                .Take(8).Select(path=>Path.GetFileName(path)+":"+new FileInfo(path).Length))+"]";
+        }
+        catch(Exception error) when(error is IOException or UnauthorizedAccessException)
+        {return "stageSnapshot="+error.GetType().Name;}
+    }
+    private static async Task Until(Func<bool> ready,TimeSpan timeout,string message,Func<string>? details=null)
     {
         var elapsed=Stopwatch.StartNew();
         while(!ready() && elapsed.Elapsed<timeout)await Task.Delay(20);
-        Require(ready(),message);
+        // Read mutable worker state only on failure, rather than capturing the
+        // initial Queued row before the real extractor has started.
+        if(!ready())Require(false,message+(details is null?"":" / "+details()));
     }
     private static async Task RefusesAdmission(AppPersistence data,DownloadOptions options,DownloadItem row,string message)
     {
