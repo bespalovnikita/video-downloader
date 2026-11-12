@@ -13,7 +13,8 @@ foreach ($file in Get-ChildItem -LiteralPath $Directory -Recurse -File) {
     }
 }
 foreach ($required in @('VideoDownloader.exe','yt-dlp.exe','windows-package.json','ui/MainWindow.xaml','ui/DuplicateDownloadDialog.xaml',
-    'ui/SubscriptionsWindow.xaml','assets/app.ico','collection-plugins/videodownloader/yt_dlp_plugins/extractor/vd_pornhub.py')) {
+    'ui/SubscriptionsWindow.xaml','assets/app.ico','collection-plugins/videodownloader/yt_dlp_plugins/extractor/vd_pornhub.py',
+    'collection-plugins/videodownloader/yt_dlp_plugins/extractor/vd_pornhub_preview.py')) {
     $path = Join-Path $Directory $required
     if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or (Get-Item -LiteralPath $path).Length -eq 0) {
         throw "Missing or empty required package file: $required"

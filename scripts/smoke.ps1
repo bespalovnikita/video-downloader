@@ -48,4 +48,7 @@ if ($IsWindows) {
 if (-not (Test-Path -LiteralPath (Join-Path $root 'collection-plugins/videodownloader/yt_dlp_plugins/extractor/vd_pornhub.py') -PathType Leaf)) {
     throw 'Missing bundled collection extractor'
 }
+if (-not (Test-Path -LiteralPath (Join-Path $root 'collection-plugins/videodownloader/yt_dlp_plugins/extractor/vd_pornhub_preview.py') -PathType Leaf)) {
+    throw 'Missing bundled preview extractor'
+}
 Write-Host 'Native project, WPF markup, resources and developer script smoke: PASS'

@@ -53,20 +53,22 @@ public sealed partial class NativeWindow
             if((string.IsNullOrWhiteSpace(row.Title) || string.Equals(row.Title,row.Url,StringComparison.Ordinal)) &&
                 discoveredTitles.TryGetValue(row.Url,out string? title))titleUpdates.Add(row,title);
         SessionState.AddBatch(approved,ReadOptions(),titleUpdates,requeues);
-        foreach (var row in SessionState.Queue.Where(row=>requestedSet.Contains(row.Url) &&
-            row.CanResume && (row.Status!="Completed" || requeueExisting && row.RequeueRequested)))
+        var previewRowsByUrl=SessionState.Queue.Where(row=>requestedSet.Contains(row.Url) &&
+            row.CanResume && (row.Status!="Completed" || requeueExisting && row.RequeueRequested))
+            .ToDictionary(row=>row.Url,StringComparer.Ordinal);
+        var previewRows=requested.Where(previewRowsByUrl.ContainsKey).Select(url=>previewRowsByUrl[url]).ToArray();
+        foreach (var row in previewRows)
         {
             _preview.RefreshKnownTitle(row);
-            // An explicitly accepted URL may already be queued after an
-            // earlier metadata failure. Re-request its preview as well; the
-            // shared worker deduplicates pending work and valid cached data.
-            RequestRowPreview(row);
         }
+        // Explicit acceptance takes precedence over archive backfill, including
+        // existing queued rows. Promote the batch once in source order rather
+        // than reversing it through repeated inserts at the worker's head.
+        _preview.RequestRows(previewRows,true);
         Reindex();
         if (_checkpointReadOnly)
             throw new IOException("Не удалось сохранить очередь. Материалы подписки остаются доступными для повторного добавления.");
-        var accepted=requested.Where(url=>SessionState.Queue.Any(row=>row.Url==url && row.CanResume &&
-            (row.Status!="Completed" || requeueExisting && row.RequeueRequested))).ToArray();
+        var accepted=previewRows.Select(row=>row.Url).ToArray();
         T("ClipboardHint").Text=$"Из подписок принято {accepted.Length}. Загрузка начнётся по кнопке «Скачать всю очередь».";
         if(SessionState.Queue.Any(row=>requestedSet.Contains(row.Url) && row.RequeueRequested &&
             row.Status=="Skipped" && row.ResumeState?.Selection?.IsPartial==true))
