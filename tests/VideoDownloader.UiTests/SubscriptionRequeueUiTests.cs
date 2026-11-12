@@ -435,6 +435,7 @@ internal sealed partial class UiScenario
                                 :DialogButton(dialog,"Cancel").IsDefault),
                             "Enter and Escape must preserve the safe Only-new/Cancel defaults instead of selecting all historical results.");
                         _inspect?.Invoke(dialog);
+                        Trace("chooser inspection returned; visible="+dialog.IsVisible);
                         if(!dialog.IsVisible)continue;
                         if(choice=="Close")dialog.Close();
                         else
