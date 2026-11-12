@@ -168,12 +168,12 @@ public sealed partial class NativeWindow
         F<Button>("OpenFileButton").Click+=(_,_)=>{if(D.SelectedItems.Count==1 && D.SelectedItem is DownloadItem row)OpenFile(row.Path);};
         F<Button>("OpenFolderButton").Click+=(_,_)=>ShowFileInFolder(D.SelectedItems.Count==1?D.SelectedItem as DownloadItem:null);
         F<Button>("CopyPathButton").Click+=(_,_)=>{if(D.SelectedItems.Count==1 && D.SelectedItem is DownloadItem row && row.Path.Length>0)Clipboard.SetText(row.Path);};
-        F<Button>("OpenUrlButton").Click+=(_,_)=>{if(D.SelectedItems.Count==1 && D.SelectedItem is DownloadItem row)OpenUrl(row.Url);};
+        F<Button>("OpenUrlButton").Click+=(_,_)=>{if(D.SelectedItems.Count==1 && D.SelectedItem is DownloadItem row)OpenUrl(row.DisplayUrl);};
         Q.KeyDown+=async(_,e)=>
         {
             if (e.Key==Key.Delete){e.Handled=true;await RemoveRowsAsync(SelectedVisibleQueueRows());}
             else if(e.Key==Key.C && Keyboard.Modifiers==ModifierKeys.Control && Q.SelectedItem is DownloadItem row && IsVisibleQueueRow(row))
-            {Clipboard.SetText(row.Url);e.Handled=true;}
+            {Clipboard.SetText(row.DisplayUrl);e.Handled=true;}
         };
         SetupContextMenus();
     }
@@ -188,8 +188,8 @@ public sealed partial class NativeWindow
             queueMenu.Opened+=(_,_)=>entry.IsEnabled=Q.SelectedItem is DownloadItem row && IsVisibleQueueRow(row);
             queueMenu.Items.Add(entry);
         }
-        QueueAction(ErrorMessages.Text("Открыть ссылку","Open URL"),row=>OpenUrl(row.Url));
-        QueueAction(ErrorMessages.Text("Копировать ссылку","Copy URL"),row=>Clipboard.SetText(row.Url));
+        QueueAction(ErrorMessages.Text("Открыть ссылку","Open URL"),row=>OpenUrl(row.DisplayUrl));
+        QueueAction(ErrorMessages.Text("Копировать ссылку","Copy URL"),row=>Clipboard.SetText(row.DisplayUrl));
         var downloadSelected=new MenuItem{Header=ErrorMessages.Text("Скачать выбранные строки","Download selected rows")};
         downloadSelected.Click+=(_,_)=>{var rows=SelectedVisibleQueueRows();if(rows.Length>0)_ = StartAsync(rows);};
         queueMenu.Items.Add(downloadSelected);
@@ -220,7 +220,8 @@ public sealed partial class NativeWindow
         DownloadAction(ErrorMessages.Text("Открыть файл","Open file"),row=>OpenFile(row.Path));
         DownloadAction(ErrorMessages.Text("Показать в папке","Show in folder"),row=>ShowFileInFolder(row));
         DownloadAction(ErrorMessages.Text("Копировать путь","Copy path"),row=>{if(row.Path.Length>0)Clipboard.SetText(row.Path);});
-        DownloadAction(ErrorMessages.Text("Открыть ссылку","Open URL"),row=>OpenUrl(row.Url));
+        DownloadAction(ErrorMessages.Text("Открыть ссылку","Open URL"),row=>OpenUrl(row.DisplayUrl));
+        DownloadAction(ErrorMessages.Text("Копировать ссылку","Copy URL"),row=>Clipboard.SetText(row.DisplayUrl));
         DownloadAction(ErrorMessages.Text("Скачать повторно","Retry URL"),row=>{_ = StartAsync([row]);});
         var skipDownloads=new MenuItem{Header=ErrorMessages.Text("Пропустить выбранные загрузки","Skip selected downloads")};
         skipDownloads.Click+=async(_,_)=>await SkipRowsAsync(SelectedDownloadRows());downloadMenu.Items.Add(skipDownloads);

@@ -97,7 +97,7 @@ public sealed partial class PreviewService : IDisposable
             if (entry!=null)
                 entry=entry with { SavedAtUtc=entry.SavedAtUtc.Kind==DateTimeKind.Unspecified
                     ? DateTime.SpecifyKind(entry.SavedAtUtc,DateTimeKind.Utc)
-                    : entry.SavedAtUtc.ToUniversalTime() };
+                    : entry.SavedAtUtc.ToUniversalTime(),WebpageUrl=VideoPageUrl.FromExtractor(entry.WebpageUrl,entry.Extractor) };
             if (entry is { Title:not null, Uploader:not null, PlaylistTitle:not null,
                 Extractor:not null, Codecs:not null, DynamicRange:not null, ThumbnailBase64:not null } &&
                 entry.Duration>=0 && entry.Duration<TimeSpan.MaxValue.TotalSeconds &&
@@ -114,7 +114,10 @@ public sealed partial class PreviewService : IDisposable
                     Log("Preview cache image unavailable for "+DiagnosticField(url)+": stage=cache_image_decode");
                 }
                 CacheInMemory(entry);_thumbnailErrors[url]=Str(root,"ThumbnailError");
-                _fetchVersions[url]=validImages && root.TryGetProperty("PreviewFetchVersion",out var storedVersion) && storedVersion.TryGetInt32(out int versionNumber)?versionNumber:0;
+                // Older collection caches know the first title but not its
+                // page. Upgrade once without discarding the useful old data.
+                bool pageKnown=!entry.IsCollection || root.TryGetProperty(nameof(PreviewData.WebpageUrl),out _);
+                _fetchVersions[url]=validImages && pageKnown && root.TryGetProperty("PreviewFetchVersion",out var storedVersion) && storedVersion.TryGetInt32(out int versionNumber)?versionNumber:0;
                 return CachedResult(entry);
             }
         }
@@ -147,7 +150,7 @@ public sealed partial class PreviewService : IDisposable
         {
             _cache[data.Url]=data;
             _lastUse[data.Url]=Interlocked.Increment(ref _access);
-            long Characters(PreviewData entry)=>(long)entry.Url.Length+entry.Title.Length+entry.Uploader.Length+
+            long Characters(PreviewData entry)=>(long)entry.Url.Length+entry.WebpageUrl.Length+entry.Title.Length+entry.Uploader.Length+
                 entry.PlaylistTitle.Length+entry.Extractor.Length+entry.Codecs.Length+entry.DynamicRange.Length+entry.ThumbnailBase64.Length+
                 entry.ThumbnailsBase64.Sum(image=>(long)image.Length)+entry.Formats.Sum(format=>(long)format.Id.Length+
                     format.Extension.Length+format.VideoCodec.Length+format.AudioCodec.Length+format.Language.Length+format.DynamicRange.Length+160);
@@ -312,7 +315,7 @@ public sealed partial class PreviewService : IDisposable
                         CacheVersion=1, PreviewFetchVersion=3, data.SavedAtUtc, data.Url, Success=true, fetched.ThumbnailError,
                         data.Title,data.PlaylistTitle,data.Uploader,data.Duration,
                         data.ThumbnailBase64,data.ThumbnailsBase64,data.Extractor,data.MaxHeight,data.MaxFps,data.Codecs,data.DynamicRange,
-                        data.Formats,data.FormatsLoaded,data.IsCollection,data.FormatsTruncated,
+                        data.Formats,data.FormatsLoaded,data.IsCollection,data.WebpageUrl,data.FormatsTruncated,
                         data.LocalThumbnailFingerprint,data.LocalThumbnailSavedAtUtc
                     },AppPersistence.Json);
                     try { AppPersistence.AtomicWrite(CacheFile(url),contents);PruneDiskCache(CacheFile(url)); }
@@ -447,9 +450,18 @@ public sealed partial class PreviewService : IDisposable
             .ThenByDescending(candidate=>candidate.Area).Take(60).ToArray();
         bool formatsTruncated=false;
         var formats=isCollection?[]:MediaFormatCatalog.Parse(j,out formatsTruncated);
+        string pageExtractor=Str(j,"extractor_key");
+        if(pageExtractor.Length==0)pageExtractor=Str(j,"extractor");
+        bool material=!j.TryGetProperty("entries",out _) && Str(j,"_type") is "" or "video";
+        string webpage=isCollection && material?VideoPageUrl.FromExtractor(Str(j,"webpage_url"),pageExtractor):"";
+        if(webpage==Str(j,"url") || j.TryGetProperty("formats",out var pageFormats) && pageFormats.ValueKind==JsonValueKind.Array &&
+            pageFormats.EnumerateArray().Any(format=>Str(format,"url")==webpage))webpage="";
+        string displayedExtractor=Str(j,"extractor");
+        if(displayedExtractor.Length==0)displayedExtractor=pageExtractor;
         var data=new PreviewData(url,Str(j,"title"),Str(j,"uploader"),playlist,Number(j,"duration"),
-            Str(j,"extractor"),maxHeight,maxFps,string.Join(", ",codecs),string.Join(", ",ranges),"",DateTime.UtcNow)
-            {Formats=formats,FormatsLoaded=true,IsCollection=isCollection,FormatsTruncated=formatsTruncated};
+            displayedExtractor,maxHeight,maxFps,string.Join(", ",codecs),string.Join(", ",ranges),"",DateTime.UtcNow)
+            {Formats=formats,FormatsLoaded=true,IsCollection=isCollection,FormatsTruncated=formatsTruncated,
+                WebpageUrl=webpage};
         publish(data);
         string thumbnailError="";
         var gallery=new List<string>();

@@ -163,7 +163,7 @@ internal static class NativeContractTests
         var printValues = args.Select((value, index) => (value, index)).Where(pair => pair.value == "--print")
             .Select(pair => args[pair.index + 1]).ToArray();
         Require(printValues.SequenceEqual(new[] { "before_dl:__VD_TITLE__:%(title)s",
-            "before_dl:__VD_PLAN__:%(.{id,format_id,requested_formats.:.format_id,playlist_autonumber,n_entries})j",
+            "before_dl:__VD_PLAN__:%(.{id,format_id,requested_formats.:.format_id,playlist_autonumber,n_entries,playlist_id,playlist_index,extractor_key,extractor,webpage_url})j",
             "after_move:__VD_FILE__:%(filepath)s" }),
             "Title, component plan and final media path must remain distinct machine-readable events without dumping media URLs");
     }

@@ -18,6 +18,9 @@ public sealed class DownloadItem : INotifyPropertyChanged
     private string _rawError = "";
     private string _slot = "";
     private string _url = "";
+    private string _currentVideoUrl = "";
+    private string _previewVideoUrl = "";
+    private bool _hasCurrentVideoContext;
     private string _progressDetail = "";
     private bool _requeueRequested;
     private DownloadSelection? _selection;
@@ -30,7 +33,38 @@ public sealed class DownloadItem : INotifyPropertyChanged
         else PropertyChanged?.Invoke(this,new PropertyChangedEventArgs(name));
     }
     public int Order { get => _order; set { _order = value; Changed(); } }
-    public string Url { get => _url; set { _url = value; Changed(); } }
+    public string Url { get => _url; set { _url = value; Changed(); Changed(nameof(DisplayUrl)); } }
+    // Url remains the exact task identity. A collection's current public page
+    // changes presentation/navigation, never download, retry or history keys.
+    [JsonIgnore(Condition=JsonIgnoreCondition.WhenWritingNull)]
+    public string? CurrentVideoUrl
+    {
+        get=>_currentVideoUrl.Length>0?_currentVideoUrl:null;
+        set
+        {
+            _currentVideoUrl=VideoPageUrl.PublicOrEmpty(value);
+            if(_currentVideoUrl.Length>0)_hasCurrentVideoContext=true;
+            Changed();Changed(nameof(DisplayUrl));
+        }
+    }
+    [JsonIgnore] public string DisplayUrl=>_currentVideoUrl.Length>0?_currentVideoUrl:
+        !_hasCurrentVideoContext && _previewVideoUrl.Length>0?_previewVideoUrl:Url;
+    [JsonIgnore] internal bool HasCurrentVideoContext=>_hasCurrentVideoContext;
+    internal void SetPreviewVideoUrl(string? value)
+    {
+        if(_hasCurrentVideoContext)return;
+        string page=VideoPageUrl.PublicOrEmpty(value);
+        if(_previewVideoUrl==page)return;
+        _previewVideoUrl=page;Changed(nameof(DisplayUrl));
+    }
+    internal void SetCurrentVideoUrl(string? value)
+    {
+        _hasCurrentVideoContext=true;_previewVideoUrl="";CurrentVideoUrl=value??"";
+    }
+    internal void ResetCurrentVideo()
+    {
+        _hasCurrentVideoContext=false;_previewVideoUrl="";CurrentVideoUrl="";
+    }
     public string State { get => _state; set { _state = value; Changed(); Changed(nameof(StateLabel)); Changed(nameof(StateToolTip)); } }
     public string Status { get => _status; set { _status = value; Changed(); if(RequeueRequested){Changed(nameof(StateLabel));Changed(nameof(StateToolTip));} } }
     public double Progress { get => _progress; set { _progress = value; Changed(); } }
@@ -188,6 +222,8 @@ public sealed record PreviewData(string Url, string Title, string Uploader, stri
     public bool FormatsTruncated { get; init; }
     public bool FormatsLoaded { get; init; }
     public bool IsCollection { get; init; }
+    // Optional public first-entry page; the cache identity remains Url.
+    public string WebpageUrl { get; init; } = "";
 }
 public static class DownloadFormat
 {

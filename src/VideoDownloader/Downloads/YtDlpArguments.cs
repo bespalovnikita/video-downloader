@@ -24,11 +24,11 @@ internal sealed class YtDlpArguments(DownloadOptions options)
             "--progress-template","download:__VD_PROGRESS__|%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s|%(progress.downloaded_bytes)s|%(progress.total_bytes,progress.total_bytes_estimate)s|%(info.id)s:%(info.format_id)s|%(info.vcodec)s|%(info.acodec)s"+
                 (selection?.EffectiveSections.Count is >1?"|%(info.section_start)s|%(info.section_end)s":""),
             "--print","before_dl:__VD_TITLE__:%(title)s",
-            // Keep only IDs/counts: a complete requested_formats dump includes
+            // Project only IDs/counts/public pages: requested_formats includes
             // signed media URLs and is unsuitable for diagnostic retention.
             "--print",selection?.EffectiveSections.Count is >1?
-                "before_dl:__VD_PLAN__:%(.{id,format_id,requested_formats.:.format_id,playlist_autonumber,n_entries,section_start,section_end})j":
-                "before_dl:__VD_PLAN__:%(.{id,format_id,requested_formats.:.format_id,playlist_autonumber,n_entries})j",
+                "before_dl:__VD_PLAN__:%(.{id,format_id,requested_formats.:.format_id,playlist_autonumber,n_entries,playlist_id,playlist_index,extractor_key,extractor,webpage_url,section_start,section_end})j":
+                "before_dl:__VD_PLAN__:%(.{id,format_id,requested_formats.:.format_id,playlist_autonumber,n_entries,playlist_id,playlist_index,extractor_key,extractor,webpage_url})j",
             "--print","after_move:__VD_FILE__:%(filepath)s"];
         var args=new List<string>(standard);
         string ffmpeg=DependencyCenter.Executable("ffmpeg.exe");

@@ -290,17 +290,17 @@
         </Style>
 
         <Style x:Key="VideoLabelStyle" TargetType="TextBlock" BasedOn="{StaticResource GridTextStyle}">
-            <Setter Property="Text" Value="{Binding Url}"/>
-            <Setter Property="ToolTip" Value="{Binding Url}"/>
+      <Setter Property="Text" Value="{Binding DisplayUrl}"/>
+      <Setter Property="ToolTip" Value="{Binding DisplayUrl}"/>
             <Style.Triggers>
                 <DataTrigger Binding="{Binding Tag, RelativeSource={RelativeSource AncestorType=DataGrid}}" Value="True">
                     <Setter Property="Text" Value="{Binding Title}"/>
                 </DataTrigger>
                 <DataTrigger Binding="{Binding Title, FallbackValue=''}" Value="">
-                    <Setter Property="Text" Value="{Binding Url}"/>
+          <Setter Property="Text" Value="{Binding DisplayUrl}"/>
                 </DataTrigger>
                 <DataTrigger Binding="{Binding Title}" Value="{x:Null}">
-                    <Setter Property="Text" Value="{Binding Url}"/>
+          <Setter Property="Text" Value="{Binding DisplayUrl}"/>
                 </DataTrigger>
             </Style.Triggers>
         </Style>
