@@ -68,8 +68,24 @@ internal sealed partial class UiScenario
             var level=Control<ComboBox>(window,"JobDiagnosticsLevelCombo");
             var details=Control<TextBox>(window,"JobDiagnosticsEventDetails");
             var status=Control<TextBlock>(window,"JobDiagnosticsStatus");
+            var purpose=Control<TextBlock>(window,"JobDiagnosticsPurpose");
+            var help=Control<TextBlock>(window,"JobDiagnosticsHelp");
+            var empty=Control<TextBlock>(window,"JobDiagnosticsEmptyHint");
             PumpUntil(()=>grid.Items.Count==3 && window.PendingOperations.IsCompleted,"The real journal/service must load only the captured exact URL.");
             Require(grid.IsReadOnly && attempts.Items.Count==3 && probes==0,"Opening must expose two typed invocations without component probes.");
+            Require(purpose.IsVisible && purpose.Text.Contains("причину ошибки") && !help.IsVisible,"The window must explain its purpose before the user asks for help.");
+            Click(window,"JobDiagnosticsHelpButton");window.UpdateLayout();
+            Require(help.IsVisible && !details.IsVisible && help.Text.Contains("скрытые фильтрами") && help.Text.Contains("что хотели сделать"),"The actual help action must explain reading errors and sharing a complete report.");
+            Click(window,"JobDiagnosticsDetailsButton");window.UpdateLayout();
+            Require(details.IsVisible && !help.IsVisible,"The user must be able to return from help to the selected event.");
+            window.Width=window.MinWidth;window.Height=window.MinHeight;window.UpdateLayout();
+            var content=(FrameworkElement)window.Content;
+            foreach(string action in new[]{"RefreshJobDiagnosticsButton","CopyJobDiagnosticsButton","ExportJobDiagnosticsButton","CloseJobDiagnosticsButton"})
+            {
+                var button=Control<Button>(window,action);var point=button.TranslatePoint(new System.Windows.Point(),content);
+                Require(button.IsVisible && point.Y>=0 && point.Y+button.ActualHeight<=content.ActualHeight+1,"Diagnostics actions must remain reachable at the minimum window size: "+action);
+            }
+            Require(grid.ActualHeight>27,"The minimum window size must retain a usable events area.");
             row.Title="Позднее имя";row.Url=other.Url;row.Status="Completed";
             Require(window.Title.Contains("Выбранное видео") && !window.Title.Contains("Позднее"),"The target must remain captured when its source row changes.");
             Require(Control<TextBlock>(window,"JobDiagnosticExplanation").Text.Length>0 && Control<TextBox>(window,"JobDiagnosticError").Text.Contains("403"),"An explanation and original diagnostic must both remain visible.");
@@ -78,8 +94,8 @@ internal sealed partial class UiScenario
             Require((grid.Columns[3].GetCellContent(grid.SelectedItem) as TextBlock)?.Text=="admitted","The actual DataGrid binding must render the typed event name.");
             attempts.SelectedIndex=1;Require(grid.Items.Count==2,"Attempt filter must isolate the first invocation.");
             level.SelectedValue=nameof(JournalLevel.Error);Require(grid.Items.Count==1,"Level and attempt filters must compose.");
-            search.Text="not-present";Require(grid.Items.Count==0 && !Control<Button>(window,"CopyJobDiagnosticsButton").IsEnabled,"No-match search must not copy hidden events.");
-            search.Text="403";Require(grid.Items.Count==1,"Search must match retained raw diagnostics.");
+            search.Text="not-present";Require(grid.Items.Count==0 && !Control<Button>(window,"CopyJobDiagnosticsButton").IsEnabled && empty.IsVisible && empty.Text.Contains("Очистите поиск"),"No-match search must explain how to restore results without copying hidden events.");
+            search.Text="403";Require(grid.Items.Count==1 && !empty.IsVisible,"Search must match retained raw diagnostics and clear the empty-state guidance.");
             Click(window,"CopyJobDiagnosticsButton");
             string copied=Clipboard.GetText();
             Require(copied.Contains("failure") && !copied.Contains("event=retry") && !copied.Contains("event=admitted"),"Clipboard copy must contain exactly the visible event subset.");
@@ -121,6 +137,15 @@ internal sealed partial class UiScenario
             PumpUntil(()=>window.PendingOperations.IsCompleted,"Closing before a posted read starts must join it without touching closed controls.");
             Require(!window.IsVisible,"A cancelled queued read cannot reopen its closed window.");window=null;
 
+            var untouched=JobDiagnosticTarget.Capture(new DownloadItem{Url="https://diagnostics.invalid/not-started",Title="Ещё не запущено",Status="Queued"});
+            window=new JobDiagnosticsWindow(owner,untouched,service,()=>journal.Sequence,_=>null);window.Show();
+            PumpUntil(()=>window.PendingOperations.IsCompleted && Control<TextBlock>(window,"JobDiagnosticsEmptyHint").IsVisible,"A job with no saved events must finish loading its guidance.");
+            Require(Control<TextBlock>(window,"JobDiagnosticsPurpose").IsVisible && !Control<TextBlock>(window,"JobDiagnosticExplanation").IsVisible &&
+                Control<TextBlock>(window,"JobDiagnosticsEmptyHint").Text.Contains("нет сохранённых событий"),"Purpose and a no-events explanation must remain available even without an error.");
+            Click(window,"JobDiagnosticsHelpButton");window.UpdateLayout();
+            Require(Control<TextBlock>(window,"JobDiagnosticsHelp").IsVisible,"A job without events must still offer the full in-window guide.");
+            window.Close();PumpUntil(()=>window.PendingOperations.IsCompleted,"Closing the empty job guide must join its read.");window=null;
+
             var mainStorage=new AppPersistence(Path.Combine(root,"main-profile"));
             using(var native=new NativeWindow(owner,mainStorage,"must-not-launch"))
             {
@@ -146,7 +171,7 @@ internal sealed partial class UiScenario
                 Require(native.SessionState.Coordinator is null && native.SessionState.RunningTask is null && native.SessionState.Queue.Count==2 && !File.Exists(mainStorage.HistoryPath),"Diagnostics controls must not admit downloads or create successful history.");
                 native.Dispose();PumpUntil(()=>!firstWindow.IsVisible,"Owner disposal must close diagnostic windows.");
             }
-            Console.WriteLine("PASS: real WPF per-job diagnostics, immutable targets, typed filters/live events, clipboard, private ZIP, collision/cancel and main owner lifecycle");
+            Console.WriteLine("PASS: real WPF per-job diagnostics, in-window help/minimum layout/empty guidance, immutable targets, typed filters/live events, clipboard, private ZIP, collision/cancel and main owner lifecycle");
         }
         finally{window?.Close();if(owner.IsVisible)owner.Close();}
     }

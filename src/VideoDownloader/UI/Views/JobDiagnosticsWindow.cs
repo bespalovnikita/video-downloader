@@ -7,7 +7,9 @@ using System.Windows.Media;
 using System.Windows.Threading;
 using Binding=System.Windows.Data.Binding;
 using Color=System.Windows.Media.Color;
+using Control=System.Windows.Controls.Control;
 using Forms=System.Windows.Forms;
+using Label=System.Windows.Controls.Label;
 
 namespace VideoDownloader.Native;
 
@@ -34,7 +36,7 @@ internal sealed class JobDiagnosticsWindow:Window
     private readonly TextBlock _explanation,_rawLabel;
     private readonly ComboBox _attempt,_level;
     private readonly DataGrid _events;
-    private readonly TextBlock _summary,_status;
+    private readonly TextBlock _summary,_status,_empty;
     private readonly Button _refresh,_copy,_export;
     private readonly DispatcherTimer _timer=new(){Interval=TimeSpan.FromMilliseconds(1500)};
     private readonly CancellationTokenSource _stop=new();
@@ -59,17 +61,19 @@ internal sealed class JobDiagnosticsWindow:Window
         Background=owner.Background;Foreground=owner.Foreground;FontFamily=owner.FontFamily;
         Resources.MergedDictionaries.Add(owner.Resources);NameScope.SetNameScope(this,new NameScope());
         var root=new Grid{Margin=new Thickness(14)};
-        foreach(var height in new[]{GridLength.Auto,GridLength.Auto,GridLength.Auto,new GridLength(1,GridUnitType.Star),new GridLength(150),GridLength.Auto})
+        foreach(var height in new[]{GridLength.Auto,GridLength.Auto,GridLength.Auto,new GridLength(1,GridUnitType.Star),new GridLength(1,GridUnitType.Star),GridLength.Auto})
             root.RowDefinitions.Add(new RowDefinition{Height=height});
         var header=new StackPanel();
         header.Children.Add(new TextBlock{Text=target.Label,FontSize=18,FontWeight=FontWeights.SemiBold,TextWrapping=TextWrapping.Wrap});
+        header.Children.Add(Named("JobDiagnosticsPurpose",Note("История выбранной загрузки помогает понять причину ошибки и подготовить отчёт. Выберите событие в таблице или откройте «Как разобраться».")));
         header.Children.Add(Named("JobDiagnosticUrl",new TextBox{Text=target.Url,IsReadOnly=true,TextWrapping=TextWrapping.Wrap,
             MaxHeight=52,Margin=new Thickness(0,5,0,4),ToolTip="Адрес с маскированием приватных параметров"}));
-        header.Children.Add(Note("Состояние при открытии: "+StatusLabel(target.Status)+" · задание "+target.Job));
+        header.Children.Add(Note("Состояние при открытии: "+StatusLabel(target.Status)));
         _explanation=Named("JobDiagnosticExplanation",Note(""));header.Children.Add(_explanation);
-        _rawLabel=Note("Исходная диагностика:");header.Children.Add(_rawLabel);
+        _rawLabel=Note("Последнее сообщение об ошибке:");header.Children.Add(_rawLabel);
         _error=Named("JobDiagnosticError",ReadOnlyText(64));header.Children.Add(_error);ShowError(target.Error);
-        root.Children.Add(header);
+        root.Children.Add(new ScrollViewer{Content=header,MaxHeight=160,VerticalScrollBarVisibility=ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility=ScrollBarVisibility.Disabled});
 
         var filters=new Grid{Margin=new Thickness(0,8,0,4)};
         filters.ColumnDefinitions.Add(new ColumnDefinition{Width=new GridLength(1,GridUnitType.Star)});
@@ -77,13 +81,19 @@ internal sealed class JobDiagnosticsWindow:Window
         filters.ColumnDefinitions.Add(new ColumnDefinition{Width=new GridLength(155)});
         _search=Named("JobDiagnosticsSearchBox",new TextBox{MaxLength=2048,Margin=new Thickness(0,0,6,0),
             ToolTip="Найти текст в событиях этого задания · Ctrl+F"});
-        _attempt=Named("JobDiagnosticsAttemptCombo",new ComboBox{DisplayMemberPath=nameof(AttemptChoice.Label),SelectedValuePath=nameof(AttemptChoice.Id),Margin=new Thickness(0,0,6,0)});
-        _level=Named("JobDiagnosticsLevelCombo",new ComboBox{DisplayMemberPath=nameof(Choice.Label),SelectedValuePath=nameof(Choice.Id)});
+        _attempt=Named("JobDiagnosticsAttemptCombo",new ComboBox{DisplayMemberPath=nameof(AttemptChoice.Label),SelectedValuePath=nameof(AttemptChoice.Id),Margin=new Thickness(0,0,6,0),
+            ToolTip="Один запуск загрузки или её повтор. «Все попытки» показывает доступную историю целиком."});
+        _level=Named("JobDiagnosticsLevelCombo",new ComboBox{DisplayMemberPath=nameof(Choice.Label),SelectedValuePath=nameof(Choice.Id),
+            ToolTip="Начните с «Ошибки», если загрузка не удалась. Предупреждение само по себе не означает сбой."});
         _level.ItemsSource=new[]{new Choice("*","Все уровни"),new Choice(nameof(JournalLevel.Error),"Ошибки"),
             new Choice(nameof(JournalLevel.Warning),"Предупреждения"),new Choice(nameof(JournalLevel.Information),"Сведения"),
             new Choice(nameof(JournalLevel.Progress),"Прогресс"),new Choice(nameof(JournalLevel.Verbose),"Подробный вывод")};
         _level.SelectedIndex=0;
-        filters.Children.Add(_search);Grid.SetColumn(_attempt,1);filters.Children.Add(_attempt);Grid.SetColumn(_level,2);filters.Children.Add(_level);
+        foreach(var (label,control,column) in new (string,Control,int)[]{("Поиск по событиям",_search,0),("Попытка загрузки",_attempt,1),("Уровень сообщения",_level,2)})
+        {
+            var field=new StackPanel();field.Children.Add(new Label{Content=label,Target=control,Foreground=Foreground,Padding=new Thickness(0,0,0,3)});
+            field.Children.Add(control);Grid.SetColumn(field,column);filters.Children.Add(field);
+        }
         Grid.SetRow(filters,1);root.Children.Add(filters);
         _summary=Named("JobDiagnosticsSummary",Note("Читаем события выбранного задания…"));Grid.SetRow(_summary,2);root.Children.Add(_summary);
 
@@ -97,15 +107,38 @@ internal sealed class JobDiagnosticsWindow:Window
             if(TryFindResource("GridTextStyle") is Style style)column.ElementStyle=style;
             _events.Columns.Add(column);
         }
-        Grid.SetRow(_events,3);root.Children.Add(_events);
+        var eventArea=new Grid{ClipToBounds=true};eventArea.Children.Add(_events);
+        _empty=Named("JobDiagnosticsEmptyHint",Note(""));_empty.Margin=new Thickness(16,38,16,8);_empty.IsHitTestVisible=false;
+        _empty.Visibility=Visibility.Collapsed;eventArea.Children.Add(_empty);Grid.SetRow(eventArea,3);root.Children.Add(eventArea);
         _details=Named("JobDiagnosticsEventDetails",ReadOnlyText(0));_details.ToolTip="Полное удерживаемое событие и параметры его попытки";
-        Grid.SetRow(_details,4);root.Children.Add(_details);
+        var detailArea=new DockPanel{LastChildFill=true};
+        var detailButtons=new WrapPanel();
+        var showDetails=Named("JobDiagnosticsDetailsButton",new Button{Content="Выбранное событие",FontWeight=FontWeights.SemiBold,Padding=new Thickness(9,4,9,4)});
+        var showHelp=Named("JobDiagnosticsHelpButton",new Button{Content="Как разобраться",Padding=new Thickness(9,4,9,4)});
+        detailButtons.Children.Add(showDetails);detailButtons.Children.Add(showHelp);DockPanel.SetDock(detailButtons,Dock.Top);detailArea.Children.Add(detailButtons);
+        var detailContent=new Grid();detailContent.Children.Add(_details);
+        var help=Named("JobDiagnosticsHelp",Note(
+            "Если загрузка не удалась\nВыберите уровень «Ошибки» и последнюю по времени запись. Полное сообщение появится в разделе «Выбранное событие». Если понятна причина, исправьте её и повторите загрузку обычной командой в очереди.\n\n"+
+            "Что означают записи\nПопытка — отдельный запуск или повтор загрузки. Фильтр помогает отделить прежнюю ошибку от нового запуска. «Сведения» и «Прогресс» описывают ход работы; «Предупреждения» не всегда мешают завершению. Служебные названия в колонке «Событие» полезны для разбора отчёта.\n\n"+
+            "Что отправить для помощи\n«Копировать видимые события» копирует только строки после применения поиска и фильтров. Вставьте их в сообщение и опишите, что хотели сделать и что произошло. «Сохранить отчёт в ZIP…» сохраняет все доступные события этой загрузки, включая скрытые фильтрами, и версии компонентов. Приложите ZIP, если короткого сообщения недостаточно; окно само ничего не отправляет. Названия материалов и публичные адреса могут оставаться в отчёте.\n\n"+
+            "Почему событий мало или нет\nСтарые записи могли уже не сохраниться. Профиль журнала «Только ошибки» сохраняет меньше подробностей; смена профиля влияет только на будущие события. «Обновить» перечитывает доступные записи и не начинает загрузку. Подробная диагностика не восстанавливает события прошлых запусков."));
+        var helpScroll=new ScrollViewer{Content=help,VerticalScrollBarVisibility=ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility=ScrollBarVisibility.Disabled,Visibility=Visibility.Collapsed};detailContent.Children.Add(helpScroll);detailArea.Children.Add(detailContent);
+        void ShowHelp(bool visible)
+        {
+            helpScroll.Visibility=visible?Visibility.Visible:Visibility.Collapsed;_details.Visibility=visible?Visibility.Collapsed:Visibility.Visible;
+            showHelp.FontWeight=visible?FontWeights.SemiBold:FontWeights.Normal;showDetails.FontWeight=visible?FontWeights.Normal:FontWeights.SemiBold;
+        }
+        showDetails.Click+=(_,_)=>ShowHelp(false);showHelp.Click+=(_,_)=>ShowHelp(true);
+        Grid.SetRow(detailArea,4);root.Children.Add(detailArea);
         var footer=new StackPanel{Margin=new Thickness(0,7,0,0)};
-        _status=Named("JobDiagnosticsStatus",Note("Показаны только доступные события. Профиль журнала определяет подробность новых записей."));footer.Children.Add(_status);
+        _status=Named("JobDiagnosticsStatus",Note("События обновляются автоматически. Отчёт можно приложить к сообщению о проблеме."));footer.Children.Add(_status);
         var buttons=new WrapPanel();
-        _refresh=Named("RefreshJobDiagnosticsButton",new Button{Content="Обновить"});
-        _copy=Named("CopyJobDiagnosticsButton",new Button{Content="Копировать видимые события",IsEnabled=false});
-        _export=Named("ExportJobDiagnosticsButton",new Button{Content="Сохранить всю диагностику в ZIP…",IsEnabled=false});
+        _refresh=Named("RefreshJobDiagnosticsButton",new Button{Content="Обновить",ToolTip="Перечитать доступные события. Новые записи также появляются автоматически."});
+        _copy=Named("CopyJobDiagnosticsButton",new Button{Content="Копировать видимые события",IsEnabled=false,
+            ToolTip="Скопировать только показанные строки с учётом поиска, попытки и уровня. Вставьте текст в сообщение о проблеме."});
+        _export=Named("ExportJobDiagnosticsButton",new Button{Content="Сохранить отчёт в ZIP…",IsEnabled=false,
+            ToolTip="Сохранить все доступные события выбранной загрузки и версии компонентов. Фильтры не ограничивают ZIP. Файл можно приложить к сообщению о проблеме."});
         var close=Named("CloseJobDiagnosticsButton",new Button{Content="Закрыть"});
         foreach(var button in new[]{_refresh,_copy,_export,close})buttons.Children.Add(button);
         footer.Children.Add(buttons);Grid.SetRow(footer,5);root.Children.Add(footer);Content=root;
@@ -187,6 +220,10 @@ internal sealed class JobDiagnosticsWindow:Window
             .Select(entry=>new EventRow(entry)).ToArray();
         _events.ItemsSource=_visible;_events.SelectedItem=_visible.FirstOrDefault(row=>row.Key==selected)??_visible.LastOrDefault();
         _copy.IsEnabled=_visible.Length>0;
+        _empty.Visibility=_visible.Length==0?Visibility.Visible:Visibility.Collapsed;
+        _empty.Text=_snapshot.Events.Count==0?
+            "Для этой загрузки нет сохранённых событий. Во время загрузки новые записи появятся здесь автоматически; старые могли уже не сохраниться. Подробнее — «Как разобраться».":
+            "По выбранным условиям ничего не найдено. Очистите поиск или выберите «Все попытки» и «Все уровни».";
         _summary.Text=$"Показано {_visible.Length} из {_snapshot.Events.Count} событий этого задания. "+
             (_snapshot.Truncated?"Список ограничен. ":"")+
             (_snapshot.OmittedEvents>0?$"Пропущено при ограничениях: {_snapshot.OmittedEvents}. ":"")+
