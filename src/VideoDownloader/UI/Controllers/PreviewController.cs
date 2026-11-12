@@ -115,7 +115,11 @@ internal sealed partial class PreviewController : IDisposable
     // selection. Metadata callbacks are delivered on the owning dispatcher.
     internal void RequestUrl(string url,bool priority=true)
     {
-        if(!_disposed && !IsResetting(url) && AppPersistence.ValidUrl(url))_service.Request(url,priority);
+        if(!_disposed && !IsResetting(url) && AppPersistence.ValidUrl(url))
+        {
+            RequestSelectedLocalPoster(url);
+            _service.Request(url,priority);
+        }
     }
 
     // The format editor uses this same worker to enrich legacy preview caches.
@@ -207,6 +211,7 @@ internal sealed partial class PreviewController : IDisposable
         SelectedUrl=url;
         if(!string.IsNullOrWhiteSpace(knownTitle) && !string.Equals(knownTitle.Trim(),url,StringComparison.Ordinal))
             _selectedKnownTitle=knownTitle.Trim();
+        RequestSelectedLocalPoster(url);
         var cached=_service.Peek(url);
         if(cached!=null){ReceiveReady(cached);_service.Request(url,true);return;}
         _title.Text=DisplayTitle(url,"","Получаем метаданные…");

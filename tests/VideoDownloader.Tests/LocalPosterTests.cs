@@ -129,6 +129,7 @@ internal static class LocalPosterTests
             finally{service.Dispose();await service.Completion.WaitAsync(TimeSpan.FromSeconds(5));}
         }
         await ExpiredLocalPosterRefresh(root,ffmpeg,input,remoteBytes);
+        await ExpiredRemotePosterRefresh(root,ffmpeg,input);
         await RemoteImageWins(root,ffmpeg,input,remoteBytes);
         await RemoteImageWins(root,ffmpeg,input,remoteBytes,recoverFallback:true);
         await RemoteImageWins(root,ffmpeg,input,remoteBytes,recoverFallback:true,converterRetry:true);
@@ -199,6 +200,51 @@ internal static class LocalPosterTests
                     "The refreshed local timestamp must survive cache restart instead of keeping the expired value.");
                 Require(!await service.RequestLocalPosterAsync(input,(_,_)=>throw new InvalidOperationException("A freshly regenerated same-file image must be reused."),CancellationToken.None),
                     "Refreshing expiry must not turn every later local request into another decode.");
+            }
+            finally{service.Dispose();await service.Completion.WaitAsync(TimeSpan.FromSeconds(5));}
+        }
+    }
+    private static async Task ExpiredRemotePosterRefresh(string root,string ffmpeg,LocalPosterInput input)
+    {
+        byte[] remote=await Tool(ffmpeg,["-f","lavfi","-i","color=c=red:s=160x90:r=1:d=1",
+            "-frames:v","1","-c:v","png","-f","image2pipe","pipe:1"]);
+        string remoteImage=Convert.ToBase64String(remote);
+        foreach(bool expired in new[]{false,true})
+        {
+            var storage=new AppPersistence(Path.Combine(root,expired?"expired-remote-poster":"fresh-remote-poster"));
+            DateTime metadataSaved=DateTime.UtcNow.AddHours(expired?-100:-4);
+            Seed(storage,input.Url,metadataSaved,remoteImage,"");
+            string path=CacheFile(storage,input.Url);
+            var before=JsonNode.Parse(File.ReadAllText(path))!.AsObject();
+            int publications=0,metadataCallbacks=0;
+            using var service=new PreviewService("must-not-run",storage,()=>"",_=>metadataCallbacks++,_=>{},ffmpegPath:ffmpeg);
+            try
+            {
+                DateTime started=DateTime.UtcNow;
+                bool refreshed=await service.RequestLocalPosterAsync(input,(commit,_)=>
+                {
+                    publications++;
+                    Require(expired && service.Peek(input.Url) is null,
+                        "A remote cover whose metadata has expired is not visible to the existing panel.");
+                    commit();return Task.FromResult(true);
+                },CancellationToken.None);
+                var visible=service.Peek(input.Url);
+                Require(metadataCallbacks==0 && visible is {ThumbnailBase64.Length:>0} && visible.SavedAtUtc==metadataSaved,
+                    "A local request must retain metadata TTL and avoid metadata work for either remote-cover age.");
+                if(expired)
+                {
+                    Require(refreshed && publications==1 && visible!.ThumbnailBase64!=remoteImage &&
+                        visible.LocalThumbnailFingerprint==LocalPosterDecoder.Fingerprint(input) &&
+                        visible.LocalThumbnailSavedAtUtc is {} saved && saved>=started && PreviewImage.IsValid(Convert.FromBase64String(visible.ThumbnailBase64)),
+                        "An expired remote cover must not suppress a real visible local frame from the published blue video.");
+                    var after=JsonNode.Parse(File.ReadAllText(path))!.AsObject();
+                    foreach(string field in new[]{"SavedAtUtc","Success","PreviewFetchVersion","ThumbnailError","Title","Formats","FormatsLoaded","FutureField"})
+                        Require(JsonNode.DeepEquals(before[field],after[field]),"Replacing an expired remote cover changed metadata envelope field "+field);
+                }
+                else
+                    Require(!refreshed && publications==0 && visible!.ThumbnailBase64==remoteImage && visible.LocalThumbnailFingerprint=="" &&
+                        visible.LocalThumbnailSavedAtUtc is null && JsonNode.DeepEquals(before,JsonNode.Parse(File.ReadAllText(path))),
+                        "A fresh usable remote cover must still win and leave its cache envelope unchanged.");
             }
             finally{service.Dispose();await service.Completion.WaitAsync(TimeSpan.FromSeconds(5));}
         }

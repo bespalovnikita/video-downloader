@@ -50,6 +50,7 @@ await AppUpdateClientTests.RunAsync();
 await PreviewSchedulingTests.RunAsync();
 await PreviewResetTests.RunAsync();
 await PreviewGalleryTests.RunAsync();
+await PreviewReliabilityTests.RunAsync();
 await PreviewOutputLimitTests.RunAsync();
 await PornHubChannelTests.RunAsync();
 await StartupDownloadRegressionTests.RunAsync();

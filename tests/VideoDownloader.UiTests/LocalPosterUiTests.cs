@@ -102,10 +102,12 @@ internal sealed partial class UiScenario
             subject.Preview.Show(first.Url);
             Require(IsColor(image,true),"The existing selected preview gallery must decode the actual red source-video pixels.");
 
-            var second=Row("selected",blueVideo);Seed(storage,second,second.Title);subject.SessionState.TryAdd(second);
+            var second=Row("selected",blueVideo);second.Status="Running";second.AttemptFinished=false;
+            Seed(storage,second,second.Title);subject.SessionState.TryAdd(second);
             subject.Preview.Show(second.Url);
             PumpUntil(()=>subject.Preview.GetCached(second.Url) is not null,"Fresh metadata-only cache must load through the shared worker.");
-            Require(image.Source is null,"Selecting a row with no image must initially leave the gallery empty.");
+            Require(image.Source is null,"Selecting an unfinished row with no site image must leave the gallery empty.");
+            second.Status="Completed";second.AttemptFinished=true;
             subject.OnRowChanged(second);
             PumpUntil(()=>IsColor(image,false) && !subject.Preview.HasLocalPosterWork,
                 "Completion must update the already selected gallery automatically, without another selection or Show call.");

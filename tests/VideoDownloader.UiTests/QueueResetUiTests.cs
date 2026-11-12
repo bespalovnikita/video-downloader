@@ -220,13 +220,16 @@ internal sealed partial class UiScenario
         ResetUi.Until(()=>downloads.Items.Contains(row),"Downloads must expose the actual active attempt to reset.");
         ResetUi.Select(downloads,row);var resetMenu=ui.Menu(downloads);
         ResetUi.Require(resetMenu.IsEnabled,"Downloads must offer Reset for its independently selected active row.");
+        ResetUi.Require(ui.Subject.Preview.SelectedUrl==row.Url &&
+            ReferenceEquals(ui.Control<DataGrid>("QueueGrid").SelectedItem,keeper) && ReferenceEquals(downloads.SelectedItem,row),
+            "Selecting the Downloads reset target must show its preview independently of the queue's keeper selection.");
         ResetUi.Confirm(6,()=>ui.Click(resetMenu));
         ResetUi.Until(()=>row.Status=="Running" && ResetUi.Pid(restartGate)>0 && row.StageDir.Length>0 && row.StageDir!=oldStage && !ui.Busy,
             "Confirmed Reset must create a genuinely fresh stage and native child in the same active coordinator.");
         int restartedPid=ResetUi.Pid(restartGate);
         ResetUi.Require(!ResetUi.Alive(oldPid) && restartedPid!=oldPid && !Directory.Exists(oldStage) &&
             ReferenceEquals(engine,ui.Subject.SessionState.Coordinator) && keeper.Status=="Running" && ResetUi.Alive(keeperPid) &&
-            ui.Subject.Preview.SelectedUrl==keeper.Url &&
+            ui.Subject.Preview.SelectedUrl==row.Url && ReferenceEquals(ui.Control<DataGrid>("QueueGrid").SelectedItem,keeper) &&
             row.ResumeState?.Token!=oldToken && row.Progress==0 && row.TransferredBytes==0 && row.Downloaded.Length==0 && row.RawError.Length==0 &&
             ReferenceEquals(row.Selection,selection) && row.SubscriptionId=="active-source" && row.SubscriptionName=="Папка источника" &&
             !ui.Data.ReadHistory().ContainsKey(row.Url),

@@ -23,7 +23,7 @@ public sealed partial class PreviewService
         data.LocalThumbnailFingerprint is {Length:64} && data.LocalThumbnailSavedAtUtc is {} saved &&
         saved<=DateTime.UtcNow.AddMinutes(5) && DateTime.UtcNow-saved<TimeSpan.FromHours(72);
     private static bool CanKeepPoster(PreviewData data,string fingerprint)=>data.ThumbnailBase64.Length>0 &&
-        (string.IsNullOrEmpty(data.LocalThumbnailFingerprint) ||
+        (string.IsNullOrEmpty(data.LocalThumbnailFingerprint) && MetadataFresh(data) ||
             data.LocalThumbnailFingerprint==fingerprint && LocalImageFresh(data));
 
     // This is local-only work on the existing sole preview worker. It never
