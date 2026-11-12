@@ -52,6 +52,16 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'FFmpeg is unavailable for media tests.' }
           ffprobe -version
           if ($LASTEXITCODE -ne 0) { throw 'ffprobe is unavailable for media tests.' }
+      - name: Focused subscription initial-actions WPF probe
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet build tests/VideoDownloader.Tests/VideoDownloader.Tests.csproj -c Release
+          if ($LASTEXITCODE -ne 0) { throw 'Native fixture build failed.' }
+          dotnet build tests/VideoDownloader.UiTests/VideoDownloader.UiTests.csproj -c Release
+          if ($LASTEXITCODE -ne 0) { throw 'WPF test build failed.' }
+          pwsh -NoProfile -File ./scripts/ui-tests.ps1 -Scene SubscriptionInitialActions -ResultPath (Join-Path $env:RUNNER_TEMP 'initial-actions-probe/native-ui-result.txt')
+          if ($LASTEXITCODE -ne 0) { throw 'Focused subscription WPF probe failed.' }
       - name: Pornhub collector with the bundled yt-dlp API
         env:
           PYTHONDONTWRITEBYTECODE: '1'
