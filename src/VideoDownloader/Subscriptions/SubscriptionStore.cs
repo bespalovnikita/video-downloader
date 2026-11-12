@@ -9,10 +9,10 @@ public sealed class SubscriptionStore
     internal const long MaxFileBytes = 128L * 1024 * 1024;
     private static readonly JsonSerializerOptions Json = new() { WriteIndented = false };
     private static readonly string[] DefinitionProperties =
-    ["Id", "Url", "Title", "ShortName", "FeedUrl", "DownloadExisting", "Initialized", "Paused",
+    ["Id", "Url", "Title", "ShortName", "FeedUrl", "DownloadExisting", "InitialAction", "Initialized", "Paused",
      "LastAttemptUtc", "LastSuccessUtc", "LastError", "LastWarning", "ScheduleEnabled", "ScheduleIntervalMinutes"];
     private static readonly string[] ItemProperties =
-    ["SubscriptionId", "Url", "Title", "State", "DiscoveredAtUtc", "InitialQueuePending", "SuccessAttributed",
+    ["SubscriptionId", "Url", "Title", "State", "DiscoveredAtUtc", "InitialQueuePending", "ManuallyCompleted", "SuccessAttributed",
      "DuplicateSubscriptionId", "DuplicateNotified"];
     public string Path { get; }
 
@@ -25,7 +25,17 @@ public sealed class SubscriptionStore
     public SubscriptionSnapshot Read() => ProfileBackupTransaction.Access(System.IO.Path.GetDirectoryName(Path)!,()=>Locked(ReadCore));
     internal static void ValidateBackupSnapshot(SubscriptionSnapshot snapshot)=>Validate(snapshot);
 
-    public SubscriptionDefinition Add(string url, bool downloadExisting, string feedUrl = "", string shortName = "")
+    public SubscriptionDefinition Add(string url, bool downloadExisting, string feedUrl = "", string shortName = "") =>
+        AddCore(url, downloadExisting, null, feedUrl, shortName);
+
+    public SubscriptionDefinition Add(string url, string initialAction, string feedUrl = "", string shortName = "")
+    {
+        ArgumentNullException.ThrowIfNull(initialAction);
+        if (!SubscriptionInitialActions.IsValid(initialAction)) throw new ArgumentException("Неизвестное действие для исходных материалов.", nameof(initialAction));
+        return AddCore(url, initialAction == SubscriptionInitialActions.Queue, initialAction, feedUrl, shortName);
+    }
+
+    private SubscriptionDefinition AddCore(string url, bool downloadExisting, string? initialAction, string feedUrl, string shortName)
     {
         RequireUrl(url);
         RequireOptionalUrl(feedUrl);
@@ -38,7 +48,7 @@ public sealed class SubscriptionStore
             var source = new SubscriptionDefinition
             {
                 Id = Guid.NewGuid().ToString("N"), Url = url, Title = url,
-                FeedUrl = feedUrl, DownloadExisting = downloadExisting,
+                FeedUrl = feedUrl, DownloadExisting = downloadExisting, InitialAction = initialAction,
                 ShortName = shortName.Length > 0 ? SubscriptionNames.Normalize(shortName) : ""
             };
             snapshot.Subscriptions.Add(source);
@@ -113,8 +123,13 @@ public sealed class SubscriptionStore
                 {
                     SubscriptionId = id, Url = discovery.Url, Title = discovery.Title,
                     DiscoveredAtUtc = now,
-                    State = initial && !source.DownloadExisting ? "Baseline" : "New",
-                    InitialQueuePending = initial && source.DownloadExisting
+                    State = initial ? source.InitialAction switch
+                    {
+                        SubscriptionInitialActions.Skip or SubscriptionInitialActions.ManualDone => "Skipped",
+                        _ => source.DownloadExisting ? "New" : "Baseline"
+                    } : "New",
+                    InitialQueuePending = initial && source.DownloadExisting,
+                    ManuallyCompleted = initial && source.InitialAction == SubscriptionInitialActions.ManualDone
                 };
                 snapshot.Items.Add(item);
                 // A Processed record is durable evidence from an earlier real
@@ -245,6 +260,27 @@ public sealed class SubscriptionStore
             {
                 item.State = state;
                 item.InitialQueuePending = false;
+                item.ManuallyCompleted = false;
+            }
+            return 0;
+        });
+    }
+
+    // Queue acknowledgement also covers explicit repeats whose genuine success
+    // and provenance must remain intact. Only accepted exact URLs lose intent.
+    public void AcknowledgeQueued(string id, IEnumerable<string> urls)
+    {
+        var selection = MaterializeUrls(urls);
+        Update(snapshot =>
+        {
+            Find(snapshot, id);
+            var items = snapshot.Items.Where(item => item.SubscriptionId == id && selection.Contains(item.Url)).ToArray();
+            if (items.Length != selection.Count) throw new InvalidOperationException("Материал не найден в подписке.");
+            foreach (var item in items)
+            {
+                if (item.State is not ("Processed" or "AlreadyProcessed")) item.State = "Queued";
+                item.InitialQueuePending = false;
+                item.ManuallyCompleted = false;
             }
             return 0;
         });
@@ -290,6 +326,8 @@ public sealed class SubscriptionStore
         if (successfulUrls.Count == 0) return;
         var order = snapshot.Subscriptions.Select((source, index) => (source.Id, index))
             .ToDictionary(pair => pair.Id, pair => pair.index, StringComparer.Ordinal);
+        var queueAllIds = snapshot.Subscriptions.Where(source => source.InitialAction == SubscriptionInitialActions.Queue)
+            .Select(source => source.Id).ToHashSet(StringComparer.Ordinal);
         foreach (var matches in snapshot.Items.Where(i => successfulUrls.Contains(i.Url)).GroupBy(i => i.Url, StringComparer.Ordinal))
         {
             var source = matches.Where(i => i.State == "Processed" && i.SuccessAttributed).MinBy(i => order[i.SubscriptionId])
@@ -301,7 +339,11 @@ public sealed class SubscriptionStore
                 // Existing Processed rows may originate in global history without
                 // source attribution. Do not invent a notice on a repeated pass.
                 if (item.State is "AlreadyProcessed" or "Processed") continue;
-                item.InitialQueuePending = false;
+                // The new Queue action explicitly includes historical successes.
+                // Legacy DownloadExisting keeps its previous history exclusion.
+                if (!queueAllIds.Contains(item.SubscriptionId))
+                    item.InitialQueuePending = false;
+                item.ManuallyCompleted = false;
                 if (sourceId is not null && item.SubscriptionId != sourceId)
                 {
                     item.State = "AlreadyProcessed";
@@ -408,8 +450,8 @@ public sealed class SubscriptionStore
                 if (sources.ValueKind != JsonValueKind.Array || items.ValueKind != JsonValueKind.Array)
                     throw new InvalidDataException("Ожидались списки подписок и материалов.");
                 foreach (var source in sources.EnumerateArray()) RequireProperties(source, DefinitionProperties,
-                    ["ShortName","ScheduleEnabled","ScheduleIntervalMinutes"]);
-                foreach (var item in items.EnumerateArray()) RequireProperties(item, ItemProperties);
+                    ["ShortName","ScheduleEnabled","ScheduleIntervalMinutes","InitialAction"]);
+                foreach (var item in items.EnumerateArray()) RequireProperties(item, ItemProperties, ["ManuallyCompleted"]);
                 var snapshot = root.Deserialize<SubscriptionSnapshot>(Json)
                     ?? throw new InvalidDataException("Пустой файл подписок.");
                 Validate(snapshot);
@@ -444,7 +486,8 @@ public sealed class SubscriptionStore
             if (source is null || string.IsNullOrWhiteSpace(source.Id) || !ids.Add(source.Id) ||
                 source.Title is null || source.ShortName is null ||
                 (source.ShortName.Length > 0 && !SubscriptionNames.IsValid(source.ShortName)) ||
-                source.LastError is null || source.LastWarning is null ||
+                source.LastError is null || source.LastWarning is null || !SubscriptionInitialActions.IsValid(source.InitialAction) ||
+                source.InitialAction is not null && source.DownloadExisting != (source.InitialAction == SubscriptionInitialActions.Queue) ||
                 source.ScheduleIntervalMinutes<SubscriptionSchedulePlanner.MinIntervalMinutes ||
                 source.ScheduleIntervalMinutes>SubscriptionSchedulePlanner.MaxIntervalMinutes)
                 throw new InvalidDataException("Повторяющаяся или повреждённая подписка.");
@@ -455,6 +498,7 @@ public sealed class SubscriptionStore
         }
         var keys = new HashSet<(string, string)>();
         var initialized = snapshot.Subscriptions.Where(s => s.Initialized).Select(s => s.Id).ToHashSet(StringComparer.Ordinal);
+        var queueAllIds = snapshot.Subscriptions.Where(s => s.InitialAction == SubscriptionInitialActions.Queue).Select(s => s.Id).ToHashSet(StringComparer.Ordinal);
         foreach (var item in snapshot.Items)
         {
             if (item is null || !ids.Contains(item.SubscriptionId) || !initialized.Contains(item.SubscriptionId) ||
@@ -462,8 +506,11 @@ public sealed class SubscriptionStore
                 item.State is not ("Baseline" or "New" or "Queued" or "Processed" or "AlreadyProcessed" or "Skipped"))
                 throw new InvalidDataException("Повторяющийся или повреждённый материал подписки.");
             RequireUrl(item.Url);
-            if (item.InitialQueuePending && item.State != "New")
+            if (item.InitialQueuePending && item.State != "New" &&
+                !(item.State is "Processed" or "AlreadyProcessed" && queueAllIds.Contains(item.SubscriptionId)))
                 throw new InvalidDataException("Несогласованное состояние исходной очереди.");
+            if (item.ManuallyCompleted && item.State != "Skipped")
+                throw new InvalidDataException("Ручная отметка готовности не соответствует состоянию материала.");
             if (item.SuccessAttributed && item.State != "Processed")
                 throw new InvalidDataException("Источник успеха не соответствует состоянию материала.");
             if (item.State == "AlreadyProcessed")

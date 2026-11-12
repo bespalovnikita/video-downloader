@@ -113,7 +113,8 @@ internal sealed partial class UiScenario
             copySource.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             Require(Clipboard.GetText()==definition.Url && subscriptions.TestControl<TextBlock>("SubscriptionStatusText").Text=="URL подписки скопирован.",
                 "The actual copy button must put the exact source URL including query and fragment on the clipboard");
-            Require(subscriptions.TestControl<CheckBox>("DownloadExistingCheck").IsChecked==false,"The initial-scan choice must default to baseline");
+            Require(subscriptions.TestControl<ComboBox>("SubscriptionInitialActionCombo").SelectedItem is ComboBoxItem {Tag:SubscriptionInitialActions.Skip},
+                "The initial-scan choice must default to skipped without queueing or downloading");
             Require(subscriptions.TestControl<CheckBox>("FullSubscriptionCheck").IsChecked==false,
                 "Manual checks must default to the optimized mode with an explicit full-check override");
             Require(subscriptions.TestControl<TextBox>("SubscriptionFeedBox")!=null,"Optional RSS / Atom input must be available");

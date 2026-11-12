@@ -50,7 +50,7 @@ internal sealed class WindowsProfileBackup
             if(shortName.Length>0)shortName=SubscriptionNames.Normalize(shortName);
             sources.Add(new(source.Id,source.Url,BackupPrivacy.Text(source.Title,4096,ref sanitized),shortName,feed,
                 source.DownloadExisting,source.Initialized,source.Paused,source.LastAttemptUtc,source.LastSuccessUtc,
-                source.ScheduleIntervalMinutes));
+                source.ScheduleIntervalMinutes,source.InitialAction));
             retainedIds.Add(source.Id);
         }
         foreach(var item in stored.Items)
@@ -58,7 +58,7 @@ internal sealed class WindowsProfileBackup
             cancellationToken.ThrowIfCancellationRequested();
             if(!retainedIds.Contains(item.SubscriptionId) || !BackupPrivacy.IsSafeUrl(item.Url)){privateItems++;continue;}
             items.Add(new(item.SubscriptionId,item.Url,BackupPrivacy.Text(item.Title,4096,ref sanitized),item.State,
-                item.DiscoveredAtUtc,item.InitialQueuePending,item.SuccessAttributed,item.DuplicateSubscriptionId,item.DuplicateNotified));
+                item.DiscoveredAtUtc,item.InitialQueuePending,item.SuccessAttributed,item.DuplicateSubscriptionId,item.DuplicateNotified,item.ManuallyCompleted));
         }
         // One latest success per exact URL is sufficient to preserve repeat
         // decisions. Export never carries its local files or deletion rights.
@@ -233,7 +233,7 @@ internal sealed class WindowsProfileBackup
             else{do{id=Guid.NewGuid().ToString("N");}while(!sourceIds.Add(id));}
             sourceIds.Add(id);idMap.Add(source.Id,id);
             var restored=new SubscriptionDefinition{Id=id,Url=source.Url,Title=source.Title,ShortName=source.ShortName,FeedUrl=source.FeedUrl,
-                DownloadExisting=source.DownloadExisting,Initialized=source.Initialized,Paused=source.Paused,
+                DownloadExisting=source.DownloadExisting,InitialAction=source.InitialAction,Initialized=source.Initialized,Paused=source.Paused,
                 LastAttemptUtc=source.LastAttemptUtc,LastSuccessUtc=source.LastSuccessUtc,
                 ScheduleEnabled=false,ScheduleIntervalMinutes=source.ScheduleIntervalMinutes};
             result.Subscriptions.Add(restored);sourceByUrl.Add(restored.Url,restored);addedSources++;
@@ -245,7 +245,7 @@ internal sealed class WindowsProfileBackup
             string duplicate=item.DuplicateSubscriptionId.Length==0?"":idMap.TryGetValue(item.DuplicateSubscriptionId,out var mapped)?mapped:
                 "backup-"+Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(item.DuplicateSubscriptionId))).ToLowerInvariant()[..24];
             result.Items.Add(new(){SubscriptionId=id,Url=item.Url,Title=item.Title,State=item.State=="Queued"?"New":item.State,
-                DiscoveredAtUtc=item.DiscoveredAtUtc,InitialQueuePending=false,SuccessAttributed=item.SuccessAttributed,
+                DiscoveredAtUtc=item.DiscoveredAtUtc,InitialQueuePending=false,SuccessAttributed=item.SuccessAttributed,ManuallyCompleted=item.ManuallyCompleted,
                 DuplicateSubscriptionId=duplicate,DuplicateNotified=item.DuplicateNotified});addedItems++;
         }
         SubscriptionStore.ValidateBackupSnapshot(result);return result;
@@ -340,14 +340,19 @@ internal sealed class WindowsProfileBackup
                 source.Title is null || source.Title.Length>4096 || !BackupPrivacy.IsSafeText(source.Title) ||
                 source.ShortName is null || !BackupPrivacy.IsSafeText(source.ShortName) || source.ShortName.Length>0 && !SubscriptionNames.IsValid(source.ShortName) ||
                 source.FeedUrl is null || source.FeedUrl.Length>0 && !BackupPrivacy.IsSafeUrl(source.FeedUrl) ||
-                source.ScheduleIntervalMinutes is <5 or >10080 || !source.Initialized && source.LastSuccessUtc.HasValue)
+                source.ScheduleIntervalMinutes is <5 or >10080 || !source.Initialized && source.LastSuccessUtc.HasValue ||
+                !SubscriptionInitialActions.IsValid(source.InitialAction) ||
+                source.InitialAction is not null && source.DownloadExisting!=(source.InitialAction==SubscriptionInitialActions.Queue))
                 throw new InvalidDataException("Повреждённая, повторная или приватная подписка в резервной копии.");
         }
         var keys=new HashSet<(string,string)>();
+        var queueAllIds=data.Sources.Where(source=>source.InitialAction==SubscriptionInitialActions.Queue).Select(source=>source.Id).ToHashSet(StringComparer.Ordinal);
         foreach(var item in data.Items)
             if(item is null || !ids.Contains(item.SubscriptionId) || !BackupPrivacy.IsSafeUrl(item.Url) || !keys.Add((item.SubscriptionId,item.Url)) ||
                 item.Title is null || item.Title.Length>4096 || !BackupPrivacy.IsSafeText(item.Title) ||
                 item.State is not ("Baseline" or "New" or "Queued" or "Processed" or "AlreadyProcessed" or "Skipped") ||
+                item.ManuallyCompleted && item.State!="Skipped" ||
+                item.InitialQueuePending && item.State!="New" && !(item.State is "Processed" or "AlreadyProcessed" && queueAllIds.Contains(item.SubscriptionId)) ||
                 item.DuplicateSubscriptionId is null || item.DuplicateSubscriptionId.Length>256 || !BackupPrivacy.IsSafeText(item.DuplicateSubscriptionId))
                 throw new InvalidDataException("Повреждённый или приватный материал подписки в резервной копии.");
         urls.Clear();
@@ -371,7 +376,9 @@ internal sealed class WindowsProfileBackup
         var resolver=new DefaultJsonTypeInfoResolver();
         resolver.Modifiers.Add(info=>
         {
-            if(info.Kind==JsonTypeInfoKind.Object)foreach(var property in info.Properties)property.IsRequired=true;
+            if(info.Kind==JsonTypeInfoKind.Object)foreach(var property in info.Properties)
+                property.IsRequired=!(info.Type==typeof(PortableSubscription) && property.Name==nameof(PortableSubscription.InitialAction) ||
+                    info.Type==typeof(PortableSubscriptionItem) && property.Name==nameof(PortableSubscriptionItem.ManuallyCompleted));
         });
         return new(){UnmappedMemberHandling=JsonUnmappedMemberHandling.Disallow,MaxDepth=24,TypeInfoResolver=resolver};
     }

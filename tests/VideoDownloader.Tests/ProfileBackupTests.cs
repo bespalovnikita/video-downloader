@@ -89,6 +89,7 @@ internal static class ProfileBackupTests
             await RestoreReplaceAndStale(root,archive);
             await ReplaceQueueProvenance(root);
             await LegacyScheduleCompatibility(root,archive);
+            await InitialActionsCompatibility(root);
             await RollbackAndLiveOwner(root,archive);
             await WindowsProtectedTargets(root,archive);
             await CrashRecovery(root,archivePath,archive);
@@ -96,6 +97,43 @@ internal static class ProfileBackupTests
             Console.WriteLine("PASS: portable profile ZIP privacy/bounds/checksums, exact URLs, merge/replace, queue/path isolation, durable rollback, live owner and killed-process recovery");
         }
         finally{Directory.Delete(root,true);}
+    }
+
+    private static async Task InitialActionsCompatibility(string root)
+    {
+        var data=NewProfile(root,"initial-actions-backup");data.Save([],new());
+        var store=new SubscriptionStore(Path.GetDirectoryName(data.SessionPath)!);
+        var manual=store.Add("https://backup-initial.invalid/manual",SubscriptionInitialActions.ManualDone);
+        const string manualUrl="https://backup-initial.invalid/Video?v=Exact";
+        store.ApplyScan(manual.Id,new("Manual collection",[new(manualUrl,"Marked by user")],"",""),[]);
+        var pending=store.Add("https://backup-initial.invalid/not-yet-scanned",SubscriptionInitialActions.Queue);
+        var service=new WindowsProfileBackup(data);
+        var archive=await service.CreateAsync(new(),None);
+        var files=ReadZip(archive.ArchiveBytes);
+        var exported=JsonNode.Parse(files["subscriptions.json"])!;
+        Require(exported["Items"]![0]!["ManuallyCompleted"]!.GetValue<bool>() &&
+            exported["Sources"]![0]!["InitialAction"]!.GetValue<string>()==SubscriptionInitialActions.ManualDone && archive.Summary.HistoryEntries==0,
+            "The backup preserves a truthful manual designation without inventing successful history");
+        var local=NewProfile(root,"initial-actions-restore");local.Save([],new());
+        var restore=new WindowsProfileBackup(local);
+        using(var plan=await restore.PrepareRestoreAsync(archive,new(),[],BackupSubscriptionsPolicy.Replace,None))await restore.RestoreAsync(plan,None);
+        var restored=new SubscriptionStore(Path.GetDirectoryName(local.SessionPath)!).Read();
+        Require(restored.Items.Single() is {State:"Skipped",ManuallyCompleted:true,InitialQueuePending:false,SuccessAttributed:false} item &&
+            item.StateLabel=="Готово" && item.Url==manualUrl && restored.Subscriptions.Single(source=>source.Url==pending.Url) is
+                {InitialAction:SubscriptionInitialActions.Queue,DownloadExisting:true,Initialized:false} &&
+            local.Restore()!.Queue.Count==0 && local.ReadHistory().Count==0,
+            "Actual restore retains manual ready and an unscanned action, without queue admission, download or history");
+
+        foreach(var source in exported["Sources"]!.AsArray())source!.AsObject().Remove("InitialAction");
+        foreach(var entry in exported["Items"]!.AsArray())entry!.AsObject().Remove("ManuallyCompleted");
+        files["subscriptions.json"]=Encoding.UTF8.GetBytes(exported.ToJsonString());Rehash(files,"subscriptions.json");
+        string legacyPath=Path.Combine(root,"initial-actions-old-schema.vdbackup");File.WriteAllBytes(legacyPath,Zip(files));
+        var legacy=await restore.LoadAsync(legacyPath,None);
+        using(var plan=await restore.PrepareRestoreAsync(legacy,new(),[],BackupSubscriptionsPolicy.Replace,None))await restore.RestoreAsync(plan,None);
+        var legacyRestored=new SubscriptionStore(Path.GetDirectoryName(local.SessionPath)!).Read();
+        Require(legacyRestored.Subscriptions.All(source=>source.InitialAction is null) &&
+            legacyRestored.Items.Single() is {State:"Skipped",ManuallyCompleted:false},
+            "An archive in the previous complete schema still loads with legacy behavior and no inferred manual readiness");
     }
 
     private static async Task InvalidArchives(string root,WindowsProfileBackup service,ProfileBackupArchive archive)
@@ -127,6 +165,9 @@ internal static class ProfileBackupTests
         await Mutate("history.json",b=>Edit(b,node=>node[0]!["Source"]="file=/opt/Папка с пробелами/"+Secret),"Checksummed arbitrary assignment paths reject the entire import");
         await Mutate("history.json",b=>Edit(b,node=>node[0]!["Source"]="path=//server/private share/"+Secret),"Checksummed forward-slash UNC/POSIX roots reject the entire import");
         await Mutate("subscriptions.json",b=>Edit(b,node=>node["Items"]![0]!["State"]="Unknown"),"Unknown subscription states are rejected");
+        await Mutate("subscriptions.json",b=>Edit(b,node=>node["Sources"]![0]!["InitialAction"]="Unknown"),"Unknown initial actions are rejected");
+        await Mutate("subscriptions.json",b=>Edit(b,node=>node["Items"]![0]!["ManuallyCompleted"]=true),"Manual ready on an incompatible raw state is rejected before normalization");
+        await Mutate("subscriptions.json",b=>Edit(b,node=>node["Items"]![0]!.AsObject().Remove("SuccessAttributed")),"Old mandatory fields remain mandatory when new fields are optional");
         await Mutate("subscriptions.json",b=>Edit(b,node=>node["Sources"]![0]!["ScheduleEnabled"]=true),"An archive cannot import permission for automatic checks");
         await Mutate("subscriptions.json",b=>Edit(b,node=>node["Sources"]![0]!["ScheduleIntervalMinutes"]=4),"Invalid imported schedule intervals fail before preview");
         await Mutate("history.json",b=>Edit(b,node=>node.AsArray().Add(node[0]!.DeepClone())),"Duplicate exact history URLs reject the archive");

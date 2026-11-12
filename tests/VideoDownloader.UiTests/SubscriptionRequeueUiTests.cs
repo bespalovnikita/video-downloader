@@ -265,8 +265,20 @@ internal sealed partial class UiScenario
         internal string Processed=>SourceOrder[5];
         internal string Duplicate=>SourceOrder[6];
         internal string HistoryAnswer="YesAllButton";
-        internal int ChooserCount,DuplicateCount,RemovalCount;
-        internal int? RemovalAnswer;
+        internal int ChooserCount,DuplicateCount;
+        private int _removalCount,_expectedDuplicateNotices,_duplicateNotices,_removalAnswer;
+        internal int RemovalCount=>Volatile.Read(ref _removalCount);
+        internal int ExpectedDuplicateNotices
+        {
+            get=>Volatile.Read(ref _expectedDuplicateNotices);
+            set=>Volatile.Write(ref _expectedDuplicateNotices,value);
+        }
+        internal int DuplicateNotices=>Volatile.Read(ref _duplicateNotices);
+        internal int? RemovalAnswer
+        {
+            get=>Volatile.Read(ref _removalAnswer) is var answer && answer!=0?answer:null;
+            set=>Volatile.Write(ref _removalAnswer,value??0);
+        }
         private readonly string _root;
         private readonly DispatcherTimer _responses=new(){Interval=TimeSpan.FromMilliseconds(20)};
         private readonly HashSet<Window> _seen=new();
@@ -277,9 +289,13 @@ internal sealed partial class UiScenario
         private IntPtr _mainHandle;
         private readonly CancellationTokenSource _diagnosticStop=new();
         private Task? _diagnosticTask;
+        private int _observingStopped;
         private string _stage="constructing";
         private long _stageAt=Stopwatch.GetTimestamp();
         private readonly HashSet<IntPtr> _nativeReplies=[];
+        private readonly HashSet<IntPtr> _pendingDuplicateNotices=[];
+        private readonly HashSet<IntPtr> _notReadyNative=[];
+        private readonly string _removalTitle=ErrorMessages.Text("Удалить загрузки","Delete downloads");
 
         internal RequeueUi(string root,string fixture)
         {
@@ -306,7 +322,7 @@ internal sealed partial class UiScenario
             Data.AppendSuccess(Processed);Data.AppendSuccess(Duplicate);
             foreach(string url in SourceOrder)Cache(url);
             Window.Show();Subject.SaveCheckpoint();
-            _mainHandle=new WindowInteropHelper(Window).Handle;
+            Volatile.Write(ref _mainHandle,new WindowInteropHelper(Window).Handle);
             _responses.Tick+=Respond;_responses.Start();
             _diagnosticTask=Task.Run(ObserveBlockedUiAsync);
             Trace("constructor before subscription Open");
@@ -320,7 +336,7 @@ internal sealed partial class UiScenario
             }
             catch
             {
-                try{Subject.Dispose();Window.Close();}
+                try{StopObserving();Subject.Dispose();Window.Close();}
                 finally{StopObserving();}
                 throw;
             }
@@ -386,73 +402,177 @@ internal sealed partial class UiScenario
         }
         private void Respond(object? sender,EventArgs args)
         {
-            var native=OwnedNativeWindows();
-            _nativeReplies.IntersectWith(native.Select(item=>item.Handle));
-            foreach(var item in native.Where(item=>item.Class=="#32770" && _nativeReplies.Add(item.Handle)))
-            {
-                if(RemovalAnswer is {} answer && item.Caption==ErrorMessages.Text("Удалить загрузки","Delete downloads"))
-                {
-                    RemovalCount++;Trace("native removal confirmation answered No");
-                    PostMessageW(item.Handle,0x111u,(IntPtr)answer,IntPtr.Zero);
-                }
-                else
-                {
-                    UnexpectedDialog("native "+item.Caption);
-                    // These are unexpected fixture-owned dialogs, never user
-                    // approval. Cancel/No/OK only; never accept deletion/Start.
-                    int safe=new[]{2,7,1}.FirstOrDefault(id=>RequeueGetDlgItem(item.Handle,id)!=IntPtr.Zero);
-                    PostMessageW(item.Handle,safe==0?0x10u:0x111u,(IntPtr)safe,IntPtr.Zero);
-                }
-            }
+            // WPF dialogs and controls stay on their owning dispatcher. Native
+            // MessageBox loops need not deliver WPF DispatcherTimer ticks, so
+            // their Win32-only responder runs independently below.
             foreach(var dialog in Application.Current.Windows.Cast<Window>().ToArray())
             {
                 if(!dialog.IsVisible || _seen.Contains(dialog))continue;
                 bool chooser=dialog.Name=="SubscriptionQueueSelectionDialog" && ReferenceEquals(dialog.Owner,Driver.TestWindow);
                 bool duplicate=dialog.Owner==Window && dialog.FindName("DuplicateUrl") is TextBox;
+                if(!chooser && !duplicate && (dialog==Window || dialog==Driver.TestWindow || !OwnsWindow(dialog)))continue;
+                _seen.Add(dialog);
+                // Deliver outside Tick so its dispatcher timer can rearm
+                // before a reply enters a nested modal loop.
+                _=Window.Dispatcher.BeginInvoke(DispatcherPriority.Normal,
+                    new Action(()=>RespondToWpfDialog(dialog,chooser,duplicate)));
+            }
+        }
+        private void RespondToNativeDialogs()
+        {
+            // Only this worker owns the native handle sets. It reads no WPF
+            // objects; the HWND root/thread and expected answers are snapshots.
+            var native=OwnedNativeWindows();
+            foreach(var handle in _pendingDuplicateNotices.Where(handle=>!RequeueIsWindow(handle)).ToArray())
+            {
+                _pendingDuplicateNotices.Remove(handle);
+                Interlocked.Increment(ref _duplicateNotices);
+                Interlocked.Decrement(ref _expectedDuplicateNotices);
+                Trace("native duplicate notice window closed");
+            }
+            _nativeReplies.IntersectWith(native.Select(item=>item.Handle));
+            _notReadyNative.IntersectWith(native.Select(item=>item.Handle));
+            foreach(var item in native.Where(item=>item.Class=="#32770" && !_nativeReplies.Contains(item.Handle)))
+            {
+                // A worker can observe CreateWindow before its native dialog
+                // has a caption/visible controls. Do not classify that as an
+                // unexpected completed dialog or consume its expected answer.
+                if(!RequeueIsWindowVisible(item.Handle) || !item.CaptionReady || item.Caption.Length==0)continue;
+                if(ExpectedDuplicateNotices>_pendingDuplicateNotices.Count && item.Caption=="Материалы уже обработаны")
+                {
+                    if(!NoticeOkButtonReady(item.Handle,out int actualButtonId))
+                    {
+                        TraceNativeReadiness(item.Handle);
+                        continue;
+                    }
+                    if(!TryPostNativeResponse(item.Handle,1))continue;
+                    _pendingDuplicateNotices.Add(item.Handle);
+                    Trace($"native duplicate notice WM_CLOSE posted=True; actualButtonId={actualButtonId}; OK visible=True enabled=True; responder=ThreadPool");
+                }
+                else if(RemovalAnswer is {} answer && item.Caption==_removalTitle)
+                {
+                    if(!NativeButtonReady(item.Handle,answer))continue;
+                    // Publish before posting: the UI may consume No and
+                    // complete the awaited click immediately after delivery.
+                    Interlocked.Increment(ref _removalCount);
+                    if(!TryPostNativeResponse(item.Handle,answer))
+                    {Interlocked.Decrement(ref _removalCount);continue;}
+                    Trace("native removal confirmation answered No; responder=ThreadPool");
+                }
+                else
+                {
+                    if(Volatile.Read(ref _responseError) is null)UnexpectedDialog("native "+item.Caption);
+                    // These are unexpected fixture-owned dialogs, never user
+                    // approval. Cancel/No/OK only; never accept deletion/Start.
+                    int safe=new[]{2,7,1}.FirstOrDefault(id=>NativeButtonReady(item.Handle,id));
+                    TryPostNativeResponse(item.Handle,safe);
+                }
+            }
+        }
+        private void TraceNativeReadiness(IntPtr handle)
+        {
+            if(!_notReadyNative.Add(handle))return;
+            var ok=RequeueGetDlgItem(handle,1);
+            var children=new List<string>();
+            RequeueEnumChildWindows(handle,(child,_)=>
+            {
+                var type=new StringBuilder(64);RequeueGetClassName(child,type,type.Capacity);
+                children.Add($"{type}#{RequeueGetDlgCtrlID(child)} visible={RequeueIsWindowVisible(child)} enabled={RequeueIsWindowEnabled(child)}");
+                return children.Count<12;
+            },IntPtr.Zero);
+            Trace($"native duplicate notice not ready: dialog visible={RequeueIsWindowVisible(handle)} enabled={RequeueIsWindowEnabled(handle)}; "+
+                $"OK exists={ok!=IntPtr.Zero} visible={RequeueIsWindowVisible(ok)} enabled={RequeueIsWindowEnabled(ok)}; "+
+                "controls=["+string.Join("; ",children)+"]; responder=ThreadPool");
+        }
+        private static bool NativeButtonReady(IntPtr dialog,int id)
+        {
+            var button=RequeueGetDlgItem(dialog,id);
+            return button!=IntPtr.Zero && RequeueIsWindowVisible(dialog) && RequeueIsWindowVisible(button) && RequeueIsWindowEnabled(button);
+        }
+        private static bool NoticeOkButtonReady(IntPtr dialog,out int actualButtonId)
+        {
+            actualButtonId=0;
+            if(!RequeueIsWindowVisible(dialog) || !RequeueIsWindowEnabled(dialog))return false;
+            int visibleButtons=0,candidate=0;bool enabled=false;
+            RequeueEnumChildWindows(dialog,(child,_)=>
+            {
+                var type=new StringBuilder(64);RequeueGetClassName(child,type,type.Capacity);
+                if(type.ToString()=="Button" && RequeueIsWindowVisible(child))
+                {
+                    visibleButtons++;
+                    candidate=RequeueGetDlgCtrlID(child);enabled=RequeueIsWindowEnabled(child);
+                }
+                return visibleButtons<2;
+            },IntPtr.Zero);
+            // This exact, fixture-owned informational notice is OK-only. CI
+            // exposes its sole button as ID 2; acknowledge with WM_CLOSE after
+            // verifying its actual shape, without accepting ID 2 elsewhere.
+            if(visibleButtons!=1 || !enabled || candidate is not (1 or 2))return false;
+            actualButtonId=candidate;return true;
+        }
+        private bool TryPostNativeResponse(IntPtr handle,int button)
+        {
+            // Match the proven native DismissDialog helper: OK-only message
+            // boxes close with WM_CLOSE; Yes/No need an explicit WM_COMMAND.
+            bool close=button is 0 or 1;
+            bool posted=RequeuePostMessage(handle,close?0x10u:0x111u,close?IntPtr.Zero:(IntPtr)button,IntPtr.Zero);
+            if(!posted)
+            {
+                int error=Marshal.GetLastWin32Error();
+                var failure=new System.ComponentModel.Win32Exception(error,"Native fixture PostMessage failed.");
+                if(Interlocked.CompareExchange(ref _responseError,failure,null) is null)
+                {
+                    Trace($"native response PostMessage=False; Win32Error={error}; button={button}");
+                }
+                return false;
+            }
+            // A not-yet-ready window or failed post must remain eligible on
+            // the next timer tick. Posting is not acknowledgement of closure.
+            _nativeReplies.Add(handle);
+            return true;
+        }
+        private void RespondToWpfDialog(Window dialog,bool chooser,bool duplicate)
+        {
+            if(!dialog.IsVisible)return;
+            try
+            {
                 if(!chooser && !duplicate)
                 {
-                    if(dialog!=Window && dialog!=Driver.TestWindow && OwnsWindow(dialog))
-                    {
-                        _seen.Add(dialog);UnexpectedDialog("WPF "+dialog.Title+" ("+dialog.Name+")");
-                        dialog.Close();
-                    }
-                    continue;
+                    UnexpectedDialog("WPF "+dialog.Title+" ("+dialog.Name+")");
+                    dialog.Close();
                 }
-                _seen.Add(dialog);
-                try
+                else if(chooser)
                 {
-                    if(chooser)
-                    {
-                        ChooserCount++;
-                        if(_answer is not {} choice)
-                            throw new InvalidOperationException("A uniform selection unexpectedly displayed a mixed-state choice.");
-                        Trace("chooser "+choice);
-                        Require(dialog.FindName("SubscriptionQueueSelectionSummary") is TextBlock summary && summary.Text.Length>0,
-                            "The actual choice must explain its captured selection.");
-                        Require(DialogButton(dialog,"Cancel").IsCancel && !DialogButton(dialog,"All").IsDefault &&
-                            (DialogButton(dialog,"New").IsEnabled
-                                ?DialogButton(dialog,"New").IsDefault && !DialogButton(dialog,"Cancel").IsDefault
-                                :DialogButton(dialog,"Cancel").IsDefault),
-                            "Enter and Escape must preserve the safe Only-new/Cancel defaults instead of selecting all historical results.");
-                        _inspect?.Invoke(dialog);
-                        Trace("chooser inspection returned; visible="+dialog.IsVisible);
-                        if(!dialog.IsVisible)continue;
-                        if(choice=="Close")dialog.Close();
-                        else
-                        {
-                            var button=DialogButton(dialog,choice);
-                            Require(button.IsEnabled,"The requested actual queue-choice button must be enabled.");
-                            button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-                        }
-                    }
+                    ChooserCount++;
+                    if(_answer is not {} choice)
+                        throw new InvalidOperationException("A uniform selection unexpectedly displayed a mixed-state choice.");
+                    Trace("chooser "+choice);
+                    Require(dialog.FindName("SubscriptionQueueSelectionSummary") is TextBlock summary && summary.Text.Length>0,
+                        "The actual choice must explain its captured selection.");
+                    Require(DialogButton(dialog,"Cancel").IsCancel && !DialogButton(dialog,"All").IsDefault &&
+                        (DialogButton(dialog,"New").IsEnabled
+                            ?DialogButton(dialog,"New").IsDefault && !DialogButton(dialog,"Cancel").IsDefault
+                            :DialogButton(dialog,"Cancel").IsDefault),
+                        "Enter and Escape must preserve the safe Only-new/Cancel defaults instead of selecting all historical results.");
+                    _inspect?.Invoke(dialog);
+                    Trace("chooser inspection returned; visible="+dialog.IsVisible);
+                    if(!dialog.IsVisible)return;
+                    if(choice=="Close")dialog.Close();
                     else
                     {
-                        DuplicateCount++;Trace("history "+HistoryAnswer);
-                        ((Button)dialog.FindName(HistoryAnswer)!).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                        var button=DialogButton(dialog,choice);
+                        Require(button.IsEnabled,"The requested actual queue-choice button must be enabled.");
+                        button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                     }
                 }
-                catch(Exception error){_responseError??=error;if(dialog.IsVisible)dialog.Close();}
+                else
+                {
+                    DuplicateCount++;Trace("history "+HistoryAnswer);
+                    ((Button)dialog.FindName(HistoryAnswer)!).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    Trace("history response returned");
+                }
             }
+            catch(Exception error){Interlocked.CompareExchange(ref _responseError,error,null);if(dialog.IsVisible)dialog.Close();}
         }
         private void Trace(string stage)
         {
@@ -462,7 +582,7 @@ internal sealed partial class UiScenario
         private void UnexpectedDialog(string description)
         {
             string message="Unexpected fixture-owned "+description+" during "+Volatile.Read(ref _stage);
-            _responseError??=new InvalidOperationException(message);Trace(message);
+            Interlocked.CompareExchange(ref _responseError,new InvalidOperationException(message),null);Trace(message);
         }
         private bool OwnsWindow(Window candidate)
         {
@@ -477,47 +597,64 @@ internal sealed partial class UiScenario
                 if(root!=IntPtr.Zero && handle==root)return true;
             return false;
         }
-        private List<(IntPtr Handle,string Caption,string Class)> OwnedNativeWindows()
+        private List<(IntPtr Handle,string Caption,string Class,bool CaptionReady)> OwnedNativeWindows()
         {
-            var found=new List<(IntPtr,string,string)>();
+            var found=new List<(IntPtr,string,string,bool)>();
             EnumThreadWindows(_thread,(handle,_)=>
             {
                 if(!OwnsHandle(handle))return true;
                 var caption=new StringBuilder(256);var type=new StringBuilder(128);
                 // A ThreadPool diagnostic must not synchronously wait on a
                 // blocked WPF thread while asking for its window caption.
-                RequeueSendMessageTimeout(handle,0xDu,(IntPtr)caption.Capacity,caption,2,200,out _);
+                bool captionReady=RequeueSendMessageTimeout(handle,0xDu,(IntPtr)caption.Capacity,caption,2,200,out _)!=IntPtr.Zero;
                 RequeueGetClassName(handle,type,type.Capacity);
-                found.Add((handle,caption.ToString(),type.ToString()));return true;
+                found.Add((handle,caption.ToString(),type.ToString(),captionReady));return true;
             },IntPtr.Zero);
             return found;
         }
         private async Task ObserveBlockedUiAsync()
         {
+            long lastDiagnostic=Stopwatch.GetTimestamp();
             try
             {
                 while(true)
                 {
-                    await Task.Delay(TimeSpan.FromSeconds(15),_diagnosticStop.Token);
-                    if(Stopwatch.GetElapsedTime(Volatile.Read(ref _stageAt))<TimeSpan.FromSeconds(15))continue;
+                    _diagnosticStop.Token.ThrowIfCancellationRequested();
+                    RespondToNativeDialogs();
+                    await Task.Delay(TimeSpan.FromMilliseconds(20),_diagnosticStop.Token).ConfigureAwait(false);
+                    if(Stopwatch.GetElapsedTime(Volatile.Read(ref _stageAt))<TimeSpan.FromSeconds(15) ||
+                        Stopwatch.GetElapsedTime(lastDiagnostic)<TimeSpan.FromSeconds(15))continue;
                     string windows=string.Join("; ",OwnedNativeWindows().Select(item=>item.Class+" '"+item.Caption+"'"));
                     RequeueStage(Path.GetFileName(_root)+": watchdog during "+Volatile.Read(ref _stage)+"; owned windows: "+windows);
+                    lastDiagnostic=Stopwatch.GetTimestamp();
                 }
             }
             catch(OperationCanceledException) when(_diagnosticStop.IsCancellationRequested){}
+            catch(Exception error)
+            {
+                Interlocked.CompareExchange(ref _responseError,error,null);
+                Trace("native responder failed: "+error.GetType().Name);
+            }
         }
         private void StopObserving()
         {
+            if(Interlocked.Exchange(ref _observingStopped,1)!=0)return;
             _responses.Stop();_responses.Tick-=Respond;_diagnosticStop.Cancel();
             _diagnosticTask?.GetAwaiter().GetResult();_diagnosticStop.Dispose();
         }
         [DllImport("user32.dll",EntryPoint="GetWindow")] private static extern IntPtr RequeueGetWindow(IntPtr handle,uint command);
         [DllImport("user32.dll",EntryPoint="GetDlgItem")] private static extern IntPtr RequeueGetDlgItem(IntPtr handle,int id);
+        [DllImport("user32.dll",EntryPoint="EnumChildWindows")] private static extern bool RequeueEnumChildWindows(IntPtr handle,EnumWindowsProc callback,IntPtr argument);
+        [DllImport("user32.dll",EntryPoint="GetDlgCtrlID")] private static extern int RequeueGetDlgCtrlID(IntPtr handle);
+        [DllImport("user32.dll",EntryPoint="IsWindow")] private static extern bool RequeueIsWindow(IntPtr handle);
+        [DllImport("user32.dll",EntryPoint="IsWindowVisible")] private static extern bool RequeueIsWindowVisible(IntPtr handle);
+        [DllImport("user32.dll",EntryPoint="IsWindowEnabled")] private static extern bool RequeueIsWindowEnabled(IntPtr handle);
+        [DllImport("user32.dll",EntryPoint="PostMessageW",SetLastError=true)] private static extern bool RequeuePostMessage(IntPtr handle,uint message,IntPtr wParam,IntPtr lParam);
         [DllImport("user32.dll",EntryPoint="GetClassNameW",CharSet=CharSet.Unicode)] private static extern int RequeueGetClassName(IntPtr handle,StringBuilder text,int count);
         [DllImport("user32.dll",EntryPoint="SendMessageTimeoutW",CharSet=CharSet.Unicode)] private static extern IntPtr RequeueSendMessageTimeout(
             IntPtr handle,uint message,IntPtr wParam,StringBuilder text,uint flags,uint timeout,out IntPtr result);
         private void ThrowResponse()
-        {if(_responseError is {} error)throw new InvalidOperationException("Subscription requeue modal automation failed.",error);}
+        {if(Volatile.Read(ref _responseError) is {} error)throw new InvalidOperationException("Subscription requeue modal automation failed.",error);}
         internal void RequireIdle(byte[] history)
         {
             Require(Subject.SessionState.Coordinator is null && Subject.SessionState.RunningTask is null && Subject.SessionState.StartedAt is null &&
@@ -544,6 +681,9 @@ internal sealed partial class UiScenario
             {
             if(Subject.SessionState.Coordinator is {} active)
             {active.Stop();Until(()=>Subject.SessionState.Coordinator is null,"The requeue fixture must join its remaining native workers.");}
+            // The Win32 worker needs no dispatcher to stop. Join it before
+            // destroying the fixture HWND/owner chain it was allowed to target.
+            StopObserving();
             Trace("dispose before subscription close");Driver.TestWindow?.Close();
             Trace("dispose before main controller");Subject.Dispose();
             Trace("dispose before main window close");Window.Close();
