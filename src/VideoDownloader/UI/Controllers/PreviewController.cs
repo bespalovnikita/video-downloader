@@ -38,6 +38,7 @@ internal sealed partial class PreviewController : IDisposable
     private string _selectedKnownTitle="";
     private string _lastReceivedUrl="";
     private string _lastReceivedTitle="";
+    private string _lastReceivedWebpageUrl="";
     private string _cookies;
     private volatile bool _disposed;
 
@@ -175,11 +176,20 @@ internal sealed partial class PreviewController : IDisposable
     private bool ApplyTitle(PreviewData data)
     {
         if(IsResetting(data.Url))return false;
-        if(string.IsNullOrWhiteSpace(data.Title) || string.Equals(data.Title.Trim(),data.Url,StringComparison.Ordinal))return false;
         string title=data.Title.Trim();
         bool changed=false;
         foreach(var row in _rows().Distinct().Where(row=>string.Equals(row.Url,data.Url,StringComparison.Ordinal)))
-            if(!string.Equals(row.Title,title,StringComparison.Ordinal)){row.Title=title;changed=true;}
+        {
+            // A collection metadata request always describes its first entry.
+            // It cannot replace a newer before_dl material, including a result
+            // restored from a checkpoint or retained by Skip.
+            if(row.HasCurrentVideoContext || data.IsCollection && (row.ResumeState is not null || row.Status!="Queued"))continue;
+            string previous=row.DisplayUrl;
+            row.SetPreviewVideoUrl(data.IsCollection?VideoPageUrl.FromExtractor(data.WebpageUrl,data.Extractor):"");
+            changed|=!string.Equals(previous,row.DisplayUrl,StringComparison.Ordinal);
+            if(title.Length>0 && !string.Equals(title,data.Url,StringComparison.Ordinal) &&
+                !string.Equals(row.Title,title,StringComparison.Ordinal)){row.Title=title;changed=true;}
+        }
         return changed;
     }
 
@@ -237,9 +247,10 @@ internal sealed partial class PreviewController : IDisposable
         if(_disposed || IsResetting(data.Url))return;
         string receivedTitle=data.Title.Trim();
         if(!string.Equals(_lastReceivedUrl,data.Url,StringComparison.Ordinal) ||
-           !string.Equals(_lastReceivedTitle,receivedTitle,StringComparison.Ordinal))
+           !string.Equals(_lastReceivedTitle,receivedTitle,StringComparison.Ordinal) ||
+           !string.Equals(_lastReceivedWebpageUrl,data.WebpageUrl,StringComparison.Ordinal))
         {
-            _lastReceivedUrl=data.Url;_lastReceivedTitle=receivedTitle;
+            _lastReceivedUrl=data.Url;_lastReceivedTitle=receivedTitle;_lastReceivedWebpageUrl=data.WebpageUrl;
             if(ApplyTitle(data))_save();
         }
         Notify(Changed,listener=>listener(data,isFinal));

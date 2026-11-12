@@ -332,6 +332,7 @@ public sealed partial class DownloadCoordinator : IAsyncDisposable
         string outputRoot=_outputRoots[item.Url];
         OwnedFiles.NoReparseAncestors(Path.Combine(outputRoot,"__check__"));
         bool retained=item.ResumeState is not null;
+        if(!retained)item.ResetCurrentVideo();
         DownloadResumeStore.Validated? validated=retained?DownloadResumeStore.Validate(item,requireMatchingSelection:false):null;
         var options=validated?.State.Plan.ToOptions()??_options;
         var arguments=new YtDlpArguments(options);
@@ -384,6 +385,7 @@ public sealed partial class DownloadCoordinator : IAsyncDisposable
                     double previousShown=item.Progress;
                     if(launch>1)
                     {
+                        item.ResetCurrentVideo();
                         item.Progress=0;item.Speed="";item.ETA="";item.State="Starting";
                         item.ProgressDetail="";_changed(item);
                     }
@@ -405,12 +407,14 @@ public sealed partial class DownloadCoordinator : IAsyncDisposable
                     void Line(string line,string source)
                     {
                         var parsed=YtDlpOutputParser.Parse(line);
-                        if(parsed is not YtDlpOutputEvent.Progress)
+                        // A webpage_url still needs provenance/privacy checks.
+                        // Never retain a raw plan, including a malformed one.
+                        if(parsed is not YtDlpOutputEvent.Progress && !line.StartsWith("__VD_PLAN__:",StringComparison.Ordinal))
                             Trace(item,JournalLevel.Verbose,"output",$"attempt={attempt+1} quality={DownloadProgressTrace.Quoted(q)} stream={source} text={DownloadProgressTrace.Quoted(line)}",category:"yt-dlp");
                         switch(parsed)
                         {
                             case YtDlpOutputEvent.Title title:
-                                item.Title=title.Value;_changed(item);
+                                item.SetCurrentVideoUrl("");item.Title=title.Value;_changed(item);
                                 Trace(item,JournalLevel.Information,"title",$"attempt={attempt+1} stream={source} title={DownloadProgressTrace.Quoted(title.Value)}");break;
                             case YtDlpOutputEvent.MediaPath media:
                                 mediaPath=media.Value;
@@ -429,6 +433,7 @@ public sealed partial class DownloadCoordinator : IAsyncDisposable
                                     subtitleManifests.Enqueue(subtitles.Value.Length<=65536?subtitles.Value:"");
                                 break;
                             case YtDlpOutputEvent.Plan plan:
+                                item.SetCurrentVideoUrl(plan.WebpageUrl);_changed(item);
                                 lock(streamed)
                                     if(selectedFragments>1)FragmentPlan(FragmentIndex(plan.SectionStart,plan.SectionEnd)).Begin(plan);
                                     else progressPlan.Begin(plan);

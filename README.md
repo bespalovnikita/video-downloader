@@ -5,6 +5,8 @@
 
 Приложение для скачивания видео и аудио с очередью, историей, превью и подписками. Доступны два клиента: **Windows 10/11 x64** на C# / .NET 8 / WPF и **Android 8.0+** на Kotlin / Jetpack Compose. Оба используют yt-dlp; набор возможностей различается.
 
+В Windows прямая коллекция остаётся одной задачей, а показ и копирование её ссылки следуют за текущим видео. [Подробности отображения](docs/user/windows-reference.md#добавление-и-отображение).
+
 **[Скачать Windows и Android](https://github.com/bespalovnikita/video-downloader/releases/latest)** · **[Установить Android](docs/user/android.md)** · **[Вся документация на русском](docs/README.md)**
 
 <a id="документация"></a>

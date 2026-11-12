@@ -83,7 +83,7 @@ internal sealed partial class PreviewController
             await Task.WhenAll(operations.Select(operation=>operation.Completion.Task));
             await _service.ResetAsync(urls);
             if(_disposed)return;
-            if(urls.Contains(_lastReceivedUrl,StringComparer.Ordinal)){_lastReceivedUrl="";_lastReceivedTitle="";}
+            if(urls.Contains(_lastReceivedUrl,StringComparer.Ordinal)){_lastReceivedUrl="";_lastReceivedTitle="";_lastReceivedWebpageUrl="";}
             if(urls.Contains(SelectedUrl,StringComparer.Ordinal))
             {
                 _selectedKnownTitle="";ClearGallery();

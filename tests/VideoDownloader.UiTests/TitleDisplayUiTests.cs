@@ -17,7 +17,7 @@ internal sealed partial class UiScenario
             Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(data.Url))).ToLowerInvariant()+".json");
         AppPersistence.AtomicWrite(file,JsonSerializer.Serialize(new {
             CacheVersion=1,PreviewFetchVersion=3,data.Url,data.Title,data.SavedAtUtc,data.Uploader,data.PlaylistTitle,data.Duration,
-            data.Extractor,data.MaxHeight,data.MaxFps,data.Codecs,data.DynamicRange,data.ThumbnailBase64
+            data.Extractor,data.MaxHeight,data.MaxFps,data.Codecs,data.DynamicRange,data.ThumbnailBase64,data.IsCollection,data.WebpageUrl
         },AppPersistence.Json));
     }
 
@@ -82,7 +82,7 @@ internal sealed partial class UiScenario
                 var column=grid.Columns.OfType<DataGridTemplateColumn>().First();
                 var content=column.GetCellContent(row);
                 return content!=null && Labels(content).Any(label=>
-                    label.Text==expected && string.Equals(label.ToolTip as string,row.Url,StringComparison.Ordinal));
+                    label.Text==expected && string.Equals(label.ToolTip as string,row.DisplayUrl,StringComparison.Ordinal));
             }
             if(Matches())return;
             var frame=new DispatcherFrame();
@@ -91,7 +91,7 @@ internal sealed partial class UiScenario
             timer.Tick+=(_,_)=>{if(Matches() || DateTime.UtcNow>deadline)frame.Continue=false;};
             timer.Start();
             try{System.Windows.Threading.Dispatcher.PushFrame(frame);}finally{timer.Stop();}
-            Require(Matches(),"Rendered label must show "+expected+" with its original URL tooltip");
+            Require(Matches(),"Rendered label must show "+expected+" with its current public URL tooltip");
         }
         var originalQueue=SessionState.Queue.ToArray();
         var originalDownloads=SessionState.Downloads.ToArray();
@@ -100,6 +100,7 @@ internal sealed partial class UiScenario
         var originalSelection=Q.SelectedItem;
         string originalInput=B("UrlInput").Text;
         string originalPreview=_preview.SelectedUrl;
+        string originalClipboard=Clipboard.ContainsText()?Clipboard.GetText():"";
         bool? originalMode=K("ShowVideoTitlesCheck").IsChecked;
         string prefix="https://example.invalid/title-display/"+Guid.NewGuid().ToString("N")+"/";
         var known=new DownloadItem{Url=prefix+"Video"};
@@ -210,11 +211,58 @@ internal sealed partial class UiScenario
             Require(SessionState.Queue.Count==originalQueue.Length+4 && SessionState.Downloads.Count==originalDownloads.Length+2 &&
                     ReferenceEquals(SessionState.Coordinator,originalSession) && known.Url==prefix+"Video" && caseDistinct.Url==prefix+"video",
                 "Switching presentation must preserve queue membership, URL identity and download session");
+
+            var collection=new DownloadItem{Url=prefix+"collection",Order=999};
+            string first=prefix+"watch?v=First",second=prefix+"watch?v=Second",third=prefix+"watch?v=Third";
+            var initial=new PreviewData(collection.Url,"Первый материал","","Коллекция",0,"FixtureSite",0,0,"","","",DateTime.UtcNow)
+                {IsCollection=true,WebpageUrl=first};
+            SeedCache(initial);
+            SessionState.Queue.Add(collection);SessionState.Downloads.Add(collection);Reindex();
+            _preview.ReceiveReady(initial);
+            Require(collection.DisplayUrl==first && collection.Url==prefix+"collection" && collection.Status=="Queued",
+                "Collection metadata must expose its first video's link before Start without replacing task identity");
+            RenderedLabel(Q,collection,first);RenderedLabel(D,collection,first);
+            Q.SelectedItem=collection;
+            var copy=Q.ContextMenu.Items.OfType<MenuItem>().Single(item=>Equals(item.Header,ErrorMessages.Text("Копировать ссылку","Copy URL")));
+            copy.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+            Require(Clipboard.GetText()==first,"Queue Copy URL must copy the first material rather than collection URL before Start");
+            collection.SetCurrentVideoUrl(second);collection.Title="Второй материал";
+            _preview.ReceiveReady(initial with{Title="Поздний ответ первого материала"});
+            Require(collection.DisplayUrl==second && collection.Title=="Второй материал",
+                "Late first-entry metadata must not overwrite the current material's title/link");
+            RenderedLabel(Q,collection,second);RenderedLabel(D,collection,second);
+            K("ShowVideoTitlesCheck").IsChecked=true;
+            RenderedLabel(Q,collection,collection.Title);
+            copy.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+            Require(Clipboard.GetText()==second,"Copy URL must follow the current runtime material in title display mode");
+            D.SelectedItem=collection;
+            D.ContextMenu.Items.OfType<MenuItem>().Single(item=>Equals(item.Header,ErrorMessages.Text("Копировать ссылку","Copy URL")))
+                .RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+            Require(Clipboard.GetText()==second,"Downloads Copy URL must use the same current material");
+            SaveCheckpoint();
+            Require(_storage.Restore()!.Queue.Single(row=>row.Url==collection.Url).DisplayUrl==second,
+                "A current-link-only update must be included in the checkpoint fingerprint");
+            collection.SetCurrentVideoUrl(third);SaveCheckpoint();
+            Require(_storage.Restore()!.Queue.Single(row=>row.Url==collection.Url).DisplayUrl==third,
+                "Changing the link with unchanged title/status must trigger another save");
+            string previousQuery=B("QueueSearchBox").Text;
+            try
+            {
+                B("QueueSearchBox").Text="watch?v=Third";
+                AwaitCachedTitle(()=>Q.Items.Contains(collection) && !Q.Items.Contains(known),"Queue search must find its actual displayed material address");
+                collection.SetCurrentVideoUrl(second);
+                AwaitCachedTitle(()=>!Q.Items.Contains(collection),"A material link change must refresh an active queue search");
+            }
+            finally{B("QueueSearchBox").Text=previousQuery;}
+            Require(collection.Url==prefix+"collection" && ReferenceEquals(SessionState.Coordinator,originalSession),
+                "Displaying, copying, filtering and saving video links must preserve task URL and session ownership");
+            Console.WriteLine("PASS: WPF collection material URLs before Start/current runtime, late preview protection, Queue/Downloads copy, tooltips, title mode, checkpoint fingerprint and live URL search");
         }
         finally
         {
             SessionState.Queue.Clear();foreach(var row in originalQueue)SessionState.Queue.Add(row);
             SessionState.Downloads.Clear();foreach(var row in originalDownloads)SessionState.Downloads.Add(row);
+            if(originalClipboard.Length>0)Clipboard.SetText(originalClipboard);else Clipboard.Clear();
             B("UrlInput").Text=originalInput;
             _preview.SelectedUrl=originalPreview;
             K("ShowVideoTitlesCheck").IsChecked=originalMode;

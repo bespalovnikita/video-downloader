@@ -70,7 +70,7 @@ internal sealed class QueueFilterController:IDisposable
             _statusId is null || string.Equals(row.Status,_statusId,StringComparison.Ordinal)) &&
         (_subscriptionId is null || string.Equals(row.SubscriptionId,_subscriptionId,StringComparison.Ordinal)) &&
         (_text.Length==0 || row.Title.Contains(_text,StringComparison.OrdinalIgnoreCase) ||
-            row.Url.Contains(_text,StringComparison.OrdinalIgnoreCase));
+            row.Url.Contains(_text,StringComparison.OrdinalIgnoreCase) || row.DisplayUrl.Contains(_text,StringComparison.OrdinalIgnoreCase));
 
     internal DownloadItem[] SelectedRows()=>_grid.SelectedItems.Cast<DownloadItem>()
         .Where(row=>_observed.Contains(row) && Includes(row)).Distinct().OrderBy(row=>row.Order).ToArray();
@@ -155,6 +155,7 @@ internal sealed class QueueFilterController:IDisposable
         if(e.PropertyName is nameof(DownloadItem.SubscriptionId) or nameof(DownloadItem.SubscriptionName))_choicesDirty=true;
         bool relevant=_choicesDirty || e.PropertyName==nameof(DownloadItem.Title) && _text.Length>0 ||
             e.PropertyName==nameof(DownloadItem.Url) && _text.Length>0 ||
+            e.PropertyName==nameof(DownloadItem.DisplayUrl) && _text.Length>0 ||
             e.PropertyName==nameof(DownloadItem.Status) && _statusId is not null;
         if(relevant && !_refresh.IsEnabled)_refresh.Start();
     }

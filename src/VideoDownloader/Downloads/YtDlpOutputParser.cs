@@ -13,6 +13,8 @@ internal abstract record YtDlpOutputEvent
     {
         internal double? SectionStart {get;init;}
         internal double? SectionEnd {get;init;}
+        internal bool IsCollection {get;init;}
+        internal string WebpageUrl {get;init;}="";
     }
     internal sealed record Progress(double Percent,string Speed,string Eta,long DownloadedBytes,long TotalBytes,string Component)
         : YtDlpOutputEvent
@@ -87,9 +89,16 @@ internal static class YtDlpOutputParser
             string mediaId=Text("id");
             if(mediaId.Length==0 && formats.Count==0)return null;
             int index=Number("playlist_autonumber"), count=Number("n_entries");
+            bool collection=index>0 || count>0 || Number("playlist_index")>0 || Text("playlist_id").Length>0;
             if(index>count){index=0;count=0;}
             double? Section(string name)=>root.TryGetProperty(name,out var value) && value.ValueKind==JsonValueKind.Number && value.TryGetDouble(out double number) && double.IsFinite(number) && number>=0?number:null;
-            return new YtDlpOutputEvent.Plan(mediaId,formats,index,count){SectionStart=Section("section_start"),SectionEnd=Section("section_end")};
+            string extractor=Text("extractor_key");
+            if(extractor.Length==0)extractor=Text("extractor");
+            return new YtDlpOutputEvent.Plan(mediaId,formats,index,count)
+            {
+                SectionStart=Section("section_start"),SectionEnd=Section("section_end"),
+                IsCollection=collection,WebpageUrl=collection?VideoPageUrl.FromExtractor(Text("webpage_url"),extractor):""
+            };
         }
         catch(JsonException){return null;}
         catch(InvalidOperationException){return null;}

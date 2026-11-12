@@ -92,7 +92,7 @@ public sealed partial class NativeWindow
                         await Task.Run(()=>DownloadCleanup.Retry(row));
                         if(QueueItemActionsBlocked(true) || !SessionState.Queue.Contains(row))break;
                         row.Status="Queued";row.State="Queued";row.Progress=0;row.ProgressDetail="";
-                        row.Title="";row.Speed="";row.Downloaded="";row.ETA="";row.Slot="";
+                        row.Title="";row.ResetCurrentVideo();row.Speed="";row.Downloaded="";row.ETA="";row.Slot="";
                         row.TransferredBytes=0;row.RawError="";row.CompletedSelection=null;
                         row.OutputRoot="";row.RunDir="";row.PendingRemoval=false;
                         row.AttemptFinished=true;row.DeferredToNextStart=false;row.RequeueRequested=false;

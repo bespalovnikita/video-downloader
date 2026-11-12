@@ -427,7 +427,7 @@ public sealed partial class NativeWindow : IDisposable
         {
             // Save on meaningful changes, not every progress tick.
             var fingerprint=System.Text.Json.JsonSerializer.Serialize(rows.Select(i=>new{
-                i.Url,i.Title,i.Status,i.Path,i.Order,i.OwnedPaths,i.OutputRoot,i.RunDir,i.StageDir,
+                i.Url,i.Title,i.CurrentVideoUrl,i.Status,i.Path,i.Order,i.OwnedPaths,i.OutputRoot,i.RunDir,i.StageDir,
                 i.CleanupPaths,i.CleanupError,i.PendingRemoval,i.AttemptFinished,i.DeferredToNextStart,i.RequeueRequested,
                 i.SubscriptionId,i.SubscriptionName,i.Selection,i.CompletedSelection
             }),AppPersistence.Json)+

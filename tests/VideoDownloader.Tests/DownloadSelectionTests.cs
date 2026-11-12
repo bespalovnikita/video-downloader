@@ -347,9 +347,46 @@ internal static class DownloadSelectionTests
                 "A real partial result must retain exact ownership, preserve unrelated files and leave full-URL history empty");
             data.Save(new[]{row},options);
             Require(data.Restore()!.Queue.Single().IsPartialResult,"A real completed clip must remain partial after restart");
+            await RealCollectionPlans(root,server.Url);
             Console.WriteLine("PASS: actual yt-dlp/FFmpeg clip, ffprobe duration/audio/video, partial history and safe publication");
         }
         finally {Directory.Delete(root,true);}
+    }
+
+    private static async Task RealCollectionPlans(string root,string mediaUrl)
+    {
+        const string collection="https://collection-plan.invalid/list?list=Original";
+        string[] pages=["https://collection-plan.invalid/watch?v=First","https://collection-plan.invalid/watch?v=Second"];
+        var entries=pages.Select((page,index)=>new JsonObject
+        {
+            ["id"]="entry-"+index,["title"]="Collection entry "+index,["extractor"]="FixtureSite",["extractor_key"]="FixtureSite",
+            ["webpage_url"]=page,["formats"]=new JsonArray(new JsonObject
+            {
+                ["format_id"]="muxed",["url"]=mediaUrl+"?token=private-format-secret",["ext"]="mp4",
+                ["vcodec"]="avc1",["acodec"]="aac",["width"]=160,["height"]=90,
+                ["http_headers"]=new JsonObject{["X-Fixture-Private"]="private-header-secret"}
+            })
+        }).ToArray();
+        string info=Path.Combine(root,"collection-plan.json");
+        File.WriteAllText(info,new JsonObject{["_type"]="playlist",["id"]="two-entries",["title"]="Two entries",
+            ["extractor"]="FixtureCollection",["extractor_key"]="FixtureCollection",
+            ["webpage_url"]=collection,["entries"]=new JsonArray(entries.Cast<JsonNode>().ToArray())}.ToJsonString());
+        string stage=Path.Combine(root,"collection-plan-downloads");Directory.CreateDirectory(stage);
+        var options=new DownloadOptions{Output=stage,EmbedMetadata=false,EmbedChapters=false};
+        var arguments=new YtDlpArguments(options).Build(collection,stage,"best").SkipLast(1)
+            .Concat(new[]{"--no-clean-info-json","--load-info-json",info});
+        string stdout=await Tool(DependencyCenter.Executable("yt-dlp.exe"),arguments);
+        string[] raw=stdout.Split('\n').Select(line=>line.Trim()).Where(line=>line.StartsWith("__VD_PLAN__:",StringComparison.Ordinal)).ToArray();
+        var plans=raw.Select(line=>YtDlpOutputParser.Parse(line) as YtDlpOutputEvent.Plan).ToArray();
+        Require(plans.Length==2 && plans.Select(plan=>plan?.WebpageUrl).SequenceEqual(pages) &&
+            plans.All(plan=>plan is{IsCollection:true,MediaCount:2}) && plans[0]!.MediaIndex==1 && plans[1]!.MediaIndex==2,
+            "Actual bundled yt-dlp must project the two current public pages and real playlist positions: "+stdout);
+        Require(raw.All(line=>!line.Contains("private-format-secret",StringComparison.Ordinal) &&
+            !line.Contains("private-header-secret",StringComparison.Ordinal) && !line.Contains(mediaUrl,StringComparison.Ordinal)),
+            "The actual before_dl template must exclude format URLs/headers rather than relying on downstream redaction");
+        Require(stdout.Split('\n').Count(line=>line.StartsWith("__VD_FILE__:",StringComparison.Ordinal))==2 && Directory.GetFiles(stage,"*.mp4").Length==2,
+            "The projection proof must download both real loopback media entries");
+        Console.WriteLine("PASS: actual bundled yt-dlp two-entry loopback playlist, before_dl public-page projection and private-format exclusion (loaded metadata)");
     }
 
     private static async Task<string> Tool(string executable,IEnumerable<string> arguments)
