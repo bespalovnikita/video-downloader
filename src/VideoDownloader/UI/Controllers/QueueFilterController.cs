@@ -14,6 +14,7 @@ namespace VideoDownloader.Native;
 /// <summary>Filters presentation only. Source order and download admission remain owned by QueueSessionController.</summary>
 internal sealed class QueueFilterController:IDisposable
 {
+    private const string NotCompletedStatus="NotCompleted";
     private sealed record Choice(string? Id,string Label);
     private readonly Window _window;
     private readonly DataGrid _grid;
@@ -65,7 +66,8 @@ internal sealed class QueueFilterController:IDisposable
     }
 
     private bool Includes(object candidate)=>candidate is DownloadItem row &&
-        (_statusId is null || string.Equals(row.Status,_statusId,StringComparison.Ordinal)) &&
+        (_statusId==NotCompletedStatus ? row.Status!="Completed" :
+            _statusId is null || string.Equals(row.Status,_statusId,StringComparison.Ordinal)) &&
         (_subscriptionId is null || string.Equals(row.SubscriptionId,_subscriptionId,StringComparison.Ordinal)) &&
         (_text.Length==0 || row.Title.Contains(_text,StringComparison.OrdinalIgnoreCase) ||
             row.Url.Contains(_text,StringComparison.OrdinalIgnoreCase));
@@ -189,7 +191,8 @@ internal sealed class QueueFilterController:IDisposable
         try
         {
             var previousStatus=_status.SelectedItem as Choice;
-            var statuses=new List<Choice>{new(null,ErrorMessages.Text("Все статусы","All statuses"))};
+            var statuses=new List<Choice>{new(null,ErrorMessages.Text("Все статусы","All statuses")),
+                new(NotCompletedStatus,ErrorMessages.Text("НЕ Готово","Not completed"))};
             string[] standard=["Queued","Starting","Running","Skipped","Completed","Failed","Interrupted","Cancelled"];
             foreach(string id in standard.Concat(_rows.Select(row=>row.Status)).Distinct(StringComparer.Ordinal))
                 statuses.Add(new(id,StatusLabel(id)));
