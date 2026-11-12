@@ -66,7 +66,8 @@ internal sealed partial class UiScenario
             foreach(var (row,blue) in new[]{(queued,(byte)24),(finished,(byte)196),(other,(byte)88)})
             {
                 SeedTitlePreviewCache(storage,new PreviewData(row.Url,row.Title,"","",1,"fixture",4,1,"","",ImageBytes(blue),DateTime.UtcNow));
-                Require(subject.SessionState.TryAdd(row),"Every exact fixture URL must enter the normal queue.");
+                if(ReferenceEquals(row,queued))
+                    Require(subject.SessionState.TryAdd(row),"The fixture queue row must enter the normal queue.");
                 subject.Preview.RequestRow(row);
             }
             subject.SessionState.Downloads.Add(finished);subject.SessionState.Downloads.Add(other);subject.Reindex();
@@ -112,7 +113,8 @@ internal sealed partial class UiScenario
                 "A newly active download must not take over the current preview.");
             downloads.SelectedItem=other;
             Require(subject.Preview.SelectedUrl==other.Url && HasColor(image,88),"A later explicit Downloads selection must still update the image.");
-            Require(subject.SessionState.Queue.SequenceEqual(rows) && rows.Select(row=>row.Order).SequenceEqual(new[]{1,2,3}) &&
+            Require(subject.SessionState.Queue.SequenceEqual(new[]{queued}) && queued.Order==1 &&
+                subject.SessionState.Downloads.SequenceEqual(new[]{finished,other,late}) &&
                 subject.SessionState.Coordinator is null && subject.SessionState.StartedAt is null && !File.Exists(storage.HistoryPath) &&
                 File.ReadAllText(storage.SessionPath)==checkpoint,
                 "Preview navigation must preserve queue order, checkpoint, successful history and the explicit Start boundary.");
