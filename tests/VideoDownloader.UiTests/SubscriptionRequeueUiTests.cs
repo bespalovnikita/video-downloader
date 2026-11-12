@@ -1,10 +1,12 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Interop;
 using System.Windows.Markup;
 using System.Windows.Threading;
 using System.Xml;
@@ -13,6 +15,22 @@ namespace VideoDownloader.UiTests;
 
 internal sealed partial class UiScenario
 {
+    private static readonly object RequeueStageGate=new();
+    private static void RequeueStage(string detail)
+    {
+        string message="subscription requeue: "+detail;
+        lock(RequeueStageGate)
+        {
+            Console.WriteLine(message);
+            string? result=Environment.GetEnvironmentVariable("VD_NATIVE_UI_TEST_RESULT");
+            if(!string.IsNullOrWhiteSpace(result))
+            {
+                try{File.WriteAllText(result,message);}
+                catch(IOException error){Console.WriteLine("Requeue stage file diagnostic: "+error.HResult);}
+            }
+        }
+    }
+
     private static void TestSubscriptionRequeue(string testRoot)
     {
         string fixture=Environment.GetEnvironmentVariable("VD_NATIVE_TITLE_FIXTURE")??"";
@@ -21,8 +39,11 @@ internal sealed partial class UiScenario
         CultureInfo.CurrentUICulture=CultureInfo.GetCultureInfo("ru-RU");
         try
         {
+            RequeueStage("choices scene");
             SubscriptionRequeueChoices(Path.Combine(testRoot,"subscription-requeue-choices"),fixture);
+            RequeueStage("modal changes scene");
             SubscriptionRequeueModalChanges(Path.Combine(testRoot,"subscription-requeue-modal"),fixture);
+            RequeueStage("existing results scene");
             SubscriptionRequeueExistingResults(Path.Combine(testRoot,"subscription-requeue-existing"),fixture);
             Console.WriteLine("PASS: actual subscription requeue choices for every state, cancellation/history consent, ordinal keys, captured modal selection, retained ownership and explicit repeat/resume through ordinary Start");
         }
@@ -252,9 +273,17 @@ internal sealed partial class UiScenario
         private string? _answer;
         private Action<Window>? _inspect;
         private Exception? _responseError;
+        private readonly uint _thread=GetCurrentThreadId();
+        private IntPtr _mainHandle;
+        private readonly CancellationTokenSource _diagnosticStop=new();
+        private Task? _diagnosticTask;
+        private string _stage="constructing";
+        private long _stageAt=Stopwatch.GetTimestamp();
+        private readonly HashSet<IntPtr> _nativeReplies=[];
 
         internal RequeueUi(string root,string fixture)
         {
+            RequeueStage(Path.GetFileName(root)+": constructor before main");
             _root=root;Directory.CreateDirectory(root);Data=new AppPersistence(Path.Combine(root,"profile"));
             using var input=File.OpenRead(Path.Combine(AppContext.BaseDirectory,"ui","MainWindow.xaml"));using var reader=XmlReader.Create(input);
             Window=(Window)XamlReader.Load(reader);
@@ -262,6 +291,9 @@ internal sealed partial class UiScenario
                 localPosterFfmpegPath:Path.Combine(root,"missing-poster-tool.exe"));
             Subject.ApplyOptions(new DownloadOptions{Output=Path.Combine(root,"output"),Threads="1",Container="MP4"});
             Driver=new SubscriptionScenarioDriver(Subject.Subscriptions);
+            try
+            {
+            Trace("constructor seeding");
             SourceOrder=[Url("baseline"),Url("Video"),Url("video"),Url("skipped"),Url("queued"),Url("processed"),Url("duplicate")];
             var origin=Store.Add(Url("origin-source"),false,shortName:"Источник");
             Store.ApplyScan(origin.Id,new("Источник",[new(Duplicate,Title(Duplicate))],"",""),[]);
@@ -274,19 +306,34 @@ internal sealed partial class UiScenario
             Data.AppendSuccess(Processed);Data.AppendSuccess(Duplicate);
             foreach(string url in SourceOrder)Cache(url);
             Window.Show();Subject.SaveCheckpoint();
-            _responses.Tick+=Respond;_responses.Start();Driver.Open();Refresh();
+            _mainHandle=new WindowInteropHelper(Window).Handle;
+            _responses.Tick+=Respond;_responses.Start();
+            _diagnosticTask=Task.Run(ObserveBlockedUiAsync);
+            Trace("constructor before subscription Open");
+            Driver.Open();Refresh();
+            Trace("constructor after subscription Open");
             Require(Item(Processed).State=="Processed" && Item(Processed).SuccessAttributed &&
                 Item(Duplicate).State=="AlreadyProcessed" && Item(Duplicate).DuplicateSubscriptionId==origin.Id && Item(Duplicate).DuplicateNotified,
                 "The fixture must contain durable historical states with genuine cross-subscription provenance.");
             Window.UpdateLayout();Subject.SaveCheckpoint();
+            Trace("constructor ready");
+            }
+            catch
+            {
+                try{Subject.Dispose();Window.Close();}
+                finally{StopObserving();}
+                throw;
+            }
         }
         internal string Url(string suffix)=>"https://startup-download.invalid/"+Path.GetFileName(_root)+"/"+suffix;
         internal string Title(string url)=>"Материал "+new Uri(url).AbsolutePath.Split('/').Last();
         internal T Main<T>(string name) where T:class=>(T)(Window.FindName(name)??throw new InvalidOperationException("Missing actual main control: "+name));
         internal void ClickMain(string name)
         {
+            Trace("main "+name+" before click");
             var operation=Window.Dispatcher.BeginInvoke(()=>Main<Button>(name).RaiseEvent(new RoutedEventArgs(Button.ClickEvent)));
             Until(()=>operation.Task.IsCompleted,"The actual main Dispatcher action must be delivered.");operation.Task.GetAwaiter().GetResult();ThrowResponse();
+            Trace("main "+name+" delivered");
         }
         internal SubscriptionItem Item(string url)=>Store.Read().Items.Single(item=>item.SubscriptionId==Source.Id && item.Url==url);
         internal void Cache(string url)
@@ -320,6 +367,7 @@ internal sealed partial class UiScenario
         })??throw new InvalidOperationException("Missing real subscription selection button."));
         internal void Queue(string? answer=null,Action<Window>? inspect=null)
         {
+            Trace("queue "+(answer??"uniform")+" before click");
             _answer=answer;_inspect=inspect;int before=ChooserCount;
             var operation=Window.Dispatcher.BeginInvoke(()=>
             {
@@ -328,23 +376,48 @@ internal sealed partial class UiScenario
                 button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             });
             Until(()=>operation.Task.IsCompleted,"The actual Dispatcher must deliver the subscription queue click.");operation.Task.GetAwaiter().GetResult();
+            Trace("queue click delivered; waiting for acknowledgement");
             Until(()=>!Driver.TestIsMutating,"The queue choice, history consent and durable acknowledgement must finish.");
             ThrowResponse();
             Require(answer is null?ChooserCount==before:ChooserCount==before+1,
                 "Only a mixed captured selection must display exactly one choice.");
             _answer=null;_inspect=null;
+            Trace("queue durable acknowledgement complete");
         }
         private void Respond(object? sender,EventArgs args)
         {
-            if(RemovalAnswer is {} answer && DismissDialog(GetCurrentThreadId(),ErrorMessages.Text("Удалить загрузки","Delete downloads"),answer))RemovalCount++;
-            if(DismissDialog(GetCurrentThreadId(),ErrorMessages.Text("Не удалось начать скачивание","Start failed"),1))
-                _responseError??=new InvalidOperationException("The real requeue Start failed.");
+            var native=OwnedNativeWindows();
+            _nativeReplies.IntersectWith(native.Select(item=>item.Handle));
+            foreach(var item in native.Where(item=>item.Class=="#32770" && _nativeReplies.Add(item.Handle)))
+            {
+                if(RemovalAnswer is {} answer && item.Caption==ErrorMessages.Text("Удалить загрузки","Delete downloads"))
+                {
+                    RemovalCount++;Trace("native removal confirmation answered No");
+                    PostMessageW(item.Handle,0x111u,(IntPtr)answer,IntPtr.Zero);
+                }
+                else
+                {
+                    UnexpectedDialog("native "+item.Caption);
+                    // These are unexpected fixture-owned dialogs, never user
+                    // approval. Cancel/No/OK only; never accept deletion/Start.
+                    int safe=new[]{2,7,1}.FirstOrDefault(id=>RequeueGetDlgItem(item.Handle,id)!=IntPtr.Zero);
+                    PostMessageW(item.Handle,safe==0?0x10u:0x111u,(IntPtr)safe,IntPtr.Zero);
+                }
+            }
             foreach(var dialog in Application.Current.Windows.Cast<Window>().ToArray())
             {
                 if(!dialog.IsVisible || _seen.Contains(dialog))continue;
                 bool chooser=dialog.Name=="SubscriptionQueueSelectionDialog" && ReferenceEquals(dialog.Owner,Driver.TestWindow);
                 bool duplicate=dialog.Owner==Window && dialog.FindName("DuplicateUrl") is TextBox;
-                if(!chooser && !duplicate)continue;
+                if(!chooser && !duplicate)
+                {
+                    if(dialog!=Window && dialog!=Driver.TestWindow && OwnsWindow(dialog))
+                    {
+                        _seen.Add(dialog);UnexpectedDialog("WPF "+dialog.Title+" ("+dialog.Name+")");
+                        dialog.Close();
+                    }
+                    continue;
+                }
                 _seen.Add(dialog);
                 try
                 {
@@ -353,6 +426,7 @@ internal sealed partial class UiScenario
                         ChooserCount++;
                         if(_answer is not {} choice)
                             throw new InvalidOperationException("A uniform selection unexpectedly displayed a mixed-state choice.");
+                        Trace("chooser "+choice);
                         Require(dialog.FindName("SubscriptionQueueSelectionSummary") is TextBlock summary && summary.Text.Length>0,
                             "The actual choice must explain its captured selection.");
                         Require(DialogButton(dialog,"Cancel").IsCancel && !DialogButton(dialog,"All").IsDefault &&
@@ -370,11 +444,77 @@ internal sealed partial class UiScenario
                             button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                         }
                     }
-                    else {DuplicateCount++;((Button)dialog.FindName(HistoryAnswer)!).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));}
+                    else
+                    {
+                        DuplicateCount++;Trace("history "+HistoryAnswer);
+                        ((Button)dialog.FindName(HistoryAnswer)!).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    }
                 }
                 catch(Exception error){_responseError??=error;if(dialog.IsVisible)dialog.Close();}
             }
         }
+        private void Trace(string stage)
+        {
+            Volatile.Write(ref _stage,stage);Volatile.Write(ref _stageAt,Stopwatch.GetTimestamp());
+            RequeueStage(Path.GetFileName(_root)+": "+stage);
+        }
+        private void UnexpectedDialog(string description)
+        {
+            string message="Unexpected fixture-owned "+description+" during "+Volatile.Read(ref _stage);
+            _responseError??=new InvalidOperationException(message);Trace(message);
+        }
+        private bool OwnsWindow(Window candidate)
+        {
+            for(Window? owner=candidate.Owner;owner is not null;owner=owner.Owner)
+                if(ReferenceEquals(owner,Window))return true;
+            return false;
+        }
+        private bool OwnsHandle(IntPtr handle)
+        {
+            var root=Volatile.Read(ref _mainHandle);
+            for(int count=0;handle!=IntPtr.Zero && count<32;count++,handle=RequeueGetWindow(handle,4))
+                if(root!=IntPtr.Zero && handle==root)return true;
+            return false;
+        }
+        private List<(IntPtr Handle,string Caption,string Class)> OwnedNativeWindows()
+        {
+            var found=new List<(IntPtr,string,string)>();
+            EnumThreadWindows(_thread,(handle,_)=>
+            {
+                if(!OwnsHandle(handle))return true;
+                var caption=new StringBuilder(256);var type=new StringBuilder(128);
+                // A ThreadPool diagnostic must not synchronously wait on a
+                // blocked WPF thread while asking for its window caption.
+                RequeueSendMessageTimeout(handle,0xDu,(IntPtr)caption.Capacity,caption,2,200,out _);
+                RequeueGetClassName(handle,type,type.Capacity);
+                found.Add((handle,caption.ToString(),type.ToString()));return true;
+            },IntPtr.Zero);
+            return found;
+        }
+        private async Task ObserveBlockedUiAsync()
+        {
+            try
+            {
+                while(true)
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(15),_diagnosticStop.Token);
+                    if(Stopwatch.GetElapsedTime(Volatile.Read(ref _stageAt))<TimeSpan.FromSeconds(15))continue;
+                    string windows=string.Join("; ",OwnedNativeWindows().Select(item=>item.Class+" '"+item.Caption+"'"));
+                    RequeueStage(Path.GetFileName(_root)+": watchdog during "+Volatile.Read(ref _stage)+"; owned windows: "+windows);
+                }
+            }
+            catch(OperationCanceledException) when(_diagnosticStop.IsCancellationRequested){}
+        }
+        private void StopObserving()
+        {
+            _responses.Stop();_responses.Tick-=Respond;_diagnosticStop.Cancel();
+            _diagnosticTask?.GetAwaiter().GetResult();_diagnosticStop.Dispose();
+        }
+        [DllImport("user32.dll",EntryPoint="GetWindow")] private static extern IntPtr RequeueGetWindow(IntPtr handle,uint command);
+        [DllImport("user32.dll",EntryPoint="GetDlgItem")] private static extern IntPtr RequeueGetDlgItem(IntPtr handle,int id);
+        [DllImport("user32.dll",EntryPoint="GetClassNameW",CharSet=CharSet.Unicode)] private static extern int RequeueGetClassName(IntPtr handle,StringBuilder text,int count);
+        [DllImport("user32.dll",EntryPoint="SendMessageTimeoutW",CharSet=CharSet.Unicode)] private static extern IntPtr RequeueSendMessageTimeout(
+            IntPtr handle,uint message,IntPtr wParam,StringBuilder text,uint flags,uint timeout,out IntPtr result);
         private void ThrowResponse()
         {if(_responseError is {} error)throw new InvalidOperationException("Subscription requeue modal automation failed.",error);}
         internal void RequireIdle(byte[] history)
@@ -398,10 +538,17 @@ internal sealed partial class UiScenario
         }
         public void Dispose()
         {
+            Trace("dispose before native join");
+            try
+            {
             if(Subject.SessionState.Coordinator is {} active)
             {active.Stop();Until(()=>Subject.SessionState.Coordinator is null,"The requeue fixture must join its remaining native workers.");}
-            _responses.Stop();_responses.Tick-=Respond;
-            Driver.TestWindow?.Close();Subject.Dispose();Window.Close();ThrowResponse();
+            Trace("dispose before subscription close");Driver.TestWindow?.Close();
+            Trace("dispose before main controller");Subject.Dispose();
+            Trace("dispose before main window close");Window.Close();
+            Trace("dispose complete");ThrowResponse();
+            }
+            finally {StopObserving();}
         }
     }
 }
