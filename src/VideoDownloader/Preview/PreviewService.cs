@@ -14,6 +14,7 @@ public sealed partial class PreviewService : IDisposable
     internal const int MaxGalleryBytes=12_000_000;
     internal const int MaxMetadataBytes=32*1024*1024;
     internal const int MaxMetadataErrorBytes=2*1024*1024;
+    internal const int CurrentFetchVersion=4;
     internal static readonly TimeSpan ThumbnailFailureRetryDelay=TimeSpan.FromMinutes(1);
     private const int MaxCacheBytes=20_000_000;
     private const long MemoryCharacterBudget=32L*1024*1024; // Base64 strings are UTF-16: 64 MiB.
@@ -204,6 +205,15 @@ public sealed partial class PreviewService : IDisposable
         !string.IsNullOrWhiteSpace(error) && !NeedsConverter(error) &&
         DateTime.UtcNow-data.SavedAtUtc>=ThumbnailFailureRetryDelay;
 
+    // Version 3 can have cached a successful Pornhub extraction with no image
+    // even though the same page contains an Open Graph/Twitter poster. Upgrade
+    // only that successful missing-cover case; recorded image errors keep
+    // their cooldown, and valid covers/ordinary negative caches keep their TTL.
+    // A version 4 genuine absence remains cacheable.
+    private int RequiredFetchVersion(PreviewData data)=>
+        data.ThumbnailBase64.Length==0 && PornHubPreview.Supports(data.Url) &&
+        string.IsNullOrWhiteSpace(_thumbnailErrors.GetValueOrDefault(data.Url))?CurrentFetchVersion:3;
+
     // Legacy caches contain covers but no format catalog. Only an explicit
     // format request upgrades those entries before their normal TTL expires.
     public void RequestFormats(string url)
@@ -218,24 +228,41 @@ public sealed partial class PreviewService : IDisposable
         Request(url,true);
     }
     public void Request(string url,bool priority=false)
+        =>RequestBatch([url],priority);
+
+    public void RequestBatch(IEnumerable<string> urls,bool priority=false)
     {
-        if (Volatile.Read(ref _disposed)!=0 || !AppPersistence.ValidUrl(url)) return;
-        var cached=Peek(url);
+        if(Volatile.Read(ref _disposed)!=0)return;
+        var requested=urls.Where(AppPersistence.ValidUrl).Distinct(StringComparer.Ordinal).ToArray();
+        if(requested.Length==0)return;
         lock(_gate)
         {
-            if(Volatile.Read(ref _disposed)!=0 || _resetting.Contains(url))return;
-            if (_known.Contains(url))
+            if(Volatile.Read(ref _disposed)!=0)return;
+            var pending=priority?_pending.ToHashSet(StringComparer.Ordinal):null;
+            var promoted=priority?new List<string>():null;
+            int added=0;
+            foreach(string url in requested)
             {
-                if (priority && _pending.Remove(url)) _pending.Insert(0,url);
-                return;
+                if(_resetting.Contains(url))continue;
+                if(_known.Contains(url))
+                {
+                    if(pending?.Contains(url)==true)promoted!.Add(url);
+                    continue;
+                }
+                var cached=Peek(url);
+                if(cached!=null && MetadataFresh(cached) && !FrameSourceNeeded(url) && (!_formatsRequested.Contains(url) || cached.FormatsLoaded) &&
+                    _fetchVersions.GetValueOrDefault(url)>=RequiredFetchVersion(cached) && !ThumbnailFailureExpired(cached) && !ThumbnailConverterRetry(cached))
+                {_formatsRequested.Remove(url);continue;}
+                _known.Add(url);added++;
+                if(priority)promoted!.Add(url);else _pending.Add(url);
             }
-            if(cached!=null && MetadataFresh(cached) && !FrameSourceNeeded(url) && (!_formatsRequested.Contains(url) || cached.FormatsLoaded) &&
-                _fetchVersions.GetValueOrDefault(url)>=3 && !ThumbnailFailureExpired(cached) && !ThumbnailConverterRetry(cached))
-            {_formatsRequested.Remove(url);return;}
-            _known.Add(url);
-            if (priority) _pending.Insert(0,url);
-            else _pending.Add(url);
-            _signal.Release();
+            if(promoted is {Count:>0})
+            {
+                var moved=promoted.ToHashSet(StringComparer.Ordinal);
+                _pending.RemoveAll(moved.Contains);
+                _pending.InsertRange(0,promoted);
+            }
+            if(added>0)_signal.Release(added);
         }
     }
     private async Task Worker()
@@ -285,7 +312,7 @@ public sealed partial class PreviewService : IDisposable
                 // image request must not suppress the cover for all 72 hours.
                 // Retry only on another request after the bounded cooldown.
                 if(cached!=null && MetadataFresh(cached) && !FrameSourceNeeded(url) && (!requireFormats || cached.FormatsLoaded) &&
-                    _fetchVersions.GetValueOrDefault(url)>=3 && !ThumbnailFailureExpired(cached) && !ThumbnailConverterRetry(cached))
+                    _fetchVersions.GetValueOrDefault(url)>=RequiredFetchVersion(cached) && !ThumbnailFailureExpired(cached) && !ThumbnailConverterRetry(cached))
                 {
                     Publish(iteration,cached,true);
                     continue;
@@ -309,10 +336,10 @@ public sealed partial class PreviewService : IDisposable
                     if (_stop.IsCancellationRequested) break;
                     if(!IsCurrent(iteration))continue;
                     CacheInMemory(data);
-                    _fetchVersions[url]=3;
+                    _fetchVersions[url]=CurrentFetchVersion;
                     _thumbnailErrors[url]=fetched.ThumbnailError;
                     var contents=JsonSerializer.Serialize(new {
-                        CacheVersion=1, PreviewFetchVersion=3, data.SavedAtUtc, data.Url, Success=true, fetched.ThumbnailError,
+                        CacheVersion=1, PreviewFetchVersion=CurrentFetchVersion, data.SavedAtUtc, data.Url, Success=true, fetched.ThumbnailError,
                         data.Title,data.PlaylistTitle,data.Uploader,data.Duration,
                         data.ThumbnailBase64,data.ThumbnailsBase64,data.Extractor,data.MaxHeight,data.MaxFps,data.Codecs,data.DynamicRange,
                         data.Formats,data.FormatsLoaded,data.IsCollection,data.WebpageUrl,data.FormatsTruncated,
@@ -398,6 +425,7 @@ public sealed partial class PreviewService : IDisposable
         };
         foreach(string arg in new[]{"--ignore-config","--dump-single-json","--skip-download","--no-warnings","--playlist-items","1","--encoding","utf-8","--impersonate","chrome"})
             psi.ArgumentList.Add(arg);
+        PornHubPreview.AddArguments(psi,url);
         string cookie=_cookiePath();
         string frameCookieContext=CookieContext(cookie);
         extractionStarted?.Invoke(frameCookieContext);
@@ -458,6 +486,7 @@ public sealed partial class PreviewService : IDisposable
             pageFormats.EnumerateArray().Any(format=>Str(format,"url")==webpage))webpage="";
         string displayedExtractor=Str(j,"extractor");
         if(displayedExtractor.Length==0)displayedExtractor=pageExtractor;
+        if(displayedExtractor==PornHubPreview.Selector)displayedExtractor="Pornhub";
         var data=new PreviewData(url,Str(j,"title"),Str(j,"uploader"),playlist,Number(j,"duration"),
             displayedExtractor,maxHeight,maxFps,string.Join(", ",codecs),string.Join(", ",ranges),"",DateTime.UtcNow)
             {Formats=formats,FormatsLoaded=true,IsCollection=isCollection,FormatsTruncated=formatsTruncated,

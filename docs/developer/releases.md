@@ -51,7 +51,7 @@ GitHub Release содержит Windows portable ZIP и Android release APK с �
 | `THIRD_PARTY_NOTICES.md` | Сведения о сторонних компонентах Android и их исходниках |
 | `youtubedl-android-GPL-3.0.txt` | Текст GPL для Android-рантайма |
 
-Windows-пакет не требует установленного PowerShell, Python или .NET Runtime. FFmpeg и ffprobe устанавливаются через интерфейс или размещаются рядом с приложением/в PATH. Проверка пакета требует `collection-plugins/videodownloader/yt_dlp_plugins/extractor/vd_pornhub.py` и отклоняет CMD, пользовательские PowerShell-скрипты и `pwsh.exe`.
+Windows-пакет не требует установленного PowerShell, Python или .NET Runtime. FFmpeg и ffprobe устанавливаются через интерфейс или размещаются рядом с приложением/в PATH. Проверка пакета требует `collection-plugins/videodownloader/yt_dlp_plugins/extractor/vd_pornhub.py` и соседний `vd_pornhub_preview.py`, а также отклоняет CMD, пользовательские PowerShell-скрипты и `pwsh.exe`.
 
 Windows ZIP собирается командой `pwsh -NoProfile -File scripts/build.ps1 -Task Publish` с выбранной версией и именем архива. Скрипт `scripts/build-android-release.ps1 -Version VERSION` собирает и подписывает APK; итоговый checksum-файл создаётся после сборки ZIP и подписи APK. Ключ извлекается только во временный каталог runner и удаляется после использования.
 

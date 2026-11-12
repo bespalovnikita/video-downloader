@@ -338,5 +338,109 @@ internal sealed partial class UiScenario
             window?.Close();
             Environment.SetEnvironmentVariable("VD_NATIVE_TITLE_FIXTURE_LOG",previousTitleLog);
         }
+        TestSubscriptionAdmissionPreviewPriority(testRoot,executable!);
+    }
+
+    private static void TestSubscriptionAdmissionPreviewPriority(string testRoot,string executable)
+    {
+        static void Require(bool condition,string message)
+        {if(!condition)throw new InvalidOperationException("Subscription preview priority WPF test failed: "+message);}
+        static void PumpUntil(Func<bool> condition,string message)
+        {
+            if(condition())return;
+            var frame=new DispatcherFrame();var deadline=DateTime.UtcNow.AddSeconds(15);
+            var timer=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(20)};
+            Exception? failure=null;
+            timer.Tick+=(_,_)=>
+            {
+                try{if(condition() || DateTime.UtcNow>=deadline)frame.Continue=false;}
+                catch(Exception error){failure=error;frame.Continue=false;}
+            };
+            timer.Start();try{Dispatcher.PushFrame(frame);}finally{timer.Stop();}
+            if(failure is not null)throw new InvalidOperationException(message,failure);
+            Require(condition(),message);
+        }
+        const string prefix="https://preview-scheduling.invalid/";
+        string root=Path.Combine(testRoot,"subscription-preview-priority-"+Guid.NewGuid().ToString("N"));
+        string metadata=Path.Combine(root,"metadata");Directory.CreateDirectory(metadata);
+        string cookies=Path.Combine(root,"control.txt");File.WriteAllText(cookies,metadata,Encoding.UTF8);
+        using var thumbnails=new PreviewThumbnailServer();
+        File.WriteAllText(Path.Combine(metadata,"thumbnail-url.txt"),thumbnails.Url,Encoding.UTF8);
+        // The accepted batch can finish while the unrelated background A stays
+        // blocked. This makes starvation observable without timing a slow site.
+        foreach(string name in new[]{"B","C"})File.WriteAllText(Path.Combine(metadata,"release-"+name),"");
+        string? previousLog=Environment.GetEnvironmentVariable("VD_NATIVE_TITLE_FIXTURE_LOG");
+        Environment.SetEnvironmentVariable("VD_NATIVE_TITLE_FIXTURE_LOG",null);
+        Window? window=null;NativeWindow? subject=null;
+        try
+        {
+            using var input=File.OpenRead(Path.Combine(AppContext.BaseDirectory,"ui","MainWindow.xaml"));
+            using var reader=XmlReader.Create(input);window=(Window)XamlReader.Load(reader);
+            var storage=new AppPersistence(Path.Combine(root,"profile"));
+            subject=new NativeWindow(window,storage,executable,automaticUpdates:false,automaticSubscriptionChecks:false);
+            window.Show();
+            ((TextBox)window.FindName("CookiesBox")!).Text=cookies;
+            var ui=subject;
+            var queue=(DataGrid)window.FindName("QueueGrid")!;
+            var downloads=(DataGrid)window.FindName("DownloadGrid")!;
+            var store=new SubscriptionStore(Path.GetDirectoryName(storage.SessionPath)!);
+            var source=store.Add("https://subscription-scanner.invalid/priority",false,shortName:"Приоритет");
+            store.ApplyScan(source.Id,new SubscriptionScan("Приоритет",
+                [new(prefix+"B","Обнаружено B"),new(prefix+"C","Обнаружено C")],"",""),[]);
+            byte[] subscription=File.ReadAllBytes(store.Path);
+            const string selected="https://selected.invalid/preserve-priority";
+            ui.Preview.SelectedUrl=selected;
+            ((TextBlock)window.FindName("PreviewTitle")!).Text="Оставить текущее превью";
+            bool HasImage(string name)=>ui.Preview.GetCached(prefix+name) is {} data &&
+                data.Title=="Metadata "+name && data.ThumbnailBase64==thumbnails.Encoded;
+            void Idle()=>Require(ui.SessionState.Coordinator is null && ui.SessionState.RunningTask is null &&
+                ui.SessionState.StartedAt is null && ui.SessionState.Downloads.Count==0 && !File.Exists(storage.HistoryPath),
+                "Preview priority and admission must not start a download or manufacture history.");
+
+            ui.Preview.RequestUrl(prefix+"first",priority:false);
+            PumpUntil(()=>File.Exists(Path.Combine(metadata,"started-first")),"The actual shared metadata worker must be gated first.");
+            foreach(string name in new[]{"A","B","C"})ui.Preview.RequestUrl(prefix+name,priority:false);
+            var accepted=ui.QueueSubscriptionUrls([prefix+"B",prefix+"C",prefix+"B"],source.Id,"Приоритет",
+                new Dictionary<string,string>(StringComparer.Ordinal){{prefix+"B","Обнаружено B"},{prefix+"C","Обнаружено C"}});
+            Require(accepted.SequenceEqual(new[]{prefix+"B",prefix+"C"}) &&
+                ui.SessionState.Queue.Select(row=>row.Url).SequenceEqual(accepted) &&
+                ui.SessionState.Queue.All(row=>row.SubscriptionId==source.Id && row.SubscriptionName=="Приоритет" && row.Status=="Queued") &&
+                queue.SelectedItems.Count==0 && downloads.SelectedItems.Count==0 && ui.Preview.SelectedUrl==selected && thumbnails.Requests==0,
+                "Actual subscription admission must retain exact URL order/identity and selected preview while the prior worker stays gated.");
+            Idle();
+            File.WriteAllText(Path.Combine(metadata,"release-first"),"");
+            PumpUntil(()=>HasImage("B") && HasImage("C") && File.Exists(Path.Combine(metadata,"started-A")),
+                "The accepted batch must obtain real HTTP covers in front of the unrelated queued background item.");
+            var calls=File.ReadAllLines(Path.Combine(metadata,"calls.jsonl"),Encoding.UTF8)
+                .Where(line=>!string.IsNullOrWhiteSpace(line)).Select(line=>JsonDocument.Parse(line)).ToArray();
+            try
+            {
+                Require(calls.Length==4 && calls.Select(call=>call.RootElement.GetProperty("Url").GetString())
+                    .SequenceEqual(new[]{prefix+"first",prefix+"B",prefix+"C",prefix+"A"}) &&
+                    calls.All(call=>call.RootElement.GetProperty("MetadataOnly").GetBoolean() &&
+                        call.RootElement.GetProperty("ProcessId").GetInt32()!=Environment.ProcessId),
+                    "Accepted batch order must be preserved with exactly one real metadata-only child per URL, ahead of background A.");
+            }
+            finally{foreach(var call in calls)call.Dispose();}
+            Require(thumbnails.Requests==3 && !HasImage("A") && !Directory.EnumerateFiles(metadata,"overlap-*").Any() &&
+                File.ReadAllBytes(store.Path).SequenceEqual(subscription),
+                "The single worker must fetch the cold accepted covers without overlapping children, reclassifying subscription items or processing gated A.");
+            Require(queue.SelectedItems.Count==0 && downloads.SelectedItems.Count==0 && ui.Preview.SelectedUrl==selected &&
+                ((TextBlock)window.FindName("PreviewTitle")!).Text=="Оставить текущее превью",
+                "Cold batch images must arrive without selecting a row or replacing the user's current preview.");
+            Idle();
+            File.WriteAllText(Path.Combine(metadata,"release-A"),"");
+            PumpUntil(()=>HasImage("A"),"The deferred background request must resume after the accepted batch.");
+            Require(thumbnails.Requests==4 && thumbnails.Errors.IsEmpty &&
+                !Directory.EnumerateFiles(metadata,"overlap-*").Any(),"Every cold HTTP cover must use the existing serial worker exactly once.");
+            Idle();
+            Console.WriteLine("PASS: actual subscription batch admission prioritizes cold HTTP previews in first,B,C,A order without selection, duplicate children, Start or history changes");
+        }
+        finally
+        {
+            foreach(string name in new[]{"first","A","B","C"})File.WriteAllText(Path.Combine(metadata,"release-"+name),"");
+            subject?.Dispose();window?.Close();
+            Environment.SetEnvironmentVariable("VD_NATIVE_TITLE_FIXTURE_LOG",previousLog);
+        }
     }
 }

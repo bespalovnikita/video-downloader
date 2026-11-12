@@ -1,5 +1,7 @@
 """Offline contract tests against the real yt-dlp API; never contact Pornhub."""
 import importlib.util
+from html import escape
+import io
 import json
 from pathlib import Path
 import subprocess
@@ -8,6 +10,8 @@ from types import SimpleNamespace
 import unittest
 
 from yt_dlp import YoutubeDL
+from yt_dlp.extractor.pornhub import PornHubIE
+from yt_dlp.networking.common import Response
 from yt_dlp.utils import ExtractorError
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -15,8 +19,149 @@ PLUGIN = ROOT / 'collection-plugins/videodownloader/yt_dlp_plugins/extractor/vd_
 spec = importlib.util.spec_from_file_location('vd_pornhub_test', PLUGIN)
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
+preview_spec = importlib.util.spec_from_file_location(
+    'vd_pornhub_preview_test', PLUGIN.with_name('vd_pornhub_preview.py'))
+preview_module = importlib.util.module_from_spec(preview_spec)
+preview_spec.loader.exec_module(preview_module)
 SOURCE = 'https://rt.pornhub.com/model/fixture-model'
 LISTING = SOURCE + '/videos/upload'
+VIDEO = 'https://www.pornhub.com/view_video.php?viewkey=6a0a221dc5b27'
+
+
+def video_page(meta='', body='', flashvars=None):
+    script = ('var quality_720p = "https://media.invalid/720p_1000k.mp4";'
+              if flashvars is None else f'var flashvars_123 = {json.dumps(flashvars)};')
+    return ('<html><head><meta name="twitter:title" content="Offline fixture video">'
+            f'{meta}</head><body>{body}<script>\n{script}\n</script></body></html>')
+
+
+class OfflineVideoTransport:
+    """Stub HTTP bytes below the production page reader and extractor."""
+    def __init__(self, html, response_url=VIDEO):
+        self.html, self.response_url, self.requests = html, response_url, []
+        downloader = YoutubeDL({'quiet': True, 'no_warnings': True})
+        downloader.urlopen = lambda *args, **kwargs: self.fail_unexpected_network()
+        super().__init__(downloader)
+
+    @staticmethod
+    def fail_unexpected_network():
+        raise AssertionError('An offline extractor test attempted real HTTP')
+
+    def _request_webpage(self, url, video_id, *args, **kwargs):
+        self.requests.append((url, dict(kwargs)))
+        if isinstance(self.html, Exception):
+            raise self.html
+        return Response(io.BytesIO(self.html.encode()), self.response_url,
+                        {'Content-Type': 'text/html; charset=utf-8'})
+
+
+class BuiltinVideo(OfflineVideoTransport, PornHubIE):
+    pass
+
+
+class PreviewVideo(OfflineVideoTransport, preview_module.VideoDownloaderPornHubPreviewIE):
+    pass
+
+
+class PreviewExtractorTests(unittest.TestCase):
+    def test_actual_builtin_missing_poster_is_repaired_without_an_extra_request(self):
+        html = video_page('<meta property="og:image" content="https://images.invalid/poster.jpg">')
+        builtin, preview = BuiltinVideo(html), PreviewVideo(html)
+        original, repaired = builtin.extract(VIDEO), preview.extract(VIDEO)
+        # This is the real pinned IE's HTML path, not --load-info-json or a
+        # replacement _real_extract: metadata succeeds while its poster is lost.
+        self.assertIsNone(original.get('thumbnail'))
+        self.assertEqual(len(original['formats']), 1)
+        self.assertEqual(repaired['thumbnail'], 'https://images.invalid/poster.jpg')
+        self.assertEqual({key: value for key, value in repaired.items() if key != 'thumbnail'},
+                         {key: value for key, value in original.items() if key != 'thumbnail'})
+        self.assertEqual(len(builtin.requests), 1)
+        self.assertEqual(len(preview.requests), 1)
+        self.assertTrue(preview.requests[0][1]['impersonate'])
+        self.assertIsNone(preview._vd_preview_poster)
+        self.assertIsNone(preview._vd_preview_video_id)
+        self.assertNotIn('webpage', repaired)
+
+    def test_builtin_thumbnail_keeps_priority(self):
+        html = video_page('<meta property="og:image" content="https://images.invalid/other.jpg">',
+                          flashvars={'image_url': 'https://images.invalid/original.jpg',
+                                     'mediaDefinitions': [{'videoUrl': 'https://media.invalid/720p_1000k.mp4',
+                                                           'quality': '720'}]})
+        original = BuiltinVideo(html).extract(VIDEO)
+        self.assertEqual(PreviewVideo(html).extract(VIDEO), original)
+        self.assertEqual(original['thumbnail'], 'https://images.invalid/original.jpg')
+
+    def test_open_graph_wins_and_decodes_entities_with_relative_and_protocol_urls(self):
+        cases = (
+            ('<meta name="twitter:image" content="https://images.invalid/twitter.jpg">'
+             '<meta property="og:image" content="//images.invalid/poster.jpg?a=1&amp;b=2">',
+             'https://images.invalid/poster.jpg?a=1&b=2'),
+            ('<meta property="og:image" content="/images/poster.jpg">',
+             'https://www.pornhub.com/images/poster.jpg'),
+            ('<meta name="twitter:image" content="images/poster.jpg">',
+             'https://www.pornhub.com/images/poster.jpg'),
+            ('<meta name="twitter:image:src" content="https://images.invalid/twitter.jpg">',
+             'https://images.invalid/twitter.jpg'),
+            ('<META PROPERTY="OG:IMAGE" CONTENT="https://images.invalid/case.jpg"/>',
+             'https://images.invalid/case.jpg'),
+        )
+        for meta, expected in cases:
+            with self.subTest(meta=meta):
+                self.assertEqual(PreviewVideo(video_page(meta)).extract(VIDEO)['thumbnail'], expected)
+
+    def test_invalid_image_candidates_do_not_hide_a_valid_twitter_poster(self):
+        for invalid in ('javascript:alert(1)', 'data:image/png;base64,AAAA', 'file:///poster.png',
+                        'https:poster.jpg', 'http:/poster.jpg', 'https:///poster.jpg', 'https://%/poster.jpg',
+                        'https://user:password@images.invalid/a.jpg', 'https://user@images.invalid/a.jpg',
+                        'https://[broken/a.jpg', 'https://images.invalid:99999/a.jpg',
+                        'https://images.invalid/a\nb.jpg', 'https://images.invalid/\\a.jpg',
+                        'https://images.invalid/' + 'a' * 8192):
+            with self.subTest(invalid=invalid[:80]):
+                meta = (f'<meta property="og:image" content="{escape(invalid, quote=True)}">'
+                        '<meta name="twitter:image" content="https://images.invalid/fallback.jpg">')
+                result = PreviewVideo(video_page(meta)).extract(VIDEO)
+                self.assertEqual(result['thumbnail'], 'https://images.invalid/fallback.jpg')
+
+    def test_missing_or_invalid_metadata_does_not_invent_a_poster(self):
+        for meta in ('', '<meta property="og:image">', '<meta property="og:image" content="">',
+                     '<script><meta property="og:image" content="https://images.invalid/script.jpg"></script>',
+                     '<!-- <meta property="og:image" content="https://images.invalid/comment.jpg"> -->',
+                     '<meta name="og:logo" content="https://images.invalid/logo.jpg">'):
+            with self.subTest(meta=meta):
+                self.assertIsNone(PreviewVideo(video_page(meta)).extract(VIDEO).get('thumbnail'))
+
+    def test_poster_search_is_bounded_and_does_not_change_extraction(self):
+        late_meta = (' ' * preview_module._MAX_PAGE_CHARS
+                     + '<meta property="og:image" content="https://images.invalid/late.jpg">')
+        html = video_page(late_meta)
+        self.assertEqual(PreviewVideo(html).extract(VIDEO), BuiltinVideo(html).extract(VIDEO))
+
+    def test_errors_and_redirects_remain_errors_and_capture_is_cleared(self):
+        poster = '<meta property="og:image" content="https://images.invalid/poster.jpg">'
+        cases = (
+            (video_page(poster, '<section class="noVideo">Fixture unavailable</section>'), VIDEO,
+             'Fixture unavailable'),
+            (video_page(poster), 'https://www.pornhub.com/view_video.php?viewkey=other', 'Redirection'),
+            (ExtractorError('Fixture HTTP 403', expected=True), VIDEO, 'Fixture HTTP 403'),
+        )
+        for html, response_url, message in cases:
+            with self.subTest(message=message):
+                preview = PreviewVideo(html, response_url)
+                with self.assertRaisesRegex(ExtractorError, message):
+                    preview.extract(VIDEO)
+                self.assertIsNone(preview._vd_preview_poster)
+                self.assertIsNone(preview._vd_preview_video_id)
+
+    def test_preview_plugin_is_discovered_by_real_yt_dlp_without_changing_builtin(self):
+        command = [sys.executable, '-m', 'yt_dlp', '--ignore-config', '--no-plugin-dirs',
+                   '--plugin-dirs', str(ROOT / 'collection-plugins'), '--use-extractors',
+                   'videodownloader:pornhub:preview', '--verbose', '--skip-download', 'vdph-test:invalid']
+        result = subprocess.run(command, capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('VideoDownloaderPornHubPreviewIE', result.stderr)
+        self.assertIn('No suitable extractor found', result.stderr)
+        self.assertEqual(PornHubIE.IE_NAME, 'PornHub')
+        self.assertNotEqual(preview_module.VideoDownloaderPornHubPreviewIE.ie_key(), PornHubIE.ie_key())
 
 
 def page(keys=('phfixture1',), number=1, next_page=None, total=None, extra='', outside=''):

@@ -140,11 +140,19 @@ internal sealed partial class PreviewController : IDisposable
     }
 
     internal void RequestRow(DownloadItem row,bool priority=false)
+        =>RequestRows([row],priority);
+
+    internal void RequestRows(IEnumerable<DownloadItem> rows,bool priority=false)
     {
-        if(_disposed || IsResetting(row.Url))return;
-        var cached=_service.Peek(row.Url);
-        if(cached!=null)ApplyTitle(cached);
-        _service.Request(row.Url,priority);
+        if(_disposed)return;
+        var urls=rows.Select(row=>row.Url).Where(url=>!IsResetting(url) && AppPersistence.ValidUrl(url))
+            .Distinct(StringComparer.Ordinal).ToArray();
+        var cached=new Dictionary<string,PreviewData>(StringComparer.Ordinal);
+        foreach(string url in urls)if(_service.Peek(url) is {} data)cached.Add(url,data);
+        if(cached.Count>0)
+            foreach(var row in _rows().Distinct())
+                if(cached.TryGetValue(row.Url,out var data))ApplyTitleToRow(row,data);
+        _service.RequestBatch(urls,priority);
     }
 
     // Subscription discovery repairs missing previews independently of scan
@@ -176,20 +184,25 @@ internal sealed partial class PreviewController : IDisposable
     private bool ApplyTitle(PreviewData data)
     {
         if(IsResetting(data.Url))return false;
-        string title=data.Title.Trim();
         bool changed=false;
         foreach(var row in _rows().Distinct().Where(row=>string.Equals(row.Url,data.Url,StringComparison.Ordinal)))
-        {
-            // A collection metadata request always describes its first entry.
-            // It cannot replace a newer before_dl material, including a result
-            // restored from a checkpoint or retained by Skip.
-            if(row.HasCurrentVideoContext || data.IsCollection && (row.ResumeState is not null || row.Status!="Queued"))continue;
-            string previous=row.DisplayUrl;
-            row.SetPreviewVideoUrl(data.IsCollection?VideoPageUrl.FromExtractor(data.WebpageUrl,data.Extractor):"");
-            changed|=!string.Equals(previous,row.DisplayUrl,StringComparison.Ordinal);
-            if(title.Length>0 && !string.Equals(title,data.Url,StringComparison.Ordinal) &&
-                !string.Equals(row.Title,title,StringComparison.Ordinal)){row.Title=title;changed=true;}
-        }
+            changed|=ApplyTitleToRow(row,data);
+        return changed;
+    }
+
+    private bool ApplyTitleToRow(DownloadItem row,PreviewData data)
+    {
+        if(IsResetting(data.Url))return false;
+        string title=data.Title.Trim();
+        // A collection metadata request always describes its first entry.
+        // It cannot replace a newer before_dl material, including a result
+        // restored from a checkpoint or retained by Skip.
+        if(row.HasCurrentVideoContext || data.IsCollection && (row.ResumeState is not null || row.Status!="Queued"))return false;
+        string previous=row.DisplayUrl;
+        row.SetPreviewVideoUrl(data.IsCollection?VideoPageUrl.FromExtractor(data.WebpageUrl,data.Extractor):"");
+        bool changed=!string.Equals(previous,row.DisplayUrl,StringComparison.Ordinal);
+        if(title.Length>0 && !string.Equals(title,data.Url,StringComparison.Ordinal) &&
+            !string.Equals(row.Title,title,StringComparison.Ordinal)){row.Title=title;changed=true;}
         return changed;
     }
 
