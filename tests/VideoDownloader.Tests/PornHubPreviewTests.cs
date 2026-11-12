@@ -51,7 +51,7 @@ internal static class PornHubPreviewTests
         Console.WriteLine(JsonSerializer.Serialize(new
         {
             title=barrier?"Worker barrier":control.RootElement.GetProperty("Title").GetString(),
-            extractor=watch?"PornHub":"PreviewFixture",duration=1,
+            extractor=watch?"videodownloader:pornhub:preview":"PreviewFixture",duration=1,
             thumbnail=barrier?"":control.RootElement.GetProperty("ImageUrl").GetString()
         }));
         return true;
@@ -153,6 +153,8 @@ internal static class PornHubPreviewTests
                 "Only an empty old known-watch result may re-extract and fetch the real PNG: "+name);
             if(reextract)
             {
+                Require(current.Extractor=="Pornhub" && results[url].Extractor=="Pornhub",
+                    "The HTTP preview result must show the site name instead of the internal adapter selector.");
                 var decoded=PreviewImage.Decode(Convert.FromBase64String(current.ThumbnailBase64));
                 Require(decoded.PixelWidth==2 && decoded.PixelHeight==2,"The recovered HTTP cover must be a real decoded 2x2 raster.");
             }

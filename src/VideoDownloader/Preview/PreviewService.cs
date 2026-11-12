@@ -486,6 +486,7 @@ public sealed partial class PreviewService : IDisposable
             pageFormats.EnumerateArray().Any(format=>Str(format,"url")==webpage))webpage="";
         string displayedExtractor=Str(j,"extractor");
         if(displayedExtractor.Length==0)displayedExtractor=pageExtractor;
+        if(displayedExtractor==PornHubPreview.Selector)displayedExtractor="Pornhub";
         var data=new PreviewData(url,Str(j,"title"),Str(j,"uploader"),playlist,Number(j,"duration"),
             displayedExtractor,maxHeight,maxFps,string.Join(", ",codecs),string.Join(", ",ranges),"",DateTime.UtcNow)
             {Formats=formats,FormatsLoaded=true,IsCollection=isCollection,FormatsTruncated=formatsTruncated,
