@@ -2,7 +2,8 @@
 [CmdletBinding()]
 param(
     [ValidateSet('Debug','Release')][string]$Configuration = 'Release',
-    [string]$ResultPath = ''
+    [string]$ResultPath = '',
+    [ValidateSet('Full','SubscriptionRequeue')][string]$Scenario = 'Full'
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -28,6 +29,10 @@ $start.CreateNoWindow = $true
 $start.WorkingDirectory = Split-Path -Parent $exe
 $start.Environment['VD_NATIVE_UI_TEST_RESULT'] = $ResultPath
 $start.Environment['VD_NATIVE_TITLE_FIXTURE'] = $fixture
+if ($Scenario -eq 'SubscriptionRequeue') {
+    $start.ArgumentList.Add('--scenario')
+    $start.ArgumentList.Add('subscription-requeue')
+}
 $process = [Diagnostics.Process]::Start($start)
 try {
     # This is the whole WPF process budget; individual scenario waits retain
@@ -46,7 +51,7 @@ try {
     if ($process.ExitCode -ne 0 -or $lastStage.Trim() -cne 'PASS') {
         throw "Native WPF tests failed: exit code $($process.ExitCode); last stage=$lastStage"
     }
-    if (-not (Test-Path -LiteralPath $screenshot -PathType Leaf)) { throw 'The UI tests did not save the subscription progress screenshot' }
+    if ($Scenario -eq 'Full' -and -not (Test-Path -LiteralPath $screenshot -PathType Leaf)) { throw 'The UI tests did not save the subscription progress screenshot' }
     Write-Host "Native WPF interaction, recovery and checkpoint tests: PASS ($ResultPath)"
 }
 finally {

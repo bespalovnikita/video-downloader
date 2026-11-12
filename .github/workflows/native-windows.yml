@@ -23,9 +23,11 @@ permissions:
 
 jobs:
   android:
+    if: github.event_name != 'pull_request' || github.head_ref != 'debug/subscription-requeue-repro'
     uses: ./.github/workflows/android.yml
 
   native:
+    if: github.event_name != 'pull_request' || github.head_ref != 'debug/subscription-requeue-repro'
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
@@ -91,6 +93,27 @@ jobs:
             dist/SHA256SUMS.txt
           if-no-files-found: error
 
+
+  native-focused:
+    name: Temporary focused subscription requeue WPF diagnostic
+    if: github.event_name == 'pull_request' && github.head_ref == 'debug/subscription-requeue-repro'
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Build native WPF host and executable fixture
+        shell: pwsh
+        run: |
+          dotnet build tests/VideoDownloader.Tests/VideoDownloader.Tests.csproj --configuration Release
+          if ($LASTEXITCODE -ne 0) { throw 'Native executable fixture build failed.' }
+          dotnet build tests/VideoDownloader.UiTests/VideoDownloader.UiTests.csproj --configuration Release
+          if ($LASTEXITCODE -ne 0) { throw 'Native WPF test host build failed.' }
+      - name: Run only actual subscription requeue WPF scenario
+        shell: pwsh
+        run: pwsh -NoProfile -File ./scripts/ui-tests.ps1 -Scenario SubscriptionRequeue
 
   release:
     name: Publish GitHub Release from main
