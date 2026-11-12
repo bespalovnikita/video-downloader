@@ -124,10 +124,18 @@
                     <TextBox x:Name="NewSubscriptionNameBox" Width="300" MaxLength="160"
                              ToolTip="Оставьте пустым, чтобы взять имя канала или плейлиста при первой проверке. Можно задать своё, например 123."/>
                 </StackPanel>
-                <CheckBox Grid.Row="3" Grid.ColumnSpan="3" x:Name="DownloadExistingCheck" IsChecked="False"
-                          Content="Добавить все существующие материалы в очередь (без скачивания)"/>
+                <ComboBox Grid.Row="3" Grid.ColumnSpan="3" x:Name="SubscriptionInitialActionCombo" SelectedIndex="1" Margin="0,8,0,5"
+                          AutomationProperties.Name="Действие с существующими материалами"
+                          ToolTip="Действие применяется к материалам первой успешной полной проверки. Последующие новинки появятся со статусом «Новое».">
+                    <ComboBox.Resources>
+                        <DataTemplate x:Key="InitialActionTemplate"><TextBlock Text="{Binding}" TextWrapping="Wrap" MaxWidth="600"/></DataTemplate>
+                    </ComboBox.Resources>
+                    <ComboBoxItem Tag="Queue" Content="Добавить все материалы в текущую очередь скачивания" ContentTemplate="{StaticResource InitialActionTemplate}"/>
+                    <ComboBoxItem Tag="Skip" Content="Добавить все материалы в подписку без скачивания в статусе &quot;пропущено&quot;" ContentTemplate="{StaticResource InitialActionTemplate}"/>
+                    <ComboBoxItem Tag="ManualDone" Content="Добавить все материалы в подписку без скачивания в статусе &quot;готово&quot;" ContentTemplate="{StaticResource InitialActionTemplate}"/>
+                </ComboBox>
                 <TextBlock Grid.Row="4" Grid.ColumnSpan="3" Foreground="#B3BBCD" TextWrapping="Wrap"
-                           Text="Если флажок выключен, текущие материалы появятся в списке как «Исходный снимок» без добавления в очередь. Их можно выбрать и добавить вручную. Первая полная проверка начнётся сразу после добавления."/>
+                           Text="Первая полная проверка начнётся сразу. «Пропущено» и ручная отметка «Готово» сохраняют список без скачивания; «Готово» не означает наличие файла. При добавлении в очередь повтор уже скачанных URL потребует подтверждения. Скачивание запускается отдельно кнопкой «Скачать всю очередь»."/>
             </Grid>
         </Border>
         <StackPanel Grid.Row="2" Margin="0,0,0,8">
@@ -221,7 +229,11 @@
             </DataGrid.RowStyle>
             <DataGrid.Columns>
                 <DataGridTextColumn Header="Материал" Binding="{Binding Title}" Width="3*"/>
-                <DataGridTextColumn Header="Состояние" Binding="{Binding StateLabel}" Width="180"/>
+                <DataGridTextColumn Header="Состояние" Binding="{Binding StateLabel}" Width="180">
+                    <DataGridTextColumn.ElementStyle>
+                        <Style TargetType="TextBlock"><Setter Property="ToolTip" Value="{Binding StateDescription}"/></Style>
+                    </DataGridTextColumn.ElementStyle>
+                </DataGridTextColumn>
                 <DataGridTextColumn Header="Обнаружен" Binding="{Binding DiscoveredLabel}" Width="145"/>
                 <DataGridTextColumn Header="URL" Binding="{Binding Url}" Width="3*"/>
             </DataGrid.Columns>

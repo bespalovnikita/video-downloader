@@ -29,7 +29,7 @@ internal sealed partial class SubscriptionController
             if(selected.Length==0)return;
             var offeredNew=selected.Where(item=>item.State=="New")
                 .Select(item=>(item.SubscriptionId,item.Url)).ToHashSet();
-            QueueSelectionChoice? choice=selected.Select(item=>item.State).Distinct(StringComparer.Ordinal).Skip(1).Any()
+            QueueSelectionChoice? choice=selected.Select(item=>item.StateKey).Distinct(StringComparer.Ordinal).Skip(1).Any()
                 ?ChooseQueueSelection(window,selected):QueueSelectionChoice.AllSelected;
             if(choice is null || !CanQueue())return;
             // NewOnly applies only to New rows shown by this choice. The queue
@@ -78,7 +78,7 @@ internal sealed partial class SubscriptionController
         panel.Children.Add(new TextBlock
         {
             Margin=new Thickness(0,14,0,16),TextWrapping=TextWrapping.Wrap,
-            Text=string.Join(Environment.NewLine,items.GroupBy(item=>item.State,StringComparer.Ordinal)
+            Text=string.Join(Environment.NewLine,items.GroupBy(item=>item.StateKey,StringComparer.Ordinal)
                 .Select(group=>$"{group.First().StateLabel}: {group.Count()}"))
         });
         var buttons=new WrapPanel{HorizontalAlignment=System.Windows.HorizontalAlignment.Right};
