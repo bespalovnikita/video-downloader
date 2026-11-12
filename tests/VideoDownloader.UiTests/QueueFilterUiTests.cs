@@ -159,6 +159,30 @@ internal sealed partial class UiScenario
             Require(queue.Items.Count==1 && ReferenceEquals(queue.Items[0],rows[3]),"No-subscription is distinct from all subscriptions");
             Click(window,"ResetQueueFiltersButton");
             Require(badge.Visibility==Visibility.Collapsed,"Reset must clear the header's active-filter indicator as well as the predicate.");
+            status.SelectedValue="NotCompleted";
+            Require(status.Text=="НЕ Готово" && queue.Items.Cast<DownloadItem>().SequenceEqual(rows.Take(3)) &&
+                count.Text=="Показано 3 из 4" && badge.Text=="1",
+                "Not completed must show every row except Completed with its Russian label and ordinary filter count.");
+            subscription.SelectedValue="source-B";search.Text="Южный";
+            PumpUntil(()=>queue.Items.Count==1 && ReferenceEquals(queue.Items[0],rows[2]),
+                "Not completed must combine with exact subscription and title filters.");
+            foreach(string state in new[]{"Queued","Starting","Running","Skipped","Interrupted","Cancelled","Failed"})
+            {
+                rows[2].Status=state;
+                ((ListCollectionView)queue.ItemsSource).Refresh();
+                Require(queue.Items.Count==1 && ReferenceEquals(queue.Items[0],rows[2]),
+                    "Every unfinished status must remain visible: "+state);
+            }
+            rows[2].Status="Completed";
+            PumpUntil(()=>queue.Items.Count==0 && empty.Visibility==Visibility.Visible,
+                "A newly completed row must disappear from Not completed without changing source membership.");
+            rows[2].Status="Failed";
+            PumpUntil(()=>queue.Items.Count==1 && ReferenceEquals(queue.Items[0],rows[2]),
+                "A row returning to an unfinished status must reappear.");
+            subject.Reindex();
+            Require((string?)status.SelectedValue=="NotCompleted" && queue.Items.Count==1,
+                "Rebuilding filter choices must preserve Not completed and its combined criteria.");
+            Click(window,"ResetQueueFiltersButton");
             search.Text="incoming title";PumpUntil(()=>queue.Items.Count==0,"The unmatched title filter must start empty");
             rows[0].Title="Incoming TITLE from metadata";
             PumpUntil(()=>queue.Items.Count==1 && ReferenceEquals(queue.Items[0],rows[0]),"Late metadata titles must update search without a new request");
@@ -234,8 +258,9 @@ internal sealed partial class UiScenario
             PumpUntil(()=>fast.Status=="Completed" && slow.Status=="Running" && File.Exists(gate+".started"),
                 "Start all must publish a hidden fast row while a second hidden worker remains active");
             var runningSession=subject.SessionState.Coordinator;
-            search.Clear();status.SelectedValue="Running";
-            PumpUntil(()=>queue.Items.Count==1 && ReferenceEquals(queue.Items[0],slow),"Filters must remain usable while downloading");
+            search.Clear();status.SelectedValue="NotCompleted";
+            PumpUntil(()=>queue.Items.Count==1 && ReferenceEquals(queue.Items[0],slow),
+                "Not completed must hide the published fast row while keeping the actual running worker visible.");
             Click(window,"ToggleQueueFiltersButton");
             Require(panel.Visibility==Visibility.Collapsed && badge.Visibility==Visibility.Visible && badge.Text=="1" &&
                 ReferenceEquals(subject.SessionState.Coordinator,runningSession) && slow.Status=="Running",
@@ -246,6 +271,8 @@ internal sealed partial class UiScenario
             Clipboard.SetText("https://startup-download.invalid/filter-live");Click(window,"PasteClipboardButton");
             PumpUntil(()=>subject.SessionState.Queue.Any(row=>row.Url=="https://startup-download.invalid/filter-live" && row.Status=="Completed"),
                 "Explicit clipboard ingress must still join and complete in the same active session while filtered");
+            PumpUntil(()=>queue.Items.Count==1 && ReferenceEquals(queue.Items[0],slow),
+                "A live-added task must disappear from Not completed after actual successful publication.");
             Require(ReferenceEquals(subject.SessionState.Coordinator,runningSession) && slow.Status=="Running" &&
                 subject.SessionState.Urls.Count==3,"Filters and live Paste must preserve the active session and all admitted URL identities");
             Click(window,"PauseButton");Require(subject.SessionState.ReadMetrics().Paused,"Pause must still control the filtered session");
