@@ -394,6 +394,7 @@ internal sealed partial class UiScenario
                 if(ExpectedDuplicateNotices>0 && item.Caption=="Материалы уже обработаны")
                 {
                     ExpectedDuplicateNotices--;DuplicateNotices++;
+                    Trace("native duplicate notice answered OK");
                     PostMessageW(item.Handle,0x111u,(IntPtr)1,IntPtr.Zero);
                 }
                 else if(RemovalAnswer is {} answer && item.Caption==ErrorMessages.Text("Удалить загрузки","Delete downloads"))
@@ -415,50 +416,58 @@ internal sealed partial class UiScenario
                 if(!dialog.IsVisible || _seen.Contains(dialog))continue;
                 bool chooser=dialog.Name=="SubscriptionQueueSelectionDialog" && ReferenceEquals(dialog.Owner,Driver.TestWindow);
                 bool duplicate=dialog.Owner==Window && dialog.FindName("DuplicateUrl") is TextBox;
+                if(!chooser && !duplicate && (dialog==Window || dialog==Driver.TestWindow || !OwnsWindow(dialog)))continue;
+                _seen.Add(dialog);
+                // DispatcherTimer rearms only after Tick returns. A WPF modal
+                // response can enter another native modal loop while closing
+                // or resuming its caller. Deliver it outside Tick so this same
+                // timer can still acknowledge the resulting native notice.
+                _=Window.Dispatcher.BeginInvoke(DispatcherPriority.Normal,
+                    new Action(()=>RespondToWpfDialog(dialog,chooser,duplicate)));
+            }
+        }
+        private void RespondToWpfDialog(Window dialog,bool chooser,bool duplicate)
+        {
+            if(!dialog.IsVisible)return;
+            try
+            {
                 if(!chooser && !duplicate)
                 {
-                    if(dialog!=Window && dialog!=Driver.TestWindow && OwnsWindow(dialog))
-                    {
-                        _seen.Add(dialog);UnexpectedDialog("WPF "+dialog.Title+" ("+dialog.Name+")");
-                        dialog.Close();
-                    }
-                    continue;
+                    UnexpectedDialog("WPF "+dialog.Title+" ("+dialog.Name+")");
+                    dialog.Close();
                 }
-                _seen.Add(dialog);
-                try
+                else if(chooser)
                 {
-                    if(chooser)
-                    {
-                        ChooserCount++;
-                        if(_answer is not {} choice)
-                            throw new InvalidOperationException("A uniform selection unexpectedly displayed a mixed-state choice.");
-                        Trace("chooser "+choice);
-                        Require(dialog.FindName("SubscriptionQueueSelectionSummary") is TextBlock summary && summary.Text.Length>0,
-                            "The actual choice must explain its captured selection.");
-                        Require(DialogButton(dialog,"Cancel").IsCancel && !DialogButton(dialog,"All").IsDefault &&
-                            (DialogButton(dialog,"New").IsEnabled
-                                ?DialogButton(dialog,"New").IsDefault && !DialogButton(dialog,"Cancel").IsDefault
-                                :DialogButton(dialog,"Cancel").IsDefault),
-                            "Enter and Escape must preserve the safe Only-new/Cancel defaults instead of selecting all historical results.");
-                        _inspect?.Invoke(dialog);
-                        Trace("chooser inspection returned; visible="+dialog.IsVisible);
-                        if(!dialog.IsVisible)continue;
-                        if(choice=="Close")dialog.Close();
-                        else
-                        {
-                            var button=DialogButton(dialog,choice);
-                            Require(button.IsEnabled,"The requested actual queue-choice button must be enabled.");
-                            button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-                        }
-                    }
+                    ChooserCount++;
+                    if(_answer is not {} choice)
+                        throw new InvalidOperationException("A uniform selection unexpectedly displayed a mixed-state choice.");
+                    Trace("chooser "+choice);
+                    Require(dialog.FindName("SubscriptionQueueSelectionSummary") is TextBlock summary && summary.Text.Length>0,
+                        "The actual choice must explain its captured selection.");
+                    Require(DialogButton(dialog,"Cancel").IsCancel && !DialogButton(dialog,"All").IsDefault &&
+                        (DialogButton(dialog,"New").IsEnabled
+                            ?DialogButton(dialog,"New").IsDefault && !DialogButton(dialog,"Cancel").IsDefault
+                            :DialogButton(dialog,"Cancel").IsDefault),
+                        "Enter and Escape must preserve the safe Only-new/Cancel defaults instead of selecting all historical results.");
+                    _inspect?.Invoke(dialog);
+                    Trace("chooser inspection returned; visible="+dialog.IsVisible);
+                    if(!dialog.IsVisible)return;
+                    if(choice=="Close")dialog.Close();
                     else
                     {
-                        DuplicateCount++;Trace("history "+HistoryAnswer);
-                        ((Button)dialog.FindName(HistoryAnswer)!).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                        var button=DialogButton(dialog,choice);
+                        Require(button.IsEnabled,"The requested actual queue-choice button must be enabled.");
+                        button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                     }
                 }
-                catch(Exception error){_responseError??=error;if(dialog.IsVisible)dialog.Close();}
+                else
+                {
+                    DuplicateCount++;Trace("history "+HistoryAnswer);
+                    ((Button)dialog.FindName(HistoryAnswer)!).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    Trace("history response returned");
+                }
             }
+            catch(Exception error){_responseError??=error;if(dialog.IsVisible)dialog.Close();}
         }
         private void Trace(string stage)
         {
