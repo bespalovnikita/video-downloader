@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
 
@@ -99,7 +100,17 @@ internal sealed partial class SubscriptionController
             buttons.Children.Add(button);dialog.RegisterName(button.Name,button);
         }
         panel.Children.Add(buttons);dialog.Content=panel;
-        dialog.ShowDialog();
+        // Explicitly end the modal frame before WPF tears down an owner and
+        // its owned windows. Automatic owner disposal can otherwise strand
+        // this ShowDialog call when shutdown arrives inside a modal callback.
+        void OwnerClosing(object? sender,CancelEventArgs args)
+        {
+            result=null;
+            if(dialog.IsVisible)dialog.Close();
+        }
+        owner.Closing+=OwnerClosing;
+        try {dialog.ShowDialog();}
+        finally {owner.Closing-=OwnerClosing;}
         return result;
     }
 }
