@@ -129,10 +129,12 @@ public sealed partial class NativeWindow
         {
             if(_closing || _disposed || _appUpdateHandoff || _queueItemActionBusy || QueueRemovalBlocked || RejectProfileBackupMutation())return;
             if (SessionState.Coordinator?.IsRunning==true)return;
-            var candidates=SessionState.ClearCandidates();
-            if(candidates.Length>0 && ConfirmClearEntireQueue(candidates) && !_closing && !_disposed &&
+            var completed=SessionState.Queue.Where(row=>row.Status=="Completed").ToArray();
+            bool completedOnly=completed.Length>0;
+            var candidates=completedOnly ? completed:SessionState.ClearCandidates();
+            if(candidates.Length>0 && ConfirmClearEntireQueue(candidates,completedOnly) && !_closing && !_disposed &&
                 !_appUpdateHandoff && SessionState.Coordinator?.IsRunning!=true)
-            {await ClearRowsAsync(candidates);}
+            {await ClearRowsAsync(candidates,completedOnly);}
         };
         F<Button>("MoveUpButton").Click+=(_,_)=>{if(Q.SelectedItem is DownloadItem item)MoveItem(item,SessionState.Queue.IndexOf(item)-1);};
         F<Button>("MoveDownButton").Click+=(_,_)=>{if(Q.SelectedItem is DownloadItem item)MoveItem(item,SessionState.Queue.IndexOf(item)+1);};

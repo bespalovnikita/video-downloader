@@ -143,11 +143,23 @@ internal sealed partial class UiScenario
                         "Confirmed recovery cleanup deletes only the legacy Result's proven owned file");
                     if(scenario.Subject.CheckpointReadOnly)
                         Require(File.ReadAllBytes(data.SessionPath).SequenceEqual(fixture.Checkpoint),"A still-oversized explicit reduction preserves the original checkpoint");
+                    var finished=scenario.SessionState.Queue.Single(row=>row.Status=="Completed" && row.StageDir.Length==0);
+                    var retainedFinished=scenario.SessionState.Queue.Single(row=>row.Status=="Completed" && row.StageDir.Length>0);
                     scenario.F<Button>("ClearQueueButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    PumpUntil(()=>!scenario.SessionState.Queue.Contains(finished));
+                    Require(scenario.SessionState.Queue.Contains(retainedFinished) && retainedFinished.StageDir.Length>0 &&
+                        scenario.SessionState.Queue.Any(row=>row.Url==fixture.PaddedUrl) && File.Exists(fixture.FinishedMedia) &&
+                        File.Exists(fixture.SavedMedia) && File.Exists(fixture.UnownedMedia),
+                        "Recovery Clear removes only eligible finished records, preserving unfinished rows, owned-stage records and all media.");
+                    scenario.F<Button>("ClearQueueButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    Require(scenario.SessionState.Queue.Any(row=>row.Url==fixture.PaddedUrl) && scenario.SessionState.Queue.Contains(retainedFinished),
+                        "A completed record awaiting stage cleanup must not let another Clear fall through to unfinished work.");
+                    scenario.Q.SelectedItem=scenario.SessionState.Queue.Single(row=>row.Url==fixture.PaddedUrl);
+                    scenario.F<Button>("RemoveQueueButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                     PumpUntil(()=>scenario.SessionState.Queue.All(row=>row.Url!=fixture.PaddedUrl) && !scenario.Subject.CheckpointReadOnly);
-                    Require(clears>0 && scenario.SessionState.Queue.Any(row=>row.Url=="https://legacy.example/cleanup-saved?token=Exact" &&
+                    Require(clears>=2 && scenario.SessionState.Queue.Any(row=>row.Url=="https://legacy.example/cleanup-saved?token=Exact" &&
                         row.PendingRemoval && row.OwnedPaths.Contains(fixture.SavedMedia)) && File.Exists(fixture.FinishedMedia) && File.Exists(fixture.UnownedMedia),
-                        "Confirmed Clear reduces the queue while retaining pending cleanup and preserving downloaded or unowned files");
+                        "Explicit reduction keeps pending cleanup and preserves downloaded or unowned files");
                 }
                 else
                 {
