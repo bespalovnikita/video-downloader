@@ -440,14 +440,14 @@ internal sealed partial class UiScenario
                 if(!RequeueIsWindowVisible(item.Handle) || !item.CaptionReady || item.Caption.Length==0)continue;
                 if(ExpectedDuplicateNotices>_pendingDuplicateNotices.Count && item.Caption=="Материалы уже обработаны")
                 {
-                    if(!NativeButtonReady(item.Handle,1))
+                    if(!NoticeOkButtonReady(item.Handle,out int actualButtonId))
                     {
                         TraceNativeReadiness(item.Handle);
                         continue;
                     }
                     if(!TryPostNativeResponse(item.Handle,1))continue;
                     _pendingDuplicateNotices.Add(item.Handle);
-                    Trace("native duplicate notice WM_CLOSE posted=True; OK visible=True enabled=True; responder=ThreadPool");
+                    Trace($"native duplicate notice WM_CLOSE posted=True; actualButtonId={actualButtonId}; OK visible=True enabled=True; responder=ThreadPool");
                 }
                 else if(RemovalAnswer is {} answer && item.Caption==_removalTitle)
                 {
@@ -488,6 +488,27 @@ internal sealed partial class UiScenario
         {
             var button=RequeueGetDlgItem(dialog,id);
             return button!=IntPtr.Zero && RequeueIsWindowVisible(dialog) && RequeueIsWindowVisible(button) && RequeueIsWindowEnabled(button);
+        }
+        private static bool NoticeOkButtonReady(IntPtr dialog,out int actualButtonId)
+        {
+            actualButtonId=0;
+            if(!RequeueIsWindowVisible(dialog) || !RequeueIsWindowEnabled(dialog))return false;
+            int visibleButtons=0,candidate=0;bool enabled=false;
+            RequeueEnumChildWindows(dialog,(child,_)=>
+            {
+                var type=new StringBuilder(64);RequeueGetClassName(child,type,type.Capacity);
+                if(type.ToString()=="Button" && RequeueIsWindowVisible(child))
+                {
+                    visibleButtons++;
+                    candidate=RequeueGetDlgCtrlID(child);enabled=RequeueIsWindowEnabled(child);
+                }
+                return visibleButtons<2;
+            },IntPtr.Zero);
+            // This exact, fixture-owned informational notice is OK-only. CI
+            // exposes its sole button as ID 2; acknowledge with WM_CLOSE after
+            // verifying its actual shape, without accepting ID 2 elsewhere.
+            if(visibleButtons!=1 || !enabled || candidate is not (1 or 2))return false;
+            actualButtonId=candidate;return true;
         }
         private bool TryPostNativeResponse(IntPtr handle,int button)
         {
