@@ -10,6 +10,9 @@ public sealed class SubscriptionDefinition
     public string ShortName { get; set; } = "";
     public string FeedUrl { get; set; } = "";
     public bool DownloadExisting { get; set; }
+    // Null retains the pre-dropdown first-scan behavior of DownloadExisting.
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? InitialAction { get; set; }
     public bool Initialized { get; set; }
     public bool Paused { get; set; }
     public bool ScheduleEnabled { get; set; }
@@ -28,11 +31,18 @@ public sealed class SubscriptionItem
     public string State { get; set; } = "New";
     public DateTimeOffset DiscoveredAtUtc { get; set; } = DateTimeOffset.UtcNow;
     public bool InitialQueuePending { get; set; }
+    // A personal subscription decision, never evidence of a downloaded file.
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool ManuallyCompleted { get; set; }
     // Global history proves success but does not identify its subscription.
     public bool SuccessAttributed { get; set; }
     public string DuplicateSubscriptionId { get; set; } = "";
     public bool DuplicateNotified { get; set; }
-    [JsonIgnore] public string StateLabel => State switch
+    [JsonIgnore] public string StateKey => ManuallyCompleted ? "ManualDone" : State;
+    [JsonIgnore] public string StateDescription => ManuallyCompleted
+        ? "Отмечено готовым вручную при добавлении подписки. Файл не скачивался; в историю загрузок успех не записан. Можно выбрать материал и добавить его в очередь."
+        : StateLabel;
+    [JsonIgnore] public string StateLabel => StateKey switch
     {
         "Baseline" => "Исходный снимок",
         "New" => "Новое",
@@ -40,8 +50,17 @@ public sealed class SubscriptionItem
         "Processed" => "Обработано",
         "AlreadyProcessed" => "Обработано в другой подписке",
         "Skipped" => "Пропущено",
+        "ManualDone" => "Готово",
         _ => State
     };
+}
+
+public static class SubscriptionInitialActions
+{
+    public const string Queue = "Queue";
+    public const string Skip = "Skip";
+    public const string ManualDone = "ManualDone";
+    public static bool IsValid(string? action) => action is null or Queue or Skip or ManualDone;
 }
 
 public sealed class SubscriptionSnapshot

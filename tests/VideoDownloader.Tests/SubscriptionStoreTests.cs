@@ -13,6 +13,7 @@ internal static class SubscriptionStoreTests
         try
         {
             InitialSnapshotsAndFailures(Path.Combine(root, "initial"));
+            InitialActions(Path.Combine(root, "initial-actions"));
             ExplicitBaselineQueue(Path.Combine(root, "baseline-queue"));
             SupplementalWindows(Path.Combine(root, "windows"));
             SourceOrderAndLegacySnapshot(Path.Combine(root, "source-order"));
@@ -45,6 +46,107 @@ internal static class SubscriptionStoreTests
 
     private static SubscriptionItem Item(SubscriptionSnapshot snapshot, string id, string url) =>
         snapshot.Items.Single(item => item.SubscriptionId == id && item.Url == url);
+
+    private static void InitialActions(string directory)
+    {
+        const string old = "https://initial-action.example/Video?key=Exact#one";
+        const string fresh = "https://initial-action.example/video?key=Exact#one";
+        foreach (string action in new[] { SubscriptionInitialActions.Skip, SubscriptionInitialActions.ManualDone, SubscriptionInitialActions.Queue })
+        {
+            var store = new SubscriptionStore(System.IO.Path.Combine(directory, action));
+            var source = store.Add("https://initial-action.example/" + action, action);
+            byte[] beforeScan = File.ReadAllBytes(store.Path);
+            using var cancelled = new CancellationTokenSource();
+            cancelled.Cancel();
+            Refuses(() => store.ApplyScan(source.Id, Scan(old), [], cancelled.Token), "An initial action cannot commit a cancelled enumeration");
+            Assert(File.ReadAllBytes(store.Path).SequenceEqual(beforeScan), "Cancellation retains the initial choice and uninitialized source byte for byte");
+            store.RecordFailure(source.Id, "Enumeration was incomplete");
+            Assert(store.Read().Subscriptions.Single() is { Initialized: false } retry && retry.InitialAction == action && store.Read().Items.Count == 0,
+                "Failure retains the selected first-scan action without an incomplete snapshot");
+            var first = store.ApplyScan(source.Id, Scan(old), []);
+            var item = Item(first, source.Id, old);
+            Assert(item.State == (action == SubscriptionInitialActions.Queue ? "New" : "Skipped") &&
+                item.ManuallyCompleted == (action == SubscriptionInitialActions.ManualDone) &&
+                item.InitialQueuePending == (action == SubscriptionInitialActions.Queue) && !item.SuccessAttributed,
+                "Each first-scan action must set only its honest local decision or pending queue intent");
+            Assert(item.StateLabel == (action == SubscriptionInitialActions.ManualDone ? "Готово" : action == SubscriptionInitialActions.Skip ? "Пропущено" : "Новое"),
+                "The initial decisions have distinct visible labels");
+            if (item.ManuallyCompleted)
+                Assert(item.StateDescription.Contains("вручную") && item.StateDescription.Contains("не скачивался"),
+                    "Manual ready must explain that no file was downloaded");
+            var later = store.ApplyScan(source.Id, Scan(old, fresh), []);
+            Assert(Item(later, source.Id, old).State == item.State && Item(later, source.Id, old).ManuallyCompleted == item.ManuallyCompleted &&
+                Item(later, source.Id, fresh) is { State: "New", ManuallyCompleted: false, InitialQueuePending: false },
+                "Repeat checks preserve the initial decision while new exact URLs remain ordinary news");
+            var restored = new SubscriptionStore(System.IO.Path.GetDirectoryName(store.Path)!).Read();
+            Assert(restored.Subscriptions.Single().InitialAction == action && Item(restored, source.Id, old).ManuallyCompleted == item.ManuallyCompleted,
+                "The initial choice and manual ready designation survive restart");
+            store.AcknowledgeQueued(source.Id, [old]);
+            Assert(Item(store.Read(), source.Id, old) is { State: "Queued", ManuallyCompleted: false, InitialQueuePending: false },
+                "Actual queue acceptance can repeat every initial decision and clears its pending/manual designation");
+            store.MarkSuccessful(old);
+            Assert(Item(store.Read(), source.Id, old) is { State: "Processed", SuccessAttributed: true, ManuallyCompleted: false },
+                "Only a real successful queued download becomes attributed success");
+        }
+
+        var shared = new SubscriptionStore(System.IO.Path.Combine(directory, "history"));
+        var successful = shared.Add("https://initial-action.example/success", true);
+        shared.ApplyScan(successful.Id, Scan(old), []);
+        shared.MarkQueued(successful.Id, [old]); shared.MarkSuccessful(old);
+        var all = shared.Add("https://initial-action.example/all", SubscriptionInitialActions.Queue);
+        var historical = shared.ApplyScan(all.Id, Scan(old, fresh), [fresh]);
+        Assert(Item(historical, all.Id, old) is { State: "AlreadyProcessed", InitialQueuePending: true, SuccessAttributed: false } duplicate &&
+            duplicate.DuplicateSubscriptionId == successful.Id && Item(historical, all.Id, fresh) is { State: "Processed", InitialQueuePending: true, SuccessAttributed: false },
+            "Queue-all retains explicit intent for both attributed duplicates and global successful history");
+        shared.ReconcileSuccess([old, fresh]);
+        Assert(shared.Read().Items.Where(i => i.SubscriptionId == all.Id).All(i => i.InitialQueuePending),
+            "An unaccepted or cancelled queue offer must remain retryable through repeated history reconciliation");
+        byte[] pending = File.ReadAllBytes(shared.Path);
+        Refuses(() => shared.AcknowledgeQueued(all.Id, [old, "https://initial-action.example/missing"]), "Queue acknowledgement must reject unknown items atomically");
+        Assert(File.ReadAllBytes(shared.Path).SequenceEqual(pending), "A rejected acknowledgement preserves every pending intent");
+        shared.AcknowledgeQueued(all.Id, [old]);
+        Assert(Item(shared.Read(), all.Id, old) is { State: "AlreadyProcessed", InitialQueuePending: false } accepted &&
+            accepted.DuplicateSubscriptionId == successful.Id && Item(shared.Read(), all.Id, fresh).InitialQueuePending,
+            "Partial queue acknowledgement clears only accepted URLs without erasing successful provenance");
+        shared.AcknowledgeQueued(all.Id, [fresh]);
+        Assert(Item(shared.Read(), all.Id, fresh) is { State: "Processed", InitialQueuePending: false, SuccessAttributed: false },
+            "Accepting a historical repeat never invents subscription attribution or reverts its proven success");
+        var legacy = shared.Add("https://initial-action.example/legacy", true);
+        shared.ApplyScan(legacy.Id, Scan(old, fresh), [old, fresh]);
+        Assert(shared.Read().Items.Where(i => i.SubscriptionId == legacy.Id).All(i => !i.InitialQueuePending),
+            "Legacy DownloadExisting sources retain their previous history-excluding behavior");
+        var manual = shared.Add("https://initial-action.example/manual", SubscriptionInitialActions.ManualDone);
+        const string onlyManual = "https://initial-action.example/manual-only";
+        shared.ApplyScan(manual.Id, Scan(onlyManual), []);
+        var other = shared.Add("https://initial-action.example/other", SubscriptionInitialActions.Skip);
+        shared.ApplyScan(other.Id, Scan(onlyManual), []);
+        Assert(Item(shared.Read(), other.Id, onlyManual) is { State: "Skipped", DuplicateSubscriptionId: "", ManuallyCompleted: false },
+            "Manual ready in one subscription cannot mark another subscription successful or produce a duplicate notice");
+        shared.ReconcileSuccess([onlyManual]);
+        Assert(shared.Read().Items.Where(i => i.Url == onlyManual).All(i => i.State == "Processed" && !i.ManuallyCompleted && !i.SuccessAttributed),
+            "A later genuine global success supersedes manual ready without fabricated attribution");
+
+        var strict = new SubscriptionStore(System.IO.Path.Combine(directory, "strict"));
+        var strictSource = strict.Add("https://initial-action.example/strict", SubscriptionInitialActions.Skip);
+        strict.ApplyScan(strictSource.Id, Scan(old), []);
+        byte[] valid = File.ReadAllBytes(strict.Path);
+        void Invalid(Action<JsonNode> mutate)
+        {
+            var json = JsonNode.Parse(valid)!; mutate(json); File.WriteAllText(strict.Path, json.ToJsonString());
+            Refuses(() => strict.Read(), "Invalid initial action or manual completion combinations must fail closed");
+            File.WriteAllBytes(strict.Path, valid);
+        }
+        Invalid(json => json["Subscriptions"]![0]!["InitialAction"] = "Unknown");
+        Invalid(json => json["Subscriptions"]![0]!["DownloadExisting"] = true);
+        Invalid(json => { json["Items"]![0]!["State"] = "New"; json["Items"]![0]!["ManuallyCompleted"] = true; });
+        Invalid(json => { json["Items"]![0]!["State"] = "Processed"; json["Items"]![0]!["InitialQueuePending"] = true; });
+        var oldJson = JsonNode.Parse(valid)!;
+        oldJson["Subscriptions"]![0]!.AsObject().Remove("InitialAction");
+        oldJson["Items"]![0]!.AsObject().Remove("ManuallyCompleted");
+        File.WriteAllText(strict.Path, oldJson.ToJsonString());
+        Assert(strict.Read().Subscriptions.Single().InitialAction is null && !strict.Read().Items.Single().ManuallyCompleted,
+            "The new reader accepts the previous complete version-1 schema without any new fields");
+    }
 
     private static void ExplicitBaselineQueue(string directory)
     {

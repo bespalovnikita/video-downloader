@@ -172,9 +172,11 @@ internal sealed class PortableSubscriptions
 }
 internal sealed record PortableSubscription(string Id,string Url,string Title,string ShortName,string FeedUrl,
     bool DownloadExisting,bool Initialized,bool Paused,DateTimeOffset? LastAttemptUtc,DateTimeOffset? LastSuccessUtc,
-    int ScheduleIntervalMinutes=30);
+    int ScheduleIntervalMinutes=30,
+    [property: JsonIgnore(Condition=JsonIgnoreCondition.WhenWritingNull)] string? InitialAction=null);
 internal sealed record PortableSubscriptionItem(string SubscriptionId,string Url,string Title,string State,
-    DateTimeOffset DiscoveredAtUtc,bool InitialQueuePending,bool SuccessAttributed,string DuplicateSubscriptionId,bool DuplicateNotified);
+    DateTimeOffset DiscoveredAtUtc,bool InitialQueuePending,bool SuccessAttributed,string DuplicateSubscriptionId,bool DuplicateNotified,
+    [property: JsonIgnore(Condition=JsonIgnoreCondition.WhenWritingDefault)] bool ManuallyCompleted=false);
 internal sealed record PortableHistoryEntry(string Url,DateTimeOffset? CompletedAtUtc,string Title,string Source);
 internal sealed record BackupDocument(BackupManifest Manifest,PortableProfileSettings Settings,
     PortableSubscriptions Subscriptions,List<PortableHistoryEntry> History);

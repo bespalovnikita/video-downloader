@@ -318,7 +318,7 @@ internal sealed partial class SubscriptionController : IDisposable
         nameBox.IsEnabled=ready && source!=null;
         Control<Button>("SaveSubscriptionNameButton").IsEnabled=ready && source!=null &&
             !string.IsNullOrWhiteSpace(nameBox.Text) && nameBox.Text!=source.Definition.ShortName;
-        Control<CheckBox>("DownloadExistingCheck").IsEnabled=ready;
+        Control<ComboBox>("SubscriptionInitialActionCombo").IsEnabled=ready;
         UpdateScheduleButtons(ready,source);
     }
 
@@ -361,7 +361,8 @@ internal sealed partial class SubscriptionController : IDisposable
         string url=Control<TextBox>("SubscriptionUrlBox").Text.Trim();
         string feed=Control<TextBox>("SubscriptionFeedBox").Text.Trim();
         string shortName=Control<TextBox>("NewSubscriptionNameBox").Text.Trim();
-        bool existing=Control<CheckBox>("DownloadExistingCheck").IsChecked==true;
+        string initialAction=(Control<ComboBox>("SubscriptionInitialActionCombo").SelectedItem as ComboBoxItem)?.Tag as string
+            ?? SubscriptionInitialActions.Skip;
         if (!AppPersistence.ValidUrl(url) || (feed.Length>0 && !AppPersistence.ValidUrl(feed)))
         { Status("Укажите полный HTTP(S) URL канала или плейлиста и, при необходимости, RSS / Atom.",true);return; }
         SubscriptionDefinition? added=null;
@@ -369,7 +370,7 @@ internal sealed partial class SubscriptionController : IDisposable
         Status("Сохраняем подписку…");
         try
         {
-            added=await Task.Run(()=>_store.Add(url,existing,feed,shortName));
+            added=await Task.Run(()=>_store.Add(url,initialAction,feed,shortName));
             if (!CurrentWindow(window)) return;
             Control<TextBox>("SubscriptionUrlBox").Clear();
             Control<TextBox>("SubscriptionFeedBox").Clear();
@@ -455,13 +456,14 @@ internal sealed partial class SubscriptionController : IDisposable
                     if (scan.Scope==SubscriptionScanScope.Full) fullChecks++;else recentChecks++;
                     if (!CurrentWindow(window)) break;
                     if (!cancel.IsCancellationRequested) PrefetchScanPreviews(snapshot,id,scan);
-                    // Only the explicit first-scan checkbox adds existing items.
+                    // Only the captured, persisted first-scan action adds existing items.
                     // Queue acceptance is recorded after the main UI confirms it.
-                    var initial=snapshot.Items.Where(x=>x.SubscriptionId==id && x.State=="New" && x.InitialQueuePending).ToArray();
+                    var initial=snapshot.Items.Where(x=>x.SubscriptionId==id && x.InitialQueuePending).ToArray();
                     if (initial.Length>0 && !cancel.IsCancellationRequested)
                     {
                         _checkProgress.SetStage(progressVersion,id,6,"Добавляем исходные материалы в очередь…");
-                        try { queued+=await QueueCandidatesAsync(initial); }
+                        try { queued+=await QueueCandidatesAsync(initial,selection:source.InitialAction==SubscriptionInitialActions.Queue
+                            ? QueueSelectionChoice.AllSelected : null); }
                         catch(Exception e)
                         {
                             // Enumeration was complete and is already durable.
@@ -597,11 +599,11 @@ internal sealed partial class SubscriptionController : IDisposable
                 foreach (var acknowledgement in acknowledgements)
                 {
                     var urls=acknowledgement.Urls.ToHashSet(StringComparer.Ordinal);
-                    // A genuine concurrent success may already have reconciled a
-                    // row. Never turn Processed/AlreadyProcessed back into Queued.
-                    var eligible=current.Items.Where(x=>x.SubscriptionId==acknowledgement.Id && urls.Contains(x.Url) && x.State is "Baseline" or "New" or "Skipped" or "Queued")
+                    // A genuine concurrent success retains its proven history;
+                    // acknowledging its admission only clears initial intent.
+                    var eligible=current.Items.Where(x=>x.SubscriptionId==acknowledgement.Id && urls.Contains(x.Url) && CanSelectForQueue(x))
                         .Select(x=>x.Url).ToArray();
-                    if (eligible.Length>0) _store.MarkQueued(acknowledgement.Id,eligible);
+                    if (eligible.Length>0) _store.AcknowledgeQueued(acknowledgement.Id,eligible);
                 }
             });
         }
@@ -706,7 +708,7 @@ internal sealed partial class SubscriptionController : IDisposable
             }
             string list=string.Join("\n\n",notices.Take(8).Select(Description));
             if (notices.Length>8) list+=$"\n\nИ ещё {notices.Length-8}. Полный список доступен во «Входящих».";
-            MessageBox.Show(window,"Эти материалы уже успешно обработаны в другой подписке. Повторного скачивания нет.\n\n"+
+            MessageBox.Show(window,"Эти материалы ранее успешно обработаны в другой подписке. Состояние сохраняет этот успех. Явно выбранный повтор ждёт запуска кнопкой «Скачать всю очередь».\n\n"+
                 list,"Материалы уже обработаны",MessageBoxButton.OK,MessageBoxImage.Information);
             await Task.Run(()=>_store.AcknowledgeDuplicates(notices));
             acknowledged=true;
@@ -746,6 +748,7 @@ internal sealed partial class SubscriptionController : IDisposable
         public string Url=>Item.Url;
         public string Title=>Item.Title.Length>0?Item.Title:Item.Url;
         public string StateLabel=>Item.StateLabel;
+        public string StateDescription=>Item.StateDescription;
         public string DiscoveredLabel=>Item.DiscoveredAtUtc.ToLocalTime().ToString("dd.MM.yyyy HH:mm");
     }
 

@@ -32,6 +32,8 @@ Replace дополнительно проверяется на настояще�
 
 ## Windows: полная проверка
 
+[SubscriptionStoreTests](../../tests/VideoDownloader.Tests/SubscriptionStoreTests.cs) проверяет три начальных действия, чтение старой схемы и строгие сочетания полей, сохранение выбора после отказа/отмены, ручную готовность без межподписочного успеха, новые URL после инициализации и partial acknowledgement исторических повторов. [SubscriptionInitialActionsUiTests](../../tests/VideoDownloader.UiTests/SubscriptionInitialActionsUiTests.cs) нажимает реальные Add/Check/Queue, проверяет ровно три dropdown-действия, безопасный default, cell tooltip и mixed chooser ручной готовности, retry с изменённой формой, Cancel/YesAll обычного подтверждения истории, сохранение provenance и отсутствие Start. ProfileBackupTests отдельно проводит настоящий roundtrip ручной готовности и неинициализированного выбора, читает архив без новых полей и сохраняет строгость остальных required properties.
+
 Нужны Windows x64, .NET 8 SDK и PowerShell 7. Команда выполняется **из корня репозитория в обычном интерактивном сеансе Windows**:
 
 ```powershell

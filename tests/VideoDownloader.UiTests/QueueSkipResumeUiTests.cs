@@ -196,19 +196,18 @@ internal sealed partial class UiScenario
             AnswerMessage(clearTitle,7,()=>Click(window,"ClearQueueButton"));
             Require(subject.SessionState.Queue.Count==5,"Declining Clear must preserve every skipped and non-skipped row.");
             string lateUrl="https://startup-download.invalid/late-clear-arrival";
-            AnswerMessage(clearTitle,6,()=>Click(window,"ClearQueueButton"),()=>
-            {
-                lateSkip.Status="Skipped";lateSkip.State="Skipped";lateSkip.AttemptFinished=true;
-                subject.ReceiveArguments([lateUrl]);
-            });
-            PumpUntil(()=>subject.SessionState.Queue.Count==4,"Mixed Clear must finish its captured non-skipped rows.");
+            AnswerMessage(clearTitle,6,()=>Click(window,"ClearQueueButton"),()=>subject.ReceiveArguments([lateUrl]));
+            PumpUntil(()=>subject.SessionState.Queue.Count==4,"Completed-first Clear must remove only its captured finished rows.");
             Require(subject.SessionState.Queue.Contains(first) && subject.SessionState.Queue.Contains(second) && subject.SessionState.Queue.Contains(lateSkip) &&
+                lateSkip.Status=="Queued" &&
                 subject.SessionState.Queue.Any(row=>row.Url==lateUrl) && !subject.SessionState.Queue.Contains(hidden) && !subject.SessionState.Queue.Contains(completed) &&
                 File.ReadAllText(published)=="published media sentinel" && File.Exists(hiddenOutput),
-                "Mixed Clear must retain original/late-Skipped rows and late IPC arrivals, recheck statuses after the modal, and keep published files.");
-            AnswerMessage(clearTitle,6,()=>Click(window,"ClearQueueButton"));
+                "Completed-first Clear must retain queued/skipped rows, late IPC arrivals and published files.");
+            AnswerMessage(clearTitle,6,()=>Click(window,"ClearQueueButton"),()=>
+            {lateSkip.Status="Skipped";lateSkip.State="Skipped";lateSkip.AttemptFinished=true;});
             PumpUntil(()=>subject.SessionState.Queue.Count==3,"The next mixed Clear must remove only the captured late queued arrival.");
-            Require(subject.SessionState.Queue.All(row=>row.Status=="Skipped"),"Only skipped rows must remain after mixed Clear.");
+            Require(subject.SessionState.Queue.All(row=>row.Status=="Skipped"),
+                "Whole Clear must recheck late Skipped statuses after the modal and retain original skipped rows.");
             AnswerMessage(clearTitle,7,()=>Click(window,"ClearQueueButton"));
             Require(subject.SessionState.Queue.Count==3,"Declining an all-Skipped Clear must keep skipped entries.");
             AnswerMessage(clearTitle,6,()=>Click(window,"ClearQueueButton"));

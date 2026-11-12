@@ -266,6 +266,7 @@ internal sealed partial class UiScenario
         internal string Duplicate=>SourceOrder[6];
         internal string HistoryAnswer="YesAllButton";
         internal int ChooserCount,DuplicateCount,RemovalCount;
+        internal int ExpectedDuplicateNotices,DuplicateNotices;
         internal int? RemovalAnswer;
         private readonly string _root;
         private readonly DispatcherTimer _responses=new(){Interval=TimeSpan.FromMilliseconds(20)};
@@ -390,7 +391,12 @@ internal sealed partial class UiScenario
             _nativeReplies.IntersectWith(native.Select(item=>item.Handle));
             foreach(var item in native.Where(item=>item.Class=="#32770" && _nativeReplies.Add(item.Handle)))
             {
-                if(RemovalAnswer is {} answer && item.Caption==ErrorMessages.Text("Удалить загрузки","Delete downloads"))
+                if(ExpectedDuplicateNotices>0 && item.Caption=="Материалы уже обработаны")
+                {
+                    ExpectedDuplicateNotices--;DuplicateNotices++;
+                    PostMessageW(item.Handle,0x111u,(IntPtr)1,IntPtr.Zero);
+                }
+                else if(RemovalAnswer is {} answer && item.Caption==ErrorMessages.Text("Удалить загрузки","Delete downloads"))
                 {
                     RemovalCount++;Trace("native removal confirmation answered No");
                     PostMessageW(item.Handle,0x111u,(IntPtr)answer,IntPtr.Zero);

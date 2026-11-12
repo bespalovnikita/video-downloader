@@ -234,11 +234,23 @@ internal sealed partial class UiScenario
             Require(Control<Button>(window,"ClearQueueButton").Content.ToString()!.Contains("всю очередь",StringComparison.Ordinal) &&
                 Control<Button>(window,"StartButton").Content.ToString()!.Contains("всю очередь",StringComparison.Ordinal),
                 "The visible global actions must explicitly say that they target the whole queue");
-            ClearWithAnswer(7);Require(subject.SessionState.Queue.Count==3,"Cancelling clear must retain all hidden entries");
+            storage.AppendSuccess(rows[3]);byte[] history=File.ReadAllBytes(storage.HistoryPath);
+            ClearWithAnswer(7);Require(subject.SessionState.Queue.Count==3,"Cancelling completed-first clear must retain all hidden entries");
+            ClearWithAnswer(6,()=>rows[3].Status="Queued");
+            Require(subject.SessionState.Queue.Count==3 && subject.SessionState.Queue.Contains(rows[3]),
+                "A completed-first confirmation must recheck changed statuses without falling through to unfinished entries.");
+            rows[3].Status="Completed";
+            ClearWithAnswer(6);
+            Require(subject.SessionState.Queue.SequenceEqual(new[]{rows[1],rows[2]}) && queue.Items.Count==0 &&
+                File.ReadAllText(keptMedia)=="user media sentinel" && File.ReadAllText(keptSecond)=="second fragment sentinel" &&
+                File.ReadAllBytes(storage.HistoryPath).SequenceEqual(history),
+                "The first clear must remove only hidden completed records, keeping unfinished rows, every fragment output and success history.");
+            ClearWithAnswer(7);Require(subject.SessionState.Queue.Count==2,"Cancelling the next whole clear must retain unfinished entries");
             ClearWithAnswer(6,()=>subject.ReceiveArguments([rows[0].Url]));
             Require(subject.SessionState.Queue.Count==1 && subject.SessionState.Queue[0].Url==rows[0].Url && queue.Items.Count==0 &&
-                File.ReadAllText(keptMedia)=="user media sentinel" && File.ReadAllText(keptSecond)=="second fragment sentinel",
-                "Global clear must remove confirmed hidden entries, keep every fragment output and preserve a late IPC arrival outside its snapshot");
+                File.ReadAllText(keptMedia)=="user media sentinel" && File.ReadAllText(keptSecond)=="second fragment sentinel" &&
+                File.ReadAllBytes(storage.HistoryPath).SequenceEqual(history),
+                "With no completed rows, clear must remove confirmed hidden entries while keeping media, history and late IPC arrivals outside its snapshot");
             ClearWithAnswer(6);Require(subject.SessionState.Queue.Count==0,"A new confirmation must clear the remaining hidden arrival");
 
             // Exercise the actual Start continuation and native worker while
