@@ -459,6 +459,11 @@ public sealed partial class PreviewService : IDisposable
         {
             using var imageDeadline=CancellationTokenSource.CreateLinkedTokenSource(token);
             imageDeadline.CancelAfter(_thumbnailTimeout);
+            // A stalled first URL must leave time for a different image from
+            // the same metadata response. Keep the original budget when the
+            // site has no alternative; all candidates still share its deadline.
+            var candidateTimeout=images.Length==1?_thumbnailTimeout:TimeSpan.FromMilliseconds(
+                Math.Min(4_000,Math.Max(1,_thumbnailTimeout.TotalMilliseconds/3)));
             long received=0;
             for(int index=0;index<images.Length;index++)
             {
@@ -467,9 +472,11 @@ public sealed partial class PreviewService : IDisposable
                 int? status=null;
                 long imageReceived=0;
                 long? expected=null;
+                using var candidateDeadline=CancellationTokenSource.CreateLinkedTokenSource(imageDeadline.Token);
+                candidateDeadline.CancelAfter(candidateTimeout);
                 try
                 {
-                    var imageToken=imageDeadline.Token;
+                    var imageToken=candidateDeadline.Token;
                     imageToken.ThrowIfCancellationRequested();
                     using var request=new HttpRequestMessage(HttpMethod.Get,image.Url);
                     request.Headers.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) VideoDownloader/1.0");
@@ -535,11 +542,12 @@ public sealed partial class PreviewService : IDisposable
                     // Once metadata is parsed, an image or total request timeout
                     // must not throw away the title, author or format summary.
                     LogImageFailure(url,image.Url,index+1,images.Length,stage,status,imageReceived,expected,received,
-                        new TimeoutException("Thumbnail timed out; gallery_timeout_ms="+
+                        new TimeoutException("Thumbnail timed out; candidate_timeout_ms="+
+                            candidateTimeout.TotalMilliseconds.ToString("0",CultureInfo.InvariantCulture)+" gallery_timeout_ms="+
                             _thumbnailTimeout.TotalMilliseconds.ToString("0",CultureInfo.InvariantCulture)+" request_timeout_ms="+
                             _requestTimeout.TotalMilliseconds.ToString("0",CultureInfo.InvariantCulture),error));
                     thumbnailError="Thumbnail timed out";
-                    break;
+                    if(imageDeadline.IsCancellationRequested)break;
                 }
                 catch(Exception error) when(error is not OperationCanceledException)
                 {
