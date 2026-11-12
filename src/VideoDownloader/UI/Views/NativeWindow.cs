@@ -762,18 +762,22 @@ public sealed partial class NativeWindow : IDisposable
     {
         SessionState.Forget(row);
     }
-    private Task ClearRowsAsync(IReadOnlyCollection<DownloadItem> candidates)
+    private Task ClearRowsAsync(IReadOnlyCollection<DownloadItem> candidates,bool completedOnly)
     {
         if(_queueItemActionBusy || _queueClearTask?.IsCompleted==false || _startingSession || SessionState.Coordinator?.IsRunning==true || QueueRemovalBlocked || RejectProfileBackupMutation())return Task.CompletedTask;
-        return _queueClearTask=ClearRowsCoreAsync(candidates);
+        return _queueClearTask=ClearRowsCoreAsync(candidates,completedOnly);
     }
-    private async Task ClearRowsCoreAsync(IReadOnlyCollection<DownloadItem> candidates)
+    private async Task ClearRowsCoreAsync(IReadOnlyCollection<DownloadItem> candidates,bool completedOnly)
     {
         bool ownsMutation=false;
         try
         {
         var eligible=SessionState.ClearCandidates().ToHashSet();
-        var selected=candidates.Where(row=>eligible.Contains(row) && SessionState.Queue.Contains(row)).ToArray();
+        // Keep the confirmed mode even if every completed row changes status.
+        // A later click may clear the rest; this operation must not fall through.
+        bool IsEligible(DownloadItem row)=>eligible.Contains(row) && SessionState.Queue.Contains(row) &&
+            (!completedOnly || row.Status=="Completed");
+        var selected=candidates.Where(IsEligible).ToArray();
         await _preview.CancelLocalPostersAsync(selected);
         if(_closing || _disposed || _appUpdateHandoff || QueueRemovalBlocked || _startingSession || _queueItemActionBusy ||
             SessionState.Coordinator?.IsRunning==true || RejectProfileBackupMutation())return;
@@ -782,9 +786,9 @@ public sealed partial class NativeWindow : IDisposable
         // Reserve the mutation barrier only for actual retained-file deletion.
         _queueItemActionBusy=true;ownsMutation=true;UpdateState();
         eligible=SessionState.ClearCandidates().ToHashSet();
-        foreach(var row in selected.Where(eligible.Contains))
+        foreach(var row in selected.Where(IsEligible))
         {
-            if(!SessionState.Queue.Contains(row) || !row.CanResume || row.CleanupPaths.Count>0)continue;
+            if(!row.CanResume || row.CleanupPaths.Count>0)continue;
             if(row.ResumeState is not null)
             {
                 try { await Task.Run(()=>DownloadResumeStore.DeleteRetained(row)); }
@@ -793,9 +797,9 @@ public sealed partial class NativeWindow : IDisposable
                     DownloadCleanup.Failed(row,error.Message);Log("Could not clear retained download: "+error);continue;
                 }
             }
-            if(SessionState.Queue.Contains(row) && row.StageDir.Length==0)ForgetRow(row);
+            if(IsEligible(row) && row.StageDir.Length==0)ForgetRow(row);
         }
-        if(selected.Any(row=>eligible.Contains(row) && SessionState.Queue.Contains(row)))
+        if(selected.Any(IsEligible))
             MessageBox.Show(_window,ErrorMessages.Text("Задачи, ожидающие очистки, сохранены. Нажмите «Удалить выбранные» для повторной попытки.",
                 "Downloads awaiting cleanup were kept. Use Remove to retry."),
                 ErrorMessages.Text("Ожидается очистка","Cleanup pending"),MessageBoxButton.OK,MessageBoxImage.Warning);
