@@ -2,9 +2,11 @@
 [CmdletBinding()]
 param(
     [ValidateSet('Debug','Release')][string]$Configuration = 'Release',
-    [string]$ResultPath = ''
+    [string]$ResultPath = '',
+    [ValidateSet('All','SubscriptionInitialActions')][string]$Scene = 'All'
 )
 $ErrorActionPreference = 'Stop'
+$Scene = if ($Scene -ieq 'All') { 'All' } else { 'SubscriptionInitialActions' }
 $root = Split-Path -Parent $PSScriptRoot
 $exe = Join-Path $root "tests/VideoDownloader.UiTests/bin/$Configuration/net8.0-windows/VideoDownloader.UiTests.exe"
 $fixture = Join-Path $root "tests/VideoDownloader.Tests/bin/$Configuration/net8.0-windows/VideoDownloader.Tests.exe"
@@ -28,6 +30,7 @@ $start.CreateNoWindow = $true
 $start.WorkingDirectory = Split-Path -Parent $exe
 $start.Environment['VD_NATIVE_UI_TEST_RESULT'] = $ResultPath
 $start.Environment['VD_NATIVE_TITLE_FIXTURE'] = $fixture
+$start.Environment['VD_NATIVE_UI_TEST_SCENE'] = $Scene
 $process = [Diagnostics.Process]::Start($start)
 try {
     # This is the whole WPF process budget; individual scenario waits retain
@@ -46,8 +49,13 @@ try {
     if ($process.ExitCode -ne 0 -or $lastStage.Trim() -cne 'PASS') {
         throw "Native WPF tests failed: exit code $($process.ExitCode); last stage=$lastStage"
     }
-    if (-not (Test-Path -LiteralPath $screenshot -PathType Leaf)) { throw 'The UI tests did not save the subscription progress screenshot' }
-    Write-Host "Native WPF interaction, recovery and checkpoint tests: PASS ($ResultPath)"
+    if ($Scene -eq 'All') {
+        if (-not (Test-Path -LiteralPath $screenshot -PathType Leaf)) { throw 'The UI tests did not save the subscription progress screenshot' }
+        Write-Host "Native WPF interaction, recovery and checkpoint tests: PASS ($ResultPath)"
+    }
+    else {
+        Write-Host "Focused native WPF $Scene scenario: PASS ($ResultPath)"
+    }
 }
 finally {
     try { if (-not $process.HasExited) { $process.Kill($true); [void]$process.WaitForExit(5000) } }
