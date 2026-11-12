@@ -234,7 +234,13 @@ internal sealed partial class UiScenario
             Require(Control<Button>(window,"ClearQueueButton").Content.ToString()!.Contains("всю очередь",StringComparison.Ordinal) &&
                 Control<Button>(window,"StartButton").Content.ToString()!.Contains("всю очередь",StringComparison.Ordinal),
                 "The visible global actions must explicitly say that they target the whole queue");
-            storage.AppendSuccess(rows[3]);byte[] history=File.ReadAllBytes(storage.HistoryPath);
+            // The completed row contains fragments, so it is intentionally
+            // excluded from full-success history. Keep a separate legacy
+            // full-URL success to verify that queue clearing preserves it.
+            const string historyUrl="https://queue-filters.invalid/previous-full-success";
+            storage.AppendSuccess(historyUrl);
+            Require(storage.ReadHistory().ContainsKey(historyUrl),"The legacy full-success fixture must be recorded before clearing.");
+            byte[] history=File.ReadAllBytes(storage.HistoryPath);
             ClearWithAnswer(7);Require(subject.SessionState.Queue.Count==3,"Cancelling completed-first clear must retain all hidden entries");
             ClearWithAnswer(6,()=>rows[3].Status="Queued");
             Require(subject.SessionState.Queue.Count==3 && subject.SessionState.Queue.Contains(rows[3]),
