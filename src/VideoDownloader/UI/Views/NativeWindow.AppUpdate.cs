@@ -1,4 +1,3 @@
-using System.Reflection;
 using System.Windows;
 using System.Windows.Controls;
 
@@ -6,6 +5,7 @@ namespace VideoDownloader.Native;
 
 public sealed partial class NativeWindow
 {
+    private static readonly Version CurrentAppVersion=typeof(NativeWindow).Assembly.GetName().Version??new Version(2,0,0);
     private IAppUpdateService? _appUpdateService;
     private CancellationTokenSource? _appUpdateStop;
     private AppUpdateRelease? _availableAppUpdate;
@@ -21,6 +21,8 @@ public sealed partial class NativeWindow
         DisposeAppUpdates();
         _appUpdateService=service??new AppUpdateClient();
         _appUpdateStop=new CancellationTokenSource();
+        string version=new Version(CurrentAppVersion.Major,CurrentAppVersion.Minor,Math.Max(0,CurrentAppVersion.Build)).ToString();
+        T("CurrentAppVersionText").Text=ErrorMessages.Text($"Текущая версия: {version}",$"Current version: {version}");
         _appUpdateStatus=ErrorMessages.Text("Обновления проверяются автоматически при запуске и по кнопке.","Updates are checked at startup and on request.");
         F<Button>("InstallAppUpdateButton").ToolTip=ErrorMessages.Text(
             "Проверенный более новый yt-dlp сохраняется. Если его подлинность нельзя подтвердить, обновление приложения останавливается.",
@@ -56,8 +58,7 @@ public sealed partial class NativeWindow
         _appUpdateBusy=true;_appUpdateStatus=ErrorMessages.Text("Проверка новой версии…","Checking for a new version…");RefreshAppUpdateControls();
         try
         {
-            var current=Assembly.GetExecutingAssembly().GetName().Version??new Version(2,0,0);
-            var release=await service.CheckAsync(current,cancel);
+            var release=await service.CheckAsync(CurrentAppVersion,cancel);
             if(generation!=_appUpdateGeneration || _disposed || _closing)return;
             _availableAppUpdate=release;
             _appUpdateStatus=release is null?ErrorMessages.Text("Установлена актуальная версия приложения.","The application is up to date."):

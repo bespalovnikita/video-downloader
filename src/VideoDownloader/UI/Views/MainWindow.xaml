@@ -757,6 +757,8 @@
 
                         <Expander Header="Обновление приложения" IsExpanded="True" Margin="0,8,0,0">
                             <StackPanel Margin="8">
+                                <TextBlock x:Name="CurrentAppVersionText" Text="Текущая версия: —"
+                                           TextWrapping="Wrap" Foreground="#B7C0D8" Margin="0,0,0,4"/>
                                 <TextBlock x:Name="AppUpdateStatusText" Text="Проверка доступна вручную."
                                            TextWrapping="Wrap" Foreground="#B7C0D8"/>
                                 <WrapPanel Margin="0,7,0,0">

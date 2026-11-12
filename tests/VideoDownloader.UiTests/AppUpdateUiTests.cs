@@ -40,12 +40,20 @@ internal sealed partial class UiScenario
             var check=Control<Button>(window,"CheckAppUpdateButton");
             var install=Control<Button>(window,"InstallAppUpdateButton");
             var status=Control<TextBlock>(window,"AppUpdateStatusText");
+            var installed=Control<TextBlock>(window,"CurrentAppVersionText");
+            var appVersion=typeof(NativeWindow).Assembly.GetName().Version??new Version(2,0,0);
+            string versionText=new Version(appVersion.Major,appVersion.Minor,Math.Max(0,appVersion.Build)).ToString();
+            string installedText=installed.Text;
             Require(check.IsEnabled && !install.IsEnabled && service.CheckCalls==0 && status.Text.Length>0,
                 "The update controls must render without background network in an isolated profile.");
+            Require(installed.IsVisible && installed.Text.EndsWith(versionText,StringComparison.Ordinal),
+                "The installed application assembly version must already be visible before any update request.");
             Require(install.Opacity<check.Opacity,"A disabled install action must remain visibly different in the dark theme.");
 
             Click(window,"CheckAppUpdateButton");
             PumpUntil(()=>service.CheckCalls==1,"Manual check did not reach the injected service.");
+            Require(service.CurrentVersion==appVersion && installed.Text==installedText,
+                "The version sent to update checking must match the displayed installed application, while checking keeps it visible.");
             Require(!check.IsEnabled && !install.IsEnabled,"An in-flight check must disable duplicate check/install actions.");
             var release=new AppUpdateRelease("999.0.0",
                 new Uri("https://github.com/bespalovnikita/video-downloader/releases/download/v999.0.0/VideoDownloader-Windows-x64.zip"),
@@ -53,6 +61,8 @@ internal sealed partial class UiScenario
             service.CheckCompletion!.SetResult(release);
             PumpUntil(()=>check.IsEnabled && install.IsEnabled,"A newer verified release must enable installation when idle.");
             Require(status.Text.Contains("999.0.0",StringComparison.Ordinal),"The available version must be visible in the actual status control.");
+            Require(installed.IsVisible && installed.Text==installedText && !installed.Text.Contains(release.Version,StringComparison.Ordinal),
+                "An available release must not replace the separately displayed installed version.");
 
             var cleanup=new DownloadItem{Url="https://update-ui.invalid/cleanup"};
             subject.SessionState.Queue.Add(cleanup);
@@ -101,11 +111,13 @@ internal sealed partial class UiScenario
             Click(window,"CheckAppUpdateButton");PumpUntil(()=>service.CheckCalls==2,"Second check did not start.");
             service.CheckCompletion!.SetResult(null);
             PumpUntil(()=>check.IsEnabled && !install.IsEnabled,"An up-to-date result must clear the old available update.");
+            Require(installed.IsVisible && installed.Text==installedText,"An up-to-date result must retain the installed version.");
             Click(window,"CheckAppUpdateButton");PumpUntil(()=>service.CheckCalls==3,"Failure check did not start.");
             service.CheckCompletion!.SetException(new IOException("offline update fixture"));
             PumpUntil(()=>check.IsEnabled && status.Text.Contains("offline update fixture",StringComparison.Ordinal),
                 "A manual network error must be visible and leave the check retryable.");
             Require(!install.IsEnabled && window.IsVisible,"A failed check must not offer or launch an unverified package.");
+            Require(installed.IsVisible && installed.Text==installedText,"A network error must retain the installed version.");
 
             Click(window,"CheckAppUpdateButton");PumpUntil(()=>service.CheckCalls==4,"Cancellation check did not start.");
             subject.Dispose();
@@ -128,10 +140,12 @@ internal sealed partial class UiScenario
         internal int PrepareCalls {get;private set;}
         internal bool CheckCancelled {get;private set;}
         internal bool Disposed {get;private set;}
+        internal Version? CurrentVersion {get;private set;}
         internal TaskCompletionSource<AppUpdateRelease?>? CheckCompletion {get;private set;}
         internal TaskCompletionSource<PreparedAppUpdate>? PrepareCompletion {get;private set;}
         public Task<AppUpdateRelease?> CheckAsync(Version currentVersion,CancellationToken cancel)
         {
+            CurrentVersion=currentVersion;
             CheckCalls++;
             var completion=new TaskCompletionSource<AppUpdateRelease?>(TaskCreationOptions.RunContinuationsAsynchronously);
             CheckCompletion=completion;
