@@ -16,6 +16,7 @@ internal static class PreviewReliabilityTests
     {
         string root=Path.Combine(Path.GetTempPath(),"vd-preview-reliability-"+Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
+        PreviewService? owner=null;
         try
         {
             await using var server=new ImageServer(Image);
@@ -48,6 +49,7 @@ internal static class PreviewReliabilityTests
                 delivered.Enqueue(value.Url);
                 completed.GetOrAdd(value.Url,_=>new(TaskCreationOptions.RunContinuationsAsynchronously)).TrySetResult(value);
             },logs.Enqueue,requestTimeout:TimeSpan.FromSeconds(8),thumbnailTimeout:TimeSpan.FromSeconds(3));
+            owner=service;
 
             foreach(string phase in new[]{"headers","body"})
             {
@@ -74,6 +76,15 @@ internal static class PreviewReliabilityTests
                     "The recovered cover must be a normal cache hit: no extra metadata child or HTTP request before the worker barrier.");
             }
 
+            string slowLast=Url("slow-last");
+            control=Control("slow-last","/quick-denied.png","/slow-valid.png");
+            service.Request(slowLast);
+            var slowResult=await Result(slowLast).WaitAsync(TimeSpan.FromSeconds(12));
+            Require(slowResult.Title=="Reliable slow-last" &&
+                    Convert.FromBase64String(slowResult.ThumbnailBase64).SequenceEqual(Image) &&
+                    server.Requests.Count(path=>path=="/quick-denied.png")==1 && server.Requests.Count(path=>path=="/slow-valid.png")==1,
+                "After a quick HTTP failure the final candidate must keep the remaining gallery budget, even when it exceeds the earlier candidate deadline.");
+
             string cancelled=Url("cancelled");
             control=Control("cancelled","/cancel-body-stall.png","/cancel-valid.png");
             service.Request(cancelled);
@@ -83,9 +94,13 @@ internal static class PreviewReliabilityTests
             Require(!server.Requests.Contains("/cancel-valid.png") && !delivered.Contains(cancelled),
                 "Disposing the owner must join the worker and cancel HTTP, without starting the next candidate or publishing a late result.");
             Require(!File.Exists(storage.HistoryPath),"Cover recovery must not record a successful media download.");
-            Console.WriteLine("PASS: preview candidate deadlines; real same-video PNG after stalled headers/body, cache hits without network, and joined cancellation without fallback");
+            Console.WriteLine("PASS: preview candidate deadlines; real same-video PNG after stalled headers/body, remaining budget for a slow final candidate, cache hits without network, and joined cancellation without fallback");
         }
-        finally {Directory.Delete(root,true);}
+        finally
+        {
+            if(owner is not null){owner.Dispose();await owner.Completion.WaitAsync(TimeSpan.FromSeconds(5));}
+            Directory.Delete(root,true);
+        }
     }
 
     private static void Require(bool value,string message)
@@ -137,7 +152,13 @@ internal static class PreviewReliabilityTests
                 string path=request.ToString().Split('\r')[0].Split(' ')[1];
                 Requests.Enqueue(path);
                 _started.GetOrAdd(path,_=>new(TaskCreationOptions.RunContinuationsAsynchronously)).TrySetResult();
+                if(path=="/quick-denied.png")
+                {
+                    await stream.WriteAsync(Encoding.ASCII.GetBytes("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"),_stop.Token);
+                    return;
+                }
                 if(path=="/headers-stall.png")await Task.Delay(Timeout.Infinite,_stop.Token);
+                if(path=="/slow-valid.png")await Task.Delay(1800,_stop.Token);
                 await stream.WriteAsync(Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: "+
                     _image.Length+"\r\nConnection: close\r\n\r\n"),_stop.Token);
                 if(path.EndsWith("body-stall.png",StringComparison.Ordinal))await Task.Delay(Timeout.Infinite,_stop.Token);
