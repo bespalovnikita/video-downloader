@@ -114,7 +114,30 @@ public sealed partial class NativeWindow : IDisposable
             if(!QueueFilterRefreshing && Q.SelectedItem is DownloadItem item)ShowPreview(item.Url);
             RefreshMediaSelectionState();
         };
-        D.SelectionChanged+=(_,_)=>SetDownloadActions();
+        D.SelectionChanged+=(_,_)=>
+        {
+            SetDownloadActions();
+            if(D.SelectedItems.Count==1 && D.SelectedItem is DownloadItem item)ShowPreview(item.Url);
+        };
+        bool focusedPreviewQueued=false;
+        void QueueFocusedPreview()
+        {
+            if(focusedPreviewQueued || _disposed || _closing)return;
+            focusedPreviewQueued=true;
+            // Cell focus can precede its new selection. Resolve the focused
+            // grid after that input event, including a return to the same row.
+            _=Dispatcher.BeginInvoke(()=>
+            {
+                focusedPreviewQueued=false;
+                if(_disposed || _closing)return;
+                if(!QueueFilterRefreshing && Q.IsKeyboardFocusWithin && Q.SelectedItems.Count==1 && Q.SelectedItem is DownloadItem queued)
+                    ShowPreview(queued.Url);
+                else if(D.IsKeyboardFocusWithin && D.SelectedItems.Count==1 && D.SelectedItem is DownloadItem download)
+                    ShowPreview(download.Url);
+            });
+        }
+        Q.GotKeyboardFocus+=(_,_)=>QueueFocusedPreview();
+        D.GotKeyboardFocus+=(_,_)=>QueueFocusedPreview();
         Q.PreviewMouseLeftButtonDown+=(_,e)=>
         {
             _dragPoint=e.GetPosition(Q);
@@ -540,7 +563,11 @@ public sealed partial class NativeWindow : IDisposable
         T("ClipboardHint").Text=QueueAddedHint(added.Count);
     }
     private void RequestRowPreview(DownloadItem row,bool priority=false)=>_preview.RequestRow(row,priority);
-    private void ShowPreview(string url)=>_preview.Show(url);
+    private void ShowPreview(string url)
+    {
+        _preview.Show(url);
+        RefreshMediaSelectionState();
+    }
     private void PollClipboard()=>_ingress.PollClipboard();
     private Task StartAsync(IEnumerable<DownloadItem>? custom=null)=>StartWithConfirmationAsync(custom,null);
     private async Task StartWithConfirmationAsync(IEnumerable<DownloadItem>? custom,IReadOnlySet<DownloadItem>? duplicateConsents,DownloadOptions? preparedOptions=null)

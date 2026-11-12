@@ -48,6 +48,10 @@ internal sealed partial class UiScenario
             UiScenario.TestPreviewGallery(root);
             Stage("testing automatic completed-video posters, shared gallery, stale attempts and joined file removal");
             UiScenario.TestLocalVideoPosters(root);
+            Stage("testing local preview recovery beyond startup bounds and expired cache");
+            UiScenario.TestLocalPosterSelectionReliability(root);
+            Stage("testing Downloads preview selection and background sorting isolation");
+            UiScenario.TestDownloadsPreviewSelection(root);
             Stage("testing resizable panel layout and restored widths");
             UiScenario.TestPanelLayout(root);
             Stage("testing journal profiles, trace correlation and clipboard/export");

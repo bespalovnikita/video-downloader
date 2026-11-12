@@ -30,6 +30,7 @@ public sealed partial class NativeWindow
     {
         if(_disposed)return;
         var row=Q.SelectedItems.Count==1?Q.SelectedItem as DownloadItem:null;
+        if(row is not null && !string.Equals(row.Url,_preview.SelectedUrl,StringComparison.Ordinal))row=null;
         F<Button>("MediaSelectionButton").IsEnabled=row!=null && CanEditMediaSelection(row);
         var summary=T("MediaSelectionSummary");
         summary.Text=row==null ? "Выберите одну строку очереди." :
@@ -44,7 +45,8 @@ public sealed partial class NativeWindow
     private void OpenMediaSelection(object sender,RoutedEventArgs e)
     {
         if(_mediaSelectionDialog is {} existing){existing.Activate();return;}
-        if(Q.SelectedItems.Count!=1 || Q.SelectedItem is not DownloadItem row || !CanEditMediaSelection(row))return;
+        if(Q.SelectedItems.Count!=1 || Q.SelectedItem is not DownloadItem row ||
+            !string.Equals(row.Url,_preview.SelectedUrl,StringComparison.Ordinal) || !CanEditMediaSelection(row))return;
         var dialog=new MediaSelectionDialog(_window,row,ReadOptions,selection=>ApplyMediaSelection(row,selection),_preview.GetFrameAsync,_preview.GetClipAsync,
             waveformPreview:_preview.GetWaveformAsync);
         _mediaSelectionDialog=dialog;
