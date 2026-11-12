@@ -13,10 +13,11 @@ internal sealed partial class PreviewController
     private readonly Func<bool> _allowLocalPosters;
     private readonly Queue<DownloadItem> _localBackfill=new();
     private readonly Dictionary<DownloadItem,LocalPosterJob> _localPosterJobs=new();
-    private readonly Dictionary<DownloadItem,LocalPosterInput> _localPosterSeen=new();
+    private readonly Dictionary<DownloadItem,LocalPosterAttempt> _localPosterSeen=new();
     private readonly HashSet<DownloadItem> _localPosterSuppressed=new();
     private readonly ConditionalWeakTable<DownloadItem,PendingPoster> _localPosterOverflow=new();
     private sealed class PendingPoster { }
+    private sealed record LocalPosterAttempt(LocalPosterInput Input,bool HadImage);
     private bool _hasLocalPosterOverflow;
     private bool _localPosterRefilling;
     private int _localPosterGeneration;
@@ -45,6 +46,21 @@ internal sealed partial class PreviewController
         RefillLocalPosters();
     }
 
+    // Selecting a URL is independent of the bounded startup backfill. It may
+    // refer to a completed row beyond that pass, including from subscriptions.
+    // Retry a previously successful attempt if its image was evicted/expired;
+    // repeatedly selecting an audio-only or damaged file must not spin a decoder.
+    private void RequestSelectedLocalPoster(string url)
+    {
+        if(_disposed || !_allowLocalPosters() || _service.Peek(url) is {ThumbnailBase64.Length:>0})return;
+        var row=_rows().Distinct().FirstOrDefault(row=>string.Equals(row.Url,url,StringComparison.Ordinal) &&
+            LocalPosterInput.Capture(row) is not null);
+        if(row is null)return;
+        if(_localPosterSeen.TryGetValue(row,out var seen) && seen.HadImage && seen.Input.Matches(row))
+            _localPosterSeen.Remove(row);
+        ScheduleLocalPoster(row);
+    }
+
     internal void ScheduleLocalPoster(DownloadItem row)
     {
         if(_disposed || !_allowLocalPosters() || _localPosterSuppressed.Contains(row))return;
@@ -66,7 +82,7 @@ internal sealed partial class PreviewController
             }
             return;
         }
-        if(_localPosterSeen.TryGetValue(row,out var seen) && seen.Matches(row)){_localPosterOverflow.Remove(row);return;}
+        if(_localPosterSeen.TryGetValue(row,out var seen) && seen.Input.Matches(row)){_localPosterOverflow.Remove(row);return;}
         if(_localPosterJobs.Count>=LocalPosterAdmissionLimit)
         {
             // Thirty-two simultaneous download slots fit beside the bounded
@@ -148,12 +164,13 @@ internal sealed partial class PreviewController
                     // Even constructor backfill may have started before WPF
                     // installed a SynchronizationContext. Always return to the
                     // owner dispatcher for collection access and subscribers.
-                    if(CanPublishLocalPoster(job) && _service.Peek(job.Input.Url) is {ThumbnailBase64.Length:>0} data)
+                    var data=_service.Peek(job.Input.Url);
+                    if(CanPublishLocalPoster(job) && data is {ThumbnailBase64.Length:>0})
                         ReceiveLocalPoster(data);
                     if(CanPublishLocalPoster(job))
                     {
                         if(_localPosterSeen.Count>=512)_localPosterSeen.Remove(_localPosterSeen.Keys.First());
-                        _localPosterSeen[job.Row]=job.Input;
+                        _localPosterSeen[job.Row]=new(job.Input,data is {ThumbnailBase64.Length:>0});
                     }
                     if(failure is not null && !_disposed)_log("Не удалось подготовить локальное превью: "+failure.Message);
                 }
