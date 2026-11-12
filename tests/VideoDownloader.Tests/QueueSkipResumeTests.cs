@@ -47,7 +47,7 @@ internal static class QueueSkipResumeTests
         await using var engine=Engine(data,options,trace);
         Require(engine.Add(first) && engine.Add(next),"The two sequential workers must be admitted");
         Task run=engine.RunAsync();
-        await WaitForPartial(first,"The real primary transfer must create a nonempty partial before skip");
+        await WaitForPartial(first,"The real primary transfer must create a nonempty partial before skip",origin,trace);
         string stage=first.StageDir,partial=Partial(first)!;
         long retainedLength=new FileInfo(partial).Length;
         if(OperatingSystem.IsWindows())engine.Pause(true);
@@ -94,11 +94,12 @@ internal static class QueueSkipResumeTests
         options.FilenameTemplate="pinned-%(id)s.%(ext)s";
         var row=new DownloadItem{Url=origin.Url("restore.mp4")};
         string stage;
-        await using(var first=Engine(data,options))
+        var initialTrace=new ConcurrentQueue<JournalRecord>();
+        await using(var first=Engine(data,options,initialTrace))
         {
             Require(first.Add(row),"The checkpoint fixture must be admitted");
             _=first.RunAsync();
-            await WaitForPartial(row,"Checkpoint fixture must first transfer real bytes");
+            await WaitForPartial(row,"Checkpoint fixture must first transfer real bytes",origin,initialTrace);
             Require(await first.SkipAsync(row).WaitAsync(TimeSpan.FromSeconds(15)),"Checkpoint skip must finish");
             stage=row.StageDir;data.Save([row],options);
         }
@@ -198,10 +199,7 @@ internal static class QueueSkipResumeTests
         {
             Require(engine.Add(cancelled),"Destructive cancellation fixture must be admitted");
             Task running=engine.RunAsync();
-            await WaitForPartial(cancelled,"Cancellation fixture must own a real partial",()=>
-                "trace=["+string.Join(" | ",resetTrace.TakeLast(16).Select(record=>record.Event+":"+
-                    record.Message[..Math.Min(record.Message.Length,384)]))+"] requests=["+
-                string.Join(" | ",origin.Requests.TakeLast(16).Select(request=>request.Method+" "+request.Path+" from="+request.First))+"]");
+            await WaitForPartial(cancelled,"Cancellation fixture must own a real partial",origin,resetTrace);
             string stage=cancelled.StageDir;
             Require(await engine.CancelAndWaitAsync(cancelled).WaitAsync(TimeSpan.FromSeconds(15)),"Destructive cancellation must join the current attempt");
             Require(cancelled.Status=="Interrupted" && cancelled.AttemptFinished && cancelled.ResumeState is null &&
@@ -415,9 +413,15 @@ internal static class QueueSkipResumeTests
         try{return Directory.EnumerateFiles(row.StageDir,"*.part",SearchOption.AllDirectories).FirstOrDefault(path=>new FileInfo(path).Length>=64*1024);}
         catch(IOException){return null;}
     }
-    private static Task WaitForPartial(DownloadItem row,string message,Func<string>? details=null)=>
+    private static Task WaitForPartial(DownloadItem row,string message,RangeOrigin origin,ConcurrentQueue<JournalRecord> trace)=>
         Until(()=>Partial(row) is not null,TimeSpan.FromSeconds(25),message,()=>
-            Describe(row)+"; "+PartialSnapshot(row)+(details is null?"":"; "+details()));
+        {
+            string identity=DownloadTraceIdentity.DiagnosticIdentity(row.Url);
+            return Describe(row)+"; "+PartialSnapshot(row)+"; trace=["+
+                string.Join(" | ",trace.Where(record=>record.Identity==identity || record.Identity.Length==0)
+                    .TakeLast(20).Select(record=>record.Event+":"+record.Message[..Math.Min(record.Message.Length,512)]))+
+                "]; "+origin.Diagnostics();
+        });
     private static string PartialSnapshot(DownloadItem row)
     {
         if(row.StageDir.Length==0)return "stage=<empty>";
@@ -476,6 +480,9 @@ internal static class QueueSkipResumeTests
         private readonly ConcurrentBag<Task> _handlers=[];
         private readonly ConcurrentDictionary<string,TaskCompletionSource> _holds=new(StringComparer.Ordinal);
         private readonly Task _accept;
+        private readonly Stopwatch _clock=Stopwatch.StartNew();
+        private readonly ConcurrentQueue<string> _events=[];
+        private int _connection;
         internal ConcurrentQueue<Request> Requests{get;}=[];
         internal byte[] PrimaryBytes{get;}=Enumerable.Range(0,1024*1024).Select(i=>(byte)(i*31+7)).ToArray();
         internal byte[] NextBytes{get;}=Enumerable.Range(0,32*1024).Select(i=>(byte)(i*17+11)).ToArray();
@@ -483,22 +490,43 @@ internal static class QueueSkipResumeTests
         internal RangeOrigin()
         {_listener.Start();Address=new("http://127.0.0.1:"+((IPEndPoint)_listener.LocalEndpoint).Port+"/");_accept=Accept();}
         internal string Url(string path)=>new Uri(Address,path).AbsoluteUri;
-        internal void Hold(string path)=>_holds[path]=new(TaskCreationOptions.RunContinuationsAsynchronously);
-        internal void Release(string path){if(_holds.TryGetValue(path,out var hold))hold.TrySetResult();}
+        internal void Hold(string path)
+        {_holds[path]=new(TaskCreationOptions.RunContinuationsAsynchronously);Observe("hold-created "+path);}
+        internal void Release(string path)
+        {if(_holds.TryGetValue(path,out var hold)){hold.TrySetResult();Observe("hold-released "+path);}}
+        private void Observe(string detail)
+        {
+            _events.Enqueue(_clock.ElapsedMilliseconds+"ms "+detail[..Math.Min(detail.Length,512)]);
+            while(_events.Count>128)_events.TryDequeue(out _);
+        }
+        internal string Diagnostics()=>"originClients="+_clients.Count+" holds=["+
+            string.Join(" | ",_holds.Select(hold=>hold.Key+":"+hold.Value.Task.Status))+"] requests=["+
+            string.Join(" | ",Requests.TakeLast(16).Select(request=>request.Method+" "+request.Path+" from="+request.First))+
+            "] events=["+string.Join(" | ",_events.TakeLast(24))+"]";
         private async Task Accept()
         {
-            try{while(!_stop.IsCancellationRequested){var client=await _listener.AcceptTcpClientAsync(_stop.Token);_clients[client]=0;_handlers.Add(Serve(client));}}
+            try
+            {
+                while(!_stop.IsCancellationRequested)
+                {
+                    var client=await _listener.AcceptTcpClientAsync(_stop.Token);_clients[client]=0;
+                    int connection=Interlocked.Increment(ref _connection);Observe("c"+connection+" accepted");
+                    _handlers.Add(Serve(client,connection));
+                }
+            }
             catch(Exception) when(_stop.IsCancellationRequested){}
+            catch(Exception error){Observe("accept-error "+error.GetType().Name+":"+error.Message);throw;}
         }
-        private async Task Serve(TcpClient client)
+        private async Task Serve(TcpClient client,int connection)
         {
+            string context="c"+connection+" reading-headers";
             using(client)
             try
             {
                 using var stream=client.GetStream();var bytes=new List<byte>();byte[] one=new byte[1];
                 while(bytes.Count<8192)
                 {
-                    if(await stream.ReadAsync(one,_stop.Token)==0)return;bytes.Add(one[0]);
+                    if(await stream.ReadAsync(one,_stop.Token)==0){Observe(context+" EOF");return;}bytes.Add(one[0]);
                     if(bytes.Count>=4 && bytes[^4]==13 && bytes[^3]==10 && bytes[^2]==13 && bytes[^1]==10)break;
                 }
                 string[] lines=Encoding.ASCII.GetString(bytes.ToArray()).Split("\r\n");
@@ -513,20 +541,26 @@ internal static class QueueSkipResumeTests
                     if(range[1].Length>0)end=Math.Min(end,long.Parse(range[1],CultureInfo.InvariantCulture));ranged=true;
                 }
                 Requests.Enqueue(new(path,first[0],begin));
+                context="c"+connection+" "+first[0]+" "+path+" range="+begin+"-"+end;Observe(context+" parsed");
                 if(begin>=body.Length){await Write(stream,"HTTP/1.1 416 Range Not Satisfiable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");return;}
                 await Write(stream,"HTTP/1.1 "+(ranged?"206 Partial Content":"200 OK")+"\r\nContent-Type: video/mp4\r\nAccept-Ranges: bytes\r\nContent-Length: "+(end-begin+1)+
                     (ranged?"\r\nContent-Range: bytes "+begin+"-"+end+"/"+body.Length:"")+"\r\nConnection: close\r\n\r\n");
+                Observe(context+" response-headers-written");
                 if(first[0]=="HEAD")return;
                 int count=(int)(end-begin+1);
                 if(_holds.TryGetValue(path,out var hold) && !hold.Task.IsCompleted)
                 {
                     int initial=Math.Min(count,256*1024);await stream.WriteAsync(body.AsMemory((int)begin,initial),_stop.Token);await stream.FlushAsync(_stop.Token);
-                    await hold.Task.WaitAsync(_stop.Token);begin+=initial;count-=initial;
+                    Observe(context+" initial-bytes-written="+initial+" waiting-for-hold");
+                    await hold.Task.WaitAsync(_stop.Token);begin+=initial;count-=initial;Observe(context+" hold-finished");
                 }
                 if(count>0)await stream.WriteAsync(body.AsMemory((int)begin,count),_stop.Token);
+                Observe(context+" body-complete");
             }
-            catch(Exception error) when(error is IOException or OperationCanceledException or SocketException or ObjectDisposedException){}
-            finally{_clients.TryRemove(client,out _);}
+            catch(Exception error) when(error is IOException or OperationCanceledException or SocketException or ObjectDisposedException)
+            {Observe(context+" error="+error.GetType().Name+":"+error.Message);}
+            catch(Exception error){Observe(context+" error="+error.GetType().Name+":"+error.Message);throw;}
+            finally{_clients.TryRemove(client,out _);Observe(context+" closed");}
         }
         private Task Write(NetworkStream stream,string text)=>stream.WriteAsync(Encoding.ASCII.GetBytes(text),_stop.Token).AsTask();
         public async ValueTask DisposeAsync()
