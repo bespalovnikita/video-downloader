@@ -21,6 +21,7 @@ await HistoryLibraryTests.RunAsync();
 PortableQueueTests.Run();
 await GuiInstanceTests.RunAsync();
 await QueueSessionControllerTests.RunAsync();
+SubscriptionRequeueTests.Run();
 await QueueSkipResumeTests.RunAsync();
 await DiskSpaceTests.RunAsync();
 var applicationAssembly=typeof(NativeWindow).Assembly;

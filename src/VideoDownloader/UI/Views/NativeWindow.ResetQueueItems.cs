@@ -95,7 +95,7 @@ public sealed partial class NativeWindow
                         row.Title="";row.Speed="";row.Downloaded="";row.ETA="";row.Slot="";
                         row.TransferredBytes=0;row.RawError="";row.CompletedSelection=null;
                         row.OutputRoot="";row.RunDir="";row.PendingRemoval=false;
-                        row.AttemptFinished=true;row.DeferredToNextStart=false;
+                        row.AttemptFinished=true;row.DeferredToNextStart=false;row.RequeueRequested=false;
                         ready.Add(row);
                     }
                     catch(Exception error)

@@ -36,6 +36,8 @@ internal sealed partial class UiScenario
             UiScenario.TestSubscriptionDetailsPreview(root);
             Stage("testing one aggregate queue offer after subscription checks");
             UiScenario.TestSubscriptionQueueOffer(root);
+            Stage("testing explicit subscription requeue for historical states and mixed-selection choices");
+            UiScenario.TestSubscriptionRequeue(root);
             Stage("testing opt-in subscription scheduling, tray lifetime, guards and process cancellation");
             UiScenario.TestSubscriptionSchedule(root);
             Stage("testing Russian errors and original diagnostics");

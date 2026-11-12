@@ -22,6 +22,7 @@ internal sealed partial class SubscriptionController : IDisposable
     private readonly Func<Dictionary<string,DateTimeOffset?>> _readHistory;
     private readonly Func<string> _readCookies;
     private readonly QueueSubscriptionItems _queueUrls;
+    private readonly QueueSubscriptionItems _queueSelectedUrls;
     private readonly Action<string> _openUrl;
     private readonly Action<string> _log;
     private readonly Action<IEnumerable<string>>? _prefetchPreviews;
@@ -46,10 +47,12 @@ internal sealed partial class SubscriptionController : IDisposable
     internal SubscriptionController(Window owner,SubscriptionStore store,string ytDlp,string viewPath,
         Func<Dictionary<string,DateTimeOffset?>> readHistory,Func<string> readCookies,
         QueueSubscriptionItems queueUrls,Action<string> openUrl,Action<string> log,
-        Action<IEnumerable<string>>? prefetchPreviews=null,PreviewController? previews=null)
+        Action<IEnumerable<string>>? prefetchPreviews=null,PreviewController? previews=null,
+        QueueSubscriptionItems? queueSelectedUrls=null)
     {
         _owner=owner;_store=store;_ytDlp=ytDlp;_viewPath=viewPath;
-        _readHistory=readHistory;_readCookies=readCookies;_queueUrls=queueUrls;_openUrl=openUrl;_log=log;
+        _readHistory=readHistory;_readCookies=readCookies;_queueUrls=queueUrls;
+        _queueSelectedUrls=queueSelectedUrls??queueUrls;_openUrl=openUrl;_log=log;
         _prefetchPreviews=prefetchPreviews;_previews=previews;
         _checkProgress=new SubscriptionCheckProgressController(owner.Dispatcher,CurrentWindow,
             ()=>_cancellation?.IsCancellationRequested==true);
@@ -304,7 +307,7 @@ internal sealed partial class SubscriptionController : IDisposable
         pause.IsEnabled=ready && source!=null;
         pause.Content=source?.Definition.Paused==true?"Возобновить":"Приостановить";
         Control<Button>("RemoveSubscriptionButton").IsEnabled=ready && source!=null;
-        Control<Button>("QueueSubscriptionItemsButton").IsEnabled=ready && items.Any(x=>x.Item.State is "Baseline" or "New" or "Skipped" or "Queued");
+        Control<Button>("QueueSubscriptionItemsButton").IsEnabled=ready && items.Any(x=>CanSelectForQueue(x.Item));
         Control<Button>("SkipSubscriptionItemsButton").IsEnabled=ready && items.Any(x=>x.Item.State=="New");
         Control<Button>("OpenSubscriptionItemButton").IsEnabled=items.Length==1;
         Control<Button>("CopySubscriptionUrlButton").IsEnabled=source!=null;
@@ -542,13 +545,18 @@ internal sealed partial class SubscriptionController : IDisposable
     }
 
     private async Task<int> QueueCandidatesAsync(IReadOnlyList<SubscriptionItem> candidates,
-        Func<bool>? canQueue=null,bool newOnly=false)
+        Func<bool>? canQueue=null,bool newOnly=false,QueueSelectionChoice? selection=null)
     {
         if (candidates.Count==0) return 0;
         var reconciled=await Task.Run(()=>_store.ReconcileSuccess(_readHistory().Keys));
         if (canQueue?.Invoke()==false) return 0;
-        var eligibleKeys=reconciled.Items.Where(x=>newOnly?x.State=="New" && !x.InitialQueuePending:
-                x.State is "Baseline" or "New" or "Skipped" or "Queued")
+        var eligibleKeys=reconciled.Items.Where(x=>selection switch
+            {
+                QueueSelectionChoice.AllSelected=>CanSelectForQueue(x),
+                QueueSelectionChoice.NewOnly=>x.State=="New",
+                _=>newOnly?x.State=="New" && !x.InitialQueuePending:
+                    x.State is "Baseline" or "New" or "Skipped" or "Queued"
+            })
             .Select(x=>(x.SubscriptionId,x.Url)).ToHashSet();
         var currentItems=reconciled.Items.ToDictionary(x=>(x.SubscriptionId,x.Url));
         candidates=candidates.Where(x=>eligibleKeys.Contains((x.SubscriptionId,x.Url)))
@@ -557,6 +565,7 @@ internal sealed partial class SubscriptionController : IDisposable
         var sources=reconciled.Subscriptions.ToDictionary(x=>x.Id,StringComparer.Ordinal);
         var acknowledgements=new List<(string Id,string[] Urls)>();
         var acceptedUrls=new HashSet<string>(StringComparer.Ordinal);
+        var queue=selection is null?_queueUrls:_queueSelectedUrls;
         Exception? acceptanceError=null;
         try
         {
@@ -571,7 +580,7 @@ internal sealed partial class SubscriptionController : IDisposable
                 var requested=group.Select(x=>x.Url).Distinct(StringComparer.Ordinal).ToArray();
                 var requestedKeys=requested.ToHashSet(StringComparer.Ordinal);
                 var titles=group.ToDictionary(x=>x.Url,x=>x.Title,StringComparer.Ordinal);
-                var accepted=_queueUrls(requested,source.Id,name,titles).Where(requestedKeys.Contains).Distinct(StringComparer.Ordinal).ToArray();
+                var accepted=queue(requested,source.Id,name,titles).Where(requestedKeys.Contains).Distinct(StringComparer.Ordinal).ToArray();
                 if (accepted.Length==0) continue;
                 acknowledgements.Add((group.Key,accepted));
                 acceptedUrls.UnionWith(accepted);
@@ -603,28 +612,6 @@ internal sealed partial class SubscriptionController : IDisposable
             System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(acceptanceError).Throw();
         }
         return acceptedUrls.Count;
-    }
-
-    private async Task QueueSelectedAsync()
-    {
-        if (Busy || _window==null) return;
-        var selected=Inbox.SelectedItems.Cast<SubscriptionItemView>().Select(x=>x.Item)
-            .Where(x=>x.State is "Baseline" or "New" or "Skipped" or "Queued").ToArray();
-        if (selected.Length==0) return;
-        _mutation=true;
-        UpdateButtons();
-        try
-        {
-            int count=await QueueCandidatesAsync(selected);
-            await ReloadAsync();
-            Status(count>0?$"В обычной очереди: {count}. Запуск только кнопкой «Скачать всю очередь».":"В очередь ничего не добавлено. Материалы остаются во «Входящих».");
-        }
-        catch(Exception e)
-        {
-            string partial=e is QueueAcceptanceException accepted?$"В обычной очереди: {accepted.AcceptedCount}. ":"";
-            Status(partial+"Не удалось подтвердить добавление в очередь: "+DisplayError(e)+" Уже принятые ссылки могут быть в обычной очереди; повторите действие после исправления.",true);
-        }
-        finally { _mutation=false;UpdateButtons(); }
     }
 
     private async Task SkipSelectedAsync()

@@ -19,6 +19,7 @@ public sealed class DownloadItem : INotifyPropertyChanged
     private string _slot = "";
     private string _url = "";
     private string _progressDetail = "";
+    private bool _requeueRequested;
     private DownloadSelection? _selection;
     public event PropertyChangedEventHandler? PropertyChanged;
     private void Changed([CallerMemberName] string? name = null)
@@ -31,7 +32,7 @@ public sealed class DownloadItem : INotifyPropertyChanged
     public int Order { get => _order; set { _order = value; Changed(); } }
     public string Url { get => _url; set { _url = value; Changed(); } }
     public string State { get => _state; set { _state = value; Changed(); Changed(nameof(StateLabel)); Changed(nameof(StateToolTip)); } }
-    public string Status { get => _status; set { _status = value; Changed(); } }
+    public string Status { get => _status; set { _status = value; Changed(); if(RequeueRequested){Changed(nameof(StateLabel));Changed(nameof(StateToolTip));} } }
     public double Progress { get => _progress; set { _progress = value; Changed(); } }
     // Runtime phase details are presentation only; old checkpoint State/Status
     // IDs remain readable and never imply that a component's 100% is success.
@@ -45,7 +46,11 @@ public sealed class DownloadItem : INotifyPropertyChanged
     [JsonIgnore] public string ErrorMessage => ErrorMessages.ForDisplay(RawError);
     // Presentation follows the Windows UI language; checkpoint IDs and colors
     // continue to use the original State/Status values.
-    [JsonIgnore] public string StateLabel => State switch
+    [JsonIgnore] public string StateLabel => RequeueRequested && Status=="Completed"
+        ? ErrorMessages.Text("В очереди на повтор","Queued for repeat")
+        : RequeueRequested && Status=="Skipped"
+        ? ErrorMessages.Text("В очереди на продолжение","Queued to resume")
+        : State switch
     {
         "Queued" => ErrorMessages.Text("В очереди",State),
         "Starting" => ErrorMessages.Text("Запуск",State),
@@ -65,7 +70,18 @@ public sealed class DownloadItem : INotifyPropertyChanged
         "Removal pending — use Remove" => ErrorMessages.Text("Ожидается удаление — нажмите «Удалить выбранные»",State),
         _ => State
     };
-    [JsonIgnore] public string StateToolTip => ErrorMessage.Length==0 ? StateLabel : StateLabel+Environment.NewLine+ErrorMessage;
+    [JsonIgnore] public string StateToolTip
+    {
+        get
+        {
+            string label=StateLabel;
+            if(RequeueRequested && Status=="Skipped" && ResumeState?.Selection?.IsPartial==true)
+                label+=Environment.NewLine+ErrorMessages.Text(
+                    "Фрагменты через FFmpeg могут скачиваться заново: возможность дозагрузки зависит от источника и загрузчика.",
+                    "FFmpeg fragments may restart: resuming depends on the source and downloader.");
+            return ErrorMessage.Length==0?label:label+Environment.NewLine+ErrorMessage;
+        }
+    }
     public string Slot { get => _slot; set { _slot = value; Changed(); } }
     // Format IDs are meaningful only for this exact URL, and never become
     // global settings or part of the portable queue exchange format.
@@ -86,6 +102,18 @@ public sealed class DownloadItem : INotifyPropertyChanged
     public bool PendingRemoval { get; set; }
     public bool AttemptFinished { get; set; }
     public bool DeferredToNextStart { get; set; }
+    // An explicit subscription action can prepare a future attempt while the
+    // old completed result or retained skipped attempt keeps its ownership.
+    [JsonIgnore(Condition=JsonIgnoreCondition.WhenWritingDefault)]
+    public bool RequeueRequested
+    {
+        get=>_requeueRequested;
+        set
+        {
+            if(_requeueRequested==value)return;
+            _requeueRequested=value;Changed();Changed(nameof(StateLabel));Changed(nameof(StateToolTip));
+        }
+    }
     [JsonIgnore(Condition=JsonIgnoreCondition.WhenWritingNull)] public DownloadResumeState? ResumeState { get; set; }
     [JsonIgnore] public bool CanResumeRetained=>ResumeState is not null && !PendingRemoval && CleanupError.Length==0;
     [JsonIgnore] public bool CanResume => !PendingRemoval && CleanupError.Length == 0;

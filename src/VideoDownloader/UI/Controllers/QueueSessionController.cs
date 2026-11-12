@@ -63,7 +63,7 @@ internal sealed class QueueSessionController
     // One persistence preflight per ingress batch, including a single live Add.
     // The dispatcher owns admission; workers still own their result fields.
     internal IReadOnlyList<DownloadItem> AddBatch(IEnumerable<DownloadItem> rows,DownloadOptions settings,
-        IReadOnlyDictionary<DownloadItem,string>? titles=null)
+        IReadOnlyDictionary<DownloadItem,string>? titles=null,IReadOnlyCollection<DownloadItem>? requeues=null)
     {
         var seen=Queue.Select(row=>row.Url).ToHashSet(StringComparer.Ordinal);
         var added=new List<DownloadItem>();
@@ -75,17 +75,23 @@ internal sealed class QueueSessionController
             row.Order=Queue.Count+added.Count+1;
             added.Add(row);
         }
-        if(added.Count==0 && (titles==null || titles.Count==0))return added;
+        var existingRows=requeues is {Count:>0}?Queue.ToHashSet():null;
+        var changedRequeues=(requeues??Array.Empty<DownloadItem>())
+            .Where(row=>existingRows?.Contains(row)==true && row.CanResume && row.Status is ("Completed" or "Skipped") &&
+                (!row.RequeueRequested || !row.DeferredToNextStart)).ToHashSet();
+        if(added.Count==0 && (titles==null || titles.Count==0) && changedRequeues.Count==0)return added;
         var proposed=new List<DownloadItem>(Queue.Count+added.Count);
         foreach(var row in Queue)
         {
             int order=proposed.Count+1;
             string? title=null;
             bool hasTitle=titles?.TryGetValue(row,out title)==true;
-            if(hasTitle || row.Order!=order)
+            bool requeue=changedRequeues.Contains(row);
+            if(hasTitle || row.Order!=order || requeue)
             {
                 var copy=JsonSerializer.Deserialize<DownloadItem>(JsonSerializer.SerializeToUtf8Bytes(row,AppPersistence.Json),AppPersistence.Json)!;
                 if(hasTitle)copy.Title=title!;
+                if(requeue){copy.DeferredToNextStart=true;copy.RequeueRequested=true;}
                 copy.Order=order;proposed.Add(copy);
             }
             else proposed.Add(row);
@@ -98,6 +104,7 @@ internal sealed class QueueSessionController
             if(titles?.TryGetValue(row,out string? title)==true)row.Title=title;
         for(int index=0;index<Queue.Count;index++)
             if(Queue[index].Order!=index+1)Queue[index].Order=index+1;
+        foreach(var row in changedRequeues){row.DeferredToNextStart=true;row.RequeueRequested=true;}
         foreach(var row in added)Queue.Add(row);
         return added;
     }
@@ -175,7 +182,7 @@ internal sealed class QueueSessionController
     internal bool TryResumeActive(DownloadCoordinator expected,DownloadItem row)
     {
         if(!ReferenceEquals(Coordinator,expected) || !expected.IsRunning || !Queue.Contains(row) || !expected.Resume(row))return false;
-        _urls.Add(row.Url);_finalStates.Remove(row.Url);row.DeferredToNextStart=false;
+        _urls.Add(row.Url);_finalStates.Remove(row.Url);row.DeferredToNextStart=false;row.RequeueRequested=false;
         return true;
     }
     internal DownloadItem[] ClearCandidates()=>Queue.Any(row=>row.Status!="Skipped")
@@ -184,7 +191,7 @@ internal sealed class QueueSessionController
     {
         if(!ReferenceEquals(Coordinator,expected) || !expected.IsRunning || !Queue.Contains(row))return false;
         if(!expected.Restart(row) && !expected.Add(row))return false;
-        _urls.Add(row.Url);_finalStates.Remove(row.Url);row.DeferredToNextStart=false;
+        _urls.Add(row.Url);_finalStates.Remove(row.Url);row.DeferredToNextStart=false;row.RequeueRequested=false;
         return true;
     }
     internal void Begin(DownloadCoordinator coordinator,DownloadOptions options,IReadOnlyList<DownloadItem> rows)
