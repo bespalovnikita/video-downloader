@@ -281,6 +281,7 @@ internal sealed partial class UiScenario
         private string _stage="constructing";
         private long _stageAt=Stopwatch.GetTimestamp();
         private readonly HashSet<IntPtr> _nativeReplies=[];
+        private readonly HashSet<IntPtr> _pendingDuplicateNotices=[];
 
         internal RequeueUi(string root,string fixture)
         {
@@ -388,27 +389,33 @@ internal sealed partial class UiScenario
         private void Respond(object? sender,EventArgs args)
         {
             var native=OwnedNativeWindows();
-            _nativeReplies.IntersectWith(native.Select(item=>item.Handle));
-            foreach(var item in native.Where(item=>item.Class=="#32770" && _nativeReplies.Add(item.Handle)))
+            foreach(var handle in _pendingDuplicateNotices.Where(handle=>!RequeueIsWindow(handle)).ToArray())
             {
-                if(ExpectedDuplicateNotices>0 && item.Caption=="Материалы уже обработаны")
+                _pendingDuplicateNotices.Remove(handle);
+                ExpectedDuplicateNotices--;DuplicateNotices++;
+                Trace("native duplicate notice window closed");
+            }
+            _nativeReplies.IntersectWith(native.Select(item=>item.Handle));
+            foreach(var item in native.Where(item=>item.Class=="#32770" && !_nativeReplies.Contains(item.Handle)))
+            {
+                if(ExpectedDuplicateNotices>_pendingDuplicateNotices.Count && item.Caption=="Материалы уже обработаны")
                 {
-                    ExpectedDuplicateNotices--;DuplicateNotices++;
-                    Trace("native duplicate notice answered OK");
-                    PostMessageW(item.Handle,0x111u,(IntPtr)1,IntPtr.Zero);
+                    if(!NativeButtonReady(item.Handle,1) || !TryPostNativeResponse(item.Handle,1))continue;
+                    _pendingDuplicateNotices.Add(item.Handle);
+                    Trace("native duplicate notice WM_CLOSE posted=True; OK visible=True enabled=True");
                 }
                 else if(RemovalAnswer is {} answer && item.Caption==ErrorMessages.Text("Удалить загрузки","Delete downloads"))
                 {
+                    if(!NativeButtonReady(item.Handle,answer) || !TryPostNativeResponse(item.Handle,answer))continue;
                     RemovalCount++;Trace("native removal confirmation answered No");
-                    PostMessageW(item.Handle,0x111u,(IntPtr)answer,IntPtr.Zero);
                 }
                 else
                 {
-                    UnexpectedDialog("native "+item.Caption);
+                    if(_responseError is null)UnexpectedDialog("native "+item.Caption);
                     // These are unexpected fixture-owned dialogs, never user
                     // approval. Cancel/No/OK only; never accept deletion/Start.
-                    int safe=new[]{2,7,1}.FirstOrDefault(id=>RequeueGetDlgItem(item.Handle,id)!=IntPtr.Zero);
-                    PostMessageW(item.Handle,safe==0?0x10u:0x111u,(IntPtr)safe,IntPtr.Zero);
+                    int safe=new[]{2,7,1}.FirstOrDefault(id=>NativeButtonReady(item.Handle,id));
+                    TryPostNativeResponse(item.Handle,safe);
                 }
             }
             foreach(var dialog in Application.Current.Windows.Cast<Window>().ToArray())
@@ -425,6 +432,32 @@ internal sealed partial class UiScenario
                 _=Window.Dispatcher.BeginInvoke(DispatcherPriority.Normal,
                     new Action(()=>RespondToWpfDialog(dialog,chooser,duplicate)));
             }
+        }
+        private static bool NativeButtonReady(IntPtr dialog,int id)
+        {
+            var button=RequeueGetDlgItem(dialog,id);
+            return button!=IntPtr.Zero && RequeueIsWindowVisible(dialog) && RequeueIsWindowVisible(button) && RequeueIsWindowEnabled(button);
+        }
+        private bool TryPostNativeResponse(IntPtr handle,int button)
+        {
+            // Match the proven native DismissDialog helper: OK-only message
+            // boxes close with WM_CLOSE; Yes/No need an explicit WM_COMMAND.
+            bool close=button is 0 or 1;
+            bool posted=RequeuePostMessage(handle,close?0x10u:0x111u,close?IntPtr.Zero:(IntPtr)button,IntPtr.Zero);
+            if(!posted)
+            {
+                int error=Marshal.GetLastWin32Error();
+                if(_responseError is null)
+                {
+                    _responseError=new System.ComponentModel.Win32Exception(error,"Native fixture PostMessage failed.");
+                    Trace($"native response PostMessage=False; Win32Error={error}; button={button}");
+                }
+                return false;
+            }
+            // A not-yet-ready window or failed post must remain eligible on
+            // the next timer tick. Posting is not acknowledgement of closure.
+            _nativeReplies.Add(handle);
+            return true;
         }
         private void RespondToWpfDialog(Window dialog,bool chooser,bool duplicate)
         {
@@ -528,6 +561,10 @@ internal sealed partial class UiScenario
         }
         [DllImport("user32.dll",EntryPoint="GetWindow")] private static extern IntPtr RequeueGetWindow(IntPtr handle,uint command);
         [DllImport("user32.dll",EntryPoint="GetDlgItem")] private static extern IntPtr RequeueGetDlgItem(IntPtr handle,int id);
+        [DllImport("user32.dll",EntryPoint="IsWindow")] private static extern bool RequeueIsWindow(IntPtr handle);
+        [DllImport("user32.dll",EntryPoint="IsWindowVisible")] private static extern bool RequeueIsWindowVisible(IntPtr handle);
+        [DllImport("user32.dll",EntryPoint="IsWindowEnabled")] private static extern bool RequeueIsWindowEnabled(IntPtr handle);
+        [DllImport("user32.dll",EntryPoint="PostMessageW",SetLastError=true)] private static extern bool RequeuePostMessage(IntPtr handle,uint message,IntPtr wParam,IntPtr lParam);
         [DllImport("user32.dll",EntryPoint="GetClassNameW",CharSet=CharSet.Unicode)] private static extern int RequeueGetClassName(IntPtr handle,StringBuilder text,int count);
         [DllImport("user32.dll",EntryPoint="SendMessageTimeoutW",CharSet=CharSet.Unicode)] private static extern IntPtr RequeueSendMessageTimeout(
             IntPtr handle,uint message,IntPtr wParam,StringBuilder text,uint flags,uint timeout,out IntPtr result);

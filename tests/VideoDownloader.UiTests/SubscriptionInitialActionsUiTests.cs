@@ -52,7 +52,7 @@ internal sealed partial class UiScenario
                 driver.TestControl<TextBox>("SubscriptionUrlBox").Text=source;
                 driver.TestControl<TextBox>("NewSubscriptionNameBox").Text="Начало "+key;
                 driver.TestControl<Button>("AddSubscriptionButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-                RequeueUi.Until(()=>!driver.TestIsMutating && ui.Store.Read().Subscriptions.Any(item=>item.Url==source &&
+                RequeueUi.Until(()=>!driver.TestIsMutating && ui.ExpectedDuplicateNotices==0 && ui.Store.Read().Subscriptions.Any(item=>item.Url==source &&
                     (mode=="complete"?item.Initialized:item.LastError.Length>0)),"The actual Add and first complete/failed scan must finish.");
                 var added=ui.Store.Read().Subscriptions.Single(item=>item.Url==source);
                 RequeueUi.Require(added.InitialAction==action,"The dropdown choice must be captured before asynchronous addition.");
