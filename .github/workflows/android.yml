@@ -45,6 +45,7 @@ jobs:
       - name: Enable the emulator hardware accelerator
         run: sudo chmod a+rw /dev/kvm
       - name: Android device tests
+        id: device_tests
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 35
@@ -54,6 +55,56 @@ jobs:
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
           script: cd android && ./gradlew --no-daemon -PvdVersionName=2.0.0 -PvdVersionCode=2000000 :app:connectedDebugAndroidTest
+      - name: Print failed Android test stack frames
+        if: failure() && steps.device_tests.outcome == 'failure'
+        working-directory: android
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          import xml.etree.ElementTree as ET
+
+          budget = 128 * 1024
+          def emit(line):
+              global budget
+              encoded = (line + '\n').encode('utf-8')
+              if len(encoded) <= budget:
+                  print(line)
+                  budget -= len(encoded)
+
+          def identifier(value):
+              return value if re.fullmatch(r'[A-Za-z0-9_.$\[\] -]{1,256}', value) else '<redacted identifier>'
+
+          frame = re.compile(r'\s*(?:at [A-Za-z0-9_.$<>/\-]+\([A-Za-z0-9_.$ :\-]+\)|\.\.\. \d+ more)\s*')
+          cause = re.compile(r'\s*((?:Caused by: |Suppressed: )?)([A-Za-z0-9_.$]+(?:Exception|Error|Throwable))(?::|$)')
+          total_bytes = failures = 0
+          reports = Path('app/build/outputs/androidTest-results/connected').rglob('TEST-*.xml')
+          for report in sorted(reports)[:64]:
+              try:
+                  size = report.stat().st_size
+                  if size > 4 * 1024 * 1024 or total_bytes + size > 32 * 1024 * 1024:
+                      emit('Skipped oversized Android test report')
+                      continue
+                  total_bytes += size
+                  root = ET.parse(report).getroot()
+              except (ET.ParseError, OSError):
+                  emit('Could not parse an Android test report')
+                  continue
+              for case in root.iter('testcase'):
+                  for failure in case.findall('failure') + case.findall('error'):
+                      failures += 1
+                      emit('FAILED ' + identifier(case.get('classname', '')) + '.' + identifier(case.get('name', '')))
+                      emit('Exception type: ' + identifier(failure.get('type', 'unknown')))
+                      # Assertion messages and system-out/system-err may contain
+                      # URLs, clipboard text or credentials. Emit only code frames
+                      # and exception classes, never arbitrary failure text.
+                      for line in (failure.text or '').splitlines()[:512]:
+                          if len(line) <= 1024 and frame.fullmatch(line):
+                              emit(line.strip())
+                          elif match := cause.match(line):
+                              emit(match[1] + match[2])
+          emit('Android test failures found: ' + str(failures))
+          PY
       - name: Upload installable development APK
         uses: actions/upload-artifact@v4
         with:
