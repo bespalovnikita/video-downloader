@@ -17,25 +17,25 @@ internal sealed partial class UiScenario
         string root=Path.Combine(Path.GetTempPath(),"vd-usability-ui-"+Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
         var app=new Application{ShutdownMode=ShutdownMode.OnExplicitShutdown};
+        var failures=new List<Exception>();
+        void Check(string label,Action action)
+        {
+            Stage("focused Windows usability: "+label);
+            try{action();}
+            catch(Exception error){failures.Add(new InvalidOperationException(label,error));}
+        }
         try
         {
             using var offers=new SubscriptionQueueOfferResponder();
-            Stage("focused Windows usability: subscription search and compact navigation");
-            TestSubscriptionFilters(root);
-            Stage("focused Windows usability: adaptive main window and keyboard navigation");
-            TestPanelLayout(root);
-            Stage("focused Windows usability: contrast palette and inherited editor controls");
-            TestWindowContrastTheme();
-            Stage("focused Windows usability: component readiness, progress and joined cancellation");
-            TestDependencyControls(root);
-            Stage("focused Windows usability: safe record removal and destructive file confirmation");
-            TestQueueRecordRemoval(root);
-            Stage("focused Windows usability: invalid input, duplicates and nested admissions");
-            TestInputFeedback(root);
-            Stage("focused Windows usability: fragment editing, expert disclosure and error focus");
-            TestMediaSelection(root);
-            Stage("focused Windows usability: diagnostics and component replacement exclusion");
-            TestJobDiagnostics(root);
+            Check("subscription search and compact navigation",()=>TestSubscriptionFilters(root));
+            Check("adaptive main window and keyboard navigation",()=>TestPanelLayout(root));
+            Check("contrast palette and inherited editor controls",TestWindowContrastTheme);
+            Check("component readiness, progress and joined cancellation",()=>TestDependencyControls(root));
+            Check("safe record removal and destructive file confirmation",()=>TestQueueRecordRemoval(root));
+            Check("invalid input, duplicates and nested admissions",()=>TestInputFeedback(root));
+            Check("fragment editing, expert disclosure and error focus",()=>TestMediaSelection(root));
+            Check("diagnostics and component replacement exclusion",()=>TestJobDiagnostics(root));
+            if(failures.Count>0)throw new AggregateException("Focused Windows usability checks failed.",failures);
         }
         finally
         {

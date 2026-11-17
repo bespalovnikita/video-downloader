@@ -3,6 +3,8 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Markup;
+using System.Windows.Threading;
+using System.Diagnostics;
 using System.Xml;
 
 namespace VideoDownloader.UiTests;
@@ -41,7 +43,7 @@ internal sealed partial class UiScenario
         {
             subject=new NativeWindow(window,storage,"must-not-launch");
             window.Show();
-            window.Width=1500;window.Height=900;window.UpdateLayout();
+            SetLayoutTestBounds(window,1500,900,compact:false);
             var queue=Control<ColumnDefinition>(window,"QueuePanelColumn");
             var downloads=Control<ColumnDefinition>(window,"DownloadsPanelColumn");
             var preview=Control<ColumnDefinition>(window,"PreviewPanelColumn");
@@ -49,9 +51,8 @@ internal sealed partial class UiScenario
             Require(Math.Abs(queue.ActualWidth-380d*4/3)<1,
                 "The default Queue panel must be one third wider than its original 380 pixels.");
             double originalQueue=queue.ActualWidth,originalDownloads=downloads.ActualWidth,originalPreview=preview.ActualWidth;
-            // A Windows runner may constrain the window to its work area.
-            // Release space first so subsequent positive drags have room even
-            // when Downloads initially has only its minimum width.
+            // Keep both real splitter directions covered after the native
+            // window has reached the requested wide geometry.
             Drag(window,"QueueDownloadsSplitter",-72);
             Require(Math.Abs(queue.ActualWidth-originalQueue+72)<2 &&
                     Math.Abs(downloads.ActualWidth-originalDownloads-72)<2 &&
@@ -87,7 +88,7 @@ internal sealed partial class UiScenario
         try
         {
             subject=new NativeWindow(window,storage,"must-not-launch");
-            window.Show();window.Width=1500;window.Height=900;window.UpdateLayout();
+            window.Show();SetLayoutTestBounds(window,1500,900,compact:false);
             var grid=Control<Grid>(window,"MainPanelsGrid");
             var queue=Control<ColumnDefinition>(window,"QueuePanelColumn");
             var downloads=Control<ColumnDefinition>(window,"DownloadsPanelColumn");
@@ -104,8 +105,7 @@ internal sealed partial class UiScenario
                     "Invalid input must not leak non-finite values into checkpoint JSON.");
 
             // Keep the wide mode to exercise constrained real splitters.
-            window.Width=1280;window.Height=900;
-            window.UpdateLayout();
+            SetLayoutTestBounds(window,1280,900,compact:false);
             subject.ApplyOptions(new DownloadOptions{QueuePanelWidth=6000,PreviewPanelWidth=6000});
             window.UpdateLayout();
             double total=grid.ColumnDefinitions.Sum(column=>column.ActualWidth);
@@ -134,5 +134,32 @@ internal sealed partial class UiScenario
             Console.WriteLine("PASS: real WPF splitters, persistent wide widths, compact navigation and reachable session controls");
         }
         finally {subject?.Dispose();window.Close();}
+    }
+
+    private static void SetLayoutTestBounds(Window window,double width,double height,bool compact)
+    {
+        var grid=(Grid)(window.FindName("MainPanelsGrid")
+            ??throw new InvalidOperationException("Missing layout test grid"));
+        var navigation=(FrameworkElement)(window.FindName("CompactNavigation")
+            ??throw new InvalidOperationException("Missing layout test navigation"));
+        window.WindowState=WindowState.Normal;
+        window.MinWidth=width;window.MinHeight=height;
+        window.Width=width;window.Height=height;
+        bool Ready()
+        {
+            window.UpdateLayout();
+            return Math.Abs(window.ActualWidth-width)<2 && Math.Abs(window.ActualHeight-height)<2 &&
+                grid.ActualWidth>=width-100 && grid.ActualHeight>0 &&
+                navigation.IsVisible==compact &&
+                grid.ColumnDefinitions.Sum(column=>column.ActualWidth)<=grid.ActualWidth+1;
+        }
+        if(Ready())return;
+        var elapsed=Stopwatch.StartNew();var frame=new DispatcherFrame();
+        var timer=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(20)};
+        timer.Tick+=(_,_)=>{if(Ready() || elapsed.Elapsed>TimeSpan.FromSeconds(5))frame.Continue=false;};
+        timer.Start();
+        try{Dispatcher.PushFrame(frame);}finally{timer.Stop();}
+        if(!Ready())throw new InvalidOperationException(
+            $"Layout test geometry did not settle: requested {width}x{height}, actual {window.ActualWidth:0.##}x{window.ActualHeight:0.##}, grid {grid.ActualWidth:0.##}x{grid.ActualHeight:0.##}, compact={navigation.IsVisible} (expected {compact}).");
     }
 }

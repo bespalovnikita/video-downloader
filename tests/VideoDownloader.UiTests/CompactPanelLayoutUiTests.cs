@@ -27,7 +27,9 @@ internal sealed partial class UiScenario
         }
         var before=subject.ReadOptions();
         double wideQueue=before.QueuePanelWidth,widePreview=before.PreviewPanelWidth;
-        window.Width=800;window.Height=550;window.UpdateLayout();
+        // Release the wide test minimums before exercising the product's
+        // compact viewport at its real supported minimum size.
+        SetLayoutTestBounds(window,800,550,compact:true);
         Require(Control<FrameworkElement>(window,"CompactNavigation").IsVisible,
             "An 800 x 550 window must offer navigation between all three areas.");
         Require(Control<FrameworkElement>(window,"QueuePanel").IsVisible &&
@@ -69,7 +71,7 @@ internal sealed partial class UiScenario
             AutomationProperties.GetName(Control<Button>(window,"PreviewNextButton")).Length>0,
             "Text inputs and icon actions expose meaningful accessible names.");
 
-        window.Width=1500;window.Height=900;window.UpdateLayout();
+        SetLayoutTestBounds(window,1500,900,compact:false);
         Require(!Control<FrameworkElement>(window,"CompactNavigation").IsVisible && Control<FrameworkElement>(window,"PreviewPanel").IsVisible,
             "A wide window returns to simultaneous panels.");
         Click(window,"ToggleDetailsPanelButton");

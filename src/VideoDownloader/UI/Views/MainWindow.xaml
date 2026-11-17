@@ -541,7 +541,9 @@
                             <ColumnDefinition Width="Auto"/>
                             <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
-                        <TextBox x:Name="UrlInput" AutomationProperties.Name="Ссылка на видео или аудио" Grid.Column="0" ToolTip="Вставьте одну или несколько ссылок, в том числе во время скачивания"/>
+                        <TextBox x:Name="UrlInput" AutomationProperties.Name="Ссылка на видео или аудио" Grid.Column="0"
+                                 MinHeight="34" MaxHeight="90" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"
+                                 HorizontalScrollBarVisibility="Disabled" ToolTip="Вставьте одну или несколько ссылок, в том числе во время скачивания"/>
                         <Button x:Name="PasteClipboardButton" Grid.Column="1" Content="Вставить" ToolTip="Добавить ссылки из буфера обмена, в том числе во время скачивания"/>
                         <Button x:Name="AddUrlButton" Grid.Column="2" Content="+ Добавить" Background="{DynamicResource AccentBrush}" Foreground="{DynamicResource OnAccentBrush}"/>
                       </Grid>
