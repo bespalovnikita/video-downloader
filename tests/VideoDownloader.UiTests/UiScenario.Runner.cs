@@ -263,7 +263,29 @@ internal sealed partial class UiScenario
                     deferred.Status=="Queued" && deferred.SubscriptionId=="subscription-test" && deferred.SubscriptionName=="123" && cancelSession.Outstanding==1,
                     "Subscription import must stay queued until Start without entering the active coordinator");
                 controller.SessionState.Queue.Remove(deferred);
-                queue.SelectedItem=pending;remove.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                queue.SelectedItem=pending;
+                // Even a still-Queued row belongs to this live coordinator:
+                // its worker could publish before a destructive click returns.
+                // Acknowledge the real native confirmation before testing the
+                // independent cleanup owner's deliberately held completion.
+                string deletionTitle=ErrorMessages.Text("Удалить загрузки","Delete downloads");
+                uint deletionThread=GetCurrentThreadId();bool deletionConfirmed=false;
+                var confirmation=new System.Windows.Threading.DispatcherTimer{Interval=TimeSpan.FromMilliseconds(20)};
+                confirmation.Tick+=(_,_)=>
+                {
+                    if(DismissDialog(deletionThread,deletionTitle,6))
+                    {deletionConfirmed=true;confirmation.Stop();}
+                };
+                using(var confirmationDeadline=new CancellationTokenSource())
+                {
+                    _=Task.Delay(TimeSpan.FromSeconds(8),confirmationDeadline.Token).ContinueWith(timed=>
+                    {if(!timed.IsCanceled)DismissDialog(deletionThread,deletionTitle,7);},TaskScheduler.Default);
+                    confirmation.Start();
+                    try{remove.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));}
+                    finally{confirmationDeadline.Cancel();confirmation.Stop();}
+                }
+                Require(deletionConfirmed,"Removing a queued row owned by a live coordinator must obtain actual destructive confirmation");
+                Stage("pending removal confirmed; waiting for cleanup owner");
                 Require(cleanupEntered.Wait(TimeSpan.FromSeconds(5)),"The real queued cleanup owner must start before its acknowledgement is released");
                 Require(Volatile.Read(ref cleanupGateTimedOut)==0,"The controlled queued cleanup gate must not expire before the pending-removal assertion");
                 Require(queue.Items.Contains(pending) && pending.PendingRemoval && !pending.AttemptFinished,
