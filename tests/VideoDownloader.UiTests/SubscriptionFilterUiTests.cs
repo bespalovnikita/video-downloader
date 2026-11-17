@@ -176,7 +176,8 @@ internal sealed partial class UiScenario
             foreach(string sourceId in new[]{"source-a","source-b"})
             {
                 Source(sourceId);
-                var source=(SubscriptionController.SubscriptionSourceView)driver.TestSources.SelectedItem;
+                var source=driver.TestSources.SelectedItem as SubscriptionController.SubscriptionSourceView
+                    ??throw new InvalidOperationException("The selected source must remain available while showing its details.");
                 var lastAttempt=Control<TextBlock>("SubscriptionLastAttemptText");
                 lastAttempt.BringIntoView();window.UpdateLayout();
                 PumpUntil(()=>lastAttempt.Text=="Последняя попытка: "+source.LastAttemptLabel &&
