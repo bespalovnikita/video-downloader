@@ -102,7 +102,8 @@ public sealed partial class NativeWindow : IDisposable
             text=>AddInputText(text,clipboard:true),file=>_ = ImportPortableFileAsync(file),text=>AddInputText(text,clipboard:true));
         BindActions();
         InitializeDependencyControls();
-        C("AudioTrackCombo").SelectionChanged+=(_,_)=>B("AudioLanguagesBox").IsEnabled=AudioTrackSelection.ToId(Pick(C("AudioTrackCombo")))=="Languages";
+        C("AudioTrackCombo").SelectionChanged+=(_,_)=>RefreshAudioTrackControls();
+        RefreshAudioTrackControls();
         InitializeJournalControls();
         InitializeMediaSelectionControls();
         InitializeQueueFilters();
@@ -315,6 +316,24 @@ public sealed partial class NativeWindow : IDisposable
         Log(error.ToString());
         return ErrorMessages.ForException(error);
     }
+    private void RefreshAudioTrackControls()
+    {
+        string mode=AudioTrackSelection.ToId(Pick(C("AudioTrackCombo")));
+        bool languages=mode=="Languages";
+        F<FrameworkElement>("AudioLanguagesPanel").Visibility=languages?Visibility.Visible:Visibility.Collapsed;
+        B("AudioLanguagesBox").IsEnabled=languages;
+        var hint=T("AudioTrackHint");
+        hint.Text=mode switch
+        {
+            "Languages"=>ErrorMessages.Text("Коды через запятую: ru,en. Несколько языков — Авто или MKV, без MP3.",
+                "Comma-separated codes: ru,en. Multiple languages require Auto or MKV, without MP3."),
+            "Original"=>ErrorMessages.Text("Источник должен пометить оригинальную дорожку. Без этой отметки скачивание завершится ошибкой.",
+                "The source must mark an original audio track. Without that mark the download will fail."),
+            _=>""
+        };
+        hint.Visibility=hint.Text.Length>0?Visibility.Visible:Visibility.Collapsed;
+    }
+
     internal DownloadOptions ReadOptions() => new()
     {
         Profile=ProfileCatalog.ToId(Pick(C("ProfileCombo"))),Quality=Pick(C("QualityCombo")),Codec=Pick(C("CodecCombo")),
