@@ -43,6 +43,7 @@ public sealed partial class NativeWindow
         F<Button>("QueueDiagnosticsButton").IsEnabled=ready && Q.SelectedItems.Count==1 &&
             Q.SelectedItem is DownloadItem queue && IsVisibleQueueRow(queue) && AppPersistence.ValidUrl(queue.Url);
         F<Button>("DownloadDiagnosticsButton").IsEnabled=ready && D.SelectedItems.Count==1 && D.SelectedItem is DownloadItem download && AppPersistence.ValidUrl(download.Url);
+        foreach(var window in _jobDiagnosticWindows.Values)window.RefreshExportAvailability();
     }
     private void OpenJobDiagnostics(DownloadItem row)
     {
@@ -57,7 +58,8 @@ public sealed partial class NativeWindow
                 "Диагностика задания",MessageBoxButton.OK,MessageBoxImage.Information);return;
         }
         _jobDiagnostics??=new JobDiagnosticsService(_journal,_ytDlp);
-        var window=new JobDiagnosticsWindow(_window,JobDiagnosticTarget.Capture(row),_jobDiagnostics,()=>_journal.Sequence);
+        var window=new JobDiagnosticsWindow(_window,JobDiagnosticTarget.Capture(row),_jobDiagnostics,()=>_journal.Sequence,
+            canExport:()=>!_dependencyOperationRunning);
         _jobDiagnosticWindows.Add(url,window);
         window.WorkStateChanged+=DiagnosticWorkChanged;
         window.Closed+=(_,_)=>
@@ -66,7 +68,7 @@ public sealed partial class NativeWindow
             if(_jobDiagnosticWindows.TryGetValue(url,out var current) && ReferenceEquals(current,window))
                 _jobDiagnosticWindows.Remove(url);
             var pending=window.PendingOperations;if(!pending.IsCompleted)_jobDiagnosticPending.Add(pending);
-            if(!_disposed)RefreshAppUpdateControls();
+            if(!_disposed){RefreshAppUpdateControls();RefreshDependencyControls();}
         };
         try{window.Show();}
         catch(Exception error)
@@ -76,7 +78,11 @@ public sealed partial class NativeWindow
             Log("Не удалось открыть диагностику задания: "+DiagnosticPrivacy.Text(error.Message));
         }
     }
-    private void DiagnosticWorkChanged(){if(!_disposed)RefreshAppUpdateControls();}
+    private void DiagnosticWorkChanged()
+    {
+        if(_disposed)return;
+        RefreshAppUpdateControls();RefreshDependencyControls();
+    }
     private void DisposeJobDiagnostics()
     {
         foreach(var window in _jobDiagnosticWindows.Values.ToArray())

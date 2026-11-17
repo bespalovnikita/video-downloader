@@ -1,6 +1,6 @@
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Подписки" Width="1500" Height="900" MinWidth="1280" MinHeight="760"
+        Title="Подписки" Width="1200" Height="800" MinWidth="720" MinHeight="500"
         WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
         Background="#111318" Foreground="#EEF1F8" FontFamily="Segoe UI">
     <Window.Resources>
@@ -87,11 +87,12 @@
     </Window.Resources>
     <Grid Margin="18">
         <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="*" MinWidth="700"/>
-            <ColumnDefinition Width="12"/>
-            <ColumnDefinition x:Name="SubscriptionDetailsColumn" Width="340" MinWidth="280" MaxWidth="480"/>
+            <ColumnDefinition Width="*" MinWidth="0"/>
+            <ColumnDefinition x:Name="SubscriptionDetailsGapColumn" Width="12"/>
+            <ColumnDefinition x:Name="SubscriptionDetailsColumn" Width="320" MinWidth="0" MaxWidth="480"/>
         </Grid.ColumnDefinitions>
-        <Grid x:Name="SubscriptionMainPanel" Grid.Column="0">
+        <ScrollViewer x:Name="SubscriptionMainScroll" Grid.Column="0" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+        <Grid x:Name="SubscriptionMainPanel">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
@@ -103,12 +104,18 @@
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
-        <StackPanel Grid.Row="0" Margin="0,0,0,12">
+        <DockPanel Grid.Row="0" Margin="0,0,0,10">
+            <CheckBox x:Name="SubscriptionPreviewToggle" DockPanel.Dock="Right" Content="Информация о видео"
+                      AutomationProperties.Name="Показывать информацию о выбранном видео" IsChecked="True"
+                      ToolTip="Показать или скрыть боковую панель в широком окне."/>
+            <Button x:Name="OpenSubscriptionDetailsButton" DockPanel.Dock="Right" Content="Информация о видео"
+                    AutomationProperties.Name="Открыть информацию о выбранном видео" Visibility="Collapsed" IsEnabled="False"
+                    ToolTip="Показать выбранный материал и его превью на всю ширину окна."/>
             <TextBlock Text="Подписки" FontSize="24" FontWeight="SemiBold"/>
-            <TextBlock Text="Ручные проверки и необязательное расписание при открытом приложении. Скачивание — только кнопкой «Скачать всю очередь»."
-                       Foreground="#B3BBCD" TextWrapping="Wrap" Margin="0,5,0,0"/>
-        </StackPanel>
-        <Border Grid.Row="1" Background="#1B1E25" CornerRadius="8" Padding="12" Margin="0,0,0,12">
+        </DockPanel>
+        <Expander Grid.Row="1" x:Name="AddSubscriptionExpander" Header="Добавить подписку" IsExpanded="False" Margin="0,0,0,8">
+        <ScrollViewer VerticalScrollBarVisibility="Auto" MaxHeight="260">
+        <Border Background="#1B1E25" CornerRadius="8" Padding="12" Margin="0,5,0,0">
             <Grid>
                 <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                 <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
@@ -138,6 +145,8 @@
                            Text="Первая полная проверка начнётся сразу. «Пропущено» и ручная отметка «Готово» сохраняют список без скачивания; «Готово» не означает наличие файла. При добавлении в очередь повтор уже скачанных URL потребует подтверждения. Скачивание запускается отдельно кнопкой «Скачать всю очередь»."/>
             </Grid>
         </Border>
+        </ScrollViewer>
+        </Expander>
         <StackPanel Grid.Row="2" Margin="0,0,0,8">
             <WrapPanel Margin="0,0,0,8">
                 <Button x:Name="CheckSubscriptionButton" Content="Проверить"/>
@@ -148,6 +157,9 @@
                 <Button x:Name="PauseSubscriptionButton" Content="Приостановить"/>
                 <Button x:Name="RemoveSubscriptionButton" Content="Удалить подписку"/>
             </WrapPanel>
+            <Expander x:Name="SubscriptionEditorExpander" Header="Настройки выбранной подписки" IsExpanded="False">
+            <ScrollViewer VerticalScrollBarVisibility="Auto" MaxHeight="210">
+            <StackPanel Margin="0,5,0,5">
             <WrapPanel>
                 <TextBlock Text="Краткое имя выбранной подписки / папка" VerticalAlignment="Center" Margin="0,0,10,0"/>
                 <TextBox x:Name="SubscriptionNameBox" Width="260" MaxLength="160" Margin="0,0,10,0"/>
@@ -173,6 +185,9 @@
                          ToolTip="Исходный адрес выбранной подписки. Можно выделить текст и нажать Ctrl+C."/>
                 <Button Grid.Column="2" x:Name="CopySubscriptionUrlButton" Content="Копировать URL" Margin="0" IsEnabled="False"/>
             </Grid>
+            </StackPanel>
+            </ScrollViewer>
+            </Expander>
             <Border x:Name="SubscriptionCheckProgressPanel" Visibility="Collapsed" Background="#1B2433"
                     BorderBrush="#35456D" BorderThickness="1" CornerRadius="7" Padding="10,8" Margin="0,10,0,0">
                 <Grid>
@@ -219,8 +234,24 @@
             </DataGrid.Columns>
         </DataGrid>
         <GridSplitter Grid.Row="4" HorizontalAlignment="Stretch" VerticalAlignment="Center" Height="4" Background="#343946"/>
-        <TextBlock Grid.Row="5" x:Name="SubscriptionInboxTitle" Text="Входящие" FontSize="17" FontWeight="SemiBold" Margin="0,0,0,8"/>
-        <DataGrid Grid.Row="6" x:Name="SubscriptionInboxGrid" SelectionMode="Extended" CanUserSortColumns="False"
+        <StackPanel Grid.Row="5" Margin="0,0,0,8">
+            <DockPanel Margin="0,0,0,5">
+                <TextBlock x:Name="SubscriptionInboxCountText" DockPanel.Dock="Right" Foreground="#B3BBCD" VerticalAlignment="Center" Margin="8,0,0,0"/>
+                <TextBlock x:Name="SubscriptionInboxTitle" Text="Входящие и результаты" FontSize="17" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+            </DockPanel>
+            <TextBlock Text="Поиск по названию или URL" Foreground="#B3BBCD" Margin="0,0,0,3"/>
+            <Grid>
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="185"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <TextBox x:Name="SubscriptionInboxSearchBox" MaxLength="2048" Margin="0,0,8,0"
+                         AutomationProperties.Name="Поиск материалов подписки по названию или URL" ToolTip="Ctrl+F — поиск. Esc — сбросить поиск и фильтр состояния."/>
+                <ComboBox Grid.Column="1" x:Name="SubscriptionInboxStateFilter" SelectedValuePath="Key" DisplayMemberPath="Label" Margin="0,0,8,0"
+                          AutomationProperties.Name="Состояние материалов подписки"
+                          ToolTip="«Обработанные» — подтверждённые успешные загрузки, включая другую подписку. Ручная отметка «Готово» остаётся в «Все»."/>
+                <Button Grid.Column="2" x:Name="ResetSubscriptionInboxFiltersButton" Content="Сбросить" Margin="0"/>
+            </Grid>
+        </StackPanel>
+        <Grid Grid.Row="6">
+        <DataGrid x:Name="SubscriptionInboxGrid" SelectionMode="Extended" CanUserSortColumns="False"
                   ToolTip="Порядок материалов соответствует последней проверке источника. Ранее обнаруженные материалы, отсутствующие в текущем результате, сохранены в конце списка. Для обновления порядка старого снимка выполните полную проверку.">
             <DataGrid.RowStyle>
                 <Style TargetType="DataGridRow" BasedOn="{StaticResource {x:Type DataGridRow}}">
@@ -238,18 +269,21 @@
                 <DataGridTextColumn Header="URL" Binding="{Binding Url}" Width="3*"/>
             </DataGrid.Columns>
         </DataGrid>
+        <TextBlock x:Name="SubscriptionInboxEmptyText" Visibility="Collapsed" Foreground="#B3BBCD" TextWrapping="Wrap"
+                   IsHitTestVisible="False" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="12"/>
+        </Grid>
         <WrapPanel Grid.Row="7" Margin="0,10,0,8">
-            <Button x:Name="QueueSubscriptionItemsButton" Content="В очередь; запуск кнопкой «Скачать всю очередь»" Background="#6366F1"/>
+            <Button x:Name="QueueSubscriptionItemsButton" Content="Добавить выбранные в очередь" Background="#6366F1"
+                    ToolTip="Только выделенные видимые материалы. Скачивание запускается отдельно кнопкой «Скачать всю очередь»."/>
             <Button x:Name="SkipSubscriptionItemsButton" Content="Пропустить"/>
             <Button x:Name="OpenSubscriptionItemButton" Content="Открыть URL"/>
         </WrapPanel>
         <StackPanel Grid.Row="8">
-            <TextBlock x:Name="SubscriptionStatusText" Text="Исходный снимок доступен для ручного добавления. Расписание включается отдельно для каждой подписки; новинки ожидают принятия в очередь и запуска кнопкой «Скачать всю очередь»."
+            <TextBlock x:Name="SubscriptionStatusText" Text="Выделите материалы и добавьте их в очередь. Скачивание запускается отдельно кнопкой «Скачать всю очередь»."
                        TextWrapping="Wrap" Foreground="#B3BBCD"/>
-            <TextBlock Text="До 10 000 материалов. Обычная проверка — до 180 секунд; публикации Pornhub — до 15 минут и 500 страниц. Каждый ролик скачивается отдельно. Неполный список не меняет исходную отметку."
-                       Foreground="#949CAE" TextWrapping="Wrap" FontSize="11" Margin="0,6,0,0"/>
         </StackPanel>
         </Grid>
+        </ScrollViewer>
         <GridSplitter x:Name="SubscriptionDetailsSplitter" Grid.Column="1" Width="4"
                       HorizontalAlignment="Center" VerticalAlignment="Stretch" Background="#343946"
                       ResizeDirection="Columns" ResizeBehavior="PreviousAndNext"
@@ -258,6 +292,9 @@
                 BorderBrush="#343946" BorderThickness="1" CornerRadius="8" Padding="14">
             <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                 <StackPanel>
+                    <Button x:Name="BackToSubscriptionsListButton" Content="← К списку подписок" Visibility="Collapsed"
+                            HorizontalAlignment="Left" Margin="0,0,0,12"
+                            AutomationProperties.Name="Вернуться к списку подписок и материалов"/>
                     <TextBlock Text="Информация о видео" FontSize="19" FontWeight="SemiBold" Margin="0,0,0,12"/>
                     <TextBlock x:Name="SubscriptionPreviewTitle" Text="Видео не выбрано" FontSize="16"
                                FontWeight="SemiBold" TextWrapping="Wrap"/>

@@ -36,7 +36,7 @@ internal sealed partial class UiScenario
             string restoreTitle=ErrorMessages.Text("Восстановить предыдущую сессию","Restore previous session");
             string warningTitle=ErrorMessages.Text("Восстановленная очередь требует сокращения","Recovered queue requires reduction");
             string deleteTitle=ErrorMessages.Text("Удалить загрузки","Delete downloads");
-            string clearTitle=ErrorMessages.Text("Очистить всю очередь","Clear entire queue");
+            string clearTitle=ErrorMessages.Text("Убрать завершённые записи","Remove completed entries");
             string pendingTitle=ErrorMessages.Text("Ожидается очистка","Cleanup pending");
             bool IsDialogOpen(string title)
             {

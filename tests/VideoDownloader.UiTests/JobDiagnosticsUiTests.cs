@@ -47,7 +47,7 @@ internal sealed partial class UiScenario
         journal.Write(Record(target,"retry",invocation:2,level:JournalLevel.Warning));
         journal.Write(Record(other,"foreign-event",level:JournalLevel.Error,message:"OTHER_JOB_CANARY"));
         string destination=Path.Combine(root,"selected.zip");
-        bool cancelProbe=false,raceCollision=false;int probes=0;
+        bool cancelProbe=false,raceCollision=false,exportAllowed=true,blockAfterChoice=false;int probes=0,exportChoices=0;
         var versionsStarted=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         async Task<IReadOnlyList<DiagnosticComponentVersion>> Versions(CancellationToken token)
         {
@@ -61,7 +61,12 @@ internal sealed partial class UiScenario
         try
         {
             owner.Show();
-            window=new JobDiagnosticsWindow(owner,target,service,()=>journal.Sequence,_=>new(destination));window.Show();
+            window=new JobDiagnosticsWindow(owner,target,service,()=>journal.Sequence,_=>
+            {
+                exportChoices++;
+                if(blockAfterChoice)exportAllowed=false;
+                return new(destination);
+            },()=>exportAllowed);window.Show();
             var grid=Control<DataGrid>(window,"JobDiagnosticsEventsGrid");
             var search=Control<TextBox>(window,"JobDiagnosticsSearchBox");
             var attempts=Control<ComboBox>(window,"JobDiagnosticsAttemptCombo");
@@ -73,6 +78,22 @@ internal sealed partial class UiScenario
             var empty=Control<TextBlock>(window,"JobDiagnosticsEmptyHint");
             PumpUntil(()=>grid.Items.Count==3 && window.PendingOperations.IsCompleted,"The real journal/service must load only the captured exact URL.");
             Require(grid.IsReadOnly && attempts.Items.Count==3 && probes==0,"Opening must expose two typed invocations without component probes.");
+            exportAllowed=false;window.RefreshExportAvailability();
+            Require(!Control<Button>(window,"ExportJobDiagnosticsButton").IsEnabled &&
+                Control<Button>(window,"CopyJobDiagnosticsButton").IsEnabled,
+                "Component replacement must disable only version-probing export while diagnostic reads and copying remain usable.");
+            Click(window,"ExportJobDiagnosticsButton");
+            Require(exportChoices==0 && probes==0 && window.PendingOperations.IsCompleted && !File.Exists(destination),
+                "Even a directly raised export click must not choose a destination or probe components while replacement is active.");
+            search.Text="403";Require(grid.Items.Count==1,"Read-only diagnostics search must remain available during component replacement.");
+            search.Text="";
+            exportAllowed=true;window.RefreshExportAvailability();blockAfterChoice=true;
+            Require(Control<Button>(window,"ExportJobDiagnosticsButton").IsEnabled,"Completing component work must re-enable the export command.");
+            Click(window,"ExportJobDiagnosticsButton");
+            Require(exportChoices==1 && probes==0 && !window.IsExporting && !File.Exists(destination) &&
+                !Control<Button>(window,"ExportJobDiagnosticsButton").IsEnabled,
+                "Component work admitted during the destination dialog must prevent export after that dialog returns.");
+            blockAfterChoice=false;exportAllowed=true;window.RefreshExportAvailability();
             Require(purpose.IsVisible && purpose.Text.Contains("причину ошибки") && !help.IsVisible,"The window must explain its purpose before the user asks for help.");
             Click(window,"JobDiagnosticsHelpButton");window.UpdateLayout();
             Require(help.IsVisible && !details.IsVisible && help.Text.Contains("скрытые фильтрами") && help.Text.Contains("что хотели сделать"),"The actual help action must explain reading errors and sharing a complete report.");

@@ -280,6 +280,10 @@ internal sealed partial class UiScenario
             Control<ComboBox>(dialog,"MediaFormatModeCombo").SelectedIndex=1;
             Control<ComboBox>(dialog,"PrimaryMediaFormatCombo").SelectedValue="137";
             Control<ComboBox>(dialog,"AudioMediaFormatCombo").SelectedValue="140";
+            Require(Control<Expander>(dialog,"MediaFormatsExpander").IsExpanded &&
+                Control<ComboBox>(dialog,"PrimaryMediaFormatCombo").IsVisible &&
+                Control<ComboBox>(dialog,"AudioMediaFormatCombo").IsVisible,
+                "Manual waveform sources must be selected in the revealed expert format controls.");
             Click(dialog,"PreviewMediaWaveformStartButton");var manual=calls[^1];
             Require(manual.Request.ClipRequest.VideoFormatId=="137" && manual.Request.ClipRequest.AudioFormatId=="140",
                 "Manual video and separate audio IDs must reach the shared media owner unchanged.");

@@ -74,6 +74,11 @@ internal sealed partial class UiScenario
         }
         void RenderedLabel(DataGrid grid,DownloadItem row,string expected)
         {
+            if(!grid.IsVisible)
+            {
+                string navigation=ReferenceEquals(grid,Q)?"ShowQueuePanelButton":"ShowDownloadsPanelButton";
+                F<Button>(navigation).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));_window.UpdateLayout();
+            }
             grid.ScrollIntoView(row);
             grid.UpdateLayout();
             bool Matches()

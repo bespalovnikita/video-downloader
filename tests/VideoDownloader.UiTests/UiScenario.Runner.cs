@@ -34,6 +34,8 @@ internal sealed partial class UiScenario
             UiScenario.TestSubscriptionPreviewPrefetch(root);
             Stage("testing subscription details and two shared preview images");
             UiScenario.TestSubscriptionDetailsPreview(root);
+            Stage("testing subscription inbox search, status filters and compact layout");
+            UiScenario.TestSubscriptionFilters(root);
             Stage("testing one aggregate queue offer after subscription checks");
             UiScenario.TestSubscriptionQueueOffer(root);
             Stage("testing explicit subscription requeue for historical states and mixed-selection choices");
@@ -56,6 +58,8 @@ internal sealed partial class UiScenario
             UiScenario.TestDownloadsPreviewSelection(root);
             Stage("testing resizable panel layout and restored widths");
             UiScenario.TestPanelLayout(root);
+            Stage("testing Windows Contrast Themes, inherited editor colors and theme lifecycle");
+            UiScenario.TestWindowContrastTheme();
             Stage("testing journal profiles, trace correlation and clipboard/export");
             UiScenario.TestJournalProfiles(root);
             Stage("testing per-job diagnostics, typed attempts, private ZIP and cancelled owner lifetime");
@@ -86,6 +90,8 @@ internal sealed partial class UiScenario
             UiScenario.TestHistoryLibrary(root);
             Stage("testing app update controls, idle handoff and checkpoint safety");
             UiScenario.TestAppUpdateControls(root);
+            Stage("testing first-run readiness and component progress, cancellation and shutdown");
+            UiScenario.TestDependencyControls(root);
             Stage("testing free disk space, pre-start consent and live warnings");
             UiScenario.TestDiskSpaceControls(root);
             Stage("testing completed queue playback and finished session clock");
@@ -94,6 +100,10 @@ internal sealed partial class UiScenario
             UiScenario.TestDownloadsActiveFirst(root);
             Stage("testing queue search/status/subscription views and scoped actions while active");
             UiScenario.TestQueueFilters(root);
+            Stage("testing safe queue record removal and explicit destructive file deletion");
+            UiScenario.TestQueueRecordRemoval(root);
+            Stage("testing manual input validation, exact duplicates and non-intrusive clipboard polling");
+            UiScenario.TestInputFeedback(root);
             Stage("testing selected Skip/Resume, retained progress, worker handoff and skipped-aware Clear");
             UiScenario.TestQueueSkipResume(root);
             Stage("testing selected full reset, fresh metadata, owned cleanup and same-engine restart");

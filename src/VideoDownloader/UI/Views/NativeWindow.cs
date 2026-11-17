@@ -24,6 +24,7 @@ public sealed partial class NativeWindow : IDisposable
     private readonly AppPersistence _storage;
     private readonly PreviewController _preview;
     private readonly PanelLayoutController _panelLayout;
+    private readonly WindowThemeController _theme;
     private readonly DispatcherTimer _tick=new(){Interval=TimeSpan.FromMilliseconds(400)};
     private readonly WindowLifecycleController _lifecycle;
     private readonly InputIngressController _ingress;
@@ -63,6 +64,7 @@ public sealed partial class NativeWindow : IDisposable
         string? localPosterFfmpegPath=null)
     {
         _window=window;
+        _theme=new WindowThemeController(window);
         _storage=persistence??new AppPersistence();
         _ytDlp=ytDlpExecutable;
         _journal=new DiagnosticJournal(Path.Combine(Path.GetDirectoryName(_storage.SessionPath)!,"logs"));
@@ -87,6 +89,7 @@ public sealed partial class NativeWindow : IDisposable
             C(control).SelectedIndex=0;
         }
         B("OutputBox").Text=new DownloadOptions().Output;
+        K("ShowVideoTitlesCheck").IsChecked=new DownloadOptions().ShowVideoTitles;
         _panelLayout=new PanelLayoutController(_window,SaveCheckpoint);
         _preview=new PreviewController(_window,_storage,_ytDlp,
             ()=>_restoringSession || _profileBackupBusy || _profileBackupRecoveryRequired || _profileBackupReplaying || _checkpointReadOnly || _legacyEngineBlocked
@@ -95,12 +98,14 @@ public sealed partial class NativeWindow : IDisposable
         _lifecycle=new WindowLifecycleController(_window,()=>OpenFolder(B("OutputBox").Text));
         _ingress=new InputIngressController(_window,AddUrls,()=>!_profileBackupBusy && !_profileBackupRecoveryRequired && !_profileBackupReplaying &&
             !_checkpointReadOnly && !_legacyEngineBlocked && Check(K("WatchClipboardCheck")),_lifecycle.Activate,Log,
-            text=>_ = ImportPortableTextAsync(text),file=>_ = ImportPortableFileAsync(file));
+            text=>AddInputText(text,clipboard:true),file=>_ = ImportPortableFileAsync(file),text=>AddInputText(text,clipboard:true));
         BindActions();
+        InitializeDependencyControls();
         C("AudioTrackCombo").SelectionChanged+=(_,_)=>B("AudioLanguagesBox").IsEnabled=AudioTrackSelection.ToId(Pick(C("AudioTrackCombo")))=="Languages";
         InitializeJournalControls();
         InitializeMediaSelectionControls();
         InitializeQueueFilters();
+        InitializeInputFeedback();
         InitializeQueueItemActions();
         InitializeResetQueueItemActions();
         InitializeHistoryControls();
@@ -206,34 +211,34 @@ public sealed partial class NativeWindow : IDisposable
         string title=SessionState.StartedAt.HasValue
             ? DownloadFormat.Tray(metrics.Successful,metrics.Left,metrics.Failed,metrics.Speed,running,paused) : ErrorMessages.Text("Video Downloader | Готово","Video Downloader | Ready");
         _lifecycle.UpdateStatus(title);
-        F<Button>("StartButton").IsEnabled=!running && !_startingSession && !_queueItemActionBusy && SessionState.Queue.Any(x=>
+        F<Button>("StartButton").IsEnabled=!running && !_startingSession && !_queueItemActionBusy && !_dependencyOperationRunning && SessionState.Queue.Any(x=>
             (x.Status is not ("Completed" or "Skipped") || x.RequeueRequested) && x.CanResume);
         F<Button>("StopButton").IsEnabled=running;
         F<Button>("PauseButton").IsEnabled=running;
         F<Button>("PauseButton").Content=paused?ErrorMessages.Text("Продолжить","Resume"):ErrorMessages.Text("Пауза","Pause");
-        F<Button>("RetryFailedButton").IsEnabled=!running && SessionState.Queue.Any(x=>x.Status=="Failed");
+        F<Button>("RetryFailedButton").IsEnabled=!running && !_dependencyOperationRunning && SessionState.Queue.Any(x=>x.Status=="Failed");
         foreach(string name in new[]{"MoveUpButton","MoveDownButton","ClearQueueButton"})
             F<Button>(name).IsEnabled=!running;
         Q.AllowDrop=!running;
         if(_checkpointCapacityRecovery)
         {
             T("HeaderStatus").Text=ErrorMessages.Text("● Требуется сокращение очереди","● Queue reduction required");
-            T("HeaderStatus").Foreground=Brushes.Orange;
+            T("HeaderStatus").SetResourceReference(TextBlock.ForegroundProperty,"HeaderWarningBrush");
         }
         else if (running)
         {
             T("HeaderStatus").Text=paused?ErrorMessages.Text("● Пауза","● Paused"):ErrorMessages.Text("● Скачивание","● Downloading");
-            T("HeaderStatus").Foreground=Brushes.LightSkyBlue;
+            T("HeaderStatus").SetResourceReference(TextBlock.ForegroundProperty,"HeaderRunningBrush");
         }
         else if (SessionState.StartedAt.HasValue)
         {
             T("HeaderStatus").Text=SessionState.Stopping?ErrorMessages.Text("● Остановлено","● Stopped"):metrics.Failed==0?ErrorMessages.Text("● Завершено","● Completed"):ErrorMessages.Text("● Завершено с ошибками","● Completed with errors");
-            T("HeaderStatus").Foreground=SessionState.Stopping?Brushes.Orange:metrics.Failed==0?Brushes.LightGreen:Brushes.Tomato;
+            T("HeaderStatus").SetResourceReference(TextBlock.ForegroundProperty,SessionState.Stopping?"HeaderWarningBrush":metrics.Failed==0?"HeaderSuccessBrush":"HeaderErrorBrush");
         }
         else
         {
             T("HeaderStatus").Text=ErrorMessages.Text("● Готово","● Ready");
-            T("HeaderStatus").Foreground=Brushes.LightGray;
+            T("HeaderStatus").SetResourceReference(TextBlock.ForegroundProperty,"HeaderIdleBrush");
         }
         if(metrics.ActiveChanged) RefreshQueueView();
         _queueFilters?.RefreshSummary();
@@ -244,6 +249,13 @@ public sealed partial class NativeWindow : IDisposable
         RefreshJobDiagnosticActions();
         PollDiskSpace();
         RefreshProfileBackupControls();
+        RefreshDependencyControls();
+        RefreshQueueEmptyState();
+        T("QueueOptionsScopeHint").Text=running
+            ? ErrorMessages.Text("Параметры относятся ко всей очереди. Изменения применятся при следующем запуске; текущие загрузки продолжатся с прежними настройками.",
+                "These settings apply to the whole queue. Changes take effect on the next start; current downloads keep their existing settings.")
+            : ErrorMessages.Text("Параметры применятся ко всей очереди при запуске. Для отдельного видео используй «Формат и фрагмент…».",
+                "These settings apply to the whole queue when started. Use Format and fragment for an individual video.");
     }
     internal void OnRowChanged(DownloadItem item)
     {
@@ -271,8 +283,8 @@ public sealed partial class NativeWindow : IDisposable
                 SaveCheckpoint();
                 if (item.CleanupError.Length>0 && !_resettingQueueItems.Contains(item))
                     MessageBox.Show(_window,ErrorMessages.Text(
-                        "Не удалось удалить файлы. Строка и пути сохранены; нажмите «Удалить выбранные» для повторной попытки.\n",
-                        "Cleanup failed. The row and paths were kept; use Remove to retry.\n")+
+                        "Не удалось удалить файлы. Строка и пути сохранены; нажмите «Удалить загрузки и файлы…» для повторной попытки.\n",
+                        "Cleanup failed. The row and paths were kept; use Delete downloads and files to retry.\n")+
                         ErrorMessages.ForDisplay(item.CleanupError),ErrorMessages.Text("Удаление заблокировано","Removal blocked"),
                         MessageBoxButton.OK,MessageBoxImage.Warning);
             }
@@ -388,8 +400,8 @@ public sealed partial class NativeWindow : IDisposable
     private bool _checkpointReadOnly;
     private bool _checkpointCapacityRecovery;
     private static string QueueCapacityRecoveryHint=>ErrorMessages.Text(
-        "Очередь восстановлена, включая результаты и пути очистки, но после чтения прежних данных её сохранение превышает 16 МиБ. Исходный файл оставлен без изменений. Добавление и запуск заблокированы. Экспортируйте очередь, затем явно сократите её кнопками «Удалить выбранные» или «Очистить всю очередь»; строки, ожидающие очистки, удаляются только через «Удалить выбранные». Сохранение возобновится, когда оставшаяся очередь поместится в лимит.",
-        "The queue, results and cleanup paths were recovered, but expanding the older data exceeds the 16 MiB checkpoint limit. The original file is unchanged. Adding and starting are blocked. Export the queue, then explicitly reduce it with Remove selected or Clear all; use Remove selected for rows awaiting cleanup. Saving resumes once the remaining queue fits the limit.");
+        "Очередь восстановлена, включая результаты и пути очистки, но после чтения прежних данных её сохранение превышает 16 МиБ. Исходный файл оставлен без изменений. Добавление и запуск заблокированы. Экспортируйте очередь, затем явно сократите её кнопками «Убрать из очереди», «Убрать завершённые» или «Очистить очередь…» — готовые файлы сохранятся. Для повторной попытки незавершённой очистки используйте «Удалить загрузки и файлы…»: эта команда удаляет только подтверждённые собственные файлы. Сохранение возобновится, когда оставшаяся очередь поместится в лимит.",
+        "The queue, results and cleanup paths were recovered, but expanding the older data exceeds the 16 MiB checkpoint limit. The original file is unchanged. Adding and starting are blocked. Export the queue, then reduce it with Remove queue entries, Remove completed entries or Clear queue; published files are kept. To retry pending cleanup, use Delete downloads and files, which deletes only confirmed owned files. Saving resumes once the remaining queue fits the limit.");
     private bool QueueRemovalBlocked=>_restoringSession || (_checkpointReadOnly && !_checkpointCapacityRecovery);
     private void SaveReducedRecoveryQueue()
     {
@@ -512,24 +524,27 @@ public sealed partial class NativeWindow : IDisposable
         UpdateState();SaveCheckpoint();
     }
     private static IReadOnlyList<string> ParseUrls(string text)=>InputIngressController.ParseUrls(text);
-    internal void AddUrls(IEnumerable<string> urls,bool clipboard=false,bool selectNew=false)
+    internal void AddUrls(IEnumerable<string> urls,bool clipboard=false,bool selectNew=false)=>
+        AddUrlsWithResult(urls,clipboard,selectNew);
+
+    internal IReadOnlyList<DownloadItem> AddUrlsWithResult(IEnumerable<string> urls,bool clipboard=false,bool selectNew=false)
     {
-        if (_closing || _disposed || _appUpdateHandoff || _restoringSession || _checkpointReadOnly || RejectProfileBackupMutation()) return;
+        if (_closing || _disposed || _appUpdateHandoff || _restoringSession || _checkpointReadOnly || RejectProfileBackupMutation()) return [];
         var rows=urls.Where(AppPersistence.ValidUrl).Distinct(StringComparer.Ordinal)
             .Where(url=>!SessionState.Queue.Any(i=>string.Equals(i.Url,url,StringComparison.Ordinal)))
             .Select(url=>new DownloadItem{Url=url}).ToList();
-        if(rows.Count==0)return;
+        if(rows.Count==0)return [];
         var session=SessionState.Coordinator;
         bool active=session?.IsRunning==true;
         if(active)
         {
             var checkedRows=ConfirmDuplicates(rows,false);
-            if(checkedRows==null)return;
+            if(checkedRows==null)return [];
             rows=checkedRows;
         }
         // A modal duplicate dialog pumps the dispatcher: IPC/clipboard may
         // have added these URLs, completed the session, or closed the window.
-        if (_closing || _disposed || _appUpdateHandoff || _checkpointReadOnly || RejectProfileBackupMutation()) return;
+        if (_closing || _disposed || _appUpdateHandoff || _checkpointReadOnly || RejectProfileBackupMutation()) return [];
         // Capture the final deferred state after the modal loop. Admission
         // checks the whole resulting UTF-8 checkpoint once for this batch.
         foreach(var row in rows)
@@ -544,7 +559,7 @@ public sealed partial class NativeWindow : IDisposable
             T("ClipboardHint").Text=error.Message;
             Log("Queue admission refused: "+error.Message);
             MessageBox.Show(_window,error.Message,ErrorMessages.Text("Очередь не добавлена","Queue was not added"),MessageBoxButton.OK,MessageBoxImage.Warning);
-            return;
+            return [];
         }
         foreach(var row in added)
         {
@@ -561,6 +576,7 @@ public sealed partial class NativeWindow : IDisposable
         }
         Reindex();
         T("ClipboardHint").Text=QueueAddedHint(added.Count);
+        return added;
     }
     private void RequestRowPreview(DownloadItem row,bool priority=false)=>_preview.RequestRow(row,priority);
     private void ShowPreview(string url)
@@ -572,14 +588,14 @@ public sealed partial class NativeWindow : IDisposable
     private Task StartAsync(IEnumerable<DownloadItem>? custom=null)=>StartWithConfirmationAsync(custom,null);
     private async Task StartWithConfirmationAsync(IEnumerable<DownloadItem>? custom,IReadOnlySet<DownloadItem>? duplicateConsents,DownloadOptions? preparedOptions=null)
     {
-        if(_closing || _disposed || _restoringSession || _startingSession || _queueItemActionBusy || _appUpdateHandoff || _checkpointReadOnly || _profileBackupReplaying || RejectProfileBackupMutation())return;
+        if(_closing || _disposed || _restoringSession || _startingSession || _queueItemActionBusy || _dependencyOperationRunning || _appUpdateHandoff || _checkpointReadOnly || _profileBackupReplaying || RejectProfileBackupMutation())return;
         _startingSession=true;
         try { await StartSessionCoreAsync(custom,duplicateConsents,preparedOptions); }
         finally { _startingSession=false;UpdateState();_preview.BackfillLocalPosters(); }
     }
     private async Task StartSessionCoreAsync(IEnumerable<DownloadItem>? custom,IReadOnlySet<DownloadItem>? duplicateConsents=null,DownloadOptions? preparedOptions=null)
     {
-        if (_closing || _disposed || _restoringSession || _checkpointReadOnly || RejectProfileBackupMutation()) return;
+        if (_closing || _disposed || _restoringSession || _checkpointReadOnly || _dependencyOperationRunning || RejectProfileBackupMutation()) return;
         if (_legacyEngineBlocked)
         {
             MessageBox.Show(_window,
@@ -709,8 +725,16 @@ public sealed partial class NativeWindow : IDisposable
         if(_closing || _disposed || _appUpdateHandoff || _queueItemActionBusy || QueueRemovalBlocked || RejectProfileBackupMutation())return;
         var selected=rows.Where(SessionState.Queue.Contains).Distinct().ToArray();
         if(selected.Length==0)return;
-        if(selected.Any(x=>x.Status!="Queued") &&
-            MessageBox.Show(_window,ErrorMessages.Text($"Удалить выбранные ссылки ({selected.Length})?\nИх активные задачи будут остановлены, а принадлежащие им готовые файлы — удалены без возможности восстановления.\nОстальные загрузки продолжатся.",$"Remove {selected.Length} selected URL(s)?\nActive jobs will be stopped; finished files belonging to them will be permanently deleted.\nOther downloads continue."),
+        int ownedFiles=selected.SelectMany(row=>row.OwnedPaths.Concat(row.CleanupPaths))
+            .Where(path=>!string.IsNullOrWhiteSpace(path)).Distinct(StringComparer.Ordinal).Count();
+        // A worker can publish after its Queued status was inspected. Any
+        // active/starting session therefore requires consent before tombstones;
+        // the idle plain-Queued path has no await that could start such work.
+        bool requiresConfirmation=SessionState.Coordinator?.IsRunning==true ||
+            SessionState.RunningTask is {IsCompleted:false} || _startingSession ||
+            selected.Any(x=>x.Status!="Queued" || x.OwnedPaths.Count>0 || x.CleanupPaths.Count>0 || x.Path.Length>0 || x.StageDir.Length>0);
+        if(requiresConfirmation &&
+            MessageBox.Show(_window,ErrorMessages.Text($"Удалить выбранные загрузки ({selected.Length}) и их файлы?\nПодтверждённых собственных файлов: {ownedFiles}. Они будут удалены без возможности восстановления.\nАктивные выбранные задания будут остановлены, их временные данные — удалены.\nОстальные загрузки и история сохранятся.\nЧтобы сохранить готовые файлы, используйте «Убрать из очереди» после завершения скачивания.",$"Delete {selected.Length} selected downloads and their files?\nConfirmed owned files: {ownedFiles}. They will be permanently deleted.\nSelected active jobs will be stopped and their temporary data discarded.\nOther downloads and history will be kept.\nTo keep published files, use Remove queue entries after downloads finish."),
                 ErrorMessages.Text("Удалить загрузки","Delete downloads"),MessageBoxButton.YesNo,MessageBoxImage.Warning)!=MessageBoxResult.Yes)return;
         if(_closing || _disposed || _appUpdateHandoff || _queueItemActionBusy || QueueRemovalBlocked || RejectProfileBackupMutation())return;
         var alreadyPending=selected.Where(row=>row.PendingRemoval).ToHashSet();
@@ -800,8 +824,8 @@ public sealed partial class NativeWindow : IDisposable
             if(IsEligible(row) && row.StageDir.Length==0)ForgetRow(row);
         }
         if(selected.Any(IsEligible))
-            MessageBox.Show(_window,ErrorMessages.Text("Задачи, ожидающие очистки, сохранены. Нажмите «Удалить выбранные» для повторной попытки.",
-                "Downloads awaiting cleanup were kept. Use Remove to retry."),
+            MessageBox.Show(_window,ErrorMessages.Text("Задачи, ожидающие очистки, сохранены. Нажмите «Удалить загрузки и файлы…» для повторной попытки.",
+                "Downloads awaiting cleanup were kept. Use Delete downloads and files to retry."),
                 ErrorMessages.Text("Ожидается очистка","Cleanup pending"),MessageBoxButton.OK,MessageBoxImage.Warning);
         Reindex();
         SaveReducedRecoveryQueue();

@@ -14,16 +14,18 @@ internal sealed class InputIngressController : IDisposable
     private readonly Action<string> _log;
     private readonly Action<string>? _portableText;
     private readonly Action<string>? _portableFile;
+    private readonly Action<string>? _manualText;
     private readonly DispatcherTimer _clipboardTick=new(){Interval=TimeSpan.FromMilliseconds(950)};
     private bool _disposed;
     internal string LastClipboard { get; set; }="";
 
     internal InputIngressController(Window window,Action<IEnumerable<string>,bool,bool> enqueue,
         Func<bool> watchClipboard,Action activate,Action<string> log,
-        Action<string>? portableText=null,Action<string>? portableFile=null)
+        Action<string>? portableText=null,Action<string>? portableFile=null,Action<string>? manualText=null)
     {
         _window=window;_enqueue=enqueue;_watchClipboard=watchClipboard;_activate=activate;_log=log;
         _portableText=portableText;_portableFile=portableFile;
+        _manualText=manualText;
         _clipboardTick.Tick+=OnClipboardTick;
         _window.Drop+=OnWindowDrop;
         _window.DragOver+=OnWindowDragOver;
@@ -84,6 +86,7 @@ internal sealed class InputIngressController : IDisposable
             {
                 string text=Clipboard.GetText();
                 if(PortableQueueCodec.IsPortable(text))_portableText?.Invoke(text);
+                else if(_manualText is not null)_manualText(text);
                 else _enqueue(ParseUrls(text),true,select);
             }
         }

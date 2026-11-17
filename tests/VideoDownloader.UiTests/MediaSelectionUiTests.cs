@@ -60,9 +60,32 @@ internal sealed partial class UiScenario
             Click(window,"MediaSelectionButton");
             var dialog=subject.MediaSelectionEditor??throw new InvalidOperationException("The actual format editor did not open.");
             Require(dialog.IsVisible,"The actual format editor must open.");
+            dialog.UpdateLayout();
+            var expert=Control<Expander>(dialog,"MediaFormatsExpander");
             var catalog=Control<DataGrid>(dialog,"MediaFormatsGrid");
+            var scroll=Control<ScrollViewer>(dialog,"MediaSelectionScrollViewer");
+            var simpleStart=Control<TextBox>(dialog,"MediaSectionStartBox");
+            var simpleEnd=Control<TextBox>(dialog,"MediaSectionEndBox");
+            Rect VisibleBounds(FrameworkElement control)=>control.TransformToAncestor(scroll)
+                .TransformBounds(new Rect(new System.Windows.Point(),control.RenderSize));
+            var rangeBounds=VisibleBounds(simpleStart);
+            Require(!expert.IsExpanded && !catalog.IsVisible && simpleStart.IsVisible &&
+                rangeBounds.Top>=0 && rangeBounds.Bottom<=scroll.ActualHeight,
+                "An automatic fragment must open at its visible time fields, with the expert catalog collapsed.");
+            simpleStart.Text="2";simpleEnd.Text="4";Click(dialog,"ApplyMediaSelectionButton");
+            Require(subject.MediaSelectionEditor==null && first.Selection is {Format:null,Section.StartSeconds:2,Section.EndSeconds:4} &&
+                first.Status=="Queued" && subject.SessionState.Coordinator==null,
+                "A normal fragment must apply through the default automatic mode without opening or choosing technical formats.");
+            Click(window,"MediaSelectionButton");dialog=subject.MediaSelectionEditor!;
+            Click(dialog,"ResetMediaSelectionButton");
+            Require(first.Selection==null,"Reset must restore the full automatic selection after the simple-fragment probe.");
+            Click(window,"MediaSelectionButton");dialog=subject.MediaSelectionEditor!;
+            expert=Control<Expander>(dialog,"MediaFormatsExpander");
+            catalog=Control<DataGrid>(dialog,"MediaFormatsGrid");
+            scroll=Control<ScrollViewer>(dialog,"MediaSelectionScrollViewer");
+            expert.IsExpanded=true;catalog.BringIntoView();dialog.UpdateLayout();
             Require(catalog.IsReadOnly && catalog.Items.Count==3 && catalog.Columns.Count==9,
-                "The actual parsed catalog must be read-only and expose all format details.");
+                "The expert section must expose the actual parsed, read-only catalog and all format details.");
             string Cell(int row,int column)
             {
                 catalog.ScrollIntoView(catalog.Items[row],catalog.Columns[column]);catalog.UpdateLayout();
@@ -78,15 +101,27 @@ internal sealed partial class UiScenario
             var audio=Control<ComboBox>(dialog,"AudioMediaFormatCombo");
             var start=Control<TextBox>(dialog,"MediaSectionStartBox");
             var end=Control<TextBox>(dialog,"MediaSectionEndBox");
+            expert.IsExpanded=false;
             mode.SelectedIndex=1;primary.SelectedValue="137";audio.SelectedValue="140";
+            Require(expert.IsExpanded && primary.IsVisible && audio.IsVisible,
+                "Choosing exact formats must reveal their actual source selectors.");
             Require(Equals(primary.SelectedValue,"137") && Equals(audio.SelectedValue,"140"),
                 "Exact source IDs must be selectable through real controls.");
             start.Text="00:00:20";end.Text="00:00:10";Click(dialog,"ApplyMediaSelectionButton");
             Require(dialog.IsVisible && first.Selection==null && Control<TextBlock>(dialog,"MediaSelectionError").Text.Length>0,
                 "An inverted interval must leave the dialog open and the stored row unchanged.");
+            PumpUntil(()=>end.IsKeyboardFocused,"Apply must move keyboard focus to the inverted interval's end field.");
+            Require(Control<TextBlock>(dialog,"MediaSectionEndError").Visibility==Visibility.Visible &&
+                Control<TextBlock>(dialog,"MediaSectionEndError").Text.Length>0 &&
+                VisibleBounds(end).Top>=0 && VisibleBounds(end).Bottom<=scroll.ActualHeight &&
+                Control<TextBlock>(dialog,"MediaSelectionError").IsVisible,
+                "A range error must appear beside its field and remain visible in the pinned footer after scrolling from expert formats.");
             start.Text="00:00:05";end.Text="00:00:10";audio.SelectedValue="";Click(dialog,"ApplyMediaSelectionButton");
             Require(first.Selection==null && Control<TextBlock>(dialog,"MediaSelectionError").Text.Length>0,
                 "Video-only selection must not silently guess or substitute an audio format.");
+            PumpUntil(()=>audio.IsKeyboardFocused,"A missing separate audio stream must focus its source selector.");
+            Require(Control<TextBlock>(dialog,"MediaFormatError").Visibility==Visibility.Visible && expert.IsExpanded,
+                "Format compatibility feedback must be beside the revealed format selectors.");
             audio.SelectedValue="140";
 
             // The modeless editor remains bound to its captured URL even if
@@ -109,7 +144,8 @@ internal sealed partial class UiScenario
             // Reopen using data restored from disk, rather than reusing form state.
             first.Selection=restored.Selection;
             Click(window,"MediaSelectionButton");dialog=subject.MediaSelectionEditor!;
-            Require(Equals(Control<ComboBox>(dialog,"PrimaryMediaFormatCombo").SelectedValue,"137") &&
+            Require(Control<Expander>(dialog,"MediaFormatsExpander").IsExpanded &&
+                Equals(Control<ComboBox>(dialog,"PrimaryMediaFormatCombo").SelectedValue,"137") &&
                 Equals(Control<ComboBox>(dialog,"AudioMediaFormatCombo").SelectedValue,"140") &&
                 Control<TextBox>(dialog,"MediaSectionStartBox").Text==DownloadSection.FormatTimestamp(5) &&
                 Control<TextBox>(dialog,"MediaSectionEndBox").Text==DownloadSection.FormatTimestamp(10),
@@ -144,6 +180,10 @@ internal sealed partial class UiScenario
             Control<TextBox>(dialog,"MediaSectionEndBox").Text="00:00:02";Click(dialog,"ApplyMediaSelectionButton");
             Require(first.Selection==previous && Control<TextBlock>(dialog,"MediaSelectionError").Text.Length>0,
                 "A collection cannot acquire a misleading per-video interval.");
+            PumpUntil(()=>Control<TextBox>(dialog,"MediaSectionStartBox").IsKeyboardFocused,
+                "A collection restriction must reveal and focus the range that needs to be cleared.");
+            Require(Control<TextBlock>(dialog,"MediaSectionStartError").Visibility==Visibility.Visible,
+                "The unsupported collection range must have its explanation beside the time field.");
             Click(dialog,"CloseMediaSelectionButton");
             Require(subject.SessionState.Coordinator==null && subject.SessionState.RunningTask==null && !File.Exists(storage.HistoryPath),
                 "Editing and restoring selections must never start transfers or add successful history.");

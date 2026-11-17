@@ -41,7 +41,7 @@ internal sealed partial class UiScenario
         {
             subject=new NativeWindow(window,storage,"must-not-launch");
             window.Show();
-            window.UpdateLayout();
+            window.Width=1500;window.Height=900;window.UpdateLayout();
             var queue=Control<ColumnDefinition>(window,"QueuePanelColumn");
             var downloads=Control<ColumnDefinition>(window,"DownloadsPanelColumn");
             var preview=Control<ColumnDefinition>(window,"PreviewPanelColumn");
@@ -87,7 +87,7 @@ internal sealed partial class UiScenario
         try
         {
             subject=new NativeWindow(window,storage,"must-not-launch");
-            window.Show();window.UpdateLayout();
+            window.Show();window.Width=1500;window.Height=900;window.UpdateLayout();
             var grid=Control<Grid>(window,"MainPanelsGrid");
             var queue=Control<ColumnDefinition>(window,"QueuePanelColumn");
             var downloads=Control<ColumnDefinition>(window,"DownloadsPanelColumn");
@@ -103,7 +103,8 @@ internal sealed partial class UiScenario
                 Require(double.IsFinite(json.RootElement.GetProperty("QueuePanelWidth").GetDouble()),
                     "Invalid input must not leak non-finite values into checkpoint JSON.");
 
-            window.Width=window.MinWidth;
+            // Keep the wide mode to exercise constrained real splitters.
+            window.Width=1280;window.Height=900;
             window.UpdateLayout();
             subject.ApplyOptions(new DownloadOptions{QueuePanelWidth=6000,PreviewPanelWidth=6000});
             window.UpdateLayout();
@@ -129,7 +130,8 @@ internal sealed partial class UiScenario
             var oldSettings=JsonSerializer.Deserialize<DownloadOptions>("{\"Profile\":\"Universal\"}",AppPersistence.Json)!;
             Require(Math.Abs(oldSettings.QueuePanelWidth-380d*4/3)<1 && oldSettings.PreviewPanelWidth==390,
                 "Older settings without panel widths must receive the new defaults without a format migration.");
-            Console.WriteLine("PASS: real WPF panel splitters, wider Queue, profile/settings persistence and small-window restoration");
+            TestCompactPanelLayout(window,subject);
+            Console.WriteLine("PASS: real WPF splitters, persistent wide widths, compact navigation and reachable session controls");
         }
         finally {subject?.Dispose();window.Close();}
     }

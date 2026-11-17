@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Windows;
+using TabControl=System.Windows.Controls.TabControl;
 using System.Windows.Controls;
 using System.Windows.Markup;
 using System.Windows.Media;
@@ -76,6 +77,10 @@ internal sealed partial class UiScenario
         {
             subject=new NativeWindow(window,storage,"must-not-launch",automaticUpdates:false,localPosterFfmpegPath:ffmpeg);
             window.Show();window.UpdateLayout();
+            if(!((FrameworkElement)window.FindName("PreviewPanel")!).IsVisible)
+                ((Button)window.FindName("ShowDetailsPanelButton")!).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            ((TabControl)window.FindName("DetailsTabs")!).SelectedItem=(TabItem)window.FindName("SelectedVideoTab")!;
+            ((FrameworkElement)window.FindName("PreviewImageHost")!).BringIntoView();window.UpdateLayout();
             var queue=(DataGrid)window.FindName("QueueGrid")!;
             var image=(Image)window.FindName("PreviewImage")!;
             DownloadItem Row(string id,string file)=>new(){Url="https://local-poster.invalid/"+id,Title="Название строки "+id,
@@ -293,7 +298,7 @@ internal sealed partial class UiScenario
         uint thread=GetCurrentThreadId();
         responder.Tick+=(_,_)=>
         {
-            if(DismissDialog(thread,"Clear entire queue",6) || DismissDialog(thread,"Очистить всю очередь",6))
+            if(DismissDialog(thread,"Remove completed entries",6) || DismissDialog(thread,"Убрать завершённые записи",6))
             {answered=true;responder.Stop();}
         };
         try
@@ -315,7 +320,7 @@ internal sealed partial class UiScenario
                     // Clear therefore reaches its actual await deterministically.
                     using var watchdog=new CancellationTokenSource();
                     _=Task.Delay(TimeSpan.FromSeconds(8),watchdog.Token).ContinueWith(task=>
-                    {if(!task.IsCanceled){DismissDialog(thread,"Clear entire queue",7);DismissDialog(thread,"Очистить всю очередь",7);}},TaskScheduler.Default);
+                    {if(!task.IsCanceled){DismissDialog(thread,"Remove completed entries",7);DismissDialog(thread,"Убрать завершённые записи",7);}},TaskScheduler.Default);
                     responder.Start();try{Click(window,"ClearQueueButton");}finally{watchdog.Cancel();responder.Stop();}
                     Require(answered && subject.Preview.HasLocalPosterWork && subject.SessionState.Queue.Count==2,
                         "Confirmed Clear must yield while joining the current local-image callback.");

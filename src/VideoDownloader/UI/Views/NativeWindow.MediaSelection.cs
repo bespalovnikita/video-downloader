@@ -22,7 +22,7 @@ public sealed partial class NativeWindow
     private bool CanEditMediaSelection(DownloadItem row)=>!_disposed && !_closing && !_appUpdateHandoff && !_profileBackupBusy && !_profileBackupRecoveryRequired && !_profileBackupReplaying &&
         !(_startingSession && SessionState.Coordinator?.IsRunning!=true) &&
         !_checkpointReadOnly && !_legacyEngineBlocked &&
-        !_restoringSession && !_queueItemActionBusy && SessionState.Queue.Contains(row) && row.ResumeState is null && !row.PendingRemoval && row.CleanupError.Length==0 &&
+        !_restoringSession && !_queueItemActionBusy && !_dependencyOperationRunning && SessionState.Queue.Contains(row) && row.ResumeState is null && !row.PendingRemoval && row.CleanupError.Length==0 &&
         row.Status is not ("Running" or "Starting") &&
         !(SessionState.Coordinator?.IsRunning==true && SessionState.Urls.Contains(row.Url,StringComparer.Ordinal));
 

@@ -10,7 +10,7 @@ internal static class FfmpegInstallTransaction
     private sealed record Original(string Name, bool Exists, long Size, string Hash);
 
     internal static void Install(string archivePath, string installDirectory, CancellationToken cancel,
-        Action<int>? afterReplacement = null)
+        Action<int>? afterReplacement = null, Action? beforeReplacement = null)
     {
         string target = Path.GetFullPath(installDirectory);
         AppUpdatePackage.AssertNoReparse(target);
@@ -48,6 +48,7 @@ internal static class FfmpegInstallTransaction
             // either member of the pair. Cancellation never interrupts rollback.
             foreach (var original in originals) VerifyOriginal(target, original);
             cancel.ThrowIfCancellationRequested();
+            beforeReplacement?.Invoke();
             try
             {
                 foreach (var original in originals)
@@ -71,6 +72,7 @@ internal static class FfmpegInstallTransaction
                     changed.Add(original.Name);
                     Verify(destination, expected[original.Name].Size, expected[original.Name].Hash);
                     afterReplacement?.Invoke(changed.Count);
+                    cancel.ThrowIfCancellationRequested();
                 }
             }
             catch (Exception failure)

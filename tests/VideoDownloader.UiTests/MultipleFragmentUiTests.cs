@@ -111,6 +111,12 @@ internal sealed partial class UiScenario
             Click(dialog,"AddMediaSectionButton");start.Text="3";end.Text="4";
             Click(dialog,"RemoveMediaSectionButton");
             Require(list.Items.Count==2 && start.Text=="2" && end.Text=="3","Removing a draft must retain the neighbouring draft and its latest values");
+            start.Text="bad-time";list.SelectedIndex=0;Click(dialog,"ApplyMediaSelectionButton");
+            PumpUntil(()=>start.IsKeyboardFocused,"Apply must focus the malformed boundary in a previously unselected range");
+            Require(list.SelectedIndex==1 && start.Text=="bad-time" && applied==0 && row.Selection is null &&
+                Control<TextBlock>(dialog,"MediaSectionStartError").Visibility==Visibility.Visible,
+                "Validation must select the erroneous draft and explain its field without committing or discarding its input");
+            start.Text="2";end.Text="3";
             Click(dialog,"ApplyMediaSelectionButton");
             Require(!dialog.IsVisible && applied==1 && row.Selection?.EffectiveSections.SequenceEqual(new[]{new DownloadSection(5,7),new DownloadSection(2,3)})==true,
                 "Apply must commit every range in the visible user order, including unsaved field edits");

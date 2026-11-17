@@ -8,6 +8,8 @@ using System.Windows.Media;
 using Color=System.Windows.Media.Color;
 using Point=System.Windows.Point;
 using Rect=System.Windows.Rect;
+using Brush=System.Windows.Media.Brush;
+using SystemColors=System.Windows.SystemColors;
 
 namespace VideoDownloader.Native;
 
@@ -32,6 +34,7 @@ internal sealed class FragmentTimeline : Canvas
     internal FragmentTimeline()
     {
         Height=65;MinWidth=120;Background=Brushes.Transparent;ClipToBounds=false;
+        SetResourceReference(BackgroundProperty,"TimelineCanvasBrush");
         _startHandle=Handle("MediaSectionStartThumb","Начало фрагмента",Color.FromRgb(74,204,230),false);
         _endHandle=Handle("MediaSectionEndThumb","Конец фрагмента",Color.FromRgb(255,190,100),true);
         Children.Add(_startHandle);Children.Add(_endHandle);
@@ -44,12 +47,12 @@ internal sealed class FragmentTimeline : Canvas
         var thumb=new Thumb{Name=name,Width=HandleWidth,Height=32,Focusable=true,Cursor=System.Windows.Input.Cursors.SizeWE};
         AutomationProperties.SetName(thumb,label);
         var border=new FrameworkElementFactory(typeof(Border));
-        border.SetValue(Border.BackgroundProperty,new SolidColorBrush(color));
-        border.SetValue(Border.BorderBrushProperty,Brushes.White);
+        border.SetResourceReference(Border.BackgroundProperty,isEnd?"RangeEndBrush":"RangeStartBrush");
+        border.SetResourceReference(Border.BorderBrushProperty,"RangeHandleBorderBrush");
         border.SetValue(Border.BorderThicknessProperty,new Thickness(1));
         border.SetValue(Border.CornerRadiusProperty,new CornerRadius(4));
         var text=new FrameworkElementFactory(typeof(TextBlock));
-        text.SetValue(TextBlock.TextProperty,isEnd?"К":"Н");text.SetValue(TextBlock.ForegroundProperty,Brushes.Black);
+        text.SetValue(TextBlock.TextProperty,isEnd?"К":"Н");text.SetResourceReference(TextBlock.ForegroundProperty,"RangeHandleTextBrush");
         text.SetValue(TextBlock.FontWeightProperty,FontWeights.Bold);
         text.SetValue(FrameworkElement.HorizontalAlignmentProperty,System.Windows.HorizontalAlignment.Center);
         text.SetValue(FrameworkElement.VerticalAlignmentProperty,System.Windows.VerticalAlignment.Center);
@@ -145,12 +148,14 @@ internal sealed class FragmentTimeline : Canvas
     protected override void OnRender(DrawingContext drawing)
     {
         base.OnRender(drawing);
+        bool contrast=(TryFindResource("WindowThemeState") as WindowThemeState)?.HighContrast??SystemParameters.HighContrast;
         var track=new Rect(HandleWidth/2,TrackTop,TrackWidth,10);
-        drawing.DrawRoundedRectangle(new SolidColorBrush(Color.FromRgb(39,49,72)),null,track,4,4);
+        drawing.DrawRoundedRectangle(contrast?SystemColors.WindowBrush:new SolidColorBrush(Color.FromRgb(39,49,72)),
+            contrast?new System.Windows.Media.Pen(SystemColors.WindowTextBrush,1):null,track,4,4);
         if(!_hasDuration)return;
-        drawing.DrawRoundedRectangle(new SolidColorBrush(Color.FromRgb(40,132,164)),null,
+        drawing.DrawRoundedRectangle(contrast?SystemColors.HighlightBrush:new SolidColorBrush(Color.FromRgb(40,132,164)),null,
             new Rect(Position(_start),TrackTop,Math.Max(0,Position(_end)-Position(_start)),10),3,3);
-        var color=new SolidColorBrush(Color.FromRgb(183,192,216));
+        Brush color=contrast?SystemColors.WindowTextBrush:new SolidColorBrush(Color.FromRgb(183,192,216));
         FormattedText Label(string text)=>new(text,CultureInfo.CurrentUICulture,System.Windows.FlowDirection.LeftToRight,
             new Typeface("Segoe UI"),11,color,VisualTreeHelper.GetDpi(this).PixelsPerDip);
         drawing.DrawText(Label("00:00:00"),new Point(0,46));

@@ -6,28 +6,24 @@
     Title="Video Downloader"
     Width="1500"
     Height="900"
-    MinWidth="1280"
-    MinHeight="760"
+    MinWidth="800"
+    MinHeight="550"
     WindowStartupLocation="CenterScreen"
-    Background="#111318"
-    Foreground="#EEF1F8"
+    Background="{DynamicResource WindowBackgroundBrush}"
+    Foreground="{DynamicResource WindowTextBrush}"
     FontFamily="Segoe UI"
     AllowDrop="True">
 
     <Window.Resources>
+      <ResourceDictionary>
+        <ResourceDictionary.MergedDictionaries>
+            <local:WindowThemeResources/>
+        </ResourceDictionary.MergedDictionaries>
         <local:DisplayValueConverter x:Key="DisplayValueConverter"/>
-        <SolidColorBrush x:Key="PanelBrush" Color="#1B1E25"/>
-        <SolidColorBrush x:Key="FieldBrush" Color="#252932"/>
-        <SolidColorBrush x:Key="FieldHoverBrush" Color="#303644"/>
-        <SolidColorBrush x:Key="MutedBrush" Color="#949CAE"/>
-        <SolidColorBrush x:Key="AccentBrush" Color="#6366F1"/>
-        <SolidColorBrush x:Key="OkBrush" Color="#22C55E"/>
-        <SolidColorBrush x:Key="WarnBrush" Color="#F59E0B"/>
-        <SolidColorBrush x:Key="DangerBrush" Color="#EF4444"/>
 
         <Style TargetType="Button">
-            <Setter Property="Foreground" Value="#EEF1F8"/>
-            <Setter Property="Background" Value="{StaticResource FieldBrush}"/>
+            <Setter Property="Foreground" Value="{DynamicResource WindowTextBrush}"/>
+            <Setter Property="Background" Value="{DynamicResource FieldBrush}"/>
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="Padding" Value="12,7"/>
             <Setter Property="Margin" Value="3"/>
@@ -35,7 +31,8 @@
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
-                        <Border
+                        <Border x:Name="ButtonChrome"
+                            BorderBrush="Transparent" BorderThickness="2"
                             Background="{TemplateBinding Background}"
                             CornerRadius="9"
                             Padding="{TemplateBinding Padding}">
@@ -43,9 +40,28 @@
                                 HorizontalAlignment="Center"
                                 VerticalAlignment="Center"/>
                         </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="ButtonChrome" Property="BorderBrush" Value="{DynamicResource SecondaryTextBrush}"/></Trigger>
+                            <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="ButtonChrome" Property="BorderBrush" Value="{DynamicResource FocusBrush}"/></Trigger>
+                            <Trigger Property="IsPressed" Value="True"><Setter TargetName="ButtonChrome" Property="Opacity" Value="0.8"/></Trigger>
+                            <DataTrigger Binding="{Binding HighContrast, Source={StaticResource WindowThemeState}}" Value="True">
+                                <Setter TargetName="ButtonChrome" Property="Opacity" Value="1"/>
+                            </DataTrigger>
+                            <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.45"/><Setter Property="Cursor" Value="Arrow"/></Trigger>
+                        </ControlTemplate.Triggers>
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
+            <Style.Triggers>
+                <MultiDataTrigger>
+                    <MultiDataTrigger.Conditions>
+                        <Condition Binding="{Binding HighContrast, Source={StaticResource WindowThemeState}}" Value="True"/>
+                        <Condition Binding="{Binding IsEnabled, RelativeSource={RelativeSource Self}}" Value="False"/>
+                    </MultiDataTrigger.Conditions>
+                    <Setter Property="Opacity" Value="1"/>
+                    <Setter Property="Foreground" Value="{DynamicResource DisabledTextBrush}"/>
+                </MultiDataTrigger>
+            </Style.Triggers>
         </Style>
 
         <Style x:Key="GuardedActionButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
@@ -54,20 +70,28 @@
                     <Setter Property="Opacity" Value="0.45"/>
                     <Setter Property="Cursor" Value="Arrow"/>
                 </Trigger>
+                <MultiDataTrigger>
+                    <MultiDataTrigger.Conditions>
+                        <Condition Binding="{Binding HighContrast, Source={StaticResource WindowThemeState}}" Value="True"/>
+                        <Condition Binding="{Binding IsEnabled, RelativeSource={RelativeSource Self}}" Value="False"/>
+                    </MultiDataTrigger.Conditions>
+                    <Setter Property="Opacity" Value="1"/>
+                    <Setter Property="Foreground" Value="{DynamicResource DisabledTextBrush}"/>
+                </MultiDataTrigger>
             </Style.Triggers>
         </Style>
 
         <Style TargetType="TextBox">
-            <Setter Property="Foreground" Value="#EEF1F8"/>
-            <Setter Property="Background" Value="{StaticResource FieldBrush}"/>
-            <Setter Property="BorderBrush" Value="#343946"/>
-            <Setter Property="CaretBrush" Value="#EEF1F8"/>
+            <Setter Property="Foreground" Value="{DynamicResource WindowTextBrush}"/>
+            <Setter Property="Background" Value="{DynamicResource FieldBrush}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
+            <Setter Property="CaretBrush" Value="{DynamicResource WindowTextBrush}"/>
             <Setter Property="Padding" Value="8,6"/>
         </Style>
 
         <Style TargetType="ComboBoxItem">
-            <Setter Property="Foreground" Value="#EEF1F8"/>
-            <Setter Property="Background" Value="{StaticResource FieldBrush}"/>
+            <Setter Property="Foreground" Value="{DynamicResource WindowTextBrush}"/>
+            <Setter Property="Background" Value="{DynamicResource FieldBrush}"/>
             <Setter Property="Padding" Value="9,6"/>
             <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
             <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
@@ -84,11 +108,11 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsHighlighted" Value="True">
-                                <Setter TargetName="ItemBorder" Property="Background" Value="{StaticResource FieldHoverBrush}"/>
+                                <Setter TargetName="ItemBorder" Property="Background" Value="{DynamicResource FieldHoverBrush}"/>
                             </Trigger>
                             <Trigger Property="IsSelected" Value="True">
-                                <Setter TargetName="ItemBorder" Property="Background" Value="#2F3A63"/>
-                                <Setter Property="Foreground" Value="#FFFFFF"/>
+                                <Setter TargetName="ItemBorder" Property="Background" Value="{DynamicResource SelectionBrush}"/>
+                                <Setter Property="Foreground" Value="{DynamicResource SelectionTextBrush}"/>
                             </Trigger>
                             <Trigger Property="IsEnabled" Value="False">
                                 <Setter Property="Opacity" Value="0.45"/>
@@ -100,9 +124,9 @@
         </Style>
 
         <Style TargetType="ComboBox">
-            <Setter Property="Foreground" Value="#EEF1F8"/>
-            <Setter Property="Background" Value="{StaticResource FieldBrush}"/>
-            <Setter Property="BorderBrush" Value="#343946"/>
+            <Setter Property="Foreground" Value="{DynamicResource WindowTextBrush}"/>
+            <Setter Property="Background" Value="{DynamicResource FieldBrush}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
             <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="Padding" Value="8,5"/>
             <Setter Property="MinHeight" Value="30"/>
@@ -135,17 +159,17 @@
                                                     Margin="0,0,10,0"
                                                     HorizontalAlignment="Right"
                                                     VerticalAlignment="Center"
-                                                    Fill="#C5CBD8"
+                                                    Fill="{DynamicResource SecondaryTextBrush}"
                                                     Data="M 0 0 L 4 4 L 8 0 Z"/>
                                             </Grid>
                                         </Border>
                                         <ControlTemplate.Triggers>
                                             <Trigger Property="IsMouseOver" Value="True">
-                                                <Setter TargetName="ComboChrome" Property="Background" Value="{StaticResource FieldHoverBrush}"/>
-                                                <Setter TargetName="ComboChrome" Property="BorderBrush" Value="#4B5364"/>
+                                                <Setter TargetName="ComboChrome" Property="Background" Value="{DynamicResource FieldHoverBrush}"/>
+                                                <Setter TargetName="ComboChrome" Property="BorderBrush" Value="{DynamicResource HoverBorderBrush}"/>
                                             </Trigger>
                                             <Trigger Property="IsChecked" Value="True">
-                                                <Setter TargetName="ComboChrome" Property="BorderBrush" Value="{StaticResource AccentBrush}"/>
+                                                <Setter TargetName="ComboChrome" Property="BorderBrush" Value="{DynamicResource AccentBrush}"/>
                                             </Trigger>
                                         </ControlTemplate.Triggers>
                                     </ControlTemplate>
@@ -169,7 +193,7 @@
                                 VerticalContentAlignment="Center"
                                 Background="Transparent"
                                 Foreground="{TemplateBinding Foreground}"
-                                CaretBrush="#EEF1F8"
+                                CaretBrush="{DynamicResource WindowTextBrush}"
                                 BorderThickness="0"
                                 Padding="0"
                                 Visibility="Hidden"
@@ -186,8 +210,8 @@
                                     MinWidth="{Binding ActualWidth, ElementName=ToggleButton}"
                                     MaxHeight="300"
                                     Margin="0,3,0,0"
-                                    Background="#1B1E25"
-                                    BorderBrush="#3B4251"
+                                    Background="{DynamicResource PanelBrush}"
+                                    BorderBrush="{DynamicResource PopupBorderBrush}"
                                     BorderThickness="1"
                                     CornerRadius="5">
                                     <ScrollViewer
@@ -206,7 +230,7 @@
                                 <Setter TargetName="PART_EditableTextBox" Property="Visibility" Value="Visible"/>
                             </Trigger>
                             <Trigger Property="IsKeyboardFocusWithin" Value="True">
-                                <Setter TargetName="ToggleButton" Property="BorderBrush" Value="{StaticResource AccentBrush}"/>
+                                <Setter TargetName="ToggleButton" Property="BorderBrush" Value="{DynamicResource AccentBrush}"/>
                             </Trigger>
                             <Trigger Property="IsEnabled" Value="False">
                                 <Setter Property="Opacity" Value="0.45"/>
@@ -218,23 +242,23 @@
         </Style>
 
         <Style TargetType="CheckBox">
-            <Setter Property="Foreground" Value="#EEF1F8"/>
+            <Setter Property="Foreground" Value="{DynamicResource WindowTextBrush}"/>
             <Setter Property="Margin" Value="3,5"/>
         </Style>
 
         <Style TargetType="DataGrid">
-            <Setter Property="Background" Value="{StaticResource FieldBrush}"/>
-            <Setter Property="Foreground" Value="#EEF1F8"/>
+            <Setter Property="Background" Value="{DynamicResource FieldBrush}"/>
+            <Setter Property="Foreground" Value="{DynamicResource WindowTextBrush}"/>
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="GridLinesVisibility" Value="Horizontal"/>
-            <Setter Property="HorizontalGridLinesBrush" Value="#343946"/>
+            <Setter Property="HorizontalGridLinesBrush" Value="{DynamicResource BorderBrush}"/>
             <Setter Property="HeadersVisibility" Value="Column"/>
             <Setter Property="RowHeaderWidth" Value="0"/>
             <Setter Property="CanUserAddRows" Value="False"/>
             <Setter Property="CanUserResizeRows" Value="False"/>
             <Setter Property="IsReadOnly" Value="True"/>
-            <Setter Property="RowBackground" Value="#1B1E25"/>
-            <Setter Property="AlternatingRowBackground" Value="#20242D"/>
+            <Setter Property="RowBackground" Value="{DynamicResource PanelBrush}"/>
+            <Setter Property="AlternatingRowBackground" Value="{DynamicResource AlternateRowBrush}"/>
             <Setter Property="AlternationCount" Value="2"/>
             <Setter Property="SelectionMode" Value="Extended"/>
             <Setter Property="SelectionUnit" Value="FullRow"/>
@@ -242,51 +266,63 @@
         </Style>
 
         <Style TargetType="DataGridColumnHeader">
-            <Setter Property="Background" Value="#111318"/>
-            <Setter Property="Foreground" Value="{StaticResource MutedBrush}"/>
+            <Setter Property="Background" Value="{DynamicResource WindowBackgroundBrush}"/>
+            <Setter Property="Foreground" Value="{DynamicResource MutedBrush}"/>
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="Padding" Value="8,6"/>
         </Style>
 
         <Style TargetType="DataGridRow">
-            <Setter Property="Foreground" Value="#EEF1F8"/>
-            <Setter Property="Background" Value="#1B1E25"/>
-            <Setter Property="BorderBrush" Value="#343946"/>
+            <Setter Property="Foreground" Value="{DynamicResource WindowTextBrush}"/>
+            <Setter Property="Background" Value="{DynamicResource PanelBrush}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
             <Setter Property="BorderThickness" Value="0,0,0,1"/>
             <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
             <Style.Triggers>
                 <Trigger Property="IsMouseOver" Value="True">
-                    <Setter Property="Background" Value="#252B36"/>
+                    <Setter Property="Background" Value="{DynamicResource RowHoverBrush}"/>
                 </Trigger>
                 <Trigger Property="IsSelected" Value="True">
-                    <Setter Property="Background" Value="#2F3A63"/>
-                    <Setter Property="Foreground" Value="#FFFFFF"/>
+                    <Setter Property="Background" Value="{DynamicResource SelectionBrush}"/>
+                    <Setter Property="Foreground" Value="{DynamicResource SelectionTextBrush}"/>
                 </Trigger>
             </Style.Triggers>
         </Style>
 
         <Style TargetType="DataGridCell">
-            <Setter Property="Foreground" Value="#EEF1F8"/>
+            <Setter Property="Foreground" Value="{DynamicResource WindowTextBrush}"/>
             <Setter Property="Background" Value="Transparent"/>
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="Padding" Value="6,4"/>
             <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
             <Style.Triggers>
                 <Trigger Property="IsSelected" Value="True">
-                    <Setter Property="Background" Value="#2F3A63"/>
-                    <Setter Property="Foreground" Value="#FFFFFF"/>
+                    <Setter Property="Background" Value="{DynamicResource SelectionBrush}"/>
+                    <Setter Property="Foreground" Value="{DynamicResource SelectionTextBrush}"/>
                 </Trigger>
                 <Trigger Property="IsKeyboardFocusWithin" Value="True">
-                    <Setter Property="Background" Value="#2F3A63"/>
-                    <Setter Property="Foreground" Value="#FFFFFF"/>
+                    <Setter Property="Background" Value="{DynamicResource SelectionBrush}"/>
+                    <Setter Property="Foreground" Value="{DynamicResource SelectionTextBrush}"/>
                 </Trigger>
             </Style.Triggers>
         </Style>
 
         <Style x:Key="GridTextStyle" TargetType="TextBlock">
-            <Setter Property="Foreground" Value="#EEF1F8"/>
+            <Setter Property="Foreground" Value="{DynamicResource WindowTextBrush}"/>
             <Setter Property="VerticalAlignment" Value="Center"/>
             <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+            <Style.Triggers>
+                <MultiDataTrigger>
+                    <MultiDataTrigger.Conditions>
+                        <Condition Binding="{Binding HighContrast, Source={StaticResource WindowThemeState}}" Value="True"/>
+                        <Condition Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType=DataGridRow}}" Value="True"/>
+                    </MultiDataTrigger.Conditions>
+                    <Setter Property="Foreground" Value="{DynamicResource SelectionTextBrush}"/>
+                </MultiDataTrigger>
+            </Style.Triggers>
+        </Style>
+        <Style x:Key="TransferDetailTextStyle" TargetType="TextBlock" BasedOn="{StaticResource GridTextStyle}">
+            <Setter Property="Foreground" Value="{DynamicResource TransferTextBrush}"/>
         </Style>
 
         <Style x:Key="VideoLabelStyle" TargetType="TextBlock" BasedOn="{StaticResource GridTextStyle}">
@@ -310,38 +346,67 @@
             <Setter Property="TextWrapping" Value="Wrap"/>
             <Setter Property="TextTrimming" Value="None"/>
             <Setter Property="ToolTip" Value="{Binding StateToolTip}"/>
-            <Setter Property="Foreground" Value="#67D7FD"/>
+            <Setter Property="Foreground" Value="{DynamicResource ActiveStateBrush}"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
             <Style.Triggers>
                 <DataTrigger Binding="{Binding Status}" Value="Completed">
-                    <Setter Property="Foreground" Value="#4ADE80"/>
+                    <Setter Property="Foreground" Value="{DynamicResource CompletedStateBrush}"/>
                 </DataTrigger>
                 <DataTrigger Binding="{Binding Status}" Value="Queued">
-                    <Setter Property="Foreground" Value="#A7B0C1"/>
+                    <Setter Property="Foreground" Value="{DynamicResource QueuedStateBrush}"/>
                 </DataTrigger>
                 <DataTrigger Binding="{Binding Status}" Value="Running">
-                    <Setter Property="Foreground" Value="#67D7FD"/>
+                    <Setter Property="Foreground" Value="{DynamicResource ActiveStateBrush}"/>
                 </DataTrigger>
                 <DataTrigger Binding="{Binding Status}" Value="Interrupted">
-                    <Setter Property="Foreground" Value="#FBBF24"/>
+                    <Setter Property="Foreground" Value="{DynamicResource InterruptedStateBrush}"/>
                 </DataTrigger>
                 <DataTrigger Binding="{Binding Status}" Value="Skipped">
-                    <Setter Property="Foreground" Value="#C4B5FD"/>
+                    <Setter Property="Foreground" Value="{DynamicResource SkippedStateBrush}"/>
                 </DataTrigger>
                 <DataTrigger Binding="{Binding Status}" Value="Failed">
-                    <Setter Property="Foreground" Value="#FB7185"/>
+                    <Setter Property="Foreground" Value="{DynamicResource FailedStateBrush}"/>
                 </DataTrigger>
+                <MultiDataTrigger>
+                    <MultiDataTrigger.Conditions>
+                        <Condition Binding="{Binding HighContrast, Source={StaticResource WindowThemeState}}" Value="True"/>
+                        <Condition Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType=DataGridRow}}" Value="True"/>
+                    </MultiDataTrigger.Conditions>
+                    <Setter Property="Foreground" Value="{DynamicResource SelectionTextBrush}"/>
+                </MultiDataTrigger>
             </Style.Triggers>
         </Style>
 
         <Style x:Key="DownloadStatusTextStyle" TargetType="TextBlock" BasedOn="{StaticResource QueueStatusTextStyle}"/>
 
+        <Style TargetType="TabItem">
+            <Setter Property="Foreground" Value="{DynamicResource WindowTextBrush}"/><Setter Property="Background" Value="{DynamicResource FieldBrush}"/>
+            <Setter Property="Padding" Value="10,7"/><Setter Property="Margin" Value="0,0,3,0"/>
+            <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="TabItem">
+                <Border x:Name="TabChrome" Background="{TemplateBinding Background}" BorderBrush="Transparent" BorderThickness="0,0,0,3" Padding="{TemplateBinding Padding}">
+                    <ContentPresenter ContentSource="Header" RecognizesAccessKey="True"/>
+                </Border>
+                <ControlTemplate.Triggers>
+                    <Trigger Property="IsSelected" Value="True"><Setter TargetName="TabChrome" Property="Background" Value="{DynamicResource FieldHoverBrush}"/><Setter TargetName="TabChrome" Property="BorderBrush" Value="{DynamicResource TabIndicatorBrush}"/></Trigger>
+                    <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="TabChrome" Property="BorderBrush" Value="{DynamicResource FocusBrush}"/></Trigger>
+                </ControlTemplate.Triggers>
+            </ControlTemplate></Setter.Value></Setter>
+        </Style>
+        <Style x:Key="SecondaryVideoUrlStyle" TargetType="TextBlock" BasedOn="{StaticResource GridTextStyle}">
+            <Setter Property="Text" Value="{Binding DisplayUrl}"/><Setter Property="Foreground" Value="{DynamicResource SecondaryTextBrush}"/><Setter Property="FontSize" Value="11"/>
+            <Setter Property="ToolTip" Value="{Binding DisplayUrl}"/>
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding Tag, RelativeSource={RelativeSource AncestorType=DataGrid}}" Value="False"><Setter Property="Visibility" Value="Collapsed"/></DataTrigger>
+                <DataTrigger Binding="{Binding Title}" Value=""><Setter Property="Visibility" Value="Collapsed"/></DataTrigger>
+                <DataTrigger Binding="{Binding Title}" Value="{x:Null}"><Setter Property="Visibility" Value="Collapsed"/></DataTrigger>
+            </Style.Triggers>
+        </Style>
         <Style TargetType="Expander">
-            <Setter Property="Foreground" Value="#EEF1F8"/>
+            <Setter Property="Foreground" Value="{DynamicResource WindowTextBrush}"/>
         </Style>
 
         <Style x:Key="Panel" TargetType="Border">
-            <Setter Property="Background" Value="{StaticResource PanelBrush}"/>
+            <Setter Property="Background" Value="{DynamicResource PanelBrush}"/>
             <Setter Property="CornerRadius" Value="18"/>
             <Setter Property="Padding" Value="16"/>
         </Style>
@@ -353,27 +418,29 @@
         </Style>
 
         <Style x:Key="MutedText" TargetType="TextBlock">
-            <Setter Property="Foreground" Value="{StaticResource MutedBrush}"/>
+            <Setter Property="Foreground" Value="{DynamicResource MutedBrush}"/>
         </Style>
         <DataTemplate x:Key="TransferDetails">
             <StackPanel Margin="0,3,0,3">
                 <ProgressBar Height="4" Minimum="0" Maximum="100" Value="{Binding Progress}"
-                             Background="#303644" Foreground="#8997FF" BorderThickness="0"/>
+                             Background="{DynamicResource FieldHoverBrush}" Foreground="{DynamicResource ProgressBrush}" BorderThickness="0"/>
                 <WrapPanel Margin="0,3,0,0">
-                    <TextBlock Text="{Binding Progress, StringFormat={}{0:F1}%}" Foreground="#EEF1F8" Margin="0,0,8,0"/>
-                    <TextBlock Text="{Binding Speed, Converter={StaticResource DisplayValueConverter}}" Foreground="#B8C1D4" Margin="0,0,8,0"/>
-                    <TextBlock Text="{Binding ETA}" Foreground="#B8C1D4" ToolTip="Осталось времени"/>
+                    <TextBlock Text="{Binding Progress, StringFormat={}{0:F1}%}" Style="{StaticResource GridTextStyle}" Margin="0,0,8,0"/>
+                    <TextBlock Text="{Binding Speed, Converter={StaticResource DisplayValueConverter}}" Style="{StaticResource TransferDetailTextStyle}" Margin="0,0,8,0"/>
+                    <TextBlock Text="{Binding ETA}" Style="{StaticResource TransferDetailTextStyle}" ToolTip="Осталось времени"/>
                 </WrapPanel>
-                <TextBlock Text="{Binding Downloaded, Converter={StaticResource DisplayValueConverter}}" Foreground="#B8C1D4" FontSize="11"/>
+                <TextBlock Text="{Binding Downloaded, Converter={StaticResource DisplayValueConverter}}" Style="{StaticResource TransferDetailTextStyle}" FontSize="11"/>
             </StackPanel>
         </DataTemplate>
+      </ResourceDictionary>
     </Window.Resources>
 
-    <Grid Margin="18">
+    <Grid x:Name="WindowLayoutRoot" Margin="12">
         <Grid.RowDefinitions>
-            <RowDefinition Height="58"/>
+            <RowDefinition Height="48"/>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
-            <RowDefinition Height="64"/>
+            <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
         <Grid Grid.Row="0">
@@ -384,18 +451,27 @@
 
             <StackPanel>
                 <TextBlock Text="Video Downloader" FontSize="24" FontWeight="Bold"/>
-                <TextBlock Text="WPF · yt-dlp · подробный прогресс" Foreground="{StaticResource MutedBrush}"/>
+                <TextBlock Text="Скачивайте видео и аудио в выбранную папку" Foreground="{DynamicResource MutedBrush}"/>
             </StackPanel>
 
             <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                <TextBlock x:Name="HeaderStats" Text="0 активных · 0 МБ/с · 0/0" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" Margin="0,0,16,0"/>
-                <Border Background="{StaticResource FieldBrush}" CornerRadius="14" Padding="14,7">
-                    <TextBlock x:Name="HeaderStatus" Text="● Готово" Foreground="{StaticResource MutedBrush}"/>
+                <TextBlock x:Name="HeaderStats" Text="0 активных · 0 МБ/с · 0/0" Foreground="{DynamicResource MutedBrush}" VerticalAlignment="Center" Margin="0,0,16,0"/>
+                <Border Background="{DynamicResource FieldBrush}" CornerRadius="14" Padding="14,7">
+                    <TextBlock x:Name="HeaderStatus" Text="● Готово" Foreground="{DynamicResource MutedBrush}"/>
                 </Border>
             </StackPanel>
         </Grid>
 
-        <Grid x:Name="MainPanelsGrid" Grid.Row="1">
+        <WrapPanel Grid.Row="1" Margin="0,0,0,8">
+            <StackPanel x:Name="CompactNavigation" Orientation="Horizontal" Visibility="Collapsed">
+                <Button x:Name="ShowQueuePanelButton" Content="Очередь" AutomationProperties.Name="Показать очередь"/>
+                <Button x:Name="ShowDownloadsPanelButton" Content="Загрузки" AutomationProperties.Name="Показать загрузки"/>
+                <Button x:Name="ShowDetailsPanelButton" Content="Видео и параметры" AutomationProperties.Name="Показать выбранное видео и параметры очереди"/>
+            </StackPanel>
+            <Button x:Name="ToggleDetailsPanelButton" Content="Скрыть правую панель" ToolTip="Показать или скрыть выбранное видео и параметры очереди"/>
+            <Button x:Name="OpenQueueOptionsButton" Content="Папка и качество…" ToolTip="Общие параметры следующего запуска"/>
+        </WrapPanel>
+        <Grid x:Name="MainPanelsGrid" Grid.Row="2">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition x:Name="QueuePanelColumn" Width="506.6666666666667" MinWidth="300"/>
                 <ColumnDefinition Width="12"/>
@@ -404,9 +480,10 @@
                 <ColumnDefinition x:Name="PreviewPanelColumn" Width="390" MinWidth="300"/>
             </Grid.ColumnDefinitions>
 
-            <Border Grid.Column="0" Style="{StaticResource Panel}">
+            <Border x:Name="QueuePanel" Grid.Column="0" Style="{StaticResource Panel}">
                 <Grid>
                     <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
@@ -426,44 +503,71 @@
                                            VerticalAlignment="Center" Visibility="Collapsed"/>
                             </StackPanel>
                         </Button>
-                        <TextBlock x:Name="QueueCount" Text="0 ссылок" Foreground="{StaticResource MutedBrush}" HorizontalAlignment="Right"/>
+                        <TextBlock x:Name="QueueCount" Text="0 ссылок" Foreground="{DynamicResource MutedBrush}" HorizontalAlignment="Right"/>
                     </DockPanel>
 
-                    <Grid Grid.Row="1" Margin="0,0,0,8">
+                    <StackPanel Grid.Row="1" Margin="0,0,0,6">
+                        <Border x:Name="ReadinessCard" Background="{DynamicResource FieldBrush}" CornerRadius="6" Padding="8,5" Margin="0,0,0,6">
+                            <StackPanel>
+                                <TextBlock x:Name="ReadinessText" Text="Проверяем готовность к скачиванию…" TextWrapping="Wrap"/>
+                                <WrapPanel>
+                                    <Button x:Name="ReadinessInstallButton" Content="Установить FFmpeg" Padding="8,3" Visibility="Collapsed"/>
+                                    <Button x:Name="ReadinessRefreshButton" Content="Проверить ещё раз" Padding="8,3" Visibility="Collapsed"/>
+                                </WrapPanel>
+                                <ProgressBar x:Name="DependencyProgress" Height="5" Margin="0,5,0,3" Minimum="0" Maximum="100" Visibility="Collapsed"/>
+                                <TextBlock x:Name="DependencyProgressText" TextWrapping="Wrap" Visibility="Collapsed"/>
+                                <Button x:Name="CancelDependencyButton" Content="Отменить установку" HorizontalAlignment="Left" Padding="8,3" Visibility="Collapsed"/>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                    <StackPanel Grid.Row="2" Margin="0,0,0,6">
+                      <Grid>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*"/>
                             <ColumnDefinition Width="Auto"/>
                             <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
-                        <TextBox x:Name="UrlInput" Grid.Column="0" ToolTip="Вставьте одну или несколько ссылок, в том числе во время скачивания"/>
+                        <TextBox x:Name="UrlInput" AutomationProperties.Name="Ссылка на видео или аудио" Grid.Column="0" ToolTip="Вставьте одну или несколько ссылок, в том числе во время скачивания"/>
                         <Button x:Name="PasteClipboardButton" Grid.Column="1" Content="Вставить" ToolTip="Добавить ссылки из буфера обмена, в том числе во время скачивания"/>
-                        <Button x:Name="AddUrlButton" Grid.Column="2" Content="+ Добавить" Background="{StaticResource AccentBrush}"/>
-                    </Grid>
+                        <Button x:Name="AddUrlButton" Grid.Column="2" Content="+ Добавить" Background="{DynamicResource AccentBrush}" Foreground="{DynamicResource OnAccentBrush}"/>
+                      </Grid>
+                      <TextBlock x:Name="InputFeedbackText" AutomationProperties.LiveSetting="Polite" TextWrapping="Wrap" Visibility="Collapsed" Foreground="{DynamicResource InterruptedStateBrush}" Margin="3,3,3,0"/>
+                    </StackPanel>
 
-                    <WrapPanel Grid.Row="2" Margin="0,0,0,8">
+                    <Expander x:Name="QueueMoreActionsExpander" Grid.Row="3" IsExpanded="False" Margin="0,0,0,6">
+                      <Expander.Header><WrapPanel>
+                        <TextBlock Text="Ещё" VerticalAlignment="Center" Margin="0,0,5,0"/>
+                        <Button x:Name="ForgetQueueButton" Content="Убрать из очереди" Padding="8,4"/>
+                        <Button x:Name="SubscriptionsButton" Content="Подписки" Padding="8,4" ToolTip="Проверки каналов и плейлистов, расписание, новые материалы и исходный набор"/>
+                      </WrapPanel></Expander.Header>
+                       <ScrollViewer MaxHeight="150" VerticalScrollBarVisibility="Auto"><StackPanel><WrapPanel>
                         <Button x:Name="OpenListButton" Content="Открыть список"/>
                         <Button x:Name="PortableQueueButton" Content="Перенос очереди" ToolTip="Скопировать очередь или сохранить её для другого клиента Windows / Android"/>
-                        <Button x:Name="SubscriptionsButton" Content="Подписки" ToolTip="Проверки каналов и плейлистов, расписание, новые материалы и исходный набор"/>
-                        <Button x:Name="RemoveQueueButton" Content="Удалить выбранные"/>
+                        <Button x:Name="RemoveQueueButton" Content="Удалить загрузки и файлы…"/>
+                        <Button x:Name="ClearAllQueueButton" Content="Очистить очередь…"/>
                         <Button x:Name="SkipQueueItemsButton" Content="Пропустить выбранные" IsEnabled="False"/>
                         <Button x:Name="ResumeQueueItemsButton" Content="Продолжить выбранные" IsEnabled="False"/>
                         <Button x:Name="ResetQueueItemsButton" Content="Сбросить и скачать заново…" IsEnabled="False"/>
                         <Button x:Name="QueueDiagnosticsButton" Content="Диагностика…" IsEnabled="False"
                                 ToolTip="События, попытки и диагностический пакет одной выбранной строки"/>
-                        <Button x:Name="ClearQueueButton" Content="Очистить всю очередь"/>
-                        <Button x:Name="MoveUpButton" Content="↑"/>
-                        <Button x:Name="MoveDownButton" Content="↓"/>
-                        <Button x:Name="RetryFailedButton" Content="Повторить ошибки" Background="{StaticResource WarnBrush}" IsEnabled="False"/>
+                        <Button x:Name="ClearQueueButton" Content="Убрать завершённые"/>
+                        <Button x:Name="MoveUpButton" AutomationProperties.Name="Поднять выбранную строку" Content="↑"/>
+                        <Button x:Name="MoveDownButton" AutomationProperties.Name="Опустить выбранную строку" Content="↓"/>
+                        <Button x:Name="RetryFailedButton" Content="Повторить ошибки" Background="{DynamicResource WarnBrush}" Foreground="{DynamicResource OnWarnBrush}" IsEnabled="False"/>
                         <Button x:Name="OpenOutputDirectoryButton" Content="📂 Открыть папку загрузок" ToolTip="Открыть настроенную папку назначения в Проводнике"/>
-                    </WrapPanel>
-
-                    <StackPanel Grid.Row="3" Margin="0,0,0,8">
+                       </WrapPanel>
+                        <CheckBox x:Name="ShowVideoTitlesCheck" Content="Показывать названия видео вместо URL" IsChecked="True" ToolTip="URL остаётся доступен второй строкой, в подсказке и меню строки."/>
+                        <CheckBox x:Name="WatchClipboardCheck" Content="Следить за буфером обмена и добавлять ссылки"/>
                         <TextBlock x:Name="MainSubscriptionScheduleStatusText" Text="Проверки по расписанию выключены."
-                                   TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" FontSize="11" Margin="0,0,0,6"/>
+                                   TextWrapping="Wrap" Foreground="{DynamicResource MutedBrush}" FontSize="11" Margin="0,4,0,0"/>
+                       </StackPanel></ScrollViewer>
+                    </Expander>
+
+                    <StackPanel Grid.Row="4" Margin="0,0,0,6">
                         <StackPanel x:Name="QueueFilterPanel" Visibility="Collapsed">
                         <DockPanel Margin="0,0,0,4">
                             <Button x:Name="ResetQueueFiltersButton" Content="Сбросить фильтры" DockPanel.Dock="Right" Padding="7,3"/>
-                            <TextBlock Text="Поиск в очереди" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}"/>
+                            <TextBlock Text="Поиск в очереди" VerticalAlignment="Center" Foreground="{DynamicResource MutedBrush}"/>
                         </DockPanel>
                         <TextBox x:Name="QueueSearchBox" MaxLength="2048" Margin="0,0,0,5"
                                  AutomationProperties.Name="Поиск по названию или URL"
@@ -479,8 +583,8 @@
                         </StackPanel>
                     </StackPanel>
 
-                    <Grid Grid.Row="4">
-                    <DataGrid x:Name="QueueGrid" AllowDrop="True" Tag="{Binding IsChecked, ElementName=ShowVideoTitlesCheck}">
+                    <Grid Grid.Row="5">
+                    <DataGrid x:Name="QueueGrid" AutomationProperties.Name="Очередь загрузок" AllowDrop="True" Tag="{Binding IsChecked, ElementName=ShowVideoTitlesCheck}">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="#" Binding="{Binding Order}" Width="38" ElementStyle="{StaticResource GridTextStyle}"/>
                             <DataGridTemplateColumn Header="Видео / прогресс" Width="*" MinWidth="185">
@@ -488,6 +592,7 @@
                                     <DataTemplate>
                                         <StackPanel Margin="4">
                                             <TextBlock Style="{StaticResource VideoLabelStyle}"/>
+                                            <TextBlock Style="{StaticResource SecondaryVideoUrlStyle}"/>
                                             <ContentControl Content="{Binding}" ContentTemplate="{StaticResource TransferDetails}"/>
                                         </StackPanel>
                                     </DataTemplate>
@@ -497,33 +602,29 @@
                             <DataGridTextColumn Header="Подписка / папка" Binding="{Binding SubscriptionName}" Width="120" ElementStyle="{StaticResource GridTextStyle}"/>
                         </DataGrid.Columns>
                     </DataGrid>
+                    <TextBlock x:Name="QueueEmptyState" Text="Вставьте ссылку на видео или аудио, затем нажмите «Добавить»." Margin="18" TextWrapping="Wrap" TextAlignment="Center" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="{DynamicResource MutedBrush}" IsHitTestVisible="False"/>
                     <TextBlock x:Name="QueueEmptyFilterHint" Visibility="Collapsed" HorizontalAlignment="Center" VerticalAlignment="Center"
-                               Margin="18" TextWrapping="Wrap" TextAlignment="Center" Foreground="{StaticResource MutedBrush}"
+                               Margin="18" TextWrapping="Wrap" TextAlignment="Center" Foreground="{DynamicResource MutedBrush}"
                                IsHitTestVisible="False"/>
                     </Grid>
 
-                    <StackPanel Grid.Row="5" Margin="0,10,0,0">
-                        <CheckBox x:Name="ShowVideoTitlesCheck" Content="Показывать названия видео вместо URL" IsChecked="False"
-                                  ToolTip="Переключает очередь и список загрузок. Пока название недоступно, отображается URL. Исходная ссылка доступна в подсказке и меню строки."/>
-                        <CheckBox x:Name="WatchClipboardCheck" Content="Следить за буфером обмена и добавлять ссылки"/>
-                        <TextBlock x:Name="ClipboardHint" Text="Вставляйте и добавляйте ссылки даже во время скачивания. Перетаскивайте файлы и ссылки; порядок строк меняется в ожидании." Style="{StaticResource MutedText}" TextWrapping="Wrap"/>
-                    </StackPanel>
+                    <TextBlock Grid.Row="6" x:Name="ClipboardHint" Text="Добавляйте ссылки вручную, из буфера или перетаскиванием." MaxHeight="30" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" Style="{StaticResource MutedText}" TextWrapping="Wrap" FontSize="11" Margin="0,5,0,0"/>
                 </Grid>
             </Border>
 
-            <GridSplitter x:Name="QueueDownloadsSplitter" Grid.Column="1" Width="8"
+            <GridSplitter x:Name="QueueDownloadsSplitter" AutomationProperties.Name="Ширина очереди и загрузок" Grid.Column="1" Width="8"
                           HorizontalAlignment="Center" VerticalAlignment="Stretch"
                           ResizeDirection="Columns" ResizeBehavior="PreviousAndNext" ShowsPreview="False"
-                          Background="#343946" Cursor="SizeWE" Focusable="True"
+                          Background="{DynamicResource BorderBrush}" Cursor="SizeWE" Focusable="True"
                           ToolTip="Перетащите, чтобы изменить ширину очереди и загрузок"/>
 
-            <Border Grid.Column="2" Style="{StaticResource Panel}">
+            <Border x:Name="DownloadsPanel" Grid.Column="2" Style="{StaticResource Panel}">
                 <Grid>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="2*"/>
+                        <RowDefinition Height="*"/>
                         <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="3*"/>
+                        <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
 
                     <DockPanel Grid.Row="0">
@@ -534,7 +635,7 @@
                         <TextBlock Text="Загрузки" Style="{StaticResource SectionTitle}"/>
                     </DockPanel>
 
-                    <DataGrid x:Name="DownloadGrid" Grid.Row="1" SelectionMode="Extended" Tag="{Binding IsChecked, ElementName=ShowVideoTitlesCheck}">
+                    <DataGrid x:Name="DownloadGrid" AutomationProperties.Name="Загрузки текущего сеанса" Grid.Row="1" SelectionMode="Extended" Tag="{Binding IsChecked, ElementName=ShowVideoTitlesCheck}">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="Поток" Binding="{Binding Slot}" Width="52" ElementStyle="{StaticResource GridTextStyle}"/>
                             <DataGridTextColumn Header="Состояние" Binding="{Binding StateLabel}" Width="110" ElementStyle="{StaticResource DownloadStatusTextStyle}"/>
@@ -544,6 +645,7 @@
                                     <DataTemplate>
                                         <StackPanel Margin="4">
                                             <TextBlock Style="{StaticResource VideoLabelStyle}"/>
+                                            <TextBlock Style="{StaticResource SecondaryVideoUrlStyle}"/>
                                             <ContentControl Content="{Binding}" ContentTemplate="{StaticResource TransferDetails}"/>
                                         </StackPanel>
                                     </DataTemplate>
@@ -559,7 +661,8 @@
                         <Button x:Name="OpenUrlButton" Content="Открыть ссылку"/>
                     </WrapPanel>
 
-                    <Grid Grid.Row="3">
+                    <Expander x:Name="JournalExpander" Grid.Row="3" Header="Журнал и диагностика" IsExpanded="False">
+                     <Grid Height="220" MaxHeight="220">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/>
@@ -567,7 +670,7 @@
                         </Grid.RowDefinitions>
                         <WrapPanel Grid.Row="0" Margin="0,0,0,4" VerticalAlignment="Center">
                             <TextBlock Text="Журнал" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,8,4"/>
-                            <ComboBox x:Name="LogProfileCombo" Width="190" Margin="0,0,6,4"
+                            <ComboBox x:Name="LogProfileCombo" AutomationProperties.Name="Подробность журнала" Width="190" Margin="0,0,6,4"
                                       ToolTip="Подробность новых событий журнала; можно менять во время скачивания."/>
                             <Button x:Name="CopyJournalButton" Content="Копировать журнал"/>
                             <Button x:Name="SaveJournalButton" Content="Сохранить журнал…"/>
@@ -577,7 +680,7 @@
                         <TextBlock x:Name="JournalHint" Grid.Row="1" Margin="0,0,0,6"
                                    Style="{StaticResource MutedText}" TextWrapping="Wrap"/>
                         <TextBox
-                            x:Name="LogBox"
+                            x:Name="LogBox" AutomationProperties.Name="Журнал приложения"
                             Grid.Row="2"
                             IsReadOnly="True"
                             TextWrapping="NoWrap"
@@ -585,23 +688,25 @@
                             HorizontalScrollBarVisibility="Auto"
                             FontFamily="Cascadia Mono"
                             FontSize="12"
-                            Background="#0D0F13"/>
-                    </Grid>
+                            Background="{DynamicResource MediaSurfaceBrush}"/>
+                     </Grid>
+                    </Expander>
                 </Grid>
             </Border>
 
-            <GridSplitter x:Name="DownloadsPreviewSplitter" Grid.Column="3" Width="8"
+            <GridSplitter x:Name="DownloadsPreviewSplitter" AutomationProperties.Name="Ширина загрузок и правой панели" Grid.Column="3" Width="8"
                           HorizontalAlignment="Center" VerticalAlignment="Stretch"
                           ResizeDirection="Columns" ResizeBehavior="PreviousAndNext" ShowsPreview="False"
-                          Background="#343946" Cursor="SizeWE" Focusable="True"
+                          Background="{DynamicResource BorderBrush}" Cursor="SizeWE" Focusable="True"
                           ToolTip="Перетащите, чтобы изменить ширину загрузок и предпросмотра"/>
 
-            <Border Grid.Column="4" Style="{StaticResource Panel}">
-                <ScrollViewer VerticalScrollBarVisibility="Auto">
-                    <StackPanel>
+            <Border x:Name="PreviewPanel" Grid.Column="4" Style="{StaticResource Panel}">
+                <TabControl x:Name="DetailsTabs" Background="Transparent" BorderThickness="0" Foreground="{DynamicResource WindowTextBrush}">
+                    <TabItem x:Name="SelectedVideoTab" Header="Видео">
+                        <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="0,10,0,0"><StackPanel>
                         <TextBlock Text="Предпросмотр" Style="{StaticResource SectionTitle}"/>
 
-                        <Border x:Name="PreviewImageHost" Height="190" Background="#0D0F13" CornerRadius="12">
+                        <Border x:Name="PreviewImageHost" Height="190" Background="{DynamicResource MediaSurfaceBrush}" CornerRadius="12">
                             <Image x:Name="PreviewImage" Stretch="Uniform"/>
                         </Border>
                         <Grid Margin="0,6,0,0">
@@ -610,18 +715,18 @@
                                 <ColumnDefinition Width="*"/>
                                 <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
-                            <Button x:Name="PreviewPreviousButton" Content="◀" Padding="10,4" IsEnabled="False"
+                            <Button x:Name="PreviewPreviousButton" AutomationProperties.Name="Предыдущее превью" Content="◀" Padding="10,4" IsEnabled="False"
                                     ToolTip="Предыдущее превью"/>
                             <TextBlock x:Name="PreviewImageCounter" Grid.Column="1" Text="0 / 0"
-                                       HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="#B7C0D8"/>
-                            <Button x:Name="PreviewNextButton" Grid.Column="2" Content="▶" Padding="10,4" IsEnabled="False"
+                                       HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="{DynamicResource SecondaryTextBrush}"/>
+                            <Button x:Name="PreviewNextButton" AutomationProperties.Name="Следующее превью" Grid.Column="2" Content="▶" Padding="10,4" IsEnabled="False"
                                     ToolTip="Следующее превью"/>
                         </Grid>
                         <TextBlock Text="Наведите мышь для листания · колесо — вручную" Style="{StaticResource MutedText}"
                                    FontSize="11" TextWrapping="Wrap" Margin="0,4,0,0"/>
                         <TextBlock x:Name="PreviewTitle" Text="Выберите видео в очереди или загрузках" FontSize="15" FontWeight="SemiBold" Margin="0,10,0,3" TextTrimming="CharacterEllipsis"/>
                         <TextBlock x:Name="PreviewMeta" Text="" Style="{StaticResource MutedText}" TextWrapping="Wrap"/>
-                        <TextBlock x:Name="PreviewFormats" Text="" Foreground="#B7C0D8" Margin="0,5,0,12" TextWrapping="Wrap"/>
+                        <TextBlock x:Name="PreviewFormats" Text="" Foreground="{DynamicResource SecondaryTextBrush}" Margin="0,5,0,12" TextWrapping="Wrap"/>
 
                         <Button x:Name="MediaSelectionButton" Content="Формат и фрагмент…" IsEnabled="False" Style="{StaticResource GuardedActionButton}"
                                 HorizontalContentAlignment="Left"
@@ -629,8 +734,27 @@
                         <TextBlock x:Name="MediaSelectionSummary" Text="Выберите одну строку очереди."
                                    Style="{StaticResource MutedText}" TextWrapping="Wrap" FontSize="11" Margin="3,2,3,10"/>
 
+                        </StackPanel></ScrollViewer>
+                    </TabItem>
+                    <TabItem x:Name="QueueOptionsTab" Header="Очередь" ToolTip="Общие параметры следующего запуска">
+                        <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="0,10,0,0"><StackPanel>
+                            <TextBlock Text="Параметры очереди" Style="{StaticResource SectionTitle}"/>
+                            <TextBlock x:Name="QueueOptionsScopeHint" Text="Общие параметры следующего запуска. Параметры отдельного видео задаются на вкладке «Видео»."
+                                       TextWrapping="Wrap" Style="{StaticResource MutedText}" Margin="0,0,0,10"/>
+                        <TextBlock Text="Папка загрузок" Style="{StaticResource MutedText}"/>
+                        <Grid Margin="0,0,0,6">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="44"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBox x:Name="OutputBox" AutomationProperties.Name="Папка загрузок"/>
+                            <Button x:Name="PickOutputButton" AutomationProperties.Name="Выбрать папку загрузок" Grid.Column="1" Content="…"/>
+                        </Grid>
+                        <TextBlock x:Name="DiskSpaceSummaryText" Text="Проверяем свободное место…" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,0,0,5"/>
+                        <TextBlock x:Name="DiskSpaceWarningText" Foreground="{DynamicResource WarnBrush}" TextWrapping="Wrap" Visibility="Collapsed" Margin="0,0,0,8"/>
+
                         <TextBlock Text="Профиль" FontWeight="SemiBold" Margin="0,4,0,4"/>
-                        <ComboBox x:Name="ProfileCombo" Margin="0,0,0,9"/>
+                        <ComboBox x:Name="ProfileCombo" AutomationProperties.Name="Профиль загрузки" Margin="0,0,0,9"/>
 
                         <StackPanel Margin="0,0,0,8">
                             <TextBlock Text="Аудиодорожка" Style="{StaticResource MutedText}"/>
@@ -650,11 +774,11 @@
                             </Grid.ColumnDefinitions>
                             <StackPanel Grid.Column="0" Margin="0,0,5,0">
                                 <TextBlock Text="Качество" Style="{StaticResource MutedText}"/>
-                                <ComboBox x:Name="QualityCombo"/>
+                                <ComboBox x:Name="QualityCombo" AutomationProperties.Name="Качество видео"/>
                             </StackPanel>
                             <StackPanel Grid.Column="1" Margin="5,0,0,0">
                                 <TextBlock Text="Кодек" Style="{StaticResource MutedText}"/>
-                                <ComboBox x:Name="CodecCombo"/>
+                                <ComboBox x:Name="CodecCombo" AutomationProperties.Name="Предпочтительный кодек"/>
                             </StackPanel>
                         </Grid>
 
@@ -665,11 +789,11 @@
                             </Grid.ColumnDefinitions>
                             <StackPanel Grid.Column="0" Margin="0,0,5,0">
                                 <TextBlock Text="Контейнер" Style="{StaticResource MutedText}"/>
-                                <ComboBox x:Name="ContainerCombo"/>
+                                <ComboBox x:Name="ContainerCombo" AutomationProperties.Name="Контейнер файла"/>
                             </StackPanel>
                             <StackPanel Grid.Column="1" Margin="5,0,0,0">
                                 <TextBlock Text="Ограничение скорости" Style="{StaticResource MutedText}"/>
-                                <ComboBox x:Name="RateLimitCombo" IsEditable="True"/>
+                                <ComboBox x:Name="RateLimitCombo" AutomationProperties.Name="Ограничение скорости" IsEditable="True"/>
                             </StackPanel>
                         </Grid>
 
@@ -680,11 +804,11 @@
                             </Grid.ColumnDefinitions>
                             <StackPanel Grid.Column="0" Margin="0,0,5,0">
                                 <TextBlock Text="Параллельные загрузки" Style="{StaticResource MutedText}"/>
-                                <TextBox x:Name="ThreadsBox" Text="4"/>
+                                <TextBox x:Name="ThreadsBox" AutomationProperties.Name="Параллельные загрузки" Text="4"/>
                             </StackPanel>
                             <StackPanel Grid.Column="1" Margin="5,0,0,0">
                                 <TextBlock Text="Фрагменты" Style="{StaticResource MutedText}"/>
-                                <ComboBox x:Name="FragmentsCombo"/>
+                                <ComboBox x:Name="FragmentsCombo" AutomationProperties.Name="Параллельные фрагменты"/>
                             </StackPanel>
                         </Grid>
 
@@ -693,7 +817,7 @@
                                     Padding="8,3" ToolTip="Поля, примеры и ограничения шаблона имени файла"/>
                             <TextBlock x:Name="FilenameTemplateLabel" Text="Шаблон имени файла" Style="{StaticResource MutedText}" VerticalAlignment="Center"/>
                         </DockPanel>
-                        <TextBox x:Name="FilenameTemplateBox" Text="%(title)s [%(id)s].%(ext)s" Margin="0,0,0,8"/>
+                        <TextBox x:Name="FilenameTemplateBox" AutomationProperties.Name="Шаблон имени файла" Text="%(title)s [%(id)s].%(ext)s" Margin="0,0,0,8"/>
 
                         <Expander Header="Субтитры" IsExpanded="False" Margin="0,4">
                             <StackPanel Margin="8">
@@ -701,7 +825,7 @@
                                 <CheckBox x:Name="AutoSubsCheck" Content="Включить автоматические субтитры"/>
                                 <CheckBox x:Name="EmbedSubsCheck" Content="Встроить субтитры в медиафайл"/>
                                 <TextBlock Text="Языки" Style="{StaticResource MutedText}" Margin="3,4,0,2"/>
-                                <TextBox x:Name="SubtitleLangsBox" Text="ru.*,en.*"/>
+                                <TextBox x:Name="SubtitleLangsBox" AutomationProperties.Name="Языки субтитров" Text="ru.*,en.*"/>
                             </StackPanel>
                         </Expander>
 
@@ -719,31 +843,24 @@
                             <CheckBox x:Name="AudioOnlyCheck" Content="Только MP3"/>
                         </WrapPanel>
 
-                        <TextBlock Text="Папка загрузок" Style="{StaticResource MutedText}"/>
-                        <Grid Margin="0,0,0,6">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="44"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBox x:Name="OutputBox"/>
-                            <Button x:Name="PickOutputButton" Grid.Column="1" Content="…"/>
-                        </Grid>
-                        <TextBlock x:Name="DiskSpaceSummaryText" Text="Проверяем свободное место…" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,0,0,5"/>
-                        <TextBlock x:Name="DiskSpaceWarningText" Foreground="{StaticResource WarnBrush}" TextWrapping="Wrap" Visibility="Collapsed" Margin="0,0,0,8"/>
-
                         <TextBlock Text="Файл cookies" Style="{StaticResource MutedText}"/>
                         <Grid Margin="0,0,0,8">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*"/>
                                 <ColumnDefinition Width="44"/>
                             </Grid.ColumnDefinitions>
-                            <TextBox x:Name="CookiesBox"/>
-                            <Button x:Name="PickCookiesButton" Grid.Column="1" Content="…"/>
+                            <TextBox x:Name="CookiesBox" AutomationProperties.Name="Файл cookies"/>
+                            <Button x:Name="PickCookiesButton" AutomationProperties.Name="Выбрать файл cookies" Grid.Column="1" Content="…"/>
                         </Grid>
 
-                        <Expander Header="Компоненты" IsExpanded="True" Margin="0,6,0,0">
+                        </StackPanel></ScrollViewer>
+                    </TabItem>
+                    <TabItem x:Name="MaintenanceTab" Header="Настройки">
+                        <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="0,10,0,0"><StackPanel>
+                            <TextBlock Text="Настройки приложения" Style="{StaticResource SectionTitle}"/>
+                        <Expander Header="Компоненты" IsExpanded="False" Margin="0,6,0,0">
                             <StackPanel Margin="8">
-                                <TextBlock x:Name="DependencyStatus" Text="Проверка…" TextWrapping="Wrap" Foreground="#B7C0D8"/>
+                                <TextBlock x:Name="DependencyStatus" Text="Проверка…" TextWrapping="Wrap" Foreground="{DynamicResource SecondaryTextBrush}"/>
                                 <WrapPanel Margin="0,7,0,0">
                                     <Button x:Name="RefreshDepsButton" Content="Проверить"/>
                                     <Button x:Name="InstallFfmpegButton" Content="Установить FFmpeg"/>
@@ -755,40 +872,33 @@
                             </StackPanel>
                         </Expander>
 
-                        <Expander Header="Обновление приложения" IsExpanded="True" Margin="0,8,0,0">
+                        <Expander Header="Обновление приложения" IsExpanded="False" Margin="0,8,0,0">
                             <StackPanel Margin="8">
                                 <TextBlock x:Name="CurrentAppVersionText" Text="Текущая версия: —"
-                                           TextWrapping="Wrap" Foreground="#B7C0D8" Margin="0,0,0,4"/>
+                                           TextWrapping="Wrap" Foreground="{DynamicResource SecondaryTextBrush}" Margin="0,0,0,4"/>
                                 <TextBlock x:Name="AppUpdateStatusText" Text="Проверка доступна вручную."
-                                           TextWrapping="Wrap" Foreground="#B7C0D8"/>
+                                           TextWrapping="Wrap" Foreground="{DynamicResource SecondaryTextBrush}"/>
                                 <WrapPanel Margin="0,7,0,0">
                                     <Button x:Name="CheckAppUpdateButton" Content="Проверить обновление" Style="{StaticResource GuardedActionButton}"/>
                                     <Button x:Name="InstallAppUpdateButton" Content="Обновить и перезапустить" IsEnabled="False" Style="{StaticResource GuardedActionButton}"/>
                                 </WrapPanel>
                             </StackPanel>
                         </Expander>
-                    </StackPanel>
-                </ScrollViewer>
+                        </StackPanel></ScrollViewer>
+                    </TabItem>
+                </TabControl>
             </Border>
         </Grid>
 
-        <Grid Grid.Row="2" Margin="0,10,0,0">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*"/>
-                <ColumnDefinition Width="Auto"/>
-            </Grid.ColumnDefinitions>
-
-            <StackPanel VerticalAlignment="Center">
-                <TextBlock x:Name="SessionStats" Text="Сеанс: ожидание" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,5"/>
-                <ProgressBar x:Name="OverallProgress" Height="15" Minimum="0" Maximum="100"/>
-            </StackPanel>
-
-            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="15,0,0,0">
+        <StackPanel Grid.Row="3" Margin="0,8,0,0">
+            <TextBlock x:Name="SessionStats" Text="Сеанс: ожидание" Foreground="{DynamicResource MutedBrush}" TextWrapping="Wrap" Margin="0,0,0,4"/>
+            <ProgressBar x:Name="OverallProgress" AutomationProperties.Name="Общий прогресс загрузки" Height="8" Minimum="0" Maximum="100"/>
+            <WrapPanel HorizontalAlignment="Right" Margin="0,4,0,0">
                 <Button x:Name="TrayButton" Content="В трей"/>
-                <Button x:Name="PauseButton" Content="Пауза" IsEnabled="False" Background="{StaticResource WarnBrush}"/>
-                <Button x:Name="StopButton" Content="Остановить" IsEnabled="False" Background="{StaticResource DangerBrush}"/>
-                <Button x:Name="StartButton" Content="Скачать всю очередь" IsEnabled="False" Background="{StaticResource AccentBrush}" Padding="18,9"/>
-            </StackPanel>
-        </Grid>
+                <Button x:Name="PauseButton" Content="Пауза" IsEnabled="False" Background="{DynamicResource WarnBrush}" Foreground="{DynamicResource OnWarnBrush}"/>
+                <Button x:Name="StopButton" Content="Остановить" IsEnabled="False" Background="{DynamicResource DangerBrush}" Foreground="{DynamicResource OnDangerBrush}"/>
+                <Button x:Name="StartButton" Content="Скачать всю очередь" IsEnabled="False" Background="{DynamicResource AccentBrush}" Foreground="{DynamicResource OnAccentBrush}" Padding="18,9"/>
+            </WrapPanel>
+        </StackPanel>
     </Grid>
 </Window>
