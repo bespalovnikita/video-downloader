@@ -45,12 +45,14 @@ internal sealed partial class UiScenario
             queue.ItemsSource=rows;
             downloads.ItemsSource=rows;
             window.Show();
+            SetLayoutTestBounds(window,1280,760,compact:false);
 
             void CheckRows()
             {
                 Pump();
                 foreach(var grid in new[]{queue,downloads})
                 {
+                    Require(grid.IsVisible,"Both real status grids must be visible before inspecting rendered cells");
                     var column=grid.Columns.OfType<DataGridTextColumn>().Single(candidate=>
                         (candidate.Binding as Binding)?.Path?.Path=="StateLabel");
                     Require(column.Width.Value==(ReferenceEquals(grid,queue)?90:110),

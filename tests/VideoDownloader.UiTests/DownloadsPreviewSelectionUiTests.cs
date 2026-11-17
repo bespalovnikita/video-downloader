@@ -59,6 +59,24 @@ internal sealed partial class UiScenario
             var downloads=(DataGrid)window.FindName("DownloadGrid")!;
             var image=(Image)window.FindName("PreviewImage")!;
             var formats=(Button)window.FindName("MediaSelectionButton")!;
+            void RevealGrid(DataGrid grid)
+            {
+                if(!grid.IsVisible)
+                {
+                    string action=ReferenceEquals(grid,queue)?"ShowQueuePanelButton":"ShowDownloadsPanelButton";
+                    ((Button)window.FindName(action)!).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                }
+                window.UpdateLayout();grid.BringIntoView();grid.UpdateLayout();
+                Require(grid.IsVisible,"The grid must be visible before a real focus or selection interaction.");
+            }
+            void RevealSelectedVideo()
+            {
+                if(!((FrameworkElement)window.FindName("PreviewPanel")!).IsVisible)
+                    ((Button)window.FindName("ShowDetailsPanelButton")!).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                ((TabControl)window.FindName("DetailsTabs")!).SelectedItem=(TabItem)window.FindName("SelectedVideoTab")!;
+                ((FrameworkElement)window.FindName("PreviewImageHost")!).BringIntoView();window.UpdateLayout();
+                Require(image.IsVisible,"The selected-video tab must expose the actual image before inspecting its pixels.");
+            }
             var queued=new DownloadItem{Url="https://downloads-preview.invalid/queue",Title="В очереди"};
             var finished=new DownloadItem{Url="https://downloads-preview.invalid/download",Title="Скачанное видео",Status="Completed",AttemptFinished=true};
             var other=new DownloadItem{Url="https://downloads-preview.invalid/other",Title="Другая загрузка",Status="Completed",AttemptFinished=true};
@@ -76,30 +94,30 @@ internal sealed partial class UiScenario
             subject.SaveCheckpoint();
             string checkpoint=File.ReadAllText(storage.SessionPath);
 
-            queue.SelectedItem=queued;
+            RevealGrid(queue);queue.SelectedItem=queued;RevealSelectedVideo();
             Require(subject.Preview.SelectedUrl==queued.Url && HasColor(image,24),"Queue selection must retain its existing rendered preview.");
-            downloads.SelectedItem=finished;
+            RevealGrid(downloads);downloads.SelectedItem=finished;RevealSelectedVideo();
             Require(subject.Preview.SelectedUrl==finished.Url && HasColor(image,196) && ReferenceEquals(queue.SelectedItem,queued) && !formats.IsEnabled,
                 "Selecting one Downloads row must show its own image without changing the queue selection.");
             formats.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             Require(subject.MediaSelectionEditor is null,"A direct action must not edit another queue row while a Downloads preview is shown.");
-            window.Activate();queue.Focus();
+            RevealGrid(queue);window.Activate();queue.Focus();
             Until(()=>queue.IsKeyboardFocusWithin && subject.Preview.SelectedUrl==queued.Url,
                 "Returning to the already selected queue row must deliver real WPF focus and preview.");
             Require(HasColor(image,24) && formats.IsEnabled,
                 "Returning to the queue must restore its selected image and the matching format action.");
-            downloads.Focus();
+            RevealGrid(downloads);downloads.Focus();
             Until(()=>downloads.IsKeyboardFocusWithin && subject.Preview.SelectedUrl==finished.Url,
                 "Returning to the already selected download must deliver real WPF focus and preview.");
             Require(HasColor(image,196) && !formats.IsEnabled,
                 "Returning to Downloads must restore its selected image even without a selection change.");
-            downloads.SelectedItems.Add(other);
+            RevealGrid(downloads);downloads.SelectedItems.Add(other);
             Require(subject.Preview.SelectedUrl==finished.Url && HasColor(image,196),"Multiselection must not replace the current preview arbitrarily.");
             downloads.SelectedItems.Clear();
             Require(subject.Preview.SelectedUrl==finished.Url && HasColor(image,196),"Clearing Downloads selection must preserve the current preview.");
 
             downloads.SelectedItem=finished;
-            queue.Focus();
+            RevealGrid(queue);queue.Focus();
             Until(()=>queue.IsKeyboardFocusWithin && subject.Preview.SelectedUrl==queued.Url,
                 "The background-sort check must start with the queue owning actual keyboard focus and preview.");
             finished.Status="Running";Drain();
@@ -111,7 +129,7 @@ internal sealed partial class UiScenario
             subject.SessionState.Downloads.Add(late);Drain();
             Require(downloads.Items[0]==late && subject.Preview.SelectedUrl==queued.Url && HasColor(image,24),
                 "A newly active download must not take over the current preview.");
-            downloads.SelectedItem=other;
+            RevealGrid(downloads);downloads.SelectedItem=other;RevealSelectedVideo();
             Require(subject.Preview.SelectedUrl==other.Url && HasColor(image,88),"A later explicit Downloads selection must still update the image.");
             Require(subject.SessionState.Queue.SequenceEqual(new[]{queued}) && queued.Order==1 &&
                 subject.SessionState.Downloads.SequenceEqual(new[]{finished,other,late}) &&

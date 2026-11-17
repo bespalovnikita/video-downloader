@@ -67,6 +67,8 @@ internal sealed partial class UiScenario
                 {
                     subject=new NativeWindow(window,storage,"must-not-launch");
                     window.Show();
+                    ((Button)window.FindName("OpenQueueOptionsButton")!).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    window.UpdateLayout();
                     Require(((Button)window.FindName("OpenListButton")!).Content.ToString()=="Открыть список",
                         "The actual main window must translate Open list.");
                     Require(((CheckBox)window.FindName("EmbedThumbnailCheck")!).Content.ToString()=="Встроить обложку" &&
@@ -82,7 +84,8 @@ internal sealed partial class UiScenario
                         // Read the selected value the user sees. A detached
                         // DataTemplate.LoadContent() has no host or binding/layout
                         // turn and cannot establish the displayed ComboBox result.
-                        option.BringIntoView();option.ApplyTemplate();window.UpdateLayout();
+                        option.BringIntoView();window.UpdateLayout();option.ApplyTemplate();window.UpdateLayout();
+                        Require(option.IsVisible,"The localized option must be tested on its opened queue-settings tab: "+name);
                         var selection=option.Template.FindName("ContentSite",option) as ContentPresenter;
                         Require(selection is not null,"The actual ComboBox must expose its selected-value presenter: "+name);
                         string OptionDetails(string location,IEnumerable<string> captions)=>
@@ -105,6 +108,7 @@ internal sealed partial class UiScenario
                         finally{option.IsDropDownOpen=false;}
                     }
                     var rate=(ComboBox)window.FindName("RateLimitCombo")!;
+                    rate.BringIntoView();window.UpdateLayout();
                     Require(rate.Text==(russian?"Без ограничений":"Unlimited") && subject.ReadOptions().RateLimit=="Unlimited",
                         "The editable unlimited rate must persist its canonical identifier.");
                     rate.Text="5M";
@@ -135,7 +139,11 @@ internal sealed partial class UiScenario
                     }
                     if(language=="ru-RU")
                     {
-                        // Open the real WinForms picker through the WPF button.
+                        // Open the real WinForms picker through its visible
+                        // queue actions, after leaving the settings tab.
+                        ((Button)window.FindName("ShowQueuePanelButton")!).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                        ((Expander)window.FindName("QueueMoreActionsExpander")!).IsExpanded=true;
+                        ((Button)window.FindName("OpenListButton")!).BringIntoView();window.UpdateLayout();
                         // A native thread-window observer closes it without choosing a file.
                         uint thread=GetCurrentThreadId();bool observed=false;
                         var timer=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(20)};
@@ -198,8 +206,11 @@ internal sealed partial class UiScenario
                     var download=(DataGrid)window.FindName("DownloadGrid")!;
                     subject.SessionState.Queue.Add(row);
                     subject.SessionState.Downloads.Add(row);
+                    ((Expander)window.FindName("QueueMoreActionsExpander")!).IsExpanded=false;
                     foreach(var grid in new[]{(DataGrid)window.FindName("QueueGrid")!,download})
                     {
+                        string navigation=ReferenceEquals(grid,download)?"ShowDownloadsPanelButton":"ShowQueuePanelButton";
+                        ((Button)window.FindName(navigation)!).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));window.UpdateLayout();
                         grid.ScrollIntoView(row);
                         grid.UpdateLayout();
                         var stateColumn=grid.Columns.OfType<DataGridTextColumn>().Single(column=>

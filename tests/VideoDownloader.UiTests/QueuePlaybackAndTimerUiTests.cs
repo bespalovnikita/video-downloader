@@ -117,12 +117,18 @@ internal sealed partial class UiScenario
                 "A container failure must finish normally without a start-error dialog");
             RequireFrozen("Failure completion");
             var failedStart=subject.SessionState.StartedAt;
+            var more=(Expander)window.FindName("QueueMoreActionsExpander")!;
+            more.IsExpanded=true;window.UpdateLayout();
+            var retry=(Button)window.FindName("RetryFailedButton")!;
+            retry.BringIntoView();window.UpdateLayout();
+            Require(retry.IsVisible && retry.IsEnabled,"Retry must be reachable through the expanded queue actions before it is invoked");
             Click(window,"RetryFailedButton");
             PumpUntil(()=>subject.SessionState.StartedAt!=failedStart,
                 "Retry failed must finish its asynchronous preflight before beginning another session");
             Require(subject.SessionState.Elapsed<TimeSpan.FromSeconds(1),"Retry failed must begin a fresh session clock");
             PumpUntil(()=>failed.Status=="Failed" && subject.SessionState.Coordinator==null,"Retry must also terminate");
             RequireFrozen("Retried failure");
+            more.IsExpanded=false;window.UpdateLayout();
             // Keep the failed row for the next Start too; Stop must still wait
             // for the independently running gated worker and its cleanup.
             var stopped=new DownloadItem{Url="https://startup-download.invalid/stop-timer-slow"};

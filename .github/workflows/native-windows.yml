@@ -27,7 +27,7 @@ jobs:
 
   native:
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
         with:
@@ -52,7 +52,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'FFmpeg is unavailable for media tests.' }
           ffprobe -version
           if ($LASTEXITCODE -ne 0) { throw 'ffprobe is unavailable for media tests.' }
-      - name: Focused subscription initial-actions WPF probe
+      - name: Early Windows WPF regression tests
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -62,8 +62,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'WPF test build failed.' }
           pwsh -NoProfile -File ./scripts/ui-tests.ps1 -Scene SubscriptionInitialActions -ResultPath (Join-Path $env:RUNNER_TEMP 'initial-actions-probe/native-ui-result.txt')
           if ($LASTEXITCODE -ne 0) { throw 'Focused subscription WPF probe failed.' }
-          pwsh -NoProfile -File ./scripts/ui-tests.ps1 -Scene WindowsUsability -ResultPath (Join-Path $env:RUNNER_TEMP 'windows-usability-probe/native-ui-result.txt')
-          if ($LASTEXITCODE -ne 0) { throw 'Focused Windows usability WPF probe failed.' }
+          pwsh -NoProfile -File ./scripts/ui-tests.ps1 -Scene All -ResultPath (Join-Path $env:RUNNER_TEMP 'early-windows-ui/native-ui-result.txt')
+          if ($LASTEXITCODE -ne 0) { throw 'Early Windows WPF regression tests failed.' }
       - name: Pornhub collector with the bundled yt-dlp API
         env:
           PYTHONDONTWRITEBYTECODE: '1'

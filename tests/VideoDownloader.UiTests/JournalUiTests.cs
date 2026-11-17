@@ -49,6 +49,14 @@ internal sealed partial class UiScenario
             window.Show();
             var profiles=(ComboBox)window.FindName("LogProfileCombo")!;
             var log=(TextBox)window.FindName("LogBox")!;
+            void ShowJournal()
+            {
+                if(!((FrameworkElement)window.FindName("DownloadsPanel")!).IsVisible)Click(window,"ShowDownloadsPanelButton");
+                ((Expander)window.FindName("JournalExpander")!).IsExpanded=true;
+                window.UpdateLayout();log.BringIntoView();window.UpdateLayout();
+                Require(profiles.IsVisible && log.IsVisible,"The real journal must be opened in the visible Downloads panel before interaction");
+            }
+            ShowJournal();
             Require(profiles.Items.Cast<string>().SequenceEqual(JournalProfileCatalog.DisplayNames),
                 "The actual journal selector must expose all four logging profiles");
             Require(subject.ReadOptions().LogProfile=="Standard","Old settings default to the standard journal");
@@ -76,7 +84,11 @@ internal sealed partial class UiScenario
             subject.ApplyOptions(new DownloadOptions{LogProfile="unknown-future-profile"});
             Require(subject.ReadOptions().LogProfile=="Standard","An unknown restored journal profile falls back safely");
             profiles.SelectedItem=JournalProfileCatalog.Display(JournalProfile.Detailed);
+            Click(window,"OpenQueueOptionsButton");window.UpdateLayout();
+            Require(((ComboBox)window.FindName("ProfileCombo")!).IsVisible,
+                "Changing the download profile must use the revealed Queue options tab");
             ((ComboBox)window.FindName("ProfileCombo")!).SelectedItem=ProfileCatalog.Display("4K archive");
+            ShowJournal();
             Require(subject.ReadOptions().LogProfile=="Detailed","Changing the download profile must preserve journal verbosity");
 
             var previousCulture=CultureInfo.CurrentUICulture;
