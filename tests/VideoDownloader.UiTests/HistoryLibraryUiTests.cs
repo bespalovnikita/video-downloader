@@ -26,6 +26,11 @@ internal sealed partial class UiScenario
         }
         static T Control<T>(Window window,string name) where T:class=>(T)(window.FindName(name)??throw new InvalidOperationException("Missing history control: "+name));
         static void Click(Window window,string name)=>Control<Button>(window,name).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        static bool VisibleInWindow(Window window,FrameworkElement control)
+        {
+            var bounds=control.TransformToAncestor(window).TransformBounds(new Rect(0,0,control.ActualWidth,control.ActualHeight));
+            return control.IsVisible && bounds.Width>0 && bounds.Height>0 && bounds.Top>=0 && bounds.Bottom<=window.ActualHeight;
+        }
         string root=Path.Combine(testRoot,"history-ui-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(root);
         var storage=new AppPersistence(Path.Combine(root,"profile"));
         string existing=Path.Combine(root,"existing.mp4"),missing=Path.Combine(root,"missing.mp4"),denied=Path.Combine(root,"denied.mp4"),unsafePath=Path.Combine(root,"untrusted.exe");
@@ -45,14 +50,38 @@ internal sealed partial class UiScenario
             owner.Show();owner.Width=1280;owner.Height=760;
             int dispatcherThread=Environment.CurrentManagedThreadId;
             window=new DownloadHistoryWindow(owner,storage,new HistoryFileAccess(probe),opened.Enqueue);window.Show();
+            window.Width=900;window.Height=650;window.UpdateLayout();
             var grid=Control<DataGrid>(window,"HistoryGrid");var files=Control<DataGrid>(window,"HistoryFilesGrid");
             var search=Control<TextBox>(window,"HistorySearchBox");var status=Control<TextBlock>(window,"HistoryStatusText");
             PumpUntil(()=>grid.Items.Count==2,"The actual history grid did not load modern and legacy events.");
+            window.UpdateLayout();
+            var fileExpander=Control<Expander>(window,"HistoryFilesExpander");
+            var checkFiles=Control<Button>(window,"CheckHistoryFilesButton");
+            var cancelCheck=Control<Button>(window,"CancelHistoryFileCheckButton");
+            var closeHistory=Control<Button>(window,"CloseHistoryButton");
+            Require(!fileExpander.IsExpanded && !files.IsVisible && !checkFiles.IsVisible &&
+                cancelCheck.Visibility==Visibility.Collapsed && VisibleInWindow(window,closeHistory),
+                "History must initially devote its viewport to results, with file actions disclosed separately and Close still reachable.");
+            Require(System.Windows.Automation.Peers.UIElementAutomationPeer.CreatePeerForElement(fileExpander)?.GetName()=="Файлы выбранной загрузки",
+                "The file disclosure must expose its purpose through its real UI Automation peer.");
             Require(grid.IsReadOnly && files.IsReadOnly && probe.Calls==0,"Opening the library must not probe the filesystem or change records.");
             var modern=grid.Items.Cast<HistoryRecordRow>().Single(row=>row.Entry.Title.Length>0);
             grid.SelectedItem=modern;grid.UpdateLayout();
             Require(modern.Title=="Исторический Ёж" && modern.Source=="Канал" && modern.Url.EndsWith("token=AbC",StringComparison.Ordinal) &&
                 modern.Date.Length>0 && files.Items.Count==4,"The actual grid must retain title, source, exact URL, date and captured file paths.");
+            Require(!fileExpander.IsExpanded,"Automatic or explicit record selection must not reopen the file group.");
+            double collapsedResultsHeight=grid.ActualHeight;
+            fileExpander.IsExpanded=true;window.UpdateLayout();
+            checkFiles.BringIntoView();window.UpdateLayout();
+            Require(files.IsVisible && VisibleInWindow(window,checkFiles) && VisibleInWindow(window,closeHistory) &&
+                grid.ActualHeight+75<collapsedResultsHeight,
+                "Expanding files must expose the actual file actions while reserving a bounded viewport and keeping Close reachable.");
+            double expandedResultsHeight=grid.ActualHeight;
+            fileExpander.IsExpanded=false;window.UpdateLayout();
+            Require(grid.ActualHeight>expandedResultsHeight+75 && !files.IsVisible && probe.Calls==0 &&
+                history.SequenceEqual(File.ReadAllBytes(storage.HistoryPath)) && session.SequenceEqual(File.ReadAllBytes(storage.SessionPath)),
+                "Closing file details must return meaningful space to results without probing files, downloading or rewriting user data.");
+            fileExpander.IsExpanded=true;window.UpdateLayout();
             grid.ScrollIntoView(modern,grid.Columns[1]);grid.UpdateLayout();
             Require((grid.Columns[1].GetCellContent(modern) as TextBlock)?.Text=="Исторический Ёж",
                 "The title must be rendered through the actual history DataGrid binding.");
@@ -63,8 +92,10 @@ internal sealed partial class UiScenario
                 !Control<Button>(window,"CheckHistoryFilesButton").IsEnabled,"Legacy records must explain unknown paths, without inventing a missing file.");
             search.Text="";PumpUntil(()=>grid.Items.Count==2,"Clearing search must restore both historical attempts.");
             modern=grid.Items.Cast<HistoryRecordRow>().Single(row=>row.Entry.Title.Length>0);grid.SelectedItem=modern;
+            checkFiles.BringIntoView();window.UpdateLayout();
             Click(window,"CheckHistoryFilesButton");
             PumpUntil(()=>modern.Availability.Contains("Доступно 1",StringComparison.Ordinal),"The selected event's file check did not finish.");
+            Require(cancelCheck.Visibility==Visibility.Collapsed,"The completed file check must remove its inactive cancellation command.");
             var fileRows=files.Items.Cast<HistoryFileRow>().ToArray();
             Require(fileRows.Single(row=>row.Path==existing).Availability.State==HistoryFileState.Present &&
                 fileRows.Single(row=>row.Path==missing).Availability.State==HistoryFileState.Missing &&
@@ -94,7 +125,16 @@ internal sealed partial class UiScenario
                 grid=Control<DataGrid>(window,"HistoryGrid");
                 PumpUntil(()=>grid.Items.Count==2,"The cancellable history view did not load.");
                 grid.SelectedItem=grid.Items.Cast<HistoryRecordRow>().Single(row=>row.Entry.OutputPaths.Count>0);
+                window.Width=720;window.Height=440;
+                fileExpander=Control<Expander>(window,"HistoryFilesExpander");
+                Require(!fileExpander.IsExpanded,"A new history window must not restore the previous window's expanded file group.");
+                fileExpander.IsExpanded=true;window.UpdateLayout();
+                Control<Button>(window,"CheckHistoryFilesButton").BringIntoView();window.UpdateLayout();
                 Click(window,"CheckHistoryFilesButton");PumpUntil(()=>held.Started.Task.IsCompleted,"The background file probe did not start.");
+                fileExpander.IsExpanded=false;window.UpdateLayout();
+                Require(VisibleInWindow(window,Control<Button>(window,"CancelHistoryFileCheckButton")) &&
+                    VisibleInWindow(window,Control<Button>(window,"CloseHistoryButton")),
+                    "A short history window must keep cancellation and Close reachable after file details are collapsed during an active probe.");
                 window.Close();string closedStatus=Control<TextBlock>(window,"HistoryStatusText").Text;
                 held.Release.Set();PumpUntil(()=>held.Active==0,"Closed-window file work did not release its bounded probe slots.");
                 Require(Control<TextBlock>(window,"HistoryStatusText").Text==closedStatus,"Late file-check results must not mutate a closed history window.");
