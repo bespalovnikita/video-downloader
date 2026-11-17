@@ -67,6 +67,9 @@ internal sealed partial class UiScenario
             var empty=Control<TextBlock>(window,"QueueEmptyFilterHint");
             var panel=Control<FrameworkElement>(window,"QueueFilterPanel");
             var badge=Control<TextBlock>(window,"QueueActiveFiltersBadge");
+            var subscriptionColumn=Control<DataGridColumn>(window,"QueueSubscriptionColumn");
+            Require(subscriptionColumn.Visibility==Visibility.Collapsed,
+                "An empty queue must give the video label space instead of reserving an empty subscription column.");
             Require(panel.Visibility==Visibility.Collapsed && panel.DesiredSize.Height==0 && badge.Visibility==Visibility.Collapsed,
                 "Search and filters must occupy no panel height on startup, while their header button stays available.");
             string[] urls=["https://title-ingress.invalid/Video?token=AbC","https://title-ingress.invalid/video?token=AbC",
@@ -82,6 +85,8 @@ internal sealed partial class UiScenario
             subject.Reindex();
             PumpUntil(()=>urls.All(url=>ready.Contains(url) && subject.Preview.GetCached(url)?.ThumbnailBase64.Length>0),
                 "Cold metadata and actual HTTP thumbnails must finish before testing network-free filters");
+            Require(subscriptionColumn.Visibility==Visibility.Visible,
+                "Adding actual subscription rows must reveal their existing label column.");
             // A real selection reapplies its cached metadata to the row. Do it
             // before assigning the controlled titles used by the search test.
             queue.SelectedItem=rows[0];
@@ -157,7 +162,12 @@ internal sealed partial class UiScenario
             PumpUntil(()=>queue.Items.Count==1,"A row returning to the selected status must reappear");
             subscription.SelectedValue="";status.SelectedIndex=0;
             Require(queue.Items.Count==1 && ReferenceEquals(queue.Items[0],rows[3]),"No-subscription is distinct from all subscriptions");
+            Require(subscriptionColumn.Visibility==Visibility.Collapsed && (string?)subscription.SelectedValue=="" &&
+                subject.SessionState.Queue.SequenceEqual(rows),
+                "A no-subscription view must hide its empty column while retaining the filter and original queue.");
             Click(window,"ResetQueueFiltersButton");
+            Require(subscriptionColumn.Visibility==Visibility.Visible,
+                "Resetting the view must restore the populated subscription column without changing the queue.");
             Require(badge.Visibility==Visibility.Collapsed,"Reset must clear the header's active-filter indicator as well as the predicate.");
             status.SelectedValue="NotCompleted";
             Require(status.Text=="НЕ Готово" && queue.Items.Cast<DownloadItem>().SequenceEqual(rows.Take(3)) &&

@@ -17,6 +17,7 @@ public sealed class DownloadItem : INotifyPropertyChanged
     private string _path = "";
     private string _rawError = "";
     private string _slot = "";
+    private string _subscriptionName = "";
     private string _url = "";
     private string _currentVideoUrl = "";
     private string _previewVideoUrl = "";
@@ -125,7 +126,7 @@ public sealed class DownloadItem : INotifyPropertyChanged
     // Captured when a subscription creates this queue row. Renaming the source
     // later must not redirect an already accepted download or its cleanup.
     public string SubscriptionId { get; set; } = "";
-    public string SubscriptionName { get; set; } = "";
+    public string SubscriptionName { get=>_subscriptionName; set {_subscriptionName=value;Changed();} }
     public List<string> OwnedPaths { get; set; } = new();
     // The publication boundary belongs to the result, not the next session.
     public string OutputRoot { get; set; } = "";
