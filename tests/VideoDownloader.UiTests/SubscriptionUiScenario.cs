@@ -237,7 +237,7 @@ internal sealed partial class UiScenario
             subscriptions.TestSources.SelectedItem=subscriptions.TestSources.Items.Cast<SubscriptionController.SubscriptionSourceView>().Single(x=>x.Id==sourceId);
             var nameBox=subscriptions.TestControl<TextBox>("SubscriptionNameBox");
             Require(nameBox.Text=="Канал 123" && ((SubscriptionController.SubscriptionSourceView)subscriptions.TestSources.SelectedItem).ShortName=="Канал 123",
-                "The source grid and editable folder must show the detected channel name");
+                "The selected source and editable folder must retain the detected channel name");
             nameBox.Text="Черновик";
             var beforeRefresh=subscriptions.TestSources.SelectedItem;
             subscriptions.Refresh();
@@ -251,9 +251,11 @@ internal sealed partial class UiScenario
                 "Saving the short name must persist it without scanning or downloading");
             Require(nameBox.Text=="123" && ((SubscriptionController.SubscriptionSourceView)subscriptions.TestSources.SelectedItem).Title=="Проверка интерфейса",
                 "Saving a short name must retain the original collection title");
-            subscriptions.TestSources.UpdateLayout();
-            WaitFor(()=>subscriptions.TestSources.Columns[1].GetCellContent(subscriptions.TestSources.SelectedItem) is TextBlock folder && folder.Text=="123",
-                "The actual source grid cell must bind the short folder name");
+            var sourceEditor=subscriptions.TestControl<Expander>("SubscriptionEditorExpander");
+            sourceEditor.IsExpanded=true;nameBox.BringIntoView();window.UpdateLayout();
+            WaitFor(()=>nameBox.IsVisible && nameBox.ActualWidth>0 && nameBox.Text=="123",
+                "The expanded selected-source editor must visibly retain its saved short folder name");
+            sourceEditor.IsExpanded=false;window.UpdateLayout();
             Require(subscriptions.TestInbox.Items.Count==6,"Existing baseline and new materials must all appear in the results");
             var baselineView=subscriptions.TestInbox.Items.Cast<SubscriptionController.SubscriptionItemView>().Single(x=>x.Url==baselineUrl);
             subscriptions.TestInbox.ScrollIntoView(baselineView);
