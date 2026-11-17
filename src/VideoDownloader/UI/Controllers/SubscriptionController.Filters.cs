@@ -128,7 +128,10 @@ internal sealed partial class SubscriptionController
         toggle.Unchecked+=(_,_)=>RefreshSubscriptionsLayout();
         var openDetails=Control<Button>("OpenSubscriptionDetailsButton");
         openDetails.IsEnabled=VisibleInboxSelection().Length==1;
-        Inbox.SelectionChanged+=(_,_)=>openDetails.IsEnabled=VisibleInboxSelection().Length==1;
+        Inbox.SelectionChanged+=(_,_)=>
+        {
+            if(CurrentWindow(window))openDetails.IsEnabled=VisibleInboxSelection().Length==1;
+        };
         openDetails.Click+=(_,_)=>
         {
             RefreshInboxFilters();

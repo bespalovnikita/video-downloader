@@ -16,6 +16,11 @@ internal static class Program
         }
         AppDomain.CurrentDomain.UnhandledException+=(_,e)=>RecordFailure(e.ExceptionObject);
         System.Windows.Threading.Dispatcher.CurrentDispatcher.UnhandledException+=(_,e)=>RecordFailure(e.Exception);
+        // Scenarios pump the dispatcher explicitly instead of Application.Run.
+        // Inline routed user events must capture the normal WPF context so
+        // awaited UI handlers resume on their owning dispatcher as in the app.
+        SynchronizationContext.SetSynchronizationContext(new System.Windows.Threading.DispatcherSynchronizationContext(
+            System.Windows.Threading.Dispatcher.CurrentDispatcher));
         try
         {
             switch(Environment.GetEnvironmentVariable("VD_NATIVE_UI_TEST_SCENE")??"All")
