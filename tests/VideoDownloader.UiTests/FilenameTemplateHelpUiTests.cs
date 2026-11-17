@@ -20,6 +20,17 @@ internal sealed partial class UiScenario
             window.Show();
             ((Button)window.FindName("OpenQueueOptionsButton")!).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));window.UpdateLayout();
             var template=(TextBox)window.FindName("FilenameTemplateBox")!;
+            var advanced=(Expander)window.FindName("QueueAdvancedOptionsExpander")!;
+            Require(!advanced.IsExpanded && !template.IsVisible && ((ComboBox)window.FindName("QualityCombo")!).IsVisible,
+                "Queue settings must keep quality available while throughput and naming controls start collapsed");
+            subject.ApplyOptions(new DownloadOptions{RateLimit="5M",Threads="7",Fragments="3",FilenameTemplate="%(title)s.%(ext)s"});
+            advanced.IsExpanded=true;
+            advanced.IsExpanded=false;
+            var hiddenOptions=subject.ReadOptions();
+            Require(hiddenOptions.RateLimit=="5M" && hiddenOptions.Threads=="7" && hiddenOptions.Fragments=="3" &&
+                    hiddenOptions.FilenameTemplate=="%(title)s.%(ext)s",
+                "Opening and closing advanced settings must preserve restored throughput and filename options");
+            advanced.IsExpanded=true;
             template.BringIntoView();window.UpdateLayout();
             Require(template.IsVisible,"The filename field must be reached through the opened queue settings tab");
             template.Text="%(upload_date)s - %(title)s [%(id)s].%(ext)s";
