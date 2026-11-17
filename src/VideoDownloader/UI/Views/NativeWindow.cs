@@ -204,7 +204,11 @@ public sealed partial class NativeWindow : IDisposable
         TraceOverallProgress(metrics);
         bool running=metrics.Running,paused=metrics.Paused;
         T("HeaderStats").Text=ErrorMessages.Text($"{metrics.Active} активных · {DisplayValueConverter.Speed(metrics.Speed)} · {metrics.Successful}/{metrics.Total}",$"{metrics.Active} active · {DisplayValueConverter.Speed(metrics.Speed)} · {metrics.Successful}/{metrics.Total}");
-        F<ProgressBar>("OverallProgress").Value=metrics.Progress;
+        var overallProgress=F<ProgressBar>("OverallProgress");
+        overallProgress.Value=metrics.Progress;
+        // Keep the footer geometry stable when the first session begins, but
+        // do not suggest an empty download is already in progress at startup.
+        overallProgress.Visibility=running || SessionState.StartedAt.HasValue?Visibility.Visible:Visibility.Hidden;
         T("SessionStats").Text=SessionState.StartedAt.HasValue
             ? ErrorMessages.Text($"Сеанс: {metrics.Successful} готово · {metrics.Left} осталось · {metrics.Skipped} пропущено · {metrics.Failed} ошибок · {DisplayValueConverter.Bytes(metrics.Transferred)} · {SessionState.Elapsed:hh\\:mm\\:ss}",$"Session: {metrics.Successful} OK · {metrics.Left} left · {metrics.Skipped} skipped · {metrics.Failed} errors · {DisplayValueConverter.Bytes(metrics.Transferred)} · {SessionState.Elapsed:hh\\:mm\\:ss}")
             : ErrorMessages.Text($"Сеанс: ожидание · {metrics.Total} ссылок",$"Session: idle · {metrics.Total} URLs");
@@ -213,9 +217,14 @@ public sealed partial class NativeWindow : IDisposable
         _lifecycle.UpdateStatus(title);
         F<Button>("StartButton").IsEnabled=!running && !_startingSession && !_queueItemActionBusy && !_dependencyOperationRunning && SessionState.Queue.Any(x=>
             (x.Status is not ("Completed" or "Skipped") || x.RequeueRequested) && x.CanResume);
-        F<Button>("StopButton").IsEnabled=running;
-        F<Button>("PauseButton").IsEnabled=running;
-        F<Button>("PauseButton").Content=paused?ErrorMessages.Text("Продолжить","Resume"):ErrorMessages.Text("Пауза","Pause");
+        var stop=F<Button>("StopButton");
+        var pause=F<Button>("PauseButton");
+        bool restoreSessionFocus=!running && (stop.IsKeyboardFocusWithin || pause.IsKeyboardFocusWithin);
+        stop.IsEnabled=pause.IsEnabled=running;
+        // Hidden reserves both command slots: Stop never replaces Start under
+        // the pointer, and completing a session does not shift the primary CTA.
+        stop.Visibility=pause.Visibility=running?Visibility.Visible:Visibility.Hidden;
+        pause.Content=paused?ErrorMessages.Text("Продолжить","Resume"):ErrorMessages.Text("Пауза","Pause");
         F<Button>("RetryFailedButton").IsEnabled=!running && !_dependencyOperationRunning && SessionState.Queue.Any(x=>x.Status=="Failed");
         foreach(string name in new[]{"MoveUpButton","MoveDownButton","ClearQueueButton"})
             F<Button>(name).IsEnabled=!running;
@@ -256,6 +265,8 @@ public sealed partial class NativeWindow : IDisposable
                 "These settings apply to the whole queue. Changes take effect on the next start; current downloads keep their existing settings.")
             : ErrorMessages.Text("Параметры применятся ко всей очереди при запуске. Для отдельного видео используй «Формат и фрагмент…».",
                 "These settings apply to the whole queue when started. Use Format and fragment for an individual video.");
+        if(restoreSessionFocus)
+            (F<Button>("StartButton").IsEnabled?F<Button>("StartButton"):F<Button>("TrayButton")).Focus();
     }
     internal void OnRowChanged(DownloadItem item)
     {
