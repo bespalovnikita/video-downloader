@@ -304,6 +304,10 @@
                     <Setter Property="Background" Value="{DynamicResource SelectionBrush}"/>
                     <Setter Property="Foreground" Value="{DynamicResource SelectionTextBrush}"/>
                 </Trigger>
+                <DataTrigger Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType=DataGridRow}}" Value="True">
+                    <Setter Property="Background" Value="{DynamicResource SelectionBrush}"/>
+                    <Setter Property="Foreground" Value="{DynamicResource SelectionTextBrush}"/>
+                </DataTrigger>
             </Style.Triggers>
         </Style>
 
@@ -312,20 +316,9 @@
             <Setter Property="VerticalAlignment" Value="Center"/>
             <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
             <Style.Triggers>
-                <MultiDataTrigger>
-                    <MultiDataTrigger.Conditions>
-                        <Condition Binding="{Binding HighContrast, Source={StaticResource WindowThemeState}}" Value="True"/>
-                        <Condition Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType=DataGridRow}}" Value="True"/>
-                    </MultiDataTrigger.Conditions>
-                    <Setter Property="Foreground" Value="{DynamicResource SelectionTextBrush}"/>
-                </MultiDataTrigger>
-                <MultiDataTrigger>
-                    <MultiDataTrigger.Conditions>
-                        <Condition Binding="{Binding HighContrast, Source={StaticResource WindowThemeState}}" Value="True"/>
-                        <Condition Binding="{Binding IsKeyboardFocusWithin, RelativeSource={RelativeSource AncestorType=DataGridCell}}" Value="True"/>
-                    </MultiDataTrigger.Conditions>
-                    <Setter Property="Foreground" Value="{DynamicResource SelectionTextBrush}"/>
-                </MultiDataTrigger>
+                <DataTrigger Binding="{Binding HighContrast, Source={StaticResource WindowThemeState}}" Value="True">
+                    <Setter Property="Foreground" Value="{Binding Foreground, RelativeSource={RelativeSource AncestorType=DataGridCell}}"/>
+                </DataTrigger>
             </Style.Triggers>
         </Style>
         <Style x:Key="TransferDetailTextStyle" TargetType="TextBlock" BasedOn="{StaticResource GridTextStyle}">
@@ -374,20 +367,9 @@
                 <DataTrigger Binding="{Binding Status}" Value="Failed">
                     <Setter Property="Foreground" Value="{DynamicResource FailedStateBrush}"/>
                 </DataTrigger>
-                <MultiDataTrigger>
-                    <MultiDataTrigger.Conditions>
-                        <Condition Binding="{Binding HighContrast, Source={StaticResource WindowThemeState}}" Value="True"/>
-                        <Condition Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType=DataGridRow}}" Value="True"/>
-                    </MultiDataTrigger.Conditions>
-                    <Setter Property="Foreground" Value="{DynamicResource SelectionTextBrush}"/>
-                </MultiDataTrigger>
-                <MultiDataTrigger>
-                    <MultiDataTrigger.Conditions>
-                        <Condition Binding="{Binding HighContrast, Source={StaticResource WindowThemeState}}" Value="True"/>
-                        <Condition Binding="{Binding IsKeyboardFocusWithin, RelativeSource={RelativeSource AncestorType=DataGridCell}}" Value="True"/>
-                    </MultiDataTrigger.Conditions>
-                    <Setter Property="Foreground" Value="{DynamicResource SelectionTextBrush}"/>
-                </MultiDataTrigger>
+                <DataTrigger Binding="{Binding HighContrast, Source={StaticResource WindowThemeState}}" Value="True">
+                    <Setter Property="Foreground" Value="{Binding Foreground, RelativeSource={RelativeSource AncestorType=DataGridCell}}"/>
+                </DataTrigger>
             </Style.Triggers>
         </Style>
 

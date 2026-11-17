@@ -43,6 +43,21 @@ internal sealed partial class UiScenario
             var row=new DownloadItem{Url="https://theme.invalid/video",Title="Название",Status="Failed",State="Failed"};
             queue.ItemsSource=new[]{row};queue.SelectedItem=row;window.UpdateLayout();Flush();
             var state=(TextBlock)queue.Columns[2].GetCellContent(row);
+            var originalState=state;
+            string StateDetails()
+            {
+                DataGridCell? cell=null;
+                for(DependencyObject? ancestor=state;ancestor is not null;ancestor=VisualTreeHelper.GetParent(ancestor))
+                    if(ancestor is DataGridCell found){cell=found;break;}
+                var container=queue.ItemContainerGenerator.ContainerFromItem(row) as DataGridRow;
+                var paletteState=window.TryFindResource("WindowThemeState") as WindowThemeState;
+                static string ColorText(Brush? value)=>value is SolidColorBrush solid?solid.Color.ToString():value?.ToString()??"null";
+                var source=DependencyPropertyHelper.GetValueSource(state,TextBlock.ForegroundProperty);
+                return $" actual={ColorText(state.Foreground)}, expected={ColorText(SystemColors.HighlightTextBrush)}, text=[{state.Text}], expectedText=[{row.StateLabel}],"+
+                    $" rowSelected={container?.IsSelected}, cellSelected={cell?.IsSelected}, cellFocus={cell?.IsKeyboardFocusWithin},"+
+                    $" cellForeground={ColorText(cell?.Foreground)}, cellBackground={ColorText(cell?.Background)}, paletteContrast={paletteState?.HighContrast},"+
+                    $" queueSelected={ReferenceEquals(queue.SelectedItem,row)}, sameTextElement={ReferenceEquals(state,originalState)}, foregroundSource={source.BaseValueSource}/{source.IsExpression}.";
+            }
             Require(ColorOf(start.Background)==Color.FromRgb(79,70,229) &&
                 ColorOf(start.Foreground)==Color.FromRgb(238,241,248) &&
                 ColorOf(pause.Background)==Color.FromRgb(245,158,11) &&
@@ -54,12 +69,21 @@ internal sealed partial class UiScenario
             editor.Show();editor.UpdateLayout();
             var editorNote=Control<TextBlock>(editor,"MediaCatalogStatus");
             contrast=true;theme.Refresh();Flush();window.UpdateLayout();editor.UpdateLayout();
+            // Resource invalidation may regenerate the column's TextBlock.
+            // Inspect the element currently presented by the actual cell.
+            state=(TextBlock)queue.Columns[2].GetCellContent(row);
             Require(Same(window.Background,SystemColors.WindowBrush) && Same(input.Foreground,SystemColors.WindowTextBrush) &&
                 Same(input.Background,SystemColors.WindowBrush) && Same(start.Background,SystemColors.HighlightBrush) &&
                 Same(start.Foreground,SystemColors.HighlightTextBrush) && Same(pause.Foreground,SystemColors.HighlightTextBrush),
                 "Existing window, fields and primary actions must switch to matched Windows system color pairs");
+            var selectedRow=queue.ItemContainerGenerator.ContainerFromItem(row) as DataGridRow;
+            DataGridCell? selectedCell=null;
+            for(DependencyObject? ancestor=state;ancestor is not null;ancestor=VisualTreeHelper.GetParent(ancestor))
+                if(ancestor is DataGridCell found){selectedCell=found;break;}
+            Require(state.IsVisible && selectedRow?.IsSelected==true && selectedCell?.IsSelected==true,
+                "The selection assertion must inspect a live visible status in an actually selected row and cell."+StateDetails());
             Require(Same(state.Foreground,SystemColors.HighlightTextBrush) && state.Text==row.StateLabel,
-                "A selected status cell must use HighlightText while keeping its bound status label");
+                "A selected status cell must use HighlightText while keeping its bound status label."+StateDetails());
             Require(Same(editor.Background,SystemColors.WindowBrush) && Same(editor.Foreground,SystemColors.WindowTextBrush) &&
                 Same(editorNote.Foreground,SystemColors.WindowTextBrush) &&
                 Same(Control<TextBox>(editor,"MediaSectionStartBox").Foreground,SystemColors.WindowTextBrush),
@@ -81,7 +105,7 @@ internal sealed partial class UiScenario
                 "The focus test must exercise a genuinely focused cell in an unselected row");
             Require(Same(stateCell.Background,SystemColors.HighlightBrush) &&
                 Same(state.Foreground,SystemColors.HighlightTextBrush) && state.Text==row.StateLabel,
-                "A focused unselected status cell must keep the bound label readable on its system highlight background");
+                "A focused unselected status cell must keep the bound label readable on its system highlight background."+StateDetails());
             queue.SelectedItem=row;Flush();
 
             contrast=false;theme.Refresh();Flush();
