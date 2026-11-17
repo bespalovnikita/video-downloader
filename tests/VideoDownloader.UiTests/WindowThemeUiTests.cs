@@ -109,10 +109,13 @@ internal sealed partial class UiScenario
             queue.SelectedItem=row;Flush();
 
             contrast=false;theme.Refresh();Flush();
+            window.UpdateLayout();editor.UpdateLayout();
+            state=(TextBlock)queue.Columns[2].GetCellContent(row);
             Require(ColorOf(window.Background)==Color.FromRgb(17,19,24) &&
                 ColorOf(start.Background)==Color.FromRgb(79,70,229) && ColorOf(state.Foreground)==Color.FromRgb(251,113,133) &&
                 ColorOf(editorNote.Foreground)==Color.FromRgb(183,192,216),
-                "Leaving Contrast Theme must restore the dark palette and normal bound state colors on existing controls");
+                "Leaving Contrast Theme must restore the dark palette and normal bound state colors on existing controls."+
+                $" window={ColorOf(window.Background)}, start={ColorOf(start.Background)}, editorNote={ColorOf(editorNote.Foreground)};"+StateDetails());
             theme.Dispose();contrast=true;theme.Refresh();Flush();
             Require(ColorOf(start.Background)==Color.FromRgb(79,70,229),
                 "A late theme callback after disposal must not mutate the closed owner's resource palette");
