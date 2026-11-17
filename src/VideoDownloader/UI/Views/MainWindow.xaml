@@ -417,7 +417,40 @@
             <Setter Property="Foreground" Value="{DynamicResource MutedBrush}"/>
         </Style>
         <DataTemplate x:Key="TransferDetails">
-            <StackPanel Margin="0,3,0,3">
+            <StackPanel x:Name="TransferDetailsPanel" Margin="0,3,0,3">
+                <StackPanel.Style>
+                    <Style TargetType="StackPanel">
+                        <Style.Triggers>
+                            <!-- A fresh waiting row has no transfer to report.
+                                 Retained attempts and every real observation stay visible. -->
+                            <MultiDataTrigger>
+                                <MultiDataTrigger.Conditions>
+                                    <Condition Binding="{Binding Status}" Value="Queued"/>
+                                    <Condition Binding="{Binding State}" Value="Queued"/>
+                                    <Condition Binding="{Binding Progress}" Value="0"/>
+                                    <Condition Binding="{Binding ProgressDetail}" Value=""/>
+                                    <Condition Binding="{Binding Speed}" Value=""/>
+                                    <Condition Binding="{Binding Downloaded}" Value=""/>
+                                    <Condition Binding="{Binding ETA}" Value=""/>
+                                    <Condition Binding="{Binding Path}" Value=""/>
+                                    <Condition Binding="{Binding RawError}" Value=""/>
+                                    <Condition Binding="{Binding Slot}" Value=""/>
+                                    <Condition Binding="{Binding TransferredBytes}" Value="0"/>
+                                    <Condition Binding="{Binding StageDir}" Value=""/>
+                                    <Condition Binding="{Binding RunDir}" Value=""/>
+                                    <Condition Binding="{Binding ResumeState}" Value="{x:Null}"/>
+                                    <Condition Binding="{Binding OwnedPaths.Count}" Value="0"/>
+                                    <Condition Binding="{Binding CleanupPaths.Count}" Value="0"/>
+                                    <Condition Binding="{Binding CleanupError}" Value=""/>
+                                    <Condition Binding="{Binding PendingRemoval}" Value="False"/>
+                                    <Condition Binding="{Binding AttemptFinished}" Value="False"/>
+                                    <Condition Binding="{Binding RequeueRequested}" Value="False"/>
+                                </MultiDataTrigger.Conditions>
+                                <Setter Property="Visibility" Value="Collapsed"/>
+                            </MultiDataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </StackPanel.Style>
                 <ProgressBar Height="4" Minimum="0" Maximum="100" Value="{Binding Progress}"
                              Background="{DynamicResource FieldHoverBrush}" Foreground="{DynamicResource ProgressBrush}" BorderThickness="0"/>
                 <WrapPanel Margin="0,3,0,0">
