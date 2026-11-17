@@ -67,6 +67,23 @@ internal sealed partial class UiScenario
             Require(Control<Button>(window,"MediaSelectionButton").Opacity==1,
                 "Disabled guarded actions must retain readable system colors without translucent Contrast Theme text");
 
+            // Keyboard focus can remain in a cell after Ctrl+click or an
+            // explicit selection clear removes its row from the selection.
+            // Its highlight background still needs the paired system text.
+            DataGridCell? stateCell=null;
+            for(DependencyObject? ancestor=state;ancestor is not null;ancestor=VisualTreeHelper.GetParent(ancestor))
+                if(ancestor is DataGridCell cell){stateCell=cell;break;}
+            Require(stateCell is not null,"The bound status must belong to an actual DataGridCell");
+            window.Activate();queue.CurrentCell=new DataGridCellInfo(row,queue.Columns[2]);
+            System.Windows.Input.Keyboard.Focus(stateCell!);queue.UnselectAll();Flush();window.UpdateLayout();
+            var rowContainer=(DataGridRow)queue.ItemContainerGenerator.ContainerFromItem(row);
+            Require(stateCell!.IsKeyboardFocusWithin && !rowContainer.IsSelected,
+                "The focus test must exercise a genuinely focused cell in an unselected row");
+            Require(Same(stateCell.Background,SystemColors.HighlightBrush) &&
+                Same(state.Foreground,SystemColors.HighlightTextBrush) && state.Text==row.StateLabel,
+                "A focused unselected status cell must keep the bound label readable on its system highlight background");
+            queue.SelectedItem=row;Flush();
+
             contrast=false;theme.Refresh();Flush();
             Require(ColorOf(window.Background)==Color.FromRgb(17,19,24) &&
                 ColorOf(start.Background)==Color.FromRgb(79,70,229) && ColorOf(state.Foreground)==Color.FromRgb(251,113,133) &&
