@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO;
 using System.Windows;
+using TabControl=System.Windows.Controls.TabControl;
 using System.Windows.Controls;
 using System.Windows.Markup;
 using System.Windows.Media;
