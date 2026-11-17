@@ -23,14 +23,14 @@ internal sealed partial class UiScenario
             System.Globalization.CultureInfo.CurrentUICulture,label.FlowDirection,
             new System.Windows.Media.Typeface(label.FontFamily,label.FontStyle,label.FontWeight,label.FontStretch),label.FontSize,
             System.Windows.Media.Brushes.White,System.Windows.Media.VisualTreeHelper.GetDpi(label).PixelsPerDip).WidthIncludingTrailingWhitespace;
-        static void PumpUntil(Func<bool> condition,string message)
+        static void PumpUntil(Func<bool> condition,string message,Func<string>? details=null)
         {
             if(condition())return;
             var frame=new DispatcherFrame();var deadline=DateTime.UtcNow.AddSeconds(8);
             var timer=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(15)};
             timer.Tick+=(_,_)=>{if(condition() || DateTime.UtcNow>=deadline)frame.Continue=false;};
             timer.Start();try{Dispatcher.PushFrame(frame);}finally{timer.Stop();}
-            Require(condition(),message);
+            Require(condition(),message+(details is null?"":" "+details()));
         }
         string root=Path.Combine(testRoot,"subscription-filters-"+Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
@@ -146,9 +146,17 @@ internal sealed partial class UiScenario
             window.Width=860;window.Height=600;window.UpdateLayout();
             driver.TestSources.UpdateLayout();
             Require(driver.TestSources.Columns.Count==4 &&
-                driver.TestSources.Columns.Select(column=>column.Header?.ToString()).SequenceEqual(new[]{"Подписка","Состояние","Расписание","Ошибка / предупреждение"}) &&
+                driver.TestSources.Columns.Select(column=>column.Header?.ToString()).SequenceEqual(new[]{"Подписка","Состояние","Расписание","Ошибка / предупреждение"}),
+                "The compact source overview must retain identity, status, schedule and warnings.");
+            // Native resizing and DataGrid's deferred Render-priority star-width
+            // computation must both finish before comparing their actual bounds.
+            PumpUntil(()=>Math.Abs(window.ActualWidth-860)<=1 && Math.Abs(window.ActualHeight-600)<=1 &&
+                driver.TestSources.IsVisible && driver.TestSources.ActualWidth>0 &&
+                driver.TestSources.Columns.All(column=>double.IsFinite(column.ActualWidth) && column.ActualWidth>0) &&
                 driver.TestSources.Columns.Sum(column=>column.ActualWidth)<=driver.TestSources.ActualWidth+1,
-                "The compact source overview must keep identity, status, schedule and warnings within its actual viewport without horizontal scrolling.");
+                "The compact source overview must fit its actual viewport without horizontal scrolling.",
+                ()=>$"Window={window.ActualWidth:0.##}x{window.ActualHeight:0.##}; grid={driver.TestSources.ActualWidth:0.##}; "+
+                    $"visible={driver.TestSources.IsVisible}; columns=[{string.Join(", ",driver.TestSources.Columns.Select(column=>$"{column.Header}: {column.ActualWidth:0.##}"))}].");
             var sourceA=driver.TestSources.Items.Cast<SubscriptionController.SubscriptionSourceView>().Single(row=>row.Id=="source-a");
             var sourceB=driver.TestSources.Items.Cast<SubscriptionController.SubscriptionSourceView>().Single(row=>row.Id=="source-b");
             driver.TestSources.ScrollIntoView(sourceA);driver.TestSources.UpdateLayout();
