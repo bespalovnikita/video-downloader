@@ -121,7 +121,7 @@ internal sealed partial class UiScenario
             Reset();Source("source-b");
             Require(Rows().Length==1 && Rows()[0].Item.SubscriptionId=="source-b" && Rows()[0].Url==upper,
                 "Sources with equal names must stay distinct by ID.");
-            driver.TestSources.SelectedItems.Clear();
+            driver.TestSources.SelectedItem=null;
             Require(Rows().Length==8,"Clearing source selection must show the full ordered cross-source projection.");
             Source("source-a");state.SelectedValue="New";
             store.MarkQueued("source-a",[lower]);driver.Refresh();

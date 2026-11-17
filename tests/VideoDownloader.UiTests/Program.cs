@@ -11,6 +11,7 @@ internal static class Program
             {
                 case "All": UiScenario.Run();break;
                 case "SubscriptionInitialActions": UiScenario.RunSubscriptionInitialActionsOnly();break;
+                case "WindowsUsability": UiScenario.RunWindowsUsabilityOnly();break;
                 default: throw new InvalidOperationException("Unknown isolated WPF test scene.");
             }
             return 0;

@@ -3,10 +3,14 @@
 param(
     [ValidateSet('Debug','Release')][string]$Configuration = 'Release',
     [string]$ResultPath = '',
-    [ValidateSet('All','SubscriptionInitialActions')][string]$Scene = 'All'
+    [ValidateSet('All','SubscriptionInitialActions','WindowsUsability')][string]$Scene = 'All'
 )
 $ErrorActionPreference = 'Stop'
-$Scene = if ($Scene -ieq 'All') { 'All' } else { 'SubscriptionInitialActions' }
+$Scene = switch ($Scene) {
+    'All' { 'All' }
+    'WindowsUsability' { 'WindowsUsability' }
+    default { 'SubscriptionInitialActions' }
+}
 $root = Split-Path -Parent $PSScriptRoot
 $exe = Join-Path $root "tests/VideoDownloader.UiTests/bin/$Configuration/net8.0-windows/VideoDownloader.UiTests.exe"
 $fixture = Join-Path $root "tests/VideoDownloader.Tests/bin/$Configuration/net8.0-windows/VideoDownloader.Tests.exe"
