@@ -123,6 +123,9 @@ public sealed partial class NativeWindow
     {
         if(!CanStartDependencyOperation() || RejectProfileBackupMutation())return Task.CompletedTask;
         _dependencyOperationRunning=true;
+        // In compact mode Settings replaces the queue. Bring the operation's
+        // progress and Cancel back into view when installation starts there.
+        _panelLayout.RevealQueue();
         _dependencyOutcome="";
         _dependencyStop=new CancellationTokenSource();
         int generation=++_dependencyGeneration;

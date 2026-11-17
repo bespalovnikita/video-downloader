@@ -63,6 +63,10 @@ internal sealed class PanelLayoutController : IDisposable
     internal double QueueWidth=>_queueWidth;
     internal double PreviewWidth=>_previewWidth;
     internal bool IsCompact=>_compact;
+    internal void RevealQueue()
+    {
+        if(_compact && _compactPanel!=0)SelectCompactPanel(0);
+    }
 
     internal void Apply(double queueWidth,double previewWidth)
     {

@@ -66,9 +66,18 @@ internal sealed partial class UiScenario
                     progress:progress).ConfigureAwait(false);
                 return "Component fixture installed";
             });
+            window.Width=800;window.Height=600;window.UpdateLayout();
+            Control<Button>(window,"ShowDetailsPanelButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Control<System.Windows.Controls.TabControl>(window,"DetailsTabs").SelectedItem=
+                Control<System.Windows.Controls.TabItem>(window,"MaintenanceTab");
+            window.UpdateLayout();
+            Require(!Control<FrameworkElement>(window,"QueuePanel").IsVisible,
+                "The installation fixture must start from compact Settings with its queue card initially hidden.");
             var operation=Install("known");
             PumpUntil(()=>server.Requests>=1 && cancel.IsVisible && bar.IsVisible && !bar.IsIndeterminate,
                 "A real Content-Length transfer must show a measured progress bar and Cancel in the main card.");
+            Require(Control<FrameworkElement>(window,"QueuePanel").IsVisible,
+                "Starting installation from compact Settings must reveal progress and cancellation without another navigation step.");
             Require(cancel.IsEnabled && !Control<Button>(window,"StartButton").IsEnabled &&
                     !Control<Button>(window,"InstallFfmpegButton").IsEnabled,
                 "Component work must prevent concurrent download admission and duplicate replacement.");
