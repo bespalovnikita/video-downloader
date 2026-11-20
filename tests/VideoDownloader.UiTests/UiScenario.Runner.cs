@@ -28,6 +28,8 @@ internal sealed partial class UiScenario
         Window? window=null;
         try
         {
+            Stage("testing long-lived tooltips and overdue DispatcherTimer delivery");
+            UiScenario.TestToolTipTimers();
             Stage("testing cold title ingress through metadata worker");
             UiScenario.TestColdTitleIngress(root);
             Stage("testing subscription preview prefetch after complete scans");

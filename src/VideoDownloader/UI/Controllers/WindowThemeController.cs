@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Media;
 using Brush=System.Windows.Media.Brush;
 using Color=System.Windows.Media.Color;
@@ -12,6 +13,27 @@ namespace VideoDownloader.Native;
 // update in place when Windows changes its Contrast Theme or system colors.
 public sealed class WindowThemeResources : ResourceDictionary
 {
+    internal const int ToolTipShowDurationMilliseconds=24*60*60*1000;
+    static WindowThemeResources()
+    {
+        EventManager.RegisterClassHandler(typeof(FrameworkElement),ToolTipService.ToolTipOpeningEvent,
+            new ToolTipEventHandler(BoundToolTipDuration));
+        EventManager.RegisterClassHandler(typeof(FrameworkContentElement),ToolTipService.ToolTipOpeningEvent,
+            new ToolTipEventHandler(BoundToolTipDuration));
+    }
+
+    private static void BoundToolTipDuration(object sender,ToolTipEventArgs args)
+    {
+        // WPF's Int32.MaxValue default can sort ahead of overdue short timers
+        // through signed TickCount subtraction, stalling every DispatcherTimer.
+        // https://github.com/dotnet/wpf/issues/10596
+        // The opening event precedes PopupControlService's duration timer.
+        // A full day retains long reading time without that overflow edge;
+        // SetCurrentValue preserves bindings and explicit shorter durations.
+        if(sender is DependencyObject owner && ToolTipService.GetShowDuration(owner)==int.MaxValue)
+            owner.SetCurrentValue(ToolTipService.ShowDurationProperty,ToolTipShowDurationMilliseconds);
+    }
+
     private readonly WindowThemeState _state=new();
     public WindowThemeResources()
     {

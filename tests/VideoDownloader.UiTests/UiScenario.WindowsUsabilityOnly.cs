@@ -27,6 +27,7 @@ internal sealed partial class UiScenario
         try
         {
             using var offers=new SubscriptionQueueOfferResponder();
+            Check("tooltip reading time and overdue dispatcher timers",TestToolTipTimers);
             Check("subscription search and compact navigation",()=>TestSubscriptionFilters(root));
             Check("adaptive main window and keyboard navigation",()=>TestPanelLayout(root));
             Check("contrast palette and inherited editor controls",TestWindowContrastTheme);
