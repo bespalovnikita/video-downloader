@@ -4,6 +4,8 @@ using System.Windows.Controls;
 using System.Windows.Markup;
 using System.Windows.Threading;
 using System.Xml;
+using System.Windows.Input;
+using System.Windows.Interop;
 
 namespace VideoDownloader.UiTests;
 
@@ -27,6 +29,28 @@ internal sealed partial class UiScenario
         static T Control<T>(Window window,string name) where T:class=>(T)(window.FindName(name)
             ??throw new InvalidOperationException("Missing real media control: "+name));
         static void Click(Window window,string name)=>Control<Button>(window,name).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        static void NativeEditorKey(Window dialog,Key key,Func<bool> ready,string message)
+        {
+            int observed=0;
+            PreProcessInputEventHandler observe=(_,e)=>
+            {
+                if(e.StagingItem.Input is System.Windows.Input.KeyEventArgs input && input.Key==key &&
+                    input.RoutedEvent==Keyboard.PreviewKeyDownEvent)observed++;
+            };
+            InputManager.Current.PreProcessInput+=observe;
+            try
+            {
+                nint target=MediaEditorKeyboardInput.GetFocus();
+                if(target==0)target=new WindowInteropHelper(dialog).Handle;
+                nint virtualKey=KeyInterop.VirtualKeyFromKey(key);
+                int down=((key==Key.Escape?1:0x1c)<<16)|1;
+                Require(PostMessageW(target,0x0100,virtualKey,(nint)down) &&
+                    PostMessageW(target,0x0101,virtualKey,(nint)(down|unchecked((int)0xc0000000))),
+                    "The actual HWND keyboard messages must be queued.");
+                PumpUntil(()=>observed>0 && ready(),message);
+            }
+            finally{InputManager.Current.PreProcessInput-=observe;}
+        }
 
         string fixture=Environment.GetEnvironmentVariable("VD_NATIVE_TITLE_FIXTURE")??"";
         Require(File.Exists(fixture),"The real native metadata fixture must be provided.");
@@ -72,7 +96,48 @@ internal sealed partial class UiScenario
             Require(!expert.IsExpanded && !catalog.IsVisible && simpleStart.IsVisible &&
                 rangeBounds.Top>=0 && rangeBounds.Bottom<=scroll.ActualHeight,
                 "An automatic fragment must open at its visible time fields, with the expert catalog collapsed.");
-            simpleStart.Text="2";simpleEnd.Text="4";Click(dialog,"ApplyMediaSelectionButton");
+            dialog.Activate();simpleStart.Focus();
+            PumpUntil(()=>simpleStart.IsKeyboardFocused,"The actual empty editor must accept keyboard focus before Escape.");
+            NativeEditorKey(dialog,Key.Escape,()=>subject.MediaSelectionEditor is null,
+                "Escape must close an unchanged editor immediately without asking to discard a draft.");
+            Require(first.Selection is null,"Closing an unchanged editor must not apply a plan.");
+            Click(window,"MediaSelectionButton");dialog=subject.MediaSelectionEditor!;
+            expert=Control<Expander>(dialog,"MediaFormatsExpander");catalog=Control<DataGrid>(dialog,"MediaFormatsGrid");
+            scroll=Control<ScrollViewer>(dialog,"MediaSelectionScrollViewer");
+            simpleStart=Control<TextBox>(dialog,"MediaSectionStartBox");simpleEnd=Control<TextBox>(dialog,"MediaSectionEndBox");
+            simpleStart.Text="2";simpleEnd.Text="4";
+            var formatMode=Control<ComboBox>(dialog,"MediaFormatModeCombo");
+            dialog.Activate();formatMode.BringIntoView();formatMode.Focus();
+            PumpUntil(()=>formatMode.IsKeyboardFocused,"The real format ComboBox must own keyboard focus before opening.");
+            formatMode.IsDropDownOpen=true;
+            PumpUntil(()=>formatMode.IsDropDownOpen,"The actual format ComboBox popup must open before native Escape.");
+            NativeEditorKey(dialog,Key.Escape,()=>!formatMode.IsDropDownOpen,
+                "Escape must reach the ComboBox and close its popup before the editor handles it.");
+            Require(dialog.IsVisible && ReferenceEquals(subject.MediaSelectionEditor,dialog) &&
+                Control<StackPanel>(dialog,"MediaDiscardDraftPanel").Visibility==Visibility.Collapsed &&
+                simpleStart.Text=="2" && simpleEnd.Text=="4" && first.Selection is null,
+                "Dismissing the popup must preserve the unapplied range and avoid a discard prompt.");
+            simpleStart.BringIntoView();simpleStart.Focus();
+            PumpUntil(()=>simpleStart.IsKeyboardFocused,"The edited range must own keyboard focus before editor Escape.");
+            NativeEditorKey(dialog,Key.Escape,()=>Control<StackPanel>(dialog,"MediaDiscardDraftPanel").IsVisible,
+                "Escape from the editor must protect an edited draft instead of closing it.");
+            Require(dialog.IsVisible && simpleStart.Text=="2" && simpleEnd.Text=="4" && first.Selection is null,
+                "The pinned discard choice must preserve the current input and stored plan.");
+            Require(Control<Button>(dialog,"ContinueMediaEditingButton").IsDefault &&
+                !Control<Button>(dialog,"ApplyMediaSelectionButton").IsDefault,
+                "The dirty-draft prompt must use Continue editing as its safe Enter default.");
+            NativeEditorKey(dialog,Key.Return,()=>!Control<StackPanel>(dialog,"MediaDiscardDraftPanel").IsVisible,
+                "Native Enter on the discard choice must continue editing rather than apply the draft.");
+            PumpUntil(()=>simpleStart.IsKeyboardFocused,"Continuing must restore focus to the original time field.");
+            Require(Control<StackPanel>(dialog,"MediaDiscardDraftPanel").Visibility==Visibility.Collapsed &&
+                Control<Button>(dialog,"ApplyMediaSelectionButton").IsDefault && first.Selection is null,
+                "Continuing must remove the confirmation without changing the draft.");
+            Require(PostMessageW(new WindowInteropHelper(dialog).Handle,0x0112,(nint)0xf060,0),
+                "The native chrome Close command must be queued.");
+            PumpUntil(()=>Control<StackPanel>(dialog,"MediaDiscardDraftPanel").IsVisible,
+                "Chrome Close and Alt+F4 must use the same dirty-draft protection.");
+            Click(dialog,"ContinueMediaEditingButton");
+            Click(dialog,"ApplyMediaSelectionButton");
             Require(subject.MediaSelectionEditor==null && first.Selection is {Format:null,Section.StartSeconds:2,Section.EndSeconds:4} &&
                 first.Status=="Queued" && subject.SessionState.Coordinator==null,
                 "A normal fragment must apply through the default automatic mode without opening or choosing technical formats.");
@@ -185,6 +250,12 @@ internal sealed partial class UiScenario
             Require(Control<TextBlock>(dialog,"MediaSectionStartError").Visibility==Visibility.Visible,
                 "The unsupported collection range must have its explanation beside the time field.");
             Click(dialog,"CloseMediaSelectionButton");
+            Require(dialog.IsVisible && first.Selection==previous &&
+                Control<StackPanel>(dialog,"MediaDiscardDraftPanel").IsVisible,
+                "The explicit Close button must protect a changed collection draft as well as Escape and chrome Close.");
+            Click(dialog,"DiscardMediaDraftButton");
+            Require(subject.MediaSelectionEditor is null && first.Selection==previous,
+                "Only an explicit discard may close the edited draft without applying it.");
             Require(subject.SessionState.Coordinator==null && subject.SessionState.RunningTask==null && !File.Exists(storage.HistoryPath),
                 "Editing and restoring selections must never start transfers or add successful history.");
             foreach(string line in File.ReadAllLines(log).Where(line=>!string.IsNullOrWhiteSpace(line)))
@@ -199,5 +270,11 @@ internal sealed partial class UiScenario
             subject.Dispose();if(window.IsVisible)window.Close();
             Environment.SetEnvironmentVariable("VD_NATIVE_TITLE_FIXTURE_LOG",oldLog);
         }
+    }
+
+    private static class MediaEditorKeyboardInput
+    {
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        internal static extern nint GetFocus();
     }
 }

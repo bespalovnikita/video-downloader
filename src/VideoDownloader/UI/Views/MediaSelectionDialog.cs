@@ -62,6 +62,7 @@ internal sealed partial class MediaSelectionDialog : Window
         _error=Named("MediaSelectionError",ValidationNote());
         AutomationProperties.SetLiveSetting(_error,AutomationLiveSetting.Assertive);
         footer.Children.Add(_error);
+        InitializeDiscardPrompt(footer);
         var footerActions=new WrapPanel{Orientation=System.Windows.Controls.Orientation.Horizontal,
             HorizontalAlignment=System.Windows.HorizontalAlignment.Right,Margin=new Thickness(0,12,0,0)};
         _applyButton=Named("ApplyMediaSelectionButton",new Button{Content="Применить",IsDefault=true});
@@ -155,13 +156,13 @@ internal sealed partial class MediaSelectionDialog : Window
         _primary.SelectionChanged+=(_,_)=>ClearValidation();_audio.SelectionChanged+=(_,_)=>ClearValidation();
         _applyButton.Click+=(_,_)=>Apply();
         _resetButton.Click+=(_,_)=>Commit(null);
-        close.Click+=(_,_)=>Close();
-        PreviewKeyDown+=(_,e)=>{if(e.Key==System.Windows.Input.Key.Escape){e.Handled=true;Close();}};
+        close.Click+=(_,_)=>RequestEditorClose();
         RefreshEnabled();
         RefreshFrameState();
         RefreshTimelineState();
         RefreshPlaybackState();
         RefreshWaveformState();
+        InitializeEditorCloseGuard();
     }
 
     private T Named<T>(string name,T control) where T:FrameworkElement
