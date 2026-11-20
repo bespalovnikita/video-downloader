@@ -25,6 +25,7 @@ internal sealed partial class MediaSelectionDialog
     private FrameworkElement? _sectionListPanel;
     private Button? _addSection,_removeSection,_sectionUp,_sectionDown;
     private bool _switchingSection;
+    private int _singleSectionIndex;
 
     private void InitializeSectionList(StackPanel body,FrameworkElement range,DownloadSelection? selection)
     {
@@ -49,7 +50,7 @@ internal sealed partial class MediaSelectionDialog
         _sectionUp=Action("MoveMediaSectionUpButton","Выше");
         _sectionDown=Action("MoveMediaSectionDownButton","Ниже");
         details.Children.Add(actions);
-        details.Children.Add(Note($"До {DownloadSectionSet.MaximumCount} непересекающихся фрагментов. Выбери строку и меняй её начало/конец ниже. Порядок списка задаёт порядок файлов или отрезков в одном ролике. Выключение списка оставляет текущий диапазон."));
+        details.Children.Add(Note($"До {DownloadSectionSet.MaximumCount} непересекающихся фрагментов. Выбери строку и меняй её начало/конец ниже. Порядок списка задаёт порядок файлов или отрезков в одном ролике. При выключенном списке применяется только текущий диапазон; остальные черновики возвращаются при включении до закрытия редактора."));
         panel.Children.Add(details);
         body.Children.Insert(body.Children.IndexOf(range),panel);
 
@@ -79,11 +80,24 @@ internal sealed partial class MediaSelectionDialog
         if(_multipleSections is null || _sectionList is null || _sectionListPanel is null)return;
         if(!_editable){_multipleSections.IsChecked=_sectionListPanel.Visibility==Visibility.Visible;return;}
         bool multiple=_multipleSections.IsChecked==true;
-        if(!multiple || _sectionDrafts.Count<=1)
+        if(multiple)
         {
-            _sectionDrafts.Clear();
-            _sectionDrafts.Add(new SectionDraft{Start=_start.Text,End=_end.Text});
-            RenumberSections();_sectionList.SelectedIndex=0;
+            if(_sectionDrafts.Count==0)
+            {
+                _sectionDrafts.Add(new SectionDraft{Start=_start.Text,End=_end.Text});RenumberSections();_singleSectionIndex=0;
+            }
+            _singleSectionIndex=Math.Clamp(_singleSectionIndex,0,_sectionDrafts.Count-1);
+            // Single-mode edits still belong to the range selected when the
+            // list was hidden. Other drafts and their order remain untouched.
+            var current=_sectionDrafts[_singleSectionIndex];
+            current.Start=_start.Text;current.End=_end.Text;current.Notify();
+            _sectionList.SelectedIndex=_singleSectionIndex;
+        }
+        else if(_sectionList.SelectedIndex>=0 && _sectionList.SelectedIndex<_sectionDrafts.Count)
+        {
+            _singleSectionIndex=_sectionList.SelectedIndex;
+            var current=_sectionDrafts[_singleSectionIndex];
+            current.Start=_start.Text;current.End=_end.Text;current.Notify();
         }
         _sectionListPanel.Visibility=multiple?Visibility.Visible:Visibility.Collapsed;
         if(multiple)DisplaySelectedSection();

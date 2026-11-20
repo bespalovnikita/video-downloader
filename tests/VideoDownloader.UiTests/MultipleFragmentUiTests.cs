@@ -140,6 +140,26 @@ internal sealed partial class UiScenario
             dialog.SetEditable(true);list.SelectedIndex=1;multiple.IsChecked=false;
             Require(start.Text==DownloadSection.FormatTimestamp(2) && end.Text==DownloadSection.FormatTimestamp(3),
                 "Turning off the list must retain the currently selected single range");
+            Require(list.Items.Count==2 && !list.IsVisible && row.Selection==saved,
+                "Hiding the list must retain both unapplied drafts without changing the stored selection.");
+            start.Text="2.2";end.Text="3.2";
+            Click(dialog,"RemoveMediaSectionButton");Click(dialog,"AddMediaSectionButton");
+            Require(list.Items.Count==2,"Hidden direct action events must not mutate retained drafts.");
+            multiple.IsChecked=true;
+            Require(list.Items.Count==2 && list.SelectedIndex==1 && start.Text=="2.2" && end.Text=="3.2" &&
+                row.Selection==saved && applied==1,
+                "Re-enabling the list must restore its selected draft and preserve edits made in single mode without committing.");
+            list.SelectedIndex=0;
+            Require(start.Text==DownloadSection.FormatTimestamp(5) && end.Text==DownloadSection.FormatTimestamp(7),
+                "A single-mode round trip must preserve the other range and the user's order.");
+            list.SelectedIndex=1;
+            var merge=Control<CheckBox>(dialog,"MergeMediaSectionsCheck");
+            var reencode=Control<CheckBox>(dialog,"AllowMergeReencodeCheck");
+            merge.IsChecked=true;reencode.IsChecked=true;multiple.IsChecked=false;multiple.IsChecked=true;
+            Require(list.Items.Count==2 && list.SelectedIndex==1 && start.Text=="2.2" && end.Text=="3.2" &&
+                merge.IsChecked==false && reencode.IsChecked==false,
+                "Restoring inactive drafts must never restore merge or reencoding consent cleared by single mode.");
+            multiple.IsChecked=false;
             start.Text="";end.Text="";Click(dialog,"ApplyMediaSelectionButton");
             Require(row.Selection==null && applied==2 && File.Exists(completed),"Full-video reset must clear only the planned ranges without deleting the previous result");
             dialog=null;

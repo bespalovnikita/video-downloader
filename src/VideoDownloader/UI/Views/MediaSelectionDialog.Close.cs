@@ -40,8 +40,11 @@ internal sealed partial class MediaSelectionDialog
     {
         bool multiple=_multipleSections?.IsChecked==true;
         bool manual=_mode.SelectedIndex==1;
+        // Inactive extra ranges are still valuable unapplied work. A plain
+        // single-range on/off round trip does not invent a dirty draft.
+        bool retainSections=multiple || _sectionDrafts.Count>1;
         return new(_mode.SelectedIndex,manual?_wantedPrimary:"",manual?_wantedAudio:"",multiple?"":_start.Text,multiple?"":_end.Text,
-            multiple,multiple?JsonSerializer.Serialize(_sectionDrafts.Select(draft=>new[]{draft.Start,draft.End})):"",
+            multiple,retainSections?JsonSerializer.Serialize(_sectionDrafts.Select(draft=>new[]{draft.Start,draft.End})):"",
             multiple && _mergeDraft,multiple && _mergeReencodeDraft);
     }
 
