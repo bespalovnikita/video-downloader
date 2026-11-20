@@ -64,7 +64,9 @@ internal sealed partial class UiScenario
         tabs.SelectedItem=Control<TabItem>(window,"MaintenanceTab");window.UpdateLayout();
         Require(Control<TabItem>(window,"MaintenanceTab").IsSelected,"Maintenance has its own explicit section.");
         tabs.SelectedItem=Control<TabItem>(window,"SelectedVideoTab");window.UpdateLayout();
-        Require(Control<FrameworkElement>(window,"PreviewImageHost").IsVisible,"The selected video stays independently reachable.");
+        Require(Control<FrameworkElement>(window,"PreviewTitle").IsVisible &&
+            !Control<FrameworkElement>(window,"PreviewImageHost").IsVisible,
+            "The video section remains reachable without reserving space for a missing image.");
         RaiseCompactSearchShortcut(window);
         Require(Control<FrameworkElement>(window,"QueuePanel").IsVisible &&
             Control<TextBox>(window,"QueueSearchBox").IsKeyboardFocusWithin,

@@ -75,11 +75,17 @@ internal sealed partial class UiScenario
             var previous=(Button)window.FindName("PreviewPreviousButton")!;
             var next=(Button)window.FindName("PreviewNextButton")!;
             var title=(TextBlock)window.FindName("PreviewTitle")!;
+            var navigation=(FrameworkElement)window.FindName("PreviewGalleryNavigation")!;
+            var galleryHint=(FrameworkElement)window.FindName("PreviewGalleryHint")!;
             Hover(host,false);
+            Require(!host.IsVisible && !navigation.IsVisible && !galleryHint.IsVisible && title.IsVisible,
+                "An empty preview must retain its selection instruction without an image-sized blank area or inactive gallery chrome.");
 
             preview.SelectedUrl=firstUrl;
             preview.ReceiveReady(Data(firstUrl,"Название галереи",images));
-            Require(count.Text=="1 / 15" && image.Source!=null && previous.IsEnabled && next.IsEnabled,
+            window.UpdateLayout();host.BringIntoView();window.UpdateLayout();
+            Require(count.Text=="1 / 15" && image.Source!=null && previous.IsEnabled && next.IsEnabled &&
+                host.IsVisible && host.ActualHeight>0 && navigation.IsVisible && galleryHint.IsVisible,
                 "The actual preview controls must display a bounded 15-image gallery.");
             var firstSource=image.Source;
             next.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
@@ -116,15 +122,17 @@ internal sealed partial class UiScenario
                 "Ready/failure events for a different exact URL must leave the visible gallery alone.");
 
             preview.SelectedUrl=secondUrl;
-            Require(image.Source==null && !previous.IsEnabled && !next.IsEnabled,
-                "Changing URL must immediately clear old images and stop the timer.");
+            Require(image.Source==null && !previous.IsEnabled && !next.IsEnabled &&
+                !host.IsVisible && !navigation.IsVisible && !galleryHint.IsVisible,
+                "Changing URL must immediately clear old images, collapse empty gallery chrome and stop the timer.");
             preview.ReceiveReady(new PreviewData(secondUrl,"Старый кеш","","",0,"",0,0,"","",images[0],DateTime.UtcNow));
-            Require(count.Text=="1 / 1" && image.Source!=null && !previous.IsEnabled && !next.IsEnabled,
-                "Legacy one-image cache records must still render without enabling a gallery.");
+            Require(count.Text=="1 / 1" && image.Source!=null && !previous.IsEnabled && !next.IsEnabled &&
+                host.IsVisible && !navigation.IsVisible && !galleryHint.IsVisible,
+                "Legacy one-image cache records must render their image without navigation, a redundant counter or gallery instructions.");
             Require(!Wheel(host,-120).Handled,"A single image must leave ordinary scrolling available.");
             preview.ReceiveReady(Data(secondUrl,"Повреждённый первый кандидат",["not-base64",images[1],images[2]]));
-            Require(count.Text=="1 / 2" && image.Source!=null,
-                "An undecodable image must be skipped while usable gallery images remain available.");
+            Require(count.Text=="1 / 2" && image.Source!=null && navigation.IsVisible && galleryHint.IsVisible,
+                "An undecodable image must be skipped while usable gallery images and navigation become available.");
             Hover(host,true);
             preview.ReceiveFailure(secondUrl,"ERROR: HTTP Error 403: Forbidden");
             Require(image.Source!=null && next.IsEnabled && previous.IsEnabled &&
@@ -133,13 +141,22 @@ internal sealed partial class UiScenario
                 "A failed gallery refresh must keep valid images and the known title, with the original diagnostic available.");
             preview.SelectedUrl=secondUrl+"/cold-failure";
             preview.ReceiveFailure(preview.SelectedUrl,"ERROR: HTTP Error 404: Not Found");
-            Require(image.Source==null && !next.IsEnabled && !previous.IsEnabled,
-                "A cold failure must leave the gallery empty and disable navigation.");
+            Require(image.Source==null && !next.IsEnabled && !previous.IsEnabled && !host.IsVisible &&
+                !navigation.IsVisible && !galleryHint.IsVisible && title.IsVisible &&
+                ((TextBlock)window.FindName("PreviewMeta")!).IsVisible &&
+                ((TextBlock)window.FindName("PreviewMeta")!).ToolTip as string=="ERROR: HTTP Error 404: Not Found",
+                "A cold failure must collapse empty gallery chrome while retaining its visible title and original diagnostic.");
             Pump(TimeSpan.FromMilliseconds(1000));
             Require(image.Source==null,"A timer must not restore images after a failure.");
+            preview.ReceiveReady(Data(preview.SelectedUrl,"Нет пригодных изображений",["not-base64"]));
+            Require(image.Source==null && !host.IsVisible && !navigation.IsVisible && !galleryHint.IsVisible &&
+                title.Text=="Нет пригодных изображений" && title.IsVisible,
+                "Rejecting every damaged candidate must collapse the image area without hiding its known title.");
 
             preview.SelectedUrl=secondUrl;
             preview.ReceiveReady(Data(secondUrl,"После повтора",images.Take(3).ToArray()));
+            Require(host.IsVisible && navigation.IsVisible && galleryHint.IsVisible && title.Text=="После повтора",
+                "A later usable gallery must restore its image and navigation after an empty or damaged result.");
             Hover(host,true);
             window.Hide();
             string hiddenCount=count.Text;
@@ -212,14 +229,19 @@ internal sealed partial class UiScenario
             window.Show();
             var title=(TextBlock)window.FindName("PreviewTitle")!;
             var count=(TextBlock)window.FindName("PreviewImageCounter")!;
+            var host=(FrameworkElement)window.FindName("PreviewImageHost")!;
+            var navigation=(FrameworkElement)window.FindName("PreviewGalleryNavigation")!;
             Require(preview.GetCached(cachedUrl)==null,
                 "UI cache inspection must remain memory-only even when a valid gallery exists on disk.");
             preview.Show(cachedUrl,"Название из обнаружения");
-            Require(title.Text=="Название из обнаружения" && count.Text!= "1 / 15",
-                "Show must return with discovery metadata before the worker loads and decodes the disk cache.");
+            Require(title.Text=="Название из обнаружения" && count.Text!= "1 / 15" &&
+                title.Visibility==Visibility.Visible && host.Visibility==Visibility.Collapsed && navigation.Visibility==Visibility.Collapsed,
+                "Show must retain discovery metadata during loading without reserving a blank image or inactive navigation before the worker decodes the disk cache.");
             bool heartbeat=false;
             _=window.Dispatcher.BeginInvoke(()=>heartbeat=true);
             PumpUntil(()=>heartbeat && count.Text=="1 / 15" && title.Text==saved.Title);
+            Require(host.Visibility==Visibility.Visible && navigation.Visibility==Visibility.Visible,
+                "The worker's loaded cache must restore gallery chrome without requiring another selection.");
             Require(rows[0].Title==saved.Title && saves==1,
                 "The worker's cached title must enrich the existing row and checkpoint it once.");
             int previousScans=scans,previousSaves=saves;

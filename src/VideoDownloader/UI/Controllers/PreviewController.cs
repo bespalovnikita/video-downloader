@@ -26,6 +26,8 @@ internal sealed partial class PreviewController : IDisposable
     private readonly TextBlock _formats;
     private readonly Image _image;
     private readonly FrameworkElement _imageHost;
+    private readonly FrameworkElement _galleryNavigation;
+    private readonly FrameworkElement _galleryHint;
     private readonly TextBlock _imageCounter;
     private readonly Button _previousImage;
     private readonly Button _nextImage;
@@ -71,6 +73,8 @@ internal sealed partial class PreviewController : IDisposable
         _formats=Control<TextBlock>("PreviewFormats");
         _image=Control<Image>("PreviewImage");
         _imageHost=Control<FrameworkElement>("PreviewImageHost");
+        _galleryNavigation=Control<FrameworkElement>("PreviewGalleryNavigation");
+        _galleryHint=Control<FrameworkElement>("PreviewGalleryHint");
         _imageCounter=Control<TextBlock>("PreviewImageCounter");
         _previousImage=Control<Button>("PreviewPreviousButton");
         _nextImage=Control<Button>("PreviewNextButton");
@@ -336,7 +340,12 @@ internal sealed partial class PreviewController : IDisposable
     private void UpdateGalleryControls()
     {
         _imageCounter.Text=_gallery.Count==0?ErrorMessages.Text("Нет превью","No previews"):$"{_galleryIndex+1} / {_gallery.Count}";
-        _previousImage.IsEnabled=_nextImage.IsEnabled=_gallery.Count>1;
+        bool canNavigate=_gallery.Count>1;
+        _previousImage.IsEnabled=_nextImage.IsEnabled=canNavigate;
+        // Loading and failures keep their textual details, without an empty
+        // image-sized placeholder or controls that cannot perform an action.
+        _imageHost.Visibility=_gallery.Count>0?Visibility.Visible:Visibility.Collapsed;
+        _galleryNavigation.Visibility=_galleryHint.Visibility=canNavigate?Visibility.Visible:Visibility.Collapsed;
     }
 
     private void MoveGallery(int offset)
