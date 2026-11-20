@@ -129,6 +129,7 @@ internal sealed class DownloadHistoryWindow:Window
         Loaded+=(_,_)=>QueueLoad(false);
         Closed+=(_,_)=>{_closed=true;_generation++;_stop.Cancel();_load?.Cancel();_checking?.Cancel();};
         RefreshActions();
+        OwnedWindowLayout.Attach(this,owner);
     }
     private T Named<T>(string name,T control) where T:FrameworkElement
     {control.Name=name;RegisterName(name,control);return control;}

@@ -85,6 +85,7 @@ public sealed partial class NativeWindow
             FontSize=14,Padding=new Thickness(6)
         });
         dialog.Content=content;
+        OwnedWindowLayout.Attach(dialog,owner);
         return dialog;
     }
 }
