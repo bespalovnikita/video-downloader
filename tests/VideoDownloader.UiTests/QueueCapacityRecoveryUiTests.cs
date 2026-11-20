@@ -227,12 +227,19 @@ internal sealed partial class UiScenario
             // no test-only flag or direct read-only state mutation is involved.
             var ready=new PreviewData(pending.Url,new string('Ж',512),"","",0,"fixture",0,0,"","","",DateTime.UtcNow);
             scenario.Preview.ReceiveReady(ready);
-            Require(scenario.Subject.CheckpointReadOnly && pending.Title==ready.Title &&
-                scenario.SessionState.Queue.SequenceEqual(new[]{completed,pending}) &&
-                File.ReadAllBytes(storage.SessionPath).SequenceEqual(original) && !File.Exists(storage.HistoryPath) &&
-                completed.OwnedPaths.SequenceEqual(new[]{media}) && File.ReadAllText(media)=="published sentinel" &&
-                scenario.T("HeaderStatus").Text.Contains("сокращ",StringComparison.Ordinal),
-                "Title growth must enter reduction recovery, keeping the original file, queue rows, ownership and media");
+            Require(scenario.Subject.CheckpointReadOnly,"Real preview title growth must protect checkpoint writes; original bytes="+original.Length);
+            Require(pending.Title==ready.Title,"The production preview callback must retain the new title in memory; actual characters="+pending.Title.Length);
+            Require(scenario.SessionState.Queue.SequenceEqual(new[]{completed,pending}),
+                "Capacity recovery must preserve both original queue row objects and their order");
+            byte[] protectedCheckpoint=File.ReadAllBytes(storage.SessionPath);
+            Require(protectedCheckpoint.SequenceEqual(original),
+                $"Capacity refusal must preserve the original checkpoint bytes; original={original.Length}, current={protectedCheckpoint.Length}");
+            Require(!File.Exists(storage.HistoryPath),"Preview enrichment must not create a successful-download history");
+            Require(completed.OwnedPaths.SequenceEqual(new[]{media}) && File.ReadAllText(media)=="published sentinel",
+                "Capacity recovery must preserve the published media and its exact ownership manifest");
+            string expectedStatus=ErrorMessages.Text("● Требуется сокращение очереди","● Queue reduction required");
+            Require(scenario.T("HeaderStatus").Text==expectedStatus,
+                $"Recovery must display the reduction state in the active UI language; UI={System.Globalization.CultureInfo.CurrentUICulture.Name}, expected={expectedStatus}, actual={scenario.T("HeaderStatus").Text}");
             scenario.Preview.ReceiveReady(ready with {Title="A later title must not modify the protected queue"});
             scenario.AddUrls(["https://capacity.invalid/blocked-after-title"]);
             scenario.F<Button>("StartButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
