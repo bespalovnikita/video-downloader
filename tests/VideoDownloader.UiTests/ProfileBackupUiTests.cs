@@ -120,11 +120,20 @@ internal sealed partial class UiScenario
             Click(current,"OpenProfileBackupButton");PumpUntil(()=>!current.IsBusy,"Damaged archive validation did not join.");
             Require(Status(current).Contains("не выполнена",StringComparison.Ordinal) && EqualFiles(before) &&
                 !Control<Button>(current,"RestoreProfileBackupButton").IsEnabled,"A damaged archive must fail before any profile write or restore confirmation.");
-            chosenArchive=export;byte[] validSubscriptions=File.ReadAllBytes(localStore.Path);File.WriteAllText(localStore.Path,"damaged subscriptions must not be replaced");
+            chosenArchive=export;
+            // Releasing maintenance resumes the legitimate scheduled-read
+            // owner. Fixture corruption must use its existing profile mutex,
+            // just like production writes, rather than racing that reader.
+            byte[] validSubscriptions=ProfileBackupTransaction.Access(targetRoot,()=>
+            {
+                var bytes=File.ReadAllBytes(localStore.Path);
+                File.WriteAllText(localStore.Path,"damaged subscriptions must not be replaced");
+                return bytes;
+            });
             var damaged=Files(storage);Click(current,"OpenProfileBackupButton");PumpUntil(()=>!current.IsBusy,"Damaged local profile validation did not join.");
             Require(Status(current).Contains("не выполнена",StringComparison.Ordinal) && EqualFiles(damaged) &&
                 !Control<Button>(current,"RestoreProfileBackupButton").IsEnabled,"Damaged current subscriptions must fail closed instead of being overwritten by a backup.");
-            File.WriteAllBytes(localStore.Path,validSubscriptions);Load(current);
+            ProfileBackupTransaction.Access(targetRoot,()=>{File.WriteAllBytes(localStore.Path,validSubscriptions);return 0;});Load(current);
             Require(Control<TextBlock>(current,"ProfileBackupSummary").Text.Contains("Подписок: 1",StringComparison.Ordinal) &&
                 Control<TextBlock>(current,"ProfileBackupChanges").Text.Contains("подписок 1",StringComparison.Ordinal) && EqualFiles(before),
                 "Loading and previewing the actual ZIP must show its counts without changing any profile file.");
