@@ -155,8 +155,10 @@ public sealed class DownloadItem : INotifyPropertyChanged
     public string DisplayState { get => State; set => State = value; }
 }
 
-public sealed class DownloadOptions
+public sealed class DownloadOptions : IJsonOnDeserialized
 {
+    private bool _showVideoTitles=true;
+    private bool _showVideoTitlesSpecified;
     public string Profile { get; set; } = "Universal";
     public string Quality { get; set; } = "Best";
     public string Codec { get; set; } = "Auto";
@@ -180,7 +182,17 @@ public sealed class DownloadOptions
     public bool Sponsor { get; set; }
     public bool AudioOnly { get; set; }
     public bool WatchClipboard { get; set; }
-    public bool ShowVideoTitles { get; set; }
+    public bool ShowVideoTitles
+    {
+        get=>_showVideoTitles;
+        set {_showVideoTitles=value;_showVideoTitlesSpecified=true;}
+    }
+    // New profiles favour readable titles. Old settings without this field
+    // retain their original URL-only display instead of changing on upgrade.
+    void IJsonOnDeserialized.OnDeserialized()
+    {
+        if(!_showVideoTitlesSpecified)_showVideoTitles=false;
+    }
     public string LogProfile { get; set; } = "Standard";
     public double QueuePanelWidth { get; set; } = 380d*4/3;
     public double PreviewPanelWidth { get; set; } = 390;

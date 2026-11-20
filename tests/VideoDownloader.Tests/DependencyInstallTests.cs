@@ -40,6 +40,7 @@ internal static class DependencyInstallTests
                 catch(OperationCanceledException) when(cancel.IsCancellationRequested) {cancelled=true;}
                 Require(cancelled,"Explicit cancellation must remain distinct from a download timeout");
             }
+            await ProgressAndCancellationAsync(root,server);
             await DependencyCenter.InstallFfmpegAsync(new Uri(server.BaseUrl+"ok"),root,TimeSpan.FromSeconds(5),CancellationToken.None);
             Require(File.ReadAllText(Path.Combine(root,"ffmpeg.exe"))=="ffmpeg fixture" &&
                 File.ReadAllText(Path.Combine(root,"ffprobe.exe"))=="ffprobe fixture","A retry must install both tools after a timeout");
@@ -49,6 +50,63 @@ internal static class DependencyInstallTests
             Console.WriteLine("PASS: dependency package header/body deadlines, cancellation, retry and cleanup");
         }
         finally {Directory.Delete(root,true);}
+    }
+
+    private static async Task ProgressAndCancellationAsync(string root,PackageServer server)
+    {
+        foreach(string endpoint in new[]{"ok","unknown"})
+        {
+            string target=Path.Combine(root,"progress-"+endpoint);Directory.CreateDirectory(target);
+            var samples=new List<DependencyProgress>();
+            var progress=new InstallProgress(value=>samples.Add(value));
+            await DependencyCenter.InstallFfmpegAsync(new Uri(server.BaseUrl+endpoint),target,
+                TimeSpan.FromSeconds(5),CancellationToken.None,progress:progress);
+            var transfers=samples.Where(value=>value.Stage==DependencyStage.Downloading).ToArray();
+            Require(transfers.Length>=2 && transfers[^1].DownloadedBytes==server.PackageLength,
+                "Progress must report the real transferred ZIP bytes, not an invented overall percentage");
+            Require(endpoint=="ok"?transfers[^1].TotalBytes==server.PackageLength:transfers.All(value=>value.TotalBytes is null),
+                "Only a real Content-Length may supply a transfer total: "+endpoint);
+            Require(samples.Any(value=>value.Stage==DependencyStage.Verifying) &&
+                    samples[^1].Stage==DependencyStage.Installing &&
+                    samples.Where(value=>value.Stage!=DependencyStage.Downloading).All(value=>value.TotalBytes is null),
+                "Verification and publication must be distinct indeterminate phases after the transfer");
+            Require(File.ReadAllText(Path.Combine(target,"ffmpeg.exe"))=="ffmpeg fixture" &&
+                    File.ReadAllText(Path.Combine(target,"ffprobe.exe"))=="ffprobe fixture",
+                "Reported phase completion must correspond to installation of the actual HTTP package");
+        }
+        foreach(var phase in new[]{DependencyStage.Downloading,DependencyStage.Installing})
+        {
+            string target=Path.Combine(root,"progress-cancel-"+phase);Directory.CreateDirectory(target);
+            File.WriteAllText(Path.Combine(target,"ffmpeg.exe"),"original ffmpeg");
+            File.WriteAllText(Path.Combine(target,"ffprobe.exe"),"original ffprobe");
+            using var cancel=new CancellationTokenSource();
+            bool observed=false,cancelled=false;
+            try
+            {
+                await DependencyCenter.InstallFfmpegAsync(new Uri(server.BaseUrl+"ok"),target,TimeSpan.FromSeconds(5),cancel.Token,
+                    progress:new InstallProgress(value=>
+                    {
+                        if(value.Stage==phase && (phase!=DependencyStage.Downloading || value.DownloadedBytes>0))
+                        {observed=true;cancel.Cancel();}
+                    }));
+            }
+            catch(OperationCanceledException) when(cancel.IsCancellationRequested){cancelled=true;}
+            Require(observed && cancelled,"An explicit cancellation from the real "+phase+" phase must be honoured");
+            Require(File.ReadAllText(Path.Combine(target,"ffmpeg.exe"))=="original ffmpeg" &&
+                    File.ReadAllText(Path.Combine(target,"ffprobe.exe"))=="original ffprobe" &&
+                    !Directory.GetDirectories(target,".vd-ffmpeg-*").Any(),
+                "Phase cancellation must preserve the previous pair and clean its own transaction");
+        }
+        string observerTarget=Path.Combine(root,"progress-observer-error");Directory.CreateDirectory(observerTarget);
+        await DependencyCenter.InstallFfmpegAsync(new Uri(server.BaseUrl+"ok"),observerTarget,TimeSpan.FromSeconds(5),CancellationToken.None,
+            progress:new InstallProgress(_=>throw new InvalidOperationException("optional observer fixture")));
+        Require(File.Exists(Path.Combine(observerTarget,"ffprobe.exe")),"A feedback observer failure must not fail a valid component install");
+        Console.WriteLine("PASS: real dependency byte progress, unknown length, measured phases and phase cancellation");
+    }
+
+    private sealed class InstallProgress(Action<DependencyProgress> report):IProgress<DependencyProgress>
+    {
+        public void Report(DependencyProgress value)=>report(value);
     }
 
     private static async Task PairRollbackAsync(string root,PackageServer server)
@@ -199,6 +257,7 @@ internal static class DependencyInstallTests
         private readonly byte[] _zip;
         public string BaseUrl {get;}
         public bool BodyHeadersSent {get;private set;}
+        public int PackageLength=>_zip.Length;
         public PackageServer()
         {
             using var buffer=new MemoryStream();
@@ -236,7 +295,9 @@ internal static class DependencyInstallTests
                 if(request.Contains("/headers ",StringComparison.Ordinal))
                 {await Task.Delay(Timeout.InfiniteTimeSpan,_stop.Token);return;}
                 bool body=request.Contains("/body ",StringComparison.Ordinal);
-                byte[] header=Encoding.ASCII.GetBytes($"HTTP/1.1 200 OK\r\nContent-Length: {_zip.Length}\r\nConnection: close\r\n\r\n");
+                bool unknown=request.Contains("/unknown ",StringComparison.Ordinal);
+                byte[] header=Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\n"+
+                    (unknown?"":$"Content-Length: {_zip.Length}\r\n")+"Connection: close\r\n\r\n");
                 await stream.WriteAsync(header,_stop.Token);
                 if(body) {BodyHeadersSent=true;await Task.Delay(Timeout.InfiniteTimeSpan,_stop.Token);}
                 else await stream.WriteAsync(_zip,_stop.Token);

@@ -87,6 +87,8 @@ internal sealed partial class SubscriptionController : IDisposable
             window.Resources.MergedDictionaries.Add(_owner.Resources);
             _window=window;
             _details=new SubscriptionPreviewController(window,_previews,_openUrl,_log);
+            BindInboxFilters(window);
+            ConfigureSubscriptionsLayout(window);
             Control<Button>("AddSubscriptionButton").Click+=async(_,_)=>await AddAsync();
             Control<Button>("SaveSubscriptionNameButton").Click+=async(_,_)=>await SaveNameAsync();
             BindScheduleControls();
@@ -136,6 +138,7 @@ internal sealed partial class SubscriptionController : IDisposable
                 if(!_automaticCheck)_cancellation?.Cancel();
                 _checkProgress.Stop();
                 _details?.Dispose();_details=null;
+                StopInboxFilterTimer();
                 _window=null;
                 _nameSelectionId="";
                 _nameSavedValue="";
@@ -148,6 +151,7 @@ internal sealed partial class SubscriptionController : IDisposable
         }
         catch(Exception e)
         {
+            StopInboxFilterTimer();
             _details?.Dispose();_details=null;
             _window=null;
             MessageBox.Show(_owner,"Не удалось открыть подписки:\n"+DisplayError(e),"Подписки",MessageBoxButton.OK,MessageBoxImage.Warning);
@@ -238,9 +242,10 @@ internal sealed partial class SubscriptionController : IDisposable
         var selected=Sources.SelectedItem as SubscriptionSourceView;
         var previouslySelected=Inbox.SelectedItems.Cast<SubscriptionItemView>()
             .Select(x=>(x.Item.SubscriptionId,x.Url)).ToHashSet();
-        var items=(_snapshot?.Items ?? [])
+        var sourceItems=(_snapshot?.Items ?? [])
             .Where(x=>selected==null || x.SubscriptionId==selected.Id)
-            .Select(x=>new SubscriptionItemView(x)).ToArray();
+            .ToArray();
+        var items=FilterInboxItems(sourceItems);
         // Preserve the inbox selection through refresh. Its own details pane
         // never changes the main window's preview selection.
         bool wasBinding=_binding;
@@ -253,17 +258,18 @@ internal sealed partial class SubscriptionController : IDisposable
         }
         finally { _binding=wasBinding; }
         Control<TextBlock>("SubscriptionInboxTitle").Text=selected==null
-            ? $"Входящие и результаты · {items.Length}"
-            : $"Входящие и результаты: {selected.Title} · {items.Length}";
+            ? "Входящие и результаты"
+            : $"Входящие и результаты: {selected.Title}";
         ShowSelectedPreview();
     }
 
     private void ShowSelectedPreview()
     {
         if (_binding || _disposed || _window==null) return;
-        var item=Inbox.SelectedItems.Count==1 ? (Inbox.SelectedItem as SubscriptionItemView)?.Item : null;
+        var selectedItems=VisibleInboxSelection();
+        var item=selectedItems.Length==1 ? selectedItems[0].Item : null;
         string source=item==null?"":_snapshot?.Subscriptions.FirstOrDefault(source=>source.Id==item.SubscriptionId)?.Title??"";
-        try { _details?.Show(item,source,Inbox.SelectedItems.Count); }
+        try { _details?.Show(item,source,selectedItems.Length); }
         catch(Exception error)
         {
             _log(ErrorMessages.Text("Не удалось показать превью подписки: ","Subscription preview display failed: ")+
@@ -295,7 +301,7 @@ internal sealed partial class SubscriptionController : IDisposable
     {
         if (_window==null) return;
         var source=Sources.SelectedItem as SubscriptionSourceView;
-        var items=Inbox.SelectedItems.Cast<SubscriptionItemView>().ToArray();
+        var items=VisibleInboxSelection();
         bool ready=!Busy;
         Control<Button>("AddSubscriptionButton").IsEnabled=ready;
         Control<Button>("CheckSubscriptionButton").IsEnabled=ready && source!=null && !source.Definition.Paused;
@@ -619,7 +625,8 @@ internal sealed partial class SubscriptionController : IDisposable
     private async Task SkipSelectedAsync()
     {
         if (Busy || _window==null) return;
-        var selected=Inbox.SelectedItems.Cast<SubscriptionItemView>().Select(x=>x.Item).Where(x=>x.State=="New").ToArray();
+        RefreshInboxFilters();
+        var selected=VisibleInboxSelection().Select(x=>x.Item).Where(x=>x.State=="New").ToArray();
         if (selected.Length==0) return;
         _mutation=true;
         UpdateButtons();
@@ -674,7 +681,11 @@ internal sealed partial class SubscriptionController : IDisposable
 
     private void OpenItem()
     {
-        if (_window==null || Inbox.SelectedItem is not SubscriptionItemView row) return;
+        if (_window==null) return;
+        RefreshInboxFilters();
+        var selected=VisibleInboxSelection();
+        if(selected.Length!=1)return;
+        var row=selected[0];
         try { _openUrl(row.Url); }
         catch(Exception e) { Status("Не удалось открыть ссылку: "+DisplayError(e),true); }
     }

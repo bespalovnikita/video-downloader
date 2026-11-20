@@ -32,9 +32,10 @@ internal sealed partial class MediaSelectionDialog
         body.Children.Add(Note("Предпросмотр воспроизводит до 15 секунд с начала или конца выбранного диапазона. Звук зависит от выбранной дорожки и аудиоустройства Windows. Скачивание запускается отдельно."));
         body.Children.Add(Note("Если выбрано несколько языков, предпросмотр использует первый язык."));
         var view=Named("MediaClipVideo",_clipPlayer.View);
-        body.Children.Add(new Border{Background=new SolidColorBrush(Color.FromRgb(13,18,30)),
-            BorderBrush=new SolidColorBrush(Color.FromRgb(48,58,85)),BorderThickness=new Thickness(1),
-            CornerRadius=new CornerRadius(5),Padding=new Thickness(4),Child=view,Margin=new Thickness(0,4,0,4)});
+        var playbackBorder=new Border{BorderThickness=new Thickness(1),CornerRadius=new CornerRadius(5),
+            Padding=new Thickness(4),Child=view,Margin=new Thickness(0,4,0,4)};
+        playbackBorder.SetResourceReference(Border.BackgroundProperty,"MediaCardBrush");
+        playbackBorder.SetResourceReference(Border.BorderBrushProperty,"MediaCardBorderBrush");body.Children.Add(playbackBorder);
         _clipRange=Named("MediaClipRangeText",Note("Диапазон предпросмотра ещё не подготовлен."));body.Children.Add(_clipRange);
         _clipSeek=Named("MediaClipSeekSlider",new Slider{Minimum=0,Maximum=1,IsEnabled=false,
             SmallChange=.1,LargeChange=1,IsMoveToPointEnabled=true,Margin=new Thickness(0,4,0,4)});

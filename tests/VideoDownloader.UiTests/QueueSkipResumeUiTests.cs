@@ -105,7 +105,8 @@ internal sealed partial class UiScenario
         Environment.SetEnvironmentVariable("VD_NATIVE_TITLE_FIXTURE_LOG",null);
         Window window=null!;NativeWindow subject=null!;
         var storage=new AppPersistence(Path.Combine(root,"profile"));
-        string clearTitle=ErrorMessages.Text("Очистить всю очередь","Clear entire queue");
+        string clearTitle=ErrorMessages.Text("Очистить очередь","Clear queue");
+        string completedClearTitle=ErrorMessages.Text("Убрать завершённые записи","Remove completed entries");
         NativeWindow Create(Window owner)=>new(owner,storage,fixture,automaticUpdates:false,automaticSubscriptionChecks:false,
             localPosterFfmpegPath:Path.Combine(root,"no-local-poster-tool.exe"));
         try
@@ -193,25 +194,33 @@ internal sealed partial class UiScenario
             var lateSkip=new DownloadItem{Url="https://startup-download.invalid/skip-during-clear"};
             subject.SessionState.TryAdd(lateSkip);subject.Reindex();search.Text="no visible matches";
             PumpUntil(()=>queue.Items.Count==0,"Clear must be tested with all affected rows hidden.");
-            AnswerMessage(clearTitle,7,()=>Click(window,"ClearQueueButton"));
+            AnswerMessage(completedClearTitle,7,()=>Click(window,"ClearQueueButton"));
             Require(subject.SessionState.Queue.Count==5,"Declining Clear must preserve every skipped and non-skipped row.");
             string lateUrl="https://startup-download.invalid/late-clear-arrival";
-            AnswerMessage(clearTitle,6,()=>Click(window,"ClearQueueButton"),()=>subject.ReceiveArguments([lateUrl]));
+            AnswerMessage(completedClearTitle,6,()=>Click(window,"ClearQueueButton"),()=>subject.ReceiveArguments([lateUrl]));
             PumpUntil(()=>subject.SessionState.Queue.Count==4,"Completed-first Clear must remove only its captured finished rows.");
             Require(subject.SessionState.Queue.Contains(first) && subject.SessionState.Queue.Contains(second) && subject.SessionState.Queue.Contains(lateSkip) &&
                 lateSkip.Status=="Queued" &&
                 subject.SessionState.Queue.Any(row=>row.Url==lateUrl) && !subject.SessionState.Queue.Contains(hidden) && !subject.SessionState.Queue.Contains(completed) &&
                 File.ReadAllText(published)=="published media sentinel" && File.Exists(hiddenOutput),
                 "Completed-first Clear must retain queued/skipped rows, late IPC arrivals and published files.");
-            AnswerMessage(clearTitle,6,()=>Click(window,"ClearQueueButton"),()=>
-            {lateSkip.Status="Skipped";lateSkip.State="Skipped";lateSkip.AttemptFinished=true;});
-            PumpUntil(()=>subject.SessionState.Queue.Count==3,"The next mixed Clear must remove only the captured late queued arrival.");
-            Require(subject.SessionState.Queue.All(row=>row.Status=="Skipped"),
-                "Whole Clear must recheck late Skipped statuses after the modal and retain original skipped rows.");
-            AnswerMessage(clearTitle,7,()=>Click(window,"ClearQueueButton"));
-            Require(subject.SessionState.Queue.Count==3,"Declining an all-Skipped Clear must keep skipped entries.");
-            AnswerMessage(clearTitle,6,()=>Click(window,"ClearQueueButton"));
-            PumpUntil(()=>subject.SessionState.Queue.Count==0,"Clear must empty an entirely skipped queue.");
+            Click(window,"ClearQueueButton");
+            Require(subject.SessionState.Queue.Count==4,
+                "Completed-only clear must not fall through to unfinished or skipped records when no completed rows remain.");
+            AnswerMessage(clearTitle,7,()=>Click(window,"ClearAllQueueButton"));
+            Require(subject.SessionState.Queue.Count==4,"Declining explicit full clear must keep skipped entries.");
+            string afterFullClear="https://startup-download.invalid/after-full-clear-question";
+            AnswerMessage(clearTitle,6,()=>Click(window,"ClearAllQueueButton"),()=>
+            {
+                lateSkip.Status="Skipped";lateSkip.State="Skipped";lateSkip.AttemptFinished=true;
+                subject.ReceiveArguments([afterFullClear]);
+            });
+            PumpUntil(()=>subject.SessionState.Queue.Count==1,"Explicit full clear must remove its captured skipped and queued entries.");
+            Require(subject.SessionState.Queue.Single().Url==afterFullClear && !subject.SessionState.Queue.Contains(first) &&
+                !subject.SessionState.Queue.Contains(second) && !subject.SessionState.Queue.Contains(lateSkip),
+                "Full clear must honor its explicit scope including skipped rows while preserving a late arrival outside its snapshot.");
+            AnswerMessage(clearTitle,6,()=>Click(window,"ClearAllQueueButton"));
+            PumpUntil(()=>subject.SessionState.Queue.Count==0,"A new full-clear confirmation must remove the late arrival.");
 
             // Actual WPF -> coordinator -> owned native child. One worker is
             // held in the fixture, so Skip must release it to the next URL.
@@ -272,7 +281,7 @@ internal sealed partial class UiScenario
 
             // Clearing a queue containing only a retained skipped job must
             // remove its own partial stage rather than leak resumable data.
-            AnswerMessage(clearTitle,6,()=>Click(window,"ClearQueueButton"));
+            AnswerMessage(completedClearTitle,6,()=>Click(window,"ClearQueueButton"));
             PumpUntil(()=>subject.SessionState.Queue.Count==0,"Completed fixture rows must clear before retained-stage cleanup.");
             gate=Path.Combine(root,"release-clear-only");Environment.SetEnvironmentVariable("VD_NATIVE_SESSION_TIMER_GATE",gate);
             var clearSkipped=new DownloadItem{Url="https://startup-download.invalid/clear-only-timer-slow"};
@@ -282,7 +291,7 @@ internal sealed partial class UiScenario
             PumpUntil(()=>clearSkipped.Status=="Skipped" && clearSkipped.AttemptFinished && subject.SessionState.Coordinator is null,
                 "The only skipped native attempt must finish while retaining its partial context.");
             retained=clearSkipped.StageDir;Require(retained.Length>0 && Directory.Exists(retained),"The skipped job must have an owned stage to clear.");
-            AnswerMessage(clearTitle,6,()=>Click(window,"ClearQueueButton"));
+            AnswerMessage(clearTitle,6,()=>Click(window,"ClearAllQueueButton"));
             PumpUntil(()=>subject.SessionState.Queue.Count==0 && !Directory.Exists(retained),
                 "An all-skipped Clear must remove the row only after its owned retained stage has been deleted.");
             Require(!storage.ReadHistory().ContainsKey(clearSkipped.Url) && existingOutputs.All(File.Exists) && File.Exists(published),

@@ -5,6 +5,22 @@ using Microsoft.Win32;
 
 namespace VideoDownloader.Native;
 
+public enum DependencyStage { Downloading, Verifying, Installing, Updating }
+
+// The percentage belongs to the current transfer only. Verification and
+// publication have no measurable overall percentage and stay indeterminate.
+public sealed record DependencyProgress(DependencyStage Stage,long DownloadedBytes=0,long? TotalBytes=null);
+
+internal sealed record DownloadToolReadiness(bool HasYtDlp,bool HasFfmpeg,bool HasFfprobe)
+{
+    internal bool Ready=>HasYtDlp && HasFfmpeg && HasFfprobe;
+    internal bool NeedsFfmpeg=>!HasFfmpeg || !HasFfprobe;
+    internal string Description=>
+        $"yt-dlp: {(HasYtDlp?ErrorMessages.Text("установлен","installed"):ErrorMessages.Text("не найден","missing"))}\n"+
+        $"FFmpeg: {(HasFfmpeg?ErrorMessages.Text("установлен","installed"):ErrorMessages.Text("не найден","missing"))}\n"+
+        $"ffprobe: {(HasFfprobe?ErrorMessages.Text("установлен","installed"):ErrorMessages.Text("не найден","missing"))}";
+}
+
 public static class DependencyCenter
 {
     public static string Executable(string name)
@@ -22,13 +38,9 @@ public static class DependencyCenter
         }
         return local;
     }
-    public static string Inspect()
-    {
-        string yt=Executable("yt-dlp.exe"), ffmpeg=Executable("ffmpeg.exe"),probe=Executable("ffprobe.exe");
-        return $"yt-dlp: {(File.Exists(yt)?ErrorMessages.Text("установлен","installed"):ErrorMessages.Text("не найден","missing"))}\n"+
-               $"FFmpeg: {(File.Exists(ffmpeg)?ErrorMessages.Text("установлен","installed"):ErrorMessages.Text("не найден","missing"))}\n"+
-               $"ffprobe: {(File.Exists(probe)?ErrorMessages.Text("установлен","installed"):ErrorMessages.Text("не найден","missing"))}";
-    }
+    public static string Inspect()=>InspectTools().Description;
+    internal static DownloadToolReadiness InspectTools(string? ytDlp=null)=>new(
+        File.Exists(ytDlp??Executable("yt-dlp.exe")),File.Exists(Executable("ffmpeg.exe")),File.Exists(Executable("ffprobe.exe")));
     public static void ValidateDownloadTools(string ytDlp) =>
         ValidateDownloadTools(ytDlp,Executable("ffmpeg.exe"),Executable("ffprobe.exe"));
     public static void ValidateDownloadTools(string ytDlp,string ffmpeg,string ffprobe)
@@ -39,8 +51,12 @@ public static class DependencyCenter
             throw new FileNotFoundException("Для скачивания и обработки медиа нужны "+string.Join(", ",missing)+
                 ". Нажмите Install FFmpeg в разделе Dependencies и повторите запуск. Загрузка ещё не началась.");
     }
-    public static async Task<string> UpdateYtDlpAsync(CancellationToken token=default)
+    public static Task<string> UpdateYtDlpAsync(CancellationToken token=default)=>UpdateYtDlpAsync(null,token);
+
+    public static async Task<string> UpdateYtDlpAsync(IProgress<DependencyProgress>? progress,CancellationToken token=default)
     {
+        token.ThrowIfCancellationRequested();
+        Report(progress,new(DependencyStage.Updating));
         var psi=new ProcessStartInfo(Executable("yt-dlp.exe"))
         {UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true};
         psi.ArgumentList.Add("-U");
@@ -48,18 +64,35 @@ public static class DependencyCenter
         // a child shell after it exits. That cleanup must outlive -U itself.
         using var process=Process.Start(psi)??throw new IOException("Cannot start yt-dlp");
         using var cancel=token.Register(()=>{try {if(!process.HasExited)process.Kill(true);}catch{}});
-        var stdout=process.StandardOutput.ReadToEndAsync(token);
-        var stderr=process.StandardError.ReadToEndAsync(token);
-        await Task.WhenAll(stdout,stderr,process.WaitForExitAsync(token)).ConfigureAwait(false);
-        if(process.ExitCode!=0)throw new IOException(stderr.Result);
-        return stdout.Result;
+        // Read both pipes through EOF after cancellation too. Returning while
+        // the updater is still replacing bytes would let a new download start
+        // against a changing executable.
+        var stdout=process.StandardOutput.ReadToEndAsync();
+        var stderr=process.StandardError.ReadToEndAsync();
+        try
+        {
+            await process.WaitForExitAsync(token).ConfigureAwait(false);
+            await Task.WhenAll(stdout,stderr).ConfigureAwait(false);
+            token.ThrowIfCancellationRequested();
+            if(process.ExitCode!=0)throw new IOException(stderr.Result);
+            return stdout.Result;
+        }
+        finally
+        {
+            if(!process.HasExited)try{process.Kill(true);}catch(InvalidOperationException){}
+            await process.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
+            await Task.WhenAll(stdout,stderr).ConfigureAwait(false);
+        }
     }
     public static Task InstallFfmpegAsync(CancellationToken token=default) =>
+        InstallFfmpegAsync(null,token);
+
+    public static Task InstallFfmpegAsync(IProgress<DependencyProgress>? progress,CancellationToken token=default) =>
         InstallFfmpegAsync(new Uri("https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"),
-            AppContext.BaseDirectory,TimeSpan.FromMinutes(6),token);
+            AppContext.BaseDirectory,TimeSpan.FromMinutes(6),token,progress:progress);
 
     internal static async Task InstallFfmpegAsync(Uri source,string installDirectory,TimeSpan downloadTimeout,CancellationToken token,
-        Action<int>? afterReplacement=null)
+        Action<int>? afterReplacement=null,IProgress<DependencyProgress>? progress=null)
     {
         if (downloadTimeout<=TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(downloadTimeout));
         string scratch=Path.Combine(Path.GetTempPath(),"vd-ffmpeg-"+Guid.NewGuid().ToString("N"));
@@ -72,17 +105,43 @@ public static class DependencyCenter
             string zip=Path.Combine(scratch,"ffmpeg.zip");
             try
             {
+                Report(progress,new(DependencyStage.Downloading));
                 using var response=await http.GetAsync(source,HttpCompletionOption.ResponseHeadersRead,deadline.Token).ConfigureAwait(false);
                 response.EnsureSuccessStatusCode();
+                long? total=response.Content.Headers.ContentLength is >0?response.Content.Headers.ContentLength:null;
+                Report(progress,new(DependencyStage.Downloading,0,total));
+                await using var input=await response.Content.ReadAsStreamAsync(deadline.Token).ConfigureAwait(false);
                 await using var target=File.Create(zip);
-                await response.Content.CopyToAsync(target,deadline.Token).ConfigureAwait(false);
+                byte[] buffer=new byte[81920];
+                long received=0,lastReport=Stopwatch.GetTimestamp();
+                int count;
+                while((count=await input.ReadAsync(buffer,deadline.Token).ConfigureAwait(false))!=0)
+                {
+                    await target.WriteAsync(buffer.AsMemory(0,count),deadline.Token).ConfigureAwait(false);
+                    received+=count;
+                    if(Stopwatch.GetElapsedTime(lastReport)>=TimeSpan.FromMilliseconds(250))
+                    {
+                        Report(progress,new(DependencyStage.Downloading,received,total));
+                        lastReport=Stopwatch.GetTimestamp();
+                    }
+                }
                 deadline.Token.ThrowIfCancellationRequested();
+                Report(progress,new(DependencyStage.Downloading,received,total));
             }
             catch(OperationCanceledException error) when (!token.IsCancellationRequested)
             { throw new TimeoutException("Не удалось скачать FFmpeg за отведённое время. Повторите установку.",error); }
-            FfmpegInstallTransaction.Install(zip,installDirectory,token,afterReplacement);
+            token.ThrowIfCancellationRequested();
+            Report(progress,new(DependencyStage.Verifying));
+            FfmpegInstallTransaction.Install(zip,installDirectory,token,afterReplacement,
+                ()=>Report(progress,new(DependencyStage.Installing)));
         }
         finally { try { Directory.Delete(scratch,true); } catch(IOException){} }
+    }
+    private static void Report(IProgress<DependencyProgress>? progress,DependencyProgress value)
+    {
+        // Optional feedback never turns an otherwise valid install into a
+        // failed component transaction.
+        try{progress?.Report(value);}catch{}
     }
     public static void RegisterProtocol()
     {

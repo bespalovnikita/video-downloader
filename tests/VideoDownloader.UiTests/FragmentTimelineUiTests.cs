@@ -106,6 +106,10 @@ internal sealed partial class UiScenario
             Require(start.Text==DownloadSection.FormatTimestamp(1.1),"Unknown FPS must use the labelled 0.1-second step.");
             Control<ComboBox>(dialog,"MediaFormatModeCombo").SelectedIndex=1;
             Control<ComboBox>(dialog,"PrimaryMediaFormatCombo").SelectedValue="v25";
+            Require(Control<Expander>(dialog,"MediaFormatsExpander").IsExpanded &&
+                Control<ComboBox>(dialog,"PrimaryMediaFormatCombo").IsVisible,
+                "Manual format mode must reveal the source selector before editing the frame grid.");
+            timeline.BringIntoView();dialog.UpdateLayout();
             start.Text="1";end.Text="2";Click(dialog,"MediaSectionStartNextFrameButton");
             Require(start.Text==DownloadSection.FormatTimestamp(1.04) && Control<TextBlock>(dialog,"MediaSectionStepStatus").Text.Contains("25 кадр/с",StringComparison.Ordinal),
                 "An exact selected video format must restore its known frame grid.");

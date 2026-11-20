@@ -36,9 +36,10 @@ internal sealed partial class MediaSelectionDialog
             var status=Named(prefix+"FrameStatus",Note("Укажите время."));
             status.MinHeight=38;
             var panel=new StackPanel();panel.Children.Add(Note(label));
-            panel.Children.Add(new Border{Background=new SolidColorBrush(Color.FromRgb(13,18,30)),
-                BorderBrush=new SolidColorBrush(Color.FromRgb(48,58,85)),BorderThickness=new Thickness(1),
-                CornerRadius=new CornerRadius(5),Padding=new Thickness(4),Child=image});
+            var frameBorder=new Border{BorderThickness=new Thickness(1),CornerRadius=new CornerRadius(5),Padding=new Thickness(4),Child=image};
+            frameBorder.SetResourceReference(Border.BackgroundProperty,"MediaCardBrush");
+            frameBorder.SetResourceReference(Border.BorderBrushProperty,"MediaCardBorderBrush");
+            panel.Children.Add(frameBorder);
             panel.Children.Add(status);
             panel.Margin=new Thickness(column==0?0:6,0,column==0?6:0,0);
             Grid.SetColumn(panel,column);cards.Children.Add(panel);

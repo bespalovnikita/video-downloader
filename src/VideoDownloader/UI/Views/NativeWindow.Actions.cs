@@ -109,9 +109,9 @@ public sealed partial class NativeWindow
     {
         BindFilenameTemplateHelp();
         Q.MouseDoubleClick+=OpenCompletedQueueFile;
-        F<Button>("AddUrlButton").Click+=(_,_)=>{AddInputText(B("UrlInput").Text);B("UrlInput").Clear();};
+        F<Button>("AddUrlButton").Click+=(_,_)=>SubmitInputText();
         F<Button>("PasteClipboardButton").Click+=(_,_)=>Paste(true);
-        B("UrlInput").KeyDown+=(_,e)=>{if(e.Key==Key.Enter){AddInputText(B("UrlInput").Text);B("UrlInput").Clear();e.Handled=true;}};
+        B("UrlInput").KeyDown+=(_,e)=>{if(e.Key==Key.Enter){SubmitInputText();e.Handled=true;}};
         F<Button>("PortableQueueButton").Click+=(_,_)=>OpenPortableQueueMenu();
         F<Button>("OpenListButton").Click+=(_,_)=>
         {
@@ -125,17 +125,7 @@ public sealed partial class NativeWindow
         };
         F<Button>("RemoveQueueButton").Click+=async(_,_)=>await RemoveRowsAsync(SelectedVisibleQueueRows());
         F<Button>("SubscriptionsButton").Click+=(_,_)=>OpenSubscriptions();
-        F<Button>("ClearQueueButton").Click+=async(_,_)=>
-        {
-            if(_closing || _disposed || _appUpdateHandoff || _queueItemActionBusy || QueueRemovalBlocked || RejectProfileBackupMutation())return;
-            if (SessionState.Coordinator?.IsRunning==true)return;
-            var completed=SessionState.Queue.Where(row=>row.Status=="Completed").ToArray();
-            bool completedOnly=completed.Length>0;
-            var candidates=completedOnly ? completed:SessionState.ClearCandidates();
-            if(candidates.Length>0 && ConfirmClearEntireQueue(candidates,completedOnly) && !_closing && !_disposed &&
-                !_appUpdateHandoff && SessionState.Coordinator?.IsRunning!=true)
-            {await ClearRowsAsync(candidates,completedOnly);}
-        };
+        F<Button>("ClearQueueButton").Click+=async(_,_)=>await ClearQueueEntriesAsync(completedOnly:true);
         F<Button>("MoveUpButton").Click+=(_,_)=>{if(Q.SelectedItem is DownloadItem item)MoveItem(item,SessionState.Queue.IndexOf(item)-1);};
         F<Button>("MoveDownButton").Click+=(_,_)=>{if(Q.SelectedItem is DownloadItem item)MoveItem(item,SessionState.Queue.IndexOf(item)+1);};
         F<Button>("RetryFailedButton").Click+=async(_,_)=>await StartAsync(SessionState.Queue.Where(x=>x.Status=="Failed").ToArray());
@@ -158,9 +148,8 @@ public sealed partial class NativeWindow
         };
         C("ProfileCombo").SelectionChanged+=(_,_)=>ApplyProfile(Pick(C("ProfileCombo")));
         F<Button>("RefreshDepsButton").Click+=(_,_)=>RefreshDependencyLabel();
-        F<Button>("UpdateYtDlpButton").Click+=async(_,_)=>await DependencyOperation(ErrorMessages.Text("Обновление yt-dlp…","Updating yt-dlp..."),DependencyCenter.UpdateYtDlpAsync);
-        F<Button>("InstallFfmpegButton").Click+=async(_,_)=>await DependencyOperation(ErrorMessages.Text("Установка FFmpeg…","Installing FFmpeg..."),
-            async cancel=>{ await DependencyCenter.InstallFfmpegAsync(cancel);return ErrorMessages.Text("FFmpeg установлен рядом с VideoDownloader.exe.","FFmpeg installed next to VideoDownloader.exe.");});
+        F<Button>("UpdateYtDlpButton").Click+=async(_,_)=>await UpdateYtDlpFromUiAsync();
+        F<Button>("InstallFfmpegButton").Click+=async(_,_)=>await InstallFfmpegFromUiAsync();
         F<Button>("OpenAppSettingsButton").Click+=(_,_)=>OpenAppSettingsFolder();
         F<Button>("RegisterProtocolButton").Click+=(_,_)=>
         {
@@ -199,7 +188,9 @@ public sealed partial class NativeWindow
         skipSelected.Click+=async(_,_)=>await SkipRowsAsync(SelectedVisibleQueueRows());queueMenu.Items.Add(skipSelected);
         var resumeSelected=new MenuItem{Header=ErrorMessages.Text("Продолжить выбранные строки","Resume selected rows")};
         resumeSelected.Click+=async(_,_)=>await ResumeRowsAsync(SelectedVisibleQueueRows());queueMenu.Items.Add(resumeSelected);
-        var removeSelected=new MenuItem{Header=ErrorMessages.Text("Удалить выбранные строки","Remove selected rows")};
+        var forgetSelected=new MenuItem{Header=ErrorMessages.Text("Убрать записи из очереди","Remove queue entries")};
+        forgetSelected.Click+=async(_,_)=>await ForgetRowsAsync(SelectedVisibleQueueRows());queueMenu.Items.Add(forgetSelected);
+        var removeSelected=new MenuItem{Header=ErrorMessages.Text("Удалить загрузки и файлы…","Delete downloads and files…")};
         removeSelected.Click+=async(_,_)=>await RemoveRowsAsync(SelectedVisibleQueueRows());queueMenu.Items.Add(removeSelected);
         queueMenu.Opened+=(_,_)=>
         {
@@ -208,6 +199,7 @@ public sealed partial class NativeWindow
             skipSelected.IsEnabled=!QueueItemActionsBlocked() && SelectedVisibleQueueRows().Any(CanSkipQueueItem);
             resumeSelected.IsEnabled=!QueueItemActionsBlocked() && SelectedVisibleQueueRows().Any(CanContinueQueueItem);
             removeSelected.IsEnabled=selected;
+            forgetSelected.IsEnabled=!QueueRecordMutationBlocked() && SelectedVisibleQueueRows().Any(CanForgetQueueRecord);
         };
         Q.ContextMenu=queueMenu;
 
@@ -253,40 +245,6 @@ public sealed partial class NativeWindow
         ProfileCatalog.Apply(options,name);
         ApplyOptions(options);
     }
-    private void RefreshDependencyLabel()=>T("DependencyStatus").Text=DependencyCenter.Inspect();
-    private async Task DependencyOperation(string progress,Func<CancellationToken,Task<string>> task)
-    {
-        if(_closing || _disposed || _appUpdateHandoff || _dependencyOperationRunning || _queueItemActionBusy || RejectProfileBackupMutation())return;
-        _dependencyOperationRunning=true;
-        RefreshAppUpdateControls();
-        T("DependencyStatus").Text=progress;
-        F<Button>("UpdateYtDlpButton").IsEnabled=false;
-        F<Button>("InstallFfmpegButton").IsEnabled=false;
-        try
-        {
-            using var schedulingPause=await SuspendSubscriptionSchedulingAsync();
-            await _preview.CancelLocalPostersAsync();
-            if(_closing || _disposed || _appUpdateHandoff)throw new OperationCanceledException("Приложение закрывается или обновляется.");
-            var response=await task(CancellationToken.None);
-            Log(response);
-            MessageBox.Show(_window,ErrorMessages.Text("Операция с компонентами завершена. Подробности доступны в журнале.",response),ErrorMessages.Text("Компоненты обновлены","Dependency operation complete"));
-        }
-        catch(Exception e)
-        {
-            Log("Dependency operation failed: "+e.Message);
-            MessageBox.Show(_window,DisplayError(e),ErrorMessages.Text("Ошибка обновления компонентов","Dependency error"),MessageBoxButton.OK,MessageBoxImage.Warning);
-        }
-        finally
-        {
-            _dependencyOperationRunning=false;
-            F<Button>("UpdateYtDlpButton").IsEnabled=true;
-            F<Button>("InstallFfmpegButton").IsEnabled=true;
-            RefreshDependencyLabel();
-            RefreshAppUpdateControls();
-            _preview.ResetLocalPosterAttempts();
-            _preview.BackfillLocalPosters();
-        }
-    }
     private async void OnClosing(object? sender,System.ComponentModel.CancelEventArgs e)
     {
         if (_disposed) return; // internal test shutdown, not a user window close
@@ -316,6 +274,7 @@ public sealed partial class NativeWindow
         // only after the final ownership/status checkpoint has been written.
         e.Cancel=true;
         _closing=true;
+        await StopDependencyOperationAsync();
         Task previewsStopped=_preview.StopAsync();
         Task diagnosticsStopped=StopJobDiagnosticsAsync();
         DisposeProfileBackup();
@@ -342,6 +301,7 @@ public sealed partial class NativeWindow
         catch(TimeoutException) { UpdateJournalHint("Время ожидания записи журнала истекло. Приложение закрывается."); }
         FlushJournal();
         _panelLayout.Dispose();
+        _theme.Dispose();
         _lifecycle.Dispose();
         _closeReady=true;
         // Even an idle/completed task may finish synchronously inside Closing.
@@ -351,6 +311,7 @@ public sealed partial class NativeWindow
     public void Dispose()
     {
         if(_disposed)return;
+        DisposeDependencyControls();
         DisposeJobDiagnostics();
         DisposeProfileBackup();
         DisposeSubscriptions();
@@ -366,6 +327,7 @@ public sealed partial class NativeWindow
         SessionState.Coordinator?.Stop();
         _preview.Dispose();
         _panelLayout.Dispose();
+        _theme.Dispose();
         _lifecycle.Dispose();
         if(!_journalCloseRequested)_journal.Dispose();
     }

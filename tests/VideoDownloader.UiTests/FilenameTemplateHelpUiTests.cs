@@ -18,7 +18,10 @@ internal sealed partial class UiScenario
         try
         {
             window.Show();
+            ((Button)window.FindName("OpenQueueOptionsButton")!).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));window.UpdateLayout();
             var template=(TextBox)window.FindName("FilenameTemplateBox")!;
+            template.BringIntoView();window.UpdateLayout();
+            Require(template.IsVisible,"The filename field must be reached through the opened queue settings tab");
             template.Text="%(upload_date)s - %(title)s [%(id)s].%(ext)s";
             string before=template.Text;
             Require(template.ToolTip?.ToString()?.Contains("%(title)s")==true &&
@@ -58,7 +61,9 @@ internal sealed partial class UiScenario
             observer.Start();watchdog.Start();
             try
             {
-                ((Button)window.FindName("FilenameTemplateHelpButton")!).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                var help=(Button)window.FindName("FilenameTemplateHelpButton")!;
+                help.BringIntoView();window.UpdateLayout();
+                help.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             }
             finally { observer.Stop();watchdog.Stop(); }
             if(failure!=null)throw failure;

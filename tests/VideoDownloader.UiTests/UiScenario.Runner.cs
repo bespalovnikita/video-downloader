@@ -34,6 +34,8 @@ internal sealed partial class UiScenario
             UiScenario.TestSubscriptionPreviewPrefetch(root);
             Stage("testing subscription details and two shared preview images");
             UiScenario.TestSubscriptionDetailsPreview(root);
+            Stage("testing subscription inbox search, status filters and compact layout");
+            UiScenario.TestSubscriptionFilters(root);
             Stage("testing one aggregate queue offer after subscription checks");
             UiScenario.TestSubscriptionQueueOffer(root);
             Stage("testing explicit subscription requeue for historical states and mixed-selection choices");
@@ -56,6 +58,8 @@ internal sealed partial class UiScenario
             UiScenario.TestDownloadsPreviewSelection(root);
             Stage("testing resizable panel layout and restored widths");
             UiScenario.TestPanelLayout(root);
+            Stage("testing Windows Contrast Themes, inherited editor colors and theme lifecycle");
+            UiScenario.TestWindowContrastTheme();
             Stage("testing journal profiles, trace correlation and clipboard/export");
             UiScenario.TestJournalProfiles(root);
             Stage("testing per-job diagnostics, typed attempts, private ZIP and cancelled owner lifetime");
@@ -86,6 +90,8 @@ internal sealed partial class UiScenario
             UiScenario.TestHistoryLibrary(root);
             Stage("testing app update controls, idle handoff and checkpoint safety");
             UiScenario.TestAppUpdateControls(root);
+            Stage("testing first-run readiness and component progress, cancellation and shutdown");
+            UiScenario.TestDependencyControls(root);
             Stage("testing free disk space, pre-start consent and live warnings");
             UiScenario.TestDiskSpaceControls(root);
             Stage("testing completed queue playback and finished session clock");
@@ -94,6 +100,10 @@ internal sealed partial class UiScenario
             UiScenario.TestDownloadsActiveFirst(root);
             Stage("testing queue search/status/subscription views and scoped actions while active");
             UiScenario.TestQueueFilters(root);
+            Stage("testing safe queue record removal and explicit destructive file deletion");
+            UiScenario.TestQueueRecordRemoval(root);
+            Stage("testing manual input validation, exact duplicates and non-intrusive clipboard polling");
+            UiScenario.TestInputFeedback(root);
             Stage("testing selected Skip/Resume, retained progress, worker handoff and skipped-aware Clear");
             UiScenario.TestQueueSkipResume(root);
             Stage("testing selected full reset, fresh metadata, owned cleanup and same-engine restart");
@@ -253,7 +263,29 @@ internal sealed partial class UiScenario
                     deferred.Status=="Queued" && deferred.SubscriptionId=="subscription-test" && deferred.SubscriptionName=="123" && cancelSession.Outstanding==1,
                     "Subscription import must stay queued until Start without entering the active coordinator");
                 controller.SessionState.Queue.Remove(deferred);
-                queue.SelectedItem=pending;remove.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                queue.SelectedItem=pending;
+                // Even a still-Queued row belongs to this live coordinator:
+                // its worker could publish before a destructive click returns.
+                // Acknowledge the real native confirmation before testing the
+                // independent cleanup owner's deliberately held completion.
+                string deletionTitle=ErrorMessages.Text("Удалить загрузки","Delete downloads");
+                uint deletionThread=GetCurrentThreadId();bool deletionConfirmed=false;
+                var confirmation=new System.Windows.Threading.DispatcherTimer{Interval=TimeSpan.FromMilliseconds(20)};
+                confirmation.Tick+=(_,_)=>
+                {
+                    if(DismissDialog(deletionThread,deletionTitle,6))
+                    {deletionConfirmed=true;confirmation.Stop();}
+                };
+                using(var confirmationDeadline=new CancellationTokenSource())
+                {
+                    _=Task.Delay(TimeSpan.FromSeconds(8),confirmationDeadline.Token).ContinueWith(timed=>
+                    {if(!timed.IsCanceled)DismissDialog(deletionThread,deletionTitle,7);},TaskScheduler.Default);
+                    confirmation.Start();
+                    try{remove.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));}
+                    finally{confirmationDeadline.Cancel();confirmation.Stop();}
+                }
+                Require(deletionConfirmed,"Removing a queued row owned by a live coordinator must obtain actual destructive confirmation");
+                Stage("pending removal confirmed; waiting for cleanup owner");
                 Require(cleanupEntered.Wait(TimeSpan.FromSeconds(5)),"The real queued cleanup owner must start before its acknowledgement is released");
                 Require(Volatile.Read(ref cleanupGateTimedOut)==0,"The controlled queued cleanup gate must not expire before the pending-removal assertion");
                 Require(queue.Items.Contains(pending) && pending.PendingRemoval && !pending.AttemptFinished,

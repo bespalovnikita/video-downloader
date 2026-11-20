@@ -11,6 +11,8 @@ using KeyEventArgs=System.Windows.Input.KeyEventArgs;
 using Pen=System.Windows.Media.Pen;
 using Point=System.Windows.Point;
 using Rect=System.Windows.Rect;
+using Brush=System.Windows.Media.Brush;
+using SystemColors=System.Windows.SystemColors;
 
 namespace VideoDownloader.Native;
 
@@ -31,15 +33,16 @@ internal sealed class AudioWaveformView:Canvas
     internal AudioWaveformView(bool isEnd)
     {
         _isEnd=isEnd;Height=112;MinWidth=180;Background=Brushes.Transparent;ClipToBounds=true;
+        SetResourceReference(BackgroundProperty,"TimelineCanvasBrush");
         AutomationProperties.SetName(this,isEnd?"Звуковая волна конца фрагмента":"Звуковая волна начала фрагмента");
         _handle=new Thumb{Width=HandleWidth,Height=23,Focusable=true,Cursor=Cursors.SizeWE};
         AutomationProperties.SetName(_handle,isEnd?"Конец фрагмента на звуковой волне":"Начало фрагмента на звуковой волне");
         var border=new FrameworkElementFactory(typeof(Border));
-        border.SetValue(Border.BackgroundProperty,new SolidColorBrush(isEnd?Color.FromRgb(255,190,100):Color.FromRgb(74,204,230)));
-        border.SetValue(Border.BorderBrushProperty,Brushes.White);border.SetValue(Border.BorderThicknessProperty,new Thickness(1));
+        border.SetResourceReference(Border.BackgroundProperty,isEnd?"RangeEndBrush":"RangeStartBrush");
+        border.SetResourceReference(Border.BorderBrushProperty,"RangeHandleBorderBrush");border.SetValue(Border.BorderThicknessProperty,new Thickness(1));
         border.SetValue(Border.CornerRadiusProperty,new CornerRadius(3));
         var text=new FrameworkElementFactory(typeof(TextBlock));text.SetValue(TextBlock.TextProperty,isEnd?"К":"Н");
-        text.SetValue(TextBlock.ForegroundProperty,Brushes.Black);text.SetValue(TextBlock.FontWeightProperty,FontWeights.Bold);
+        text.SetResourceReference(TextBlock.ForegroundProperty,"RangeHandleTextBrush");text.SetValue(TextBlock.FontWeightProperty,FontWeights.Bold);
         text.SetValue(FrameworkElement.HorizontalAlignmentProperty,System.Windows.HorizontalAlignment.Center);
         text.SetValue(FrameworkElement.VerticalAlignmentProperty,System.Windows.VerticalAlignment.Center);
         border.AppendChild(text);_handle.Template=new ControlTemplate(typeof(Thumb)){VisualTree=border};
@@ -110,13 +113,15 @@ internal sealed class AudioWaveformView:Canvas
     protected override void OnRender(DrawingContext drawing)
     {
         base.OnRender(drawing);
+        bool contrast=(TryFindResource("WindowThemeState") as WindowThemeState)?.HighContrast??SystemParameters.HighContrast;
         var frame=new Rect(HandleWidth/2,25,TrackWidth,56);
-        drawing.DrawRectangle(new SolidColorBrush(Color.FromRgb(18,26,43)),null,frame);
-        drawing.DrawLine(new Pen(new SolidColorBrush(Color.FromRgb(80,93,115)),1),
+        drawing.DrawRectangle(contrast?SystemColors.WindowBrush:new SolidColorBrush(Color.FromRgb(18,26,43)),
+            contrast?new Pen(SystemColors.WindowTextBrush,1):null,frame);
+        drawing.DrawLine(new Pen(contrast?SystemColors.WindowTextBrush:new SolidColorBrush(Color.FromRgb(80,93,115)),1),
             new Point(frame.Left,frame.Top+frame.Height/2),new Point(frame.Right,frame.Top+frame.Height/2));
         if(_data is null)return;
-        var peak=new SolidColorBrush(Color.FromRgb(43,131,154));
-        var rms=new SolidColorBrush(Color.FromRgb(87,218,220));
+        Brush peak=contrast?SystemColors.WindowTextBrush:new SolidColorBrush(Color.FromRgb(43,131,154));
+        Brush rms=contrast?SystemColors.HighlightBrush:new SolidColorBrush(Color.FromRgb(87,218,220));
         double binWidth=TrackWidth/_data.Bins.Count,center=frame.Top+frame.Height/2;
         for(int index=0;index<_data.Bins.Count;index++)
         {
@@ -125,9 +130,9 @@ internal sealed class AudioWaveformView:Canvas
             drawing.DrawRectangle(peak,null,new Rect(x,center-outer,Math.Max(.5,binWidth-.5),outer*2));
             drawing.DrawRectangle(rms,null,new Rect(x,center-inner,Math.Max(.5,binWidth-.5),inner*2));
         }
-        drawing.DrawLine(new Pen(new SolidColorBrush(_isEnd?Color.FromRgb(255,190,100):Color.FromRgb(74,204,230)),1.5),
+        drawing.DrawLine(new Pen(contrast?SystemColors.HighlightBrush:new SolidColorBrush(_isEnd?Color.FromRgb(255,190,100):Color.FromRgb(74,204,230)),1.5),
             new Point(Position(_boundary),22),new Point(Position(_boundary),frame.Bottom));
-        var brush=new SolidColorBrush(Color.FromRgb(183,192,216));
+        Brush brush=contrast?SystemColors.WindowTextBrush:new SolidColorBrush(Color.FromRgb(183,192,216));
         FormattedText Label(double seconds)=>new(DownloadSection.FormatTimestamp(seconds),CultureInfo.CurrentUICulture,
             System.Windows.FlowDirection.LeftToRight,new Typeface("Segoe UI"),11,brush,VisualTreeHelper.GetDpi(this).PixelsPerDip);
         var left=Label(_data.StartSeconds);var right=Label(_data.EndSeconds);

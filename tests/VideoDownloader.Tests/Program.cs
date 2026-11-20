@@ -32,6 +32,7 @@ if(applicationAssembly.GetTypes().Any(type=>type.Name.Contains("SelfTest",String
         .Any(method=>method.Name.StartsWith("Test",StringComparison.Ordinal)))
     throw new InvalidOperationException("Production assembly must not contain UI scenarios or self-test entry points.");
 LegacyCompatibilityTests.Run();
+TitleDisplaySettingsTests.Run();
 await NativeContractTests.RunAsync();
 await AudioTrackSelectionTests.RunAsync();
 await DownloadSelectionTests.RunAsync();

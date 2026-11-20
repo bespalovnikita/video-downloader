@@ -32,6 +32,9 @@ internal sealed class JobDiagnosticsWindow:Window
     private readonly JobDiagnosticsService _service;
     private readonly Func<long> _sequence;
     private readonly Func<Window,DiagnosticSaveSelection?> _chooseExport;
+    private readonly Func<bool> _canExport;
+    private const string ExportPurpose="Сохранить все доступные события выбранной загрузки и версии компонентов. Фильтры не ограничивают ZIP. Файл можно приложить к сообщению о проблеме.";
+    private const string ExportBlocked="Сохранение отчёта доступно после завершения операции с компонентами. Читать и копировать события можно сейчас.";
     private readonly TextBox _search,_details,_error;
     private readonly TextBlock _explanation,_rawLabel;
     private readonly ComboBox _attempt,_level;
@@ -51,9 +54,9 @@ internal sealed class JobDiagnosticsWindow:Window
     internal Task CancelForOwnerAsync(){CloseOperations();return PendingOperations;}
 
     internal JobDiagnosticsWindow(Window owner,JobDiagnosticTarget target,JobDiagnosticsService service,
-        Func<long> sequence,Func<Window,DiagnosticSaveSelection?>? chooseExport=null)
+        Func<long> sequence,Func<Window,DiagnosticSaveSelection?>? chooseExport=null,Func<bool>? canExport=null)
     {
-        _target=target;_service=service;_sequence=sequence;_chooseExport=chooseExport??ChooseExport;
+        _target=target;_service=service;_sequence=sequence;_chooseExport=chooseExport??ChooseExport;_canExport=canExport??(()=>true);
         Owner=owner;Title="Диагностика: "+target.Label;Name="JobDiagnosticsWindow";
         Width=Math.Min(1120,Math.Max(740,SystemParameters.WorkArea.Width-48));
         Height=Math.Min(800,Math.Max(520,SystemParameters.WorkArea.Height-48));MinWidth=700;MinHeight=500;
@@ -138,7 +141,8 @@ internal sealed class JobDiagnosticsWindow:Window
         _copy=Named("CopyJobDiagnosticsButton",new Button{Content="Копировать видимые события",IsEnabled=false,
             ToolTip="Скопировать только показанные строки с учётом поиска, попытки и уровня. Вставьте текст в сообщение о проблеме."});
         _export=Named("ExportJobDiagnosticsButton",new Button{Content="Сохранить отчёт в ZIP…",IsEnabled=false,
-            ToolTip="Сохранить все доступные события выбранной загрузки и версии компонентов. Фильтры не ограничивают ZIP. Файл можно приложить к сообщению о проблеме."});
+            ToolTip=ExportPurpose});
+        ToolTipService.SetShowOnDisabled(_export,true);
         var close=Named("CloseJobDiagnosticsButton",new Button{Content="Закрыть"});
         foreach(var button in new[]{_refresh,_copy,_export,close})buttons.Children.Add(button);
         footer.Children.Add(buttons);Grid.SetRow(footer,5);root.Children.Add(footer);Content=root;
@@ -200,7 +204,7 @@ internal sealed class JobDiagnosticsWindow:Window
             finally{_binding=false;}
             string error=snapshot.Events.LastOrDefault(entry=>entry.Level==JournalLevel.Error)?.Message??_target.Error;
             ShowError(error);
-            RebuildView();_export.IsEnabled=true;
+            RebuildView();RefreshExportAvailability();
         }
         catch(OperationCanceledException) when(_stop.IsCancellationRequested){ }
         catch(Exception error){if(!_closed)_status.Text="Не удалось прочитать диагностику: "+DiagnosticPrivacy.Text(error.Message);}
@@ -249,17 +253,33 @@ internal sealed class JobDiagnosticsWindow:Window
     private void BeginExport()
     {
         if(_closed || _exporting || _snapshot is null)return;
+        if(!ExportAdmissionAllowed())return;
         DiagnosticSaveSelection? destination;
         try{destination=_chooseExport(this);}catch(Exception error){_status.Text="Не удалось выбрать файл: "+DiagnosticPrivacy.Text(error.Message);return;}
         if(destination is null || _closed)return;
+        // A destination picker pumps the owner dispatcher. Component work may
+        // have started since the initial click; never probe changing binaries.
+        if(!ExportAdmissionAllowed())return;
         var snapshot=_snapshot;_exporting=true;_export.IsEnabled=false;
         _exportTask=Dispatcher.InvokeAsync(()=>ExportAsync(snapshot,destination),DispatcherPriority.Background).Task.Unwrap();
+    }
+    internal void RefreshExportAvailability()
+    {
+        if(_closed)return;
+        bool allowed=_canExport();
+        _export.IsEnabled=_snapshot is not null && !_exporting && allowed;
+        _export.ToolTip=allowed?ExportPurpose:ExportBlocked;
+    }
+    private bool ExportAdmissionAllowed()
+    {
+        if(_canExport())return true;
+        RefreshExportAvailability();_status.Text=ExportBlocked;return false;
     }
     private async Task ExportAsync(JobDiagnosticSnapshot snapshot,DiagnosticSaveSelection destination)
     {
         try
         {
-            if(_closed)return;
+            if(_closed || !ExportAdmissionAllowed())return;
             _status.Text="Собираем выбранное задание и версии компонентов…";
             WorkStateChanged?.Invoke();
             bool overwrite=destination.Overwrite;
@@ -271,14 +291,14 @@ internal sealed class JobDiagnosticsWindow:Window
                 {_status.Text="Сохранение отменено.";return;}
                 overwrite=true;
             }
-            if(_closed || _stop.IsCancellationRequested)return;
+            if(_closed || _stop.IsCancellationRequested || !ExportAdmissionAllowed())return;
             var result=await _service.ExportAsync(_target,snapshot,destination.Path,_stop.Token,overwrite);
             if(!_closed)_status.Text=$"ZIP сохранён: {result.Events} событий, {DisplayValueConverter.Bytes(result.Bytes)}. "+
                 string.Join("; ",result.Components.Select(component=>component.Component+": "+component.Status));
         }
         catch(OperationCanceledException) when(_stop.IsCancellationRequested){ }
         catch(Exception error){if(!_closed)_status.Text="Не удалось сохранить диагностику: "+DiagnosticPrivacy.Text(error.Message);}
-        finally{_exporting=false;if(!_closed)_export.IsEnabled=true;WorkStateChanged?.Invoke();}
+        finally{_exporting=false;RefreshExportAvailability();WorkStateChanged?.Invoke();}
     }
     private DiagnosticSaveSelection? ChooseExport(Window owner)
     {

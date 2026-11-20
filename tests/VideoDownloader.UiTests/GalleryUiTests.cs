@@ -1,4 +1,5 @@
 using System.Windows;
+using TabItem=System.Windows.Controls.TabItem;
 using System.Windows.Input;
 using System.Windows.Markup;
 using System.Windows.Media;
@@ -8,6 +9,7 @@ using System.Xml;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using TabControl=System.Windows.Controls.TabControl;
 using MouseEventArgs = System.Windows.Input.MouseEventArgs;
 using MouseWheelEventArgs = System.Windows.Input.MouseWheelEventArgs;
 
@@ -62,6 +64,10 @@ internal sealed partial class UiScenario
             subject=new NativeWindow(window,new AppPersistence(Path.Combine(testRoot,"preview-gallery")),"must-not-launch");
             window.Show();
             window.UpdateLayout();
+            if(!((FrameworkElement)window.FindName("PreviewPanel")!).IsVisible)
+                ((Button)window.FindName("ShowDetailsPanelButton")!).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            ((TabControl)window.FindName("DetailsTabs")!).SelectedItem=(TabItem)window.FindName("SelectedVideoTab")!;
+            ((FrameworkElement)window.FindName("PreviewImageHost")!).BringIntoView();window.UpdateLayout();
             var preview=subject.Preview;
             var host=(FrameworkElement)window.FindName("PreviewImageHost")!;
             var image=(Image)window.FindName("PreviewImage")!;

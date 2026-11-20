@@ -159,6 +159,8 @@ internal sealed partial class UiScenario
             var mode=Control<ComboBox>(dialog,"MediaFormatModeCombo");
             var primary=Control<ComboBox>(dialog,"PrimaryMediaFormatCombo");
             mode.SelectedIndex=1;primary.SelectedValue="137";start.Text="1";end.Text="2";
+            Require(Control<Expander>(dialog,"MediaFormatsExpander").IsExpanded && primary.IsVisible,
+                "Selecting manual mode must expose the actual source format selector.");
             PumpUntil(()=>probe.Calls.Length==2,"Both selected boundaries must request the manual source format.");
             var oldFormat=probe.Calls;
             Require(oldFormat.All(call=>call.Request.VideoFormatId=="137"),"Manual video IDs must reach the frame provider unchanged.");

@@ -8,10 +8,11 @@ public sealed partial class NativeWindow
 {
     private readonly SemaphoreSlim _portableIngressGate=new(1,1);
 
-    private void AddInputText(string text)
+    private void AddInputText(string text,bool clipboard=false)
     {
+        long generation=++_inputFeedbackGeneration;
         if(PortableQueueCodec.IsPortable(text))_ = ImportPortableTextAsync(text);
-        else AddUrls(ParseUrls(text));
+        else ProcessOrdinaryInput(text,clipboard,generation);
     }
 
     private void OpenPortableQueueMenu()

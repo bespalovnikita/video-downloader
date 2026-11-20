@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using System.Windows;
+using TabControl=System.Windows.Controls.TabControl;
 using System.Windows.Controls;
 using System.Windows.Markup;
 using System.Windows.Media;
@@ -87,6 +88,9 @@ internal sealed partial class UiScenario
             }
             void VerifyRenderedTitle(DownloadItem row,string title)
             {
+                if(!ui.Q.IsVisible)
+                    ui.F<Button>("ShowQueuePanelButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                window.UpdateLayout();ui.Q.BringIntoView();
                 foreach(bool showTitle in new[]{false,true})
                 {
                     ui.K("ShowVideoTitlesCheck").IsChecked=showTitle;
@@ -97,7 +101,7 @@ internal sealed partial class UiScenario
                         ui.Q.UpdateLayout();
                         var column=ui.Q.Columns.OfType<DataGridTemplateColumn>().First();
                         var content=column.GetCellContent(row);
-                        return content!=null && Labels(content).Any(label=>label.Text==expected &&
+                        return content!=null && Labels(content).Any(label=>label.IsVisible && label.Text==expected &&
                             string.Equals(label.ToolTip as string,row.Url,StringComparison.Ordinal));
                     },"The actual row binding must render "+expected);
                 }
@@ -180,8 +184,17 @@ internal sealed partial class UiScenario
             // cached image. Neither selection nor Start was used to obtain it.
             foreach(int index in new[]{0,4})
             {
-                ui.Q.SelectedItem=ui.SessionState.Queue.Single(row=>row.Url==urls[index]);
+                if(!ui.Q.IsVisible)
+                    ui.F<Button>("ShowQueuePanelButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                window.UpdateLayout();
+                var selected=ui.SessionState.Queue.Single(row=>row.Url==urls[index]);
+                ui.Q.ScrollIntoView(selected);ui.Q.UpdateLayout();ui.Q.SelectedItem=selected;
+                if(!ui.F<FrameworkElement>("PreviewPanel").IsVisible)
+                    ui.F<Button>("ShowDetailsPanelButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                ui.F<TabControl>("DetailsTabs").SelectedItem=ui.F<TabItem>("SelectedVideoTab");
+                ui.F<FrameworkElement>("PreviewImageHost").BringIntoView();window.UpdateLayout();
                 PumpUntil(()=>ui._preview.SelectedUrl==urls[index] &&
+                    ui.F<Image>("PreviewImage").IsVisible &&
                     ui.F<Image>("PreviewImage").Source is BitmapSource {PixelWidth:PreviewThumbnailServer.Width,PixelHeight:PreviewThumbnailServer.Height},
                     "Selecting a prefetched URL/subscription must render its actual cached PNG");
             }

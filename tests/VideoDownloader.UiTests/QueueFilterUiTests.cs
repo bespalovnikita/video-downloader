@@ -207,10 +207,11 @@ internal sealed partial class UiScenario
             Require(!subject.SessionState.Queue.Contains(rows[0]) && subject.SessionState.Queue.Contains(rows[1]) &&
                 subject.SessionState.Queue.Count==3,"Remove selected must affect only the still-visible selection");
             search.Text="нет совпадений";PumpUntil(()=>queue.Items.Count==0,"The global clear test must hide all remaining rows");
-            void ClearWithAnswer(int button,Action? beforeAnswer=null)
+            void ClearWithAnswer(int button,Action? beforeAnswer=null,bool all=false)
             {
                 uint thread=GetCurrentThreadId();bool observed=false;
-                string title=ErrorMessages.Text("Очистить всю очередь","Clear entire queue");
+                string title=all?ErrorMessages.Text("Очистить очередь","Clear queue"):
+                    ErrorMessages.Text("Убрать завершённые записи","Remove completed entries");
                 var timer=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(20)};
                 timer.Tick+=(_,_)=>
                 {
@@ -228,12 +229,13 @@ internal sealed partial class UiScenario
                 using var watchdog=new CancellationTokenSource();
                 _=Task.Delay(TimeSpan.FromSeconds(10),watchdog.Token).ContinueWith(task=>
                 {if(!task.IsCanceled)DismissDialog(thread,title,7);},TaskScheduler.Default);
-                timer.Start();try{Click(window,"ClearQueueButton");}finally{watchdog.Cancel();timer.Stop();}
+                timer.Start();try{Click(window,all?"ClearAllQueueButton":"ClearQueueButton");}finally{watchdog.Cancel();timer.Stop();}
                 Require(observed,"The actual global clear confirmation must identify the whole queue");
             }
-            Require(Control<Button>(window,"ClearQueueButton").Content.ToString()!.Contains("всю очередь",StringComparison.Ordinal) &&
+            Require(Control<Button>(window,"ClearQueueButton").Content.ToString()!.Contains("завершённые",StringComparison.Ordinal) &&
+                Control<Button>(window,"ClearAllQueueButton").Content.ToString()!.Contains("Очистить очередь",StringComparison.Ordinal) &&
                 Control<Button>(window,"StartButton").Content.ToString()!.Contains("всю очередь",StringComparison.Ordinal),
-                "The visible global actions must explicitly say that they target the whole queue");
+                "Global actions must clearly distinguish completed-only removal, full clear and whole-queue Start.");
             // The completed row contains fragments, so it is intentionally
             // excluded from full-success history. Keep a separate legacy
             // full-URL success to verify that queue clearing preserves it.
@@ -251,13 +253,13 @@ internal sealed partial class UiScenario
                 File.ReadAllText(keptMedia)=="user media sentinel" && File.ReadAllText(keptSecond)=="second fragment sentinel" &&
                 File.ReadAllBytes(storage.HistoryPath).SequenceEqual(history),
                 "The first clear must remove only hidden completed records, keeping unfinished rows, every fragment output and success history.");
-            ClearWithAnswer(7);Require(subject.SessionState.Queue.Count==2,"Cancelling the next whole clear must retain unfinished entries");
-            ClearWithAnswer(6,()=>subject.ReceiveArguments([rows[0].Url]));
+            ClearWithAnswer(7,all:true);Require(subject.SessionState.Queue.Count==2,"Cancelling full clear must retain unfinished entries");
+            ClearWithAnswer(6,()=>subject.ReceiveArguments([rows[0].Url]),all:true);
             Require(subject.SessionState.Queue.Count==1 && subject.SessionState.Queue[0].Url==rows[0].Url && queue.Items.Count==0 &&
                 File.ReadAllText(keptMedia)=="user media sentinel" && File.ReadAllText(keptSecond)=="second fragment sentinel" &&
                 File.ReadAllBytes(storage.HistoryPath).SequenceEqual(history),
-                "With no completed rows, clear must remove confirmed hidden entries while keeping media, history and late IPC arrivals outside its snapshot");
-            ClearWithAnswer(6);Require(subject.SessionState.Queue.Count==0,"A new confirmation must clear the remaining hidden arrival");
+                "Explicit full clear must remove confirmed hidden entries while keeping media, history and late IPC arrivals outside its snapshot");
+            ClearWithAnswer(6,all:true);Require(subject.SessionState.Queue.Count==0,"A new full-clear confirmation must clear the remaining hidden arrival");
 
             // Exercise the actual Start continuation and native worker while
             // no rows match. Filtering must not become an execution filter.

@@ -213,7 +213,7 @@ public sealed partial class NativeWindow
     private void PresentDiskSpace(DiskSpaceAssessment assessment,bool running)
     {
         T("DiskSpaceSummaryText").Text=DiskSpaceDescription(assessment);
-        T("DiskSpaceSummaryText").Foreground=assessment.ShouldWarn?Brushes.Orange:Brushes.LightGray;
+        T("DiskSpaceSummaryText").SetResourceReference(TextBlock.ForegroundProperty,assessment.ShouldWarn?"HeaderWarningBrush":"HeaderIdleBrush");
         var low=running?assessment.Volumes.Where(volume=>volume.Space.AvailableBytes is {} free &&
             free<DiskSpaceAssessment.LowSpaceBytes).ToArray():Array.Empty<DiskSpaceVolume>();
         string warning=_diskAdmissionMessage;

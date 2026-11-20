@@ -33,8 +33,10 @@ internal sealed partial class MediaSelectionDialog
         panel.Children.Add(_multipleSections);
         var details=new StackPanel();_sectionListPanel=details;
         _sectionList=Named("MediaSectionsList",new ListBox{ItemsSource=_sectionDrafts,DisplayMemberPath=nameof(SectionDraft.Label),
-            MinHeight=48,MaxHeight=140,Margin=new Thickness(0,2,0,4),Background=Background,Foreground=Foreground,
+            MinHeight=48,MaxHeight=140,Margin=new Thickness(0,2,0,4),
             HorizontalContentAlignment=System.Windows.HorizontalAlignment.Stretch});
+        _sectionList.SetResourceReference(System.Windows.Controls.Control.BackgroundProperty,"WindowBackgroundBrush");
+        _sectionList.SetResourceReference(System.Windows.Controls.Control.ForegroundProperty,"WindowTextBrush");
         details.Children.Add(_sectionList);
         var actions=new WrapPanel{Orientation=Orientation.Horizontal};
         Button Action(string name,string label)
@@ -149,10 +151,29 @@ internal sealed partial class MediaSelectionDialog
         {
             var draft=_sectionDrafts[index];
             if(!DownloadSection.TryParse(draft.Start,draft.End,duration,out var section,out error) || section is null)
-            {error=$"Фрагмент {index+1}: "+(error.Length>0?error:"укажите начало и конец.");return false;}
+            {
+                error=$"Фрагмент {index+1}: "+(error.Length>0?error:"укажите начало и конец.");
+                if(_sectionList is not null){_sectionList.SelectedIndex=index;DisplaySelectedSection();}
+                return false;
+            }
             parsed.Add(section);
         }
         try{var set=new DownloadSectionSet(parsed);set.Validate(duration);sections=set.ToArray();return true;}
-        catch(ArgumentException issue){error=issue.Message;return false;}
+        catch(ArgumentException issue)
+        {
+            error=issue.Message;
+            // Point to the offending draft while preserving the user's order.
+            // This chooses a field for feedback; validation above still owns
+            // acceptance of the complete immutable section set.
+            var chronological=parsed.Select((section,index)=>(Section:section,Index:index))
+                .OrderBy(entry=>entry.Section.StartSeconds).ThenBy(entry=>entry.Section.EndSeconds).ToArray();
+            for(int index=1;index<chronological.Length;index++)
+                if(chronological[index].Section.StartSeconds<chronological[index-1].Section.EndSeconds)
+                {
+                    if(_sectionList is not null){_sectionList.SelectedIndex=chronological[index].Index;DisplaySelectedSection();}
+                    break;
+                }
+            return false;
+        }
     }
 }

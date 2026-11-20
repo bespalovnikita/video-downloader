@@ -74,6 +74,11 @@ internal sealed partial class UiScenario
         }
         void RenderedLabel(DataGrid grid,DownloadItem row,string expected)
         {
+            if(!grid.IsVisible)
+            {
+                string navigation=ReferenceEquals(grid,Q)?"ShowQueuePanelButton":"ShowDownloadsPanelButton";
+                F<Button>(navigation).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));_window.UpdateLayout();
+            }
             grid.ScrollIntoView(row);
             grid.UpdateLayout();
             bool Matches()
@@ -82,7 +87,7 @@ internal sealed partial class UiScenario
                 var column=grid.Columns.OfType<DataGridTemplateColumn>().First();
                 var content=column.GetCellContent(row);
                 return content!=null && Labels(content).Any(label=>
-                    label.Text==expected && string.Equals(label.ToolTip as string,row.DisplayUrl,StringComparison.Ordinal));
+                    label.IsVisible && label.Text==expected && string.Equals(label.ToolTip as string,row.DisplayUrl,StringComparison.Ordinal));
             }
             if(Matches())return;
             var frame=new DispatcherFrame();

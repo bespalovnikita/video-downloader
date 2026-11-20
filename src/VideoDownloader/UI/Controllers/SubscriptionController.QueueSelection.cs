@@ -14,9 +14,12 @@ internal sealed partial class SubscriptionController
     private async Task QueueSelectedAsync()
     {
         if(Busy || _window is not {} window)return;
+        // Apply a pending search draft before capturing the explicit action.
+        // A row hidden by the typed criteria must not remain actionable.
+        RefreshInboxFilters();
         // Capture identities before an await or modal loop can change the
         // current view. A later selection never enlarges this explicit action.
-        var keys=Inbox.SelectedItems.Cast<SubscriptionItemView>().Select(row=>row.Item)
+        var keys=VisibleInboxSelection().Select(row=>row.Item)
             .Where(CanSelectForQueue).Select(item=>(item.SubscriptionId,item.Url)).ToHashSet();
         if(keys.Count==0)return;
         _mutation=true;UpdateButtons();

@@ -21,8 +21,11 @@ internal sealed partial class UiScenario
         try
         {
             window.Show();
+            ((Button)window.FindName("OpenQueueOptionsButton")!).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));window.UpdateLayout();
             var mode=(ComboBox)window.FindName("AudioTrackCombo")!;
             var languages=(TextBox)window.FindName("AudioLanguagesBox")!;
+            mode.BringIntoView();window.UpdateLayout();
+            Require(mode.IsVisible && languages.IsVisible,"The actual audio controls must be reachable on the queue settings tab");
             Require(subject.ReadOptions().AudioTrack=="Default" && !languages.IsEnabled,"Old/default settings use automatic audio without a language filter");
             mode.SelectedItem="По языкам";
             Require(languages.IsEnabled,"Language selection enables the language field");

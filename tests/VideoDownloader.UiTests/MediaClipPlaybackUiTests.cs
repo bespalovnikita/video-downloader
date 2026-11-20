@@ -169,6 +169,8 @@ internal sealed partial class UiScenario
             var mode=Control<ComboBox>(dialog,"MediaFormatModeCombo");var primary=Control<ComboBox>(dialog,"PrimaryMediaFormatCombo");
             var audio=Control<ComboBox>(dialog,"AudioMediaFormatCombo");
             mode.SelectedIndex=1;primary.SelectedValue="137";audio.SelectedValue="140";
+            Require(Control<Expander>(dialog,"MediaFormatsExpander").IsExpanded && primary.IsVisible && audio.IsVisible,
+                "Manual AV selection must reveal both source selectors.");
             Require(player.Source is null && disposed.Contains(currentClip.Path),"Format changes must release the old source.");
             Click(dialog,"PreviewMediaClipStartButton");var manual=calls[^1];
             Require(manual.Request.VideoFormatId=="137" && manual.Request.AudioFormatId=="140",

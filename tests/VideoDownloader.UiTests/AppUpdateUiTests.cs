@@ -41,6 +41,22 @@ internal sealed partial class UiScenario
             var install=Control<Button>(window,"InstallAppUpdateButton");
             var status=Control<TextBlock>(window,"AppUpdateStatusText");
             var installed=Control<TextBlock>(window,"CurrentAppVersionText");
+            void ShowDetailsTab(string tab)
+            {
+                if(!Control<FrameworkElement>(window,"PreviewPanel").IsVisible)
+                    Control<Button>(window,"ShowDetailsPanelButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                Control<TabItem>(window,tab).IsSelected=true;window.UpdateLayout();
+            }
+            void ShowUpdateSettings()
+            {
+                ShowDetailsTab("MaintenanceTab");
+                for(DependencyObject? ancestor=installed;ancestor is not null;ancestor=LogicalTreeHelper.GetParent(ancestor))
+                    if(ancestor is Expander expander)expander.IsExpanded=true;
+                window.UpdateLayout();installed.BringIntoView();window.UpdateLayout();
+                Require(installed.IsVisible && check.IsVisible && install.IsVisible,
+                    "Update controls must be reached through Settings and the expanded application-update section");
+            }
+            ShowUpdateSettings();
             var appVersion=typeof(NativeWindow).Assembly.GetName().Version??new Version(2,0,0);
             string versionText=new Version(appVersion.Major,appVersion.Minor,Math.Max(0,appVersion.Build)).ToString();
             string installedText=installed.Text;
@@ -66,11 +82,18 @@ internal sealed partial class UiScenario
 
             var cleanup=new DownloadItem{Url="https://update-ui.invalid/cleanup"};
             subject.SessionState.Queue.Add(cleanup);
+            if(!Control<FrameworkElement>(window,"QueuePanel").IsVisible)
+                Control<Button>(window,"ShowQueuePanelButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             Control<DataGrid>(window,"QueueGrid").SelectedItem=cleanup;
-            subject.UpdateState();Click(window,"MediaSelectionButton");
+            subject.UpdateState();ShowDetailsTab("SelectedVideoTab");
+            Control<Button>(window,"MediaSelectionButton").BringIntoView();window.UpdateLayout();
+            Require(Control<Button>(window,"MediaSelectionButton").IsVisible,
+                "The editor must be opened from its selected-video tab rather than a hidden action");
+            Click(window,"MediaSelectionButton");
             PumpUntil(()=>subject.MediaSelectionEditor?.IsVisible==true,"The row editor did not open.");
             Require(!install.IsEnabled,"An open editor with unapplied inputs must block application restart.");
             subject.MediaSelectionEditor!.Close();
+            ShowUpdateSettings();
             Require(install.IsEnabled,"Closing the editor must restore the idle installation action.");
             cleanup.PendingRemoval=true;subject.UpdateState();
             Require(!install.IsEnabled,"Pending file cleanup must block installation.");

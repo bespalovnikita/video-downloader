@@ -61,9 +61,11 @@ internal sealed partial class UiScenario
         try
         {
             subject=new NativeWindow(window,storage,"must-not-launch",automaticSubscriptionChecks:false);
-            window.Show();window.Width=1280;window.Height=760;window.UpdateLayout();
+            window.Show();SetLayoutTestBounds(window,1280,760,compact:false);
             var grid=(DataGrid)window.FindName("DownloadGrid")!;
             var urlInput=(TextBox)window.FindName("UrlInput")!;
+            Require(grid.IsVisible && urlInput.IsVisible,
+                "The simultaneous Downloads-scroll and URL-focus scenario requires both real wide-layout panels to be visible");
             Button Action(string name)=>(Button)window.FindName(name)!;
             var complete=new DownloadItem{Url="https://downloads-order.invalid/Video?token=AbC",Status="Completed",State="Completed",Slot="002"};
             var running=new DownloadItem{Url="https://downloads-order.invalid/video?token=AbC",Status="Running",State="Downloading",Slot="009",
