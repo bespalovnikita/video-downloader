@@ -5,10 +5,6 @@ internal static class Program
     [STAThread]
     private static int Main()
     {
-        // A failed native Dispatcher wake-up must expose its originating call
-        // instead of silently leaving every timer/queued operation asleep.
-        System.Windows.BaseCompatibilityPreferences.HandleDispatcherRequestProcessingFailure=
-            System.Windows.BaseCompatibilityPreferences.HandleDispatcherRequestProcessingFailureOptions.Throw;
         // WinExe hosts do not reliably forward CLR/dispatcher crash text to
         // the CI console. Keep the original exception in the isolated result
         // file without marking the failure handled or changing its exit code.
