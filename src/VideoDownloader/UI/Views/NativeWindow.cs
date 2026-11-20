@@ -110,6 +110,7 @@ public sealed partial class NativeWindow : IDisposable
         _subscriptionColumns=[new(Q,F<DataGridColumn>("QueueSubscriptionColumn")),
             new(D,F<DataGridColumn>("DownloadSubscriptionColumn"))];
         InitializeInputFeedback();
+        InitializeAdvancedOptions();
         InitializeQueueItemActions();
         InitializeResetQueueItemActions();
         InitializeHistoryControls();
@@ -264,6 +265,7 @@ public sealed partial class NativeWindow : IDisposable
         RefreshProfileBackupControls();
         RefreshDependencyControls();
         RefreshQueueEmptyState();
+        RefreshAdvancedOptionsSummary();
         T("QueueOptionsScopeHint").Text=running
             ? ErrorMessages.Text("Параметры относятся ко всей очереди. Изменения применятся при следующем запуске; текущие загрузки продолжатся с прежними настройками.",
                 "These settings apply to the whole queue. Changes take effect on the next start; current downloads keep their existing settings.")
@@ -372,6 +374,7 @@ public sealed partial class NativeWindow : IDisposable
             ("SponsorCheck",o.Sponsor),("AudioOnlyCheck",o.AudioOnly),("WatchClipboardCheck",o.WatchClipboard),
             ("ShowVideoTitlesCheck",o.ShowVideoTitles)})
             K(name).IsChecked=value;
+        RefreshAdvancedOptionsSummary();
     }
     private void TryRestore()
     {
