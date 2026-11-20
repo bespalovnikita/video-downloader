@@ -13,14 +13,24 @@ internal sealed partial class UiScenario
     {
         static void Require(bool condition,string message)
         {if(!condition)throw new InvalidOperationException("Subscription-filter WPF test: "+message);}
-        static void PumpUntil(Func<bool> condition,string message)
+        static IEnumerable<TextBlock> SourceLabels(DependencyObject element)
+        {
+            if(element is TextBlock label)yield return label;
+            for(int index=0;index<System.Windows.Media.VisualTreeHelper.GetChildrenCount(element);index++)
+                foreach(var child in SourceLabels(System.Windows.Media.VisualTreeHelper.GetChild(element,index)))yield return child;
+        }
+        static double FullTextWidth(TextBlock label)=>new System.Windows.Media.FormattedText(label.Text,
+            System.Globalization.CultureInfo.CurrentUICulture,label.FlowDirection,
+            new System.Windows.Media.Typeface(label.FontFamily,label.FontStyle,label.FontWeight,label.FontStretch),label.FontSize,
+            System.Windows.Media.Brushes.White,System.Windows.Media.VisualTreeHelper.GetDpi(label).PixelsPerDip).WidthIncludingTrailingWhitespace;
+        static void PumpUntil(Func<bool> condition,string message,Func<string>? details=null)
         {
             if(condition())return;
             var frame=new DispatcherFrame();var deadline=DateTime.UtcNow.AddSeconds(8);
             var timer=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(15)};
             timer.Tick+=(_,_)=>{if(condition() || DateTime.UtcNow>=deadline)frame.Continue=false;};
             timer.Start();try{Dispatcher.PushFrame(frame);}finally{timer.Stop();}
-            Require(condition(),message);
+            Require(condition(),message+(details is null?"":" "+details()));
         }
         string root=Path.Combine(testRoot,"subscription-filters-"+Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
@@ -35,8 +45,11 @@ internal sealed partial class UiScenario
         var snapshot=new SubscriptionSnapshot
         {
             Subscriptions=[
-                new(){Id="source-a",Url="https://subscription-filter.invalid/a",Title="Одинаковое имя",ShortName="Канал A",Initialized=true},
-                new(){Id="source-b",Url="https://subscription-filter.invalid/b",Title="Одинаковое имя",ShortName="Канал B",Initialized=true}],
+                new(){Id="source-a",Url="https://subscription-filter.invalid/a",Title="Одинаковое имя",ShortName="Канал A",Initialized=true,
+                    LastAttemptUtc=new DateTimeOffset(2026,1,2,12,0,0,TimeSpan.Zero),LastSuccessUtc=new DateTimeOffset(2026,1,1,12,0,0,TimeSpan.Zero),
+                    LastWarning="Предупреждение источника A"},
+                new(){Id="source-b",Url="https://subscription-filter.invalid/b",Title="Одинаковое имя",ShortName="Канал B",Initialized=true,
+                    LastAttemptUtc=new DateTimeOffset(2026,2,2,12,0,0,TimeSpan.Zero),LastSuccessUtc=new DateTimeOffset(2026,2,1,12,0,0,TimeSpan.Zero)}],
             Items=[
                 new(){SubscriptionId="source-a",Url=upper,Title="Ёжик верх",State="New"},
                 new(){SubscriptionId="source-a",Url=lower,Title="ёжик низ",State="New"},
@@ -131,6 +144,70 @@ internal sealed partial class UiScenario
             Reset();
 
             window.Width=860;window.Height=600;window.UpdateLayout();
+            driver.TestSources.UpdateLayout();
+            Require(driver.TestSources.Columns.Count==4 &&
+                driver.TestSources.Columns.Select(column=>column.Header?.ToString()).SequenceEqual(new[]{"Подписка","Состояние","Расписание","Ошибка / предупреждение"}),
+                "The compact source overview must retain identity, status, schedule and warnings.");
+            // Native resizing and DataGrid's deferred Render-priority star-width
+            // computation must both finish before comparing their actual bounds.
+            PumpUntil(()=>Math.Abs(window.ActualWidth-860)<=1 && Math.Abs(window.ActualHeight-600)<=1 &&
+                driver.TestSources.IsVisible && driver.TestSources.ActualWidth>0 &&
+                driver.TestSources.Columns.All(column=>double.IsFinite(column.ActualWidth) && column.ActualWidth>0) &&
+                driver.TestSources.Columns.Sum(column=>column.ActualWidth)<=driver.TestSources.ActualWidth+1,
+                "The compact source overview must fit its actual viewport without horizontal scrolling.",
+                ()=>$"Window={window.ActualWidth:0.##}x{window.ActualHeight:0.##}; grid={driver.TestSources.ActualWidth:0.##}; "+
+                    $"visible={driver.TestSources.IsVisible}; columns=[{string.Join(", ",driver.TestSources.Columns.Select(column=>$"{column.Header}: {column.ActualWidth:0.##}"))}].");
+            var sourceA=driver.TestSources.Items.Cast<SubscriptionController.SubscriptionSourceView>().Single(row=>row.Id=="source-a");
+            var sourceB=driver.TestSources.Items.Cast<SubscriptionController.SubscriptionSourceView>().Single(row=>row.Id=="source-b");
+            driver.TestSources.ScrollIntoView(sourceA);driver.TestSources.UpdateLayout();
+            Require(driver.TestSources.Columns[3].GetCellContent(sourceA) is TextBlock warning && warning.IsVisible && warning.Text==sourceA.Message,
+                "An important source warning must remain rendered in the concise overview.");
+            var identities=new List<TextBlock>();
+            foreach(var source in new[]{sourceA,sourceB})
+            {
+                driver.TestSources.ScrollIntoView(source);driver.TestSources.UpdateLayout();
+                var cell=driver.TestSources.Columns[0].GetCellContent(source);
+                Require(cell is not null,"Both equally named source rows must have an actual rendered title cell.");
+                var identity=SourceLabels(cell!).Single(label=>label.Name=="SubscriptionSourceIdentity");
+                Require(identity.IsVisible && identity.Text==source.Url && Equals(identity.ToolTip,source.Url) &&
+                    FullTextWidth(identity)<=identity.ActualWidth+1 &&
+                    System.Windows.Automation.Peers.UIElementAutomationPeer.CreatePeerForElement(identity)?.GetName()==source.Url,
+                    "The concise source cell must visibly distinguish same-title rows and retain their full exact URL in tooltips and UI Automation.");
+                identities.Add(identity);
+            }
+            Require(sourceA.Title==sourceB.Title && sourceA.StatusLabel==sourceB.StatusLabel && sourceA.ScheduleLabel==sourceB.ScheduleLabel &&
+                identities[0].Text!=identities[1].Text,"Source identity must remain distinguishable even when title, state and schedule are identical.");
+            byte[] beforeDetails=File.ReadAllBytes(store.Path);
+            var sourceEditor=Control<Expander>("SubscriptionEditorExpander");
+            Require(!sourceEditor.IsExpanded,"Operational metadata must not consume space until source settings are requested.");
+            sourceEditor.IsExpanded=true;
+            foreach(string sourceId in new[]{"source-a","source-b"})
+            {
+                Source(sourceId);
+                var source=driver.TestSources.SelectedItem as SubscriptionController.SubscriptionSourceView
+                    ??throw new InvalidOperationException("The selected source must remain available while showing its details.");
+                var lastAttempt=Control<TextBlock>("SubscriptionLastAttemptText");
+                lastAttempt.BringIntoView();window.UpdateLayout();
+                PumpUntil(()=>lastAttempt.Text=="Последняя попытка: "+source.LastAttemptLabel &&
+                    Control<TextBlock>("SubscriptionLastSuccessText").Text=="Успешная проверка: "+source.LastSuccessLabel &&
+                    Control<TextBlock>("SubscriptionNextCheckText").Text=="Следующая проверка: "+source.NextCheckLabel,
+                    "Source details must render the selected source's actual operation dates rather than stale metadata from its equally named peer.");
+                var originalUrl=Control<TextBox>("SelectedSubscriptionUrlBox");
+                Require(lastAttempt.IsVisible && lastAttempt.ActualHeight>0 && originalUrl.IsReadOnly && originalUrl.Text==source.Url &&
+                    Control<TextBox>("SubscriptionNameBox").Text==source.Definition.ShortName,
+                    "Expanded source details must retain the complete exact URL, folder and readable labelled operation dates.");
+                Click("CopySubscriptionUrlButton");
+                Require(Clipboard.GetText()==source.Url,"Source-detail copy must retain the exact selected source identity.");
+            }
+            Source("source-a");sourceEditor.IsExpanded=false;window.UpdateLayout();
+            Require(File.ReadAllBytes(store.Path).SequenceEqual(beforeDetails) && scans==0 && prefetches==0,
+                "Browsing concise source rows and their details must not write, scan, prefetch or enqueue.");
+            var previousSource=driver.TestSources.SelectedItem;
+            store.RecordFailure("source-a","Новая ошибка проверки");driver.Refresh();
+            PumpUntil(()=>driver.TestSources.SelectedItem is SubscriptionController.SubscriptionSourceView current &&
+                !ReferenceEquals(current,previousSource) && current.Id=="source-a" && current.Message=="Новая ошибка проверки" &&
+                Control<TextBlock>("SubscriptionLastAttemptText").Text=="Последняя попытка: "+current.LastAttemptLabel,
+                "A refreshed source snapshot must also update operation details when controller selection events are suppressed during binding.");
             Require(Control<FrameworkElement>("SubscriptionDetailsPanel").Visibility==Visibility.Collapsed &&
                 Control<ColumnDefinition>("SubscriptionDetailsColumn").Width.Value==0 &&
                 Control<CheckBox>("SubscriptionPreviewToggle").Visibility==Visibility.Collapsed &&

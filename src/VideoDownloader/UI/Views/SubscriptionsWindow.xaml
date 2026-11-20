@@ -162,7 +162,8 @@
             <StackPanel Margin="0,5,0,5">
             <WrapPanel>
                 <TextBlock Text="Краткое имя выбранной подписки / папка" VerticalAlignment="Center" Margin="0,0,10,0"/>
-                <TextBox x:Name="SubscriptionNameBox" Width="260" MaxLength="160" Margin="0,0,10,0"/>
+                <TextBox x:Name="SubscriptionNameBox" Width="260" MaxLength="160" Margin="0,0,10,0"
+                         AutomationProperties.Name="Краткое имя и папка выбранной подписки"/>
                 <Button x:Name="SaveSubscriptionNameButton" Content="Сохранить имя"/>
             </WrapPanel>
             <TextBlock Text="Материалы сохраняются в подпапку с этим именем, например D:\Video\123. Изменение имени действует на новые задания."
@@ -182,9 +183,18 @@
                 <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                 <TextBlock Text="URL подписки" VerticalAlignment="Center" Margin="0,0,10,0"/>
                 <TextBox Grid.Column="1" x:Name="SelectedSubscriptionUrlBox" IsReadOnly="True" Margin="0,0,10,0"
+                         AutomationProperties.Name="Полный исходный URL выбранной подписки"
                          ToolTip="Исходный адрес выбранной подписки. Можно выделить текст и нажать Ctrl+C."/>
                 <Button Grid.Column="2" x:Name="CopySubscriptionUrlButton" Content="Копировать URL" Margin="0" IsEnabled="False"/>
             </Grid>
+            <StackPanel DataContext="{Binding SelectedItem, ElementName=SubscriptionGrid}" Margin="0,8,0,0">
+                <TextBlock x:Name="SubscriptionLastAttemptText" Text="{Binding LastAttemptLabel, StringFormat='Последняя попытка: {0}'}"
+                           Foreground="#B3BBCD" TextWrapping="Wrap"/>
+                <TextBlock x:Name="SubscriptionLastSuccessText" Text="{Binding LastSuccessLabel, StringFormat='Успешная проверка: {0}'}"
+                           Foreground="#B3BBCD" TextWrapping="Wrap" Margin="0,4,0,0"/>
+                <TextBlock x:Name="SubscriptionNextCheckText" Text="{Binding NextCheckLabel, StringFormat='Следующая проверка: {0}'}"
+                           Foreground="#B3BBCD" TextWrapping="Wrap" Margin="0,4,0,0"/>
+            </StackPanel>
             </StackPanel>
             </ScrollViewer>
             </Expander>
@@ -222,15 +232,28 @@
                 </Style>
             </DataGrid.RowStyle>
             <DataGrid.Columns>
-                <DataGridTextColumn Header="Подписка" Binding="{Binding Title}" Width="2*"/>
-                <DataGridTextColumn Header="Краткое имя / папка" Binding="{Binding ShortName}" Width="170"/>
+                <DataGridTemplateColumn Header="Подписка" SortMemberPath="Title" Width="2*">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <StackPanel Margin="0,2">
+                                <TextBlock Text="{Binding Title}" TextTrimming="CharacterEllipsis" ToolTip="{Binding Url}"/>
+                                <TextBlock x:Name="SubscriptionSourceIdentity" Text="{Binding Url}" FontSize="11"
+                                           Foreground="#B3BBCD" TextTrimming="CharacterEllipsis" ToolTip="{Binding Url}"
+                                           AutomationProperties.Name="{Binding Url}"/>
+                            </StackPanel>
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
                 <DataGridTextColumn Header="Состояние" Binding="{Binding StatusLabel}" Width="145"/>
-                <DataGridTextColumn Header="Последняя попытка" Binding="{Binding LastAttemptLabel}" Width="160"/>
-                <DataGridTextColumn Header="Успешная проверка" Binding="{Binding LastSuccessLabel}" Width="160"/>
                 <DataGridTextColumn Header="Расписание" Binding="{Binding ScheduleLabel}" Width="125"/>
-                <DataGridTextColumn Header="Следующая проверка" Binding="{Binding NextCheckLabel}" Width="165"/>
-                <DataGridTextColumn Header="URL" Binding="{Binding Url}" Width="2*"/>
-                <DataGridTextColumn Header="Ошибка / предупреждение" Binding="{Binding Message}" Width="2*"/>
+                <DataGridTextColumn Header="Ошибка / предупреждение" Binding="{Binding Message}" Width="2*">
+                    <DataGridTextColumn.ElementStyle>
+                        <Style TargetType="TextBlock">
+                            <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+                            <Setter Property="ToolTip" Value="{Binding DiagnosticDetails}"/>
+                        </Style>
+                    </DataGridTextColumn.ElementStyle>
+                </DataGridTextColumn>
             </DataGrid.Columns>
         </DataGrid>
         <GridSplitter Grid.Row="4" HorizontalAlignment="Stretch" VerticalAlignment="Center" Height="4" Background="#343946"/>
