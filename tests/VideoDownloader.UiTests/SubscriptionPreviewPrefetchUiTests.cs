@@ -11,6 +11,28 @@ namespace VideoDownloader.UiTests;
 
 internal sealed partial class UiScenario
 {
+    private static void SubscriptionPreviewStage(string detail)
+    {
+        string message="subscription preview: "+detail;
+        Console.WriteLine(message);
+        string? result=Environment.GetEnvironmentVariable("VD_NATIVE_UI_TEST_RESULT");
+        if(!string.IsNullOrWhiteSpace(result))
+            try{File.WriteAllText(result,message);}
+            catch(IOException error){Console.WriteLine("Subscription preview stage file: "+error.HResult);}
+    }
+
+    private static string SubscriptionPreviewWindowTitles()
+    {
+        var titles=new List<string>();
+        EnumThreadWindows(GetCurrentThreadId(),(handle,_)=>
+        {
+            var caption=new StringBuilder(256);GetWindowTextW(handle,caption,caption.Capacity);
+            if(caption.Length>0)titles.Add(caption.ToString());
+            return true;
+        },IntPtr.Zero);
+        return string.Join(" | ",titles);
+    }
+
     // Full production scanner -> durable subscription store -> shared real
     // metadata worker. No queue row or Start is needed to populate the cache.
     private static void TestSubscriptionPreviewPrefetch(string testRoot)
@@ -21,6 +43,7 @@ internal sealed partial class UiScenario
         }
         static void PumpUntil(Func<bool> condition,string error)
         {
+            SubscriptionPreviewStage("backfill waiting: "+error);
             if (condition()) return;
             var frame=new DispatcherFrame();
             var deadline=DateTime.UtcNow.AddSeconds(15);
@@ -28,7 +51,15 @@ internal sealed partial class UiScenario
             Exception? failure=null;
             timer.Tick+=(_,_)=>
             {
-                try { if (condition() || DateTime.UtcNow>=deadline) frame.Continue=false; }
+                try
+                {
+                    if(condition())frame.Continue=false;
+                    else if(DateTime.UtcNow>=deadline)
+                    {
+                        SubscriptionPreviewStage("backfill wait deadline: "+error+"; native windows: "+SubscriptionPreviewWindowTitles());
+                        frame.Continue=false;
+                    }
+                }
                 catch(Exception exception) {failure=exception;frame.Continue=false;}
             };
             timer.Start();
@@ -36,6 +67,7 @@ internal sealed partial class UiScenario
             finally {timer.Stop();}
             if(failure!=null) throw new InvalidOperationException(error,failure);
             Require(condition(),error);
+            SubscriptionPreviewStage("backfill completed: "+error);
         }
         static int Calls(string path)
         {
@@ -61,7 +93,9 @@ internal sealed partial class UiScenario
         string metadataRoot=Path.Combine(root,"metadata");
         Directory.CreateDirectory(scanRoot);
         Directory.CreateDirectory(metadataRoot);
+        SubscriptionPreviewStage("backfill construct HTTP thumbnail server");
         using var thumbnails=new PreviewThumbnailServer();
+        SubscriptionPreviewStage("backfill HTTP thumbnail server ready");
         File.WriteAllText(Path.Combine(metadataRoot,"thumbnail-url.txt"),thumbnails.Url,Encoding.UTF8);
         string scanConfig=Path.Combine(scanRoot,"scan.json");
         string metadataCookies=Path.Combine(metadataRoot,"fixture-control.txt");
@@ -81,17 +115,22 @@ internal sealed partial class UiScenario
         var events=new List<string>();
         var logs=new List<string>();
         bool failPrefetch=false;
+        Exception? scenarioFailure=null;
         try
         {
+            SubscriptionPreviewStage("backfill load owner XAML");
             using var input=File.OpenRead(Path.Combine(AppContext.BaseDirectory,"ui","MainWindow.xaml"));
             using var reader=XmlReader.Create(input);
             window=(Window)XamlReader.Load(reader);
             var storage=new AppPersistence(Path.Combine(root,"profile"));
+            SubscriptionPreviewStage("backfill construct NativeWindow");
             subject=new NativeWindow(window,storage,executable!);
+            SubscriptionPreviewStage("backfill show owner");
             window.Show();
             var ui=subject;
             ((TextBox)window.FindName("CookiesBox")!).Text=metadataCookies;
             var store=new SubscriptionStore(Path.GetDirectoryName(storage.SessionPath)!);
+            SubscriptionPreviewStage("backfill construct subscription controller");
             subscriptions=new SubscriptionController(window,store,executable!,
                 Path.Combine(AppContext.BaseDirectory,"ui","SubscriptionsWindow.xaml"),storage.ReadHistory,()=>scanConfig,
                 (urls,id,name,titles)=>
@@ -126,10 +165,12 @@ internal sealed partial class UiScenario
             }
             void Check()
             {
+                SubscriptionPreviewStage("backfill read scan calls and raise manual Check");
                 int before=Calls(scanCalls);
                 var button=driver.TestControl<Button>("CheckSubscriptionButton");
                 Require(button.IsEnabled,"Manual Check must be enabled before the scenario starts.");
                 button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                SubscriptionPreviewStage("backfill Check raised; waiting for scanner and controls");
                 PumpUntil(()=>Calls(scanCalls)>before && button.IsEnabled,
                     "The actual manual full scan must finish and release its controls.");
             }
@@ -143,6 +184,7 @@ internal sealed partial class UiScenario
                 data.ThumbnailBase64==thumbnails.Encoded && data.ThumbnailsBase64.Length==1;
 
             Response("complete",baseline);
+            SubscriptionPreviewStage("backfill open actual subscriptions window");
             driver.Open();
             PumpUntil(()=>driver.TestWindow!=null && driver.TestSources.Items.Count==1,"The real subscriptions window must bind its source.");
             SelectSource(source.Id);
@@ -164,6 +206,7 @@ internal sealed partial class UiScenario
                 "Baseline backfill must use one metadata child and one image request without adding a queue row.");
             Idle();
 
+            SubscriptionPreviewStage("backfill preserve main selection and seed processed material");
             ui.Preview.SelectedUrl="https://selected.invalid/current";
             ((TextBlock)window.FindName("PreviewTitle")!).Text="Оставить текущее превью";
             // Reproduce a saved, previously processed material that never had
@@ -196,6 +239,7 @@ internal sealed partial class UiScenario
                 !events.Any(value=>value.StartsWith("queue:",StringComparison.Ordinal)),
                 "A processed material must allow explicit manual queueing, while cached preview selection preserves its history state and does not invoke queue acceptance.");
             Idle();
+            SubscriptionPreviewStage("backfill queue cached baseline through actual button");
             driver.TestInbox.SelectedItem=driver.TestInbox.Items.Cast<SubscriptionController.SubscriptionItemView>().Single(item=>item.Url==baseline);
             driver.TestControl<Button>("QueueSubscriptionItemsButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             PumpUntil(()=>!driver.TestIsMutating && store.Read().Items.Single(item=>item.Url==baseline).State=="Queued",
@@ -204,6 +248,7 @@ internal sealed partial class UiScenario
                 "Queueing an already prefetched URL must reuse the shared worker/cache.");
             Idle();
 
+            SubscriptionPreviewStage("backfill check a newly discovered cover");
             Response("complete",baseline,first,second);
             Check();
             PumpUntil(()=>HasImage(second,"Metadata B"),"The next complete scan must prefetch the new URL's metadata and real HTTP image.");
@@ -212,6 +257,7 @@ internal sealed partial class UiScenario
                 "Processed, queued and new source items share backfill, with no duplicate metadata request for ready covers.");
 
             failPrefetch=true;
+            SubscriptionPreviewStage("backfill check optional scheduling failure");
             Check();
             failPrefetch=false;
             Require(store.Read().Subscriptions.Single(item=>item.Id==source.Id).LastError.Length==0 &&
@@ -222,12 +268,14 @@ internal sealed partial class UiScenario
             // A stdout list accompanied by a nonzero exit is not a complete
             // scan and cannot add items or start their preview acquisition.
             Response("nonzero",baseline,first,second,imported);
+            SubscriptionPreviewStage("backfill check nonzero partial scan");
             Check();
             Require(store.Read().Subscriptions.Single(item=>item.Id==source.Id).LastError.Length>0 &&
                 store.Read().Items.All(item=>item.Url!=imported) && ui.Preview.GetCached(imported)==null && Calls(metadataCalls)==3,
                 "A failed partial scan must preserve old results and must not prefetch its uncommitted URLs.");
 
             Response("hang",baseline,first,second,imported);
+            SubscriptionPreviewStage("backfill start and cancel actual hanging scanner child");
             string childPid=Path.Combine(scanRoot,"child.pid");
             if (File.Exists(childPid)) File.Delete(childPid);
             driver.TestControl<Button>("CheckSubscriptionButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
@@ -239,6 +287,7 @@ internal sealed partial class UiScenario
                 "A cancelled scan must not prefetch URLs from its incomplete result.");
 
             var importSource=store.Add("https://subscription-scanner.invalid/ui-preview-import",true);
+            SubscriptionPreviewStage("backfill check initial import and preview ordering");
             Response("complete",imported);
             SelectSource(importSource.Id);
             Check();
@@ -252,6 +301,7 @@ internal sealed partial class UiScenario
             // known URLs are Baseline, so this also proves the UI passes every
             // stored state rather than only downloaded/new materials.
             var orderedSource=store.Add("https://www.youtube.com/@vd-offline/videos",false);
+            SubscriptionPreviewStage("backfill seed ordered source and check recent-window scope");
             var orderedItems=Enumerable.Range(0,26).Select(index=>new DiscoveredMedia(
                 "https://www.youtube.com/watch?v="+index.ToString("D11"),"Исходное видео "+index)).ToArray();
             store.ApplyScan(orderedSource.Id,new SubscriptionScan("Упорядоченный канал",orderedItems,"",""),[]);
@@ -279,6 +329,7 @@ internal sealed partial class UiScenario
                 .SequenceEqual(orderedItems.Select(item=>"prefetch:"+item.Url)),
                 "A recent-window check must backfill all saved baseline covers, including the tail beyond its twenty confirmed entries.");
             var fullCheck=driver.TestControl<CheckBox>("FullSubscriptionCheck");
+            SubscriptionPreviewStage("backfill check forced full scope");
             fullCheck.IsChecked=true;
             int beforeFull=Calls(scanCalls);
             int beforeFullPrefetch=events.Count;
@@ -299,6 +350,7 @@ internal sealed partial class UiScenario
             // Explicit acceptance of the same baseline must reuse the backfilled
             // image without another metadata child, HTTP request or main-row selection.
             SelectSource(source.Id);
+            SubscriptionPreviewStage("backfill reselect cached baseline and verify explicit queue acceptance");
             driver.TestInbox.SelectedItem=driver.TestInbox.Items.Cast<SubscriptionController.SubscriptionItemView>()
                 .Single(item=>item.Url==baseline);
             Require(ui.Preview.SelectedUrl=="https://selected.invalid/current" &&
@@ -321,6 +373,7 @@ internal sealed partial class UiScenario
             Idle();
 
             var calls=File.ReadAllLines(metadataCalls).Select(line=>JsonDocument.Parse(line)).ToArray();
+            SubscriptionPreviewStage("backfill verify real metadata child call log");
             try
             {
                 Require(calls.Select(call=>call.RootElement.GetProperty("Url").GetString()).SequenceEqual(new[]{baseline,first,second,imported}) &&
@@ -331,14 +384,23 @@ internal sealed partial class UiScenario
             finally {foreach(var call in calls)call.Dispose();}
             Console.WriteLine("PASS: nonblocking baseline and processed-cover HTTP backfill, shared cached acceptance, actual WPF image, failed-scan exclusion and full/recent backfill scope");
         }
+        catch(Exception error){scenarioFailure=error;throw;}
         finally
         {
+            void Closing(string detail)=>SubscriptionPreviewStage("backfill finally: "+detail+
+                (scenarioFailure is null?"":"; original failure: "+scenarioFailure));
+            Closing("dispose subscription controller");
             subscriptions?.Dispose();
+            Closing("dispose NativeWindow");
             subject?.Dispose();
+            Closing("close owner window");
             window?.Close();
             Environment.SetEnvironmentVariable("VD_NATIVE_TITLE_FIXTURE_LOG",previousTitleLog);
+            Closing(scenarioFailure is null?"product cleanup completed":"join HTTP thumbnail server while unwinding failure");
         }
+        SubscriptionPreviewStage("start admission-priority sub-scenario");
         TestSubscriptionAdmissionPreviewPriority(testRoot,executable!);
+        SubscriptionPreviewStage("all assertions and priority HTTP join completed; join backfill HTTP thumbnail server");
     }
 
     private static void TestSubscriptionAdmissionPreviewPriority(string testRoot,string executable)
@@ -347,24 +409,36 @@ internal sealed partial class UiScenario
         {if(!condition)throw new InvalidOperationException("Subscription preview priority WPF test failed: "+message);}
         static void PumpUntil(Func<bool> condition,string message)
         {
+            SubscriptionPreviewStage("priority waiting: "+message);
             if(condition())return;
             var frame=new DispatcherFrame();var deadline=DateTime.UtcNow.AddSeconds(15);
             var timer=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(20)};
             Exception? failure=null;
             timer.Tick+=(_,_)=>
             {
-                try{if(condition() || DateTime.UtcNow>=deadline)frame.Continue=false;}
+                try
+                {
+                    if(condition())frame.Continue=false;
+                    else if(DateTime.UtcNow>=deadline)
+                    {
+                        SubscriptionPreviewStage("priority wait deadline: "+message+"; native windows: "+SubscriptionPreviewWindowTitles());
+                        frame.Continue=false;
+                    }
+                }
                 catch(Exception error){failure=error;frame.Continue=false;}
             };
             timer.Start();try{Dispatcher.PushFrame(frame);}finally{timer.Stop();}
             if(failure is not null)throw new InvalidOperationException(message,failure);
             Require(condition(),message);
+            SubscriptionPreviewStage("priority completed: "+message);
         }
         const string prefix="https://preview-scheduling.invalid/";
         string root=Path.Combine(testRoot,"subscription-preview-priority-"+Guid.NewGuid().ToString("N"));
         string metadata=Path.Combine(root,"metadata");Directory.CreateDirectory(metadata);
         string cookies=Path.Combine(root,"control.txt");File.WriteAllText(cookies,metadata,Encoding.UTF8);
+        SubscriptionPreviewStage("priority construct HTTP thumbnail server");
         using var thumbnails=new PreviewThumbnailServer();
+        SubscriptionPreviewStage("priority HTTP thumbnail server ready");
         File.WriteAllText(Path.Combine(metadata,"thumbnail-url.txt"),thumbnails.Url,Encoding.UTF8);
         // The accepted batch can finish while the unrelated background A stays
         // blocked. This makes starvation observable without timing a slow site.
@@ -372,13 +446,17 @@ internal sealed partial class UiScenario
         string? previousLog=Environment.GetEnvironmentVariable("VD_NATIVE_TITLE_FIXTURE_LOG");
         Environment.SetEnvironmentVariable("VD_NATIVE_TITLE_FIXTURE_LOG",null);
         Window? window=null;NativeWindow? subject=null;
+        Exception? scenarioFailure=null;
         try
         {
+            SubscriptionPreviewStage("priority load owner XAML");
             using var input=File.OpenRead(Path.Combine(AppContext.BaseDirectory,"ui","MainWindow.xaml"));
             using var reader=XmlReader.Create(input);window=(Window)XamlReader.Load(reader);
             var storage=new AppPersistence(Path.Combine(root,"profile"));
+            SubscriptionPreviewStage("priority construct NativeWindow");
             subject=new NativeWindow(window,storage,executable,automaticUpdates:false,automaticSubscriptionChecks:false);
             window.Show();
+            SubscriptionPreviewStage("priority owner shown; seed source and metadata controls");
             ((TextBox)window.FindName("CookiesBox")!).Text=cookies;
             var ui=subject;
             var queue=(DataGrid)window.FindName("QueueGrid")!;
@@ -436,11 +514,17 @@ internal sealed partial class UiScenario
             Idle();
             Console.WriteLine("PASS: actual subscription batch admission prioritizes cold HTTP previews in first,B,C,A order without selection, duplicate children, Start or history changes");
         }
+        catch(Exception error){scenarioFailure=error;throw;}
         finally
         {
+            void Closing(string detail)=>SubscriptionPreviewStage("priority finally: "+detail+
+                (scenarioFailure is null?"":"; original failure: "+scenarioFailure));
+            Closing("release gated metadata children");
             foreach(string name in new[]{"first","A","B","C"})File.WriteAllText(Path.Combine(metadata,"release-"+name),"");
-            subject?.Dispose();window?.Close();
+            Closing("dispose NativeWindow");subject?.Dispose();
+            Closing("close owner window");window?.Close();
             Environment.SetEnvironmentVariable("VD_NATIVE_TITLE_FIXTURE_LOG",previousLog);
+            Closing("join HTTP thumbnail server on leaving priority sub-scenario");
         }
     }
 }
