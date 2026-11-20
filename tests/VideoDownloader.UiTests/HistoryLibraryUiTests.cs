@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.ComponentModel;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
@@ -73,12 +74,47 @@ internal sealed partial class UiScenario
             Require(modern.Title=="Исторический Ёж" && modern.Source=="Канал" && modern.Url.EndsWith("token=AbC",StringComparison.Ordinal) &&
                 modern.Date.Length>0 && files.Items.Count==4,"The actual grid must retain title, source, exact URL, date and captured file paths.");
             Require(!fileExpander.IsExpanded,"Automatic or explicit record selection must not reopen the file group.");
+            grid.Items.SortDescriptions.Add(new SortDescription(nameof(HistoryRecordRow.Date),ListSortDirection.Descending));
+            var sortedRows=grid.Items.Cast<HistoryRecordRow>().ToArray();var historySource=grid.ItemsSource;
+            grid.CurrentCell=new DataGridCellInfo(modern,grid.Columns[1]);
+            // Exercise a genuine wide layout even on a smaller CI desktop;
+            // the production owner controller otherwise clamps it back down.
+            var columnLayout=OwnedWindowLayout.Attach(window,owner);
+            columnLayout.Refresh(new Rect(0,0,1400,900));
+            window.MinWidth=1120;window.Width=1120;window.UpdateLayout();
+            PumpUntil(()=>Math.Abs(window.ActualWidth-1120)<=1 &&
+                grid.Columns.All(column=>column.Visibility==Visibility.Visible && column.ActualWidth>0) &&
+                grid.Columns.Sum(column=>column.ActualWidth)<=grid.ActualWidth+1,
+                "Wide history must restore its complete actual column layout.");
+            window.MinWidth=660;window.Width=660;window.UpdateLayout();
+            PumpUntil(()=>Math.Abs(window.ActualWidth-660)<=1 &&
+                new[]{2,4,5}.All(index=>grid.Columns[index].Visibility==Visibility.Collapsed) &&
+                grid.Columns[1].ActualWidth>=200 && grid.Columns[3].ActualWidth>=200 &&
+                grid.Columns.Where(column=>column.Visibility==Visibility.Visible).Sum(column=>column.ActualWidth)<=grid.ActualWidth+1,
+                "A narrow history must keep date, title and exact URL useful without horizontal overflow.");
+            Require(ReferenceEquals(grid.ItemsSource,historySource) && ReferenceEquals(grid.SelectedItem,modern) &&
+                ReferenceEquals(grid.CurrentCell.Item,modern) && grid.Items.Cast<HistoryRecordRow>().SequenceEqual(sortedRows) &&
+                grid.Items.SortDescriptions.Single().Equals(new SortDescription(nameof(HistoryRecordRow.Date),ListSortDirection.Descending)) && probe.Calls==0,
+                "Responsive history columns must not change the source, current row, sort or filesystem state.");
+            window.Width=900;window.UpdateLayout();
+            PumpUntil(()=>Math.Abs(window.ActualWidth-900)<=1 && grid.Columns[1].ActualWidth>=200,
+                "The history layout must settle when returning to its ordinary width.");
+            grid.Items.SortDescriptions.Clear();
+            columnLayout.Refresh();
             double collapsedResultsHeight=grid.ActualHeight;
             fileExpander.IsExpanded=true;window.UpdateLayout();
             checkFiles.BringIntoView();window.UpdateLayout();
             Require(files.IsVisible && VisibleInWindow(window,checkFiles) && VisibleInWindow(window,closeHistory) &&
                 grid.ActualHeight+75<collapsedResultsHeight,
                 "Expanding files must expose the actual file actions while reserving a bounded viewport and keeping Close reachable.");
+            var recordDetails=Control<TextBlock>(window,"HistoryRecordDetails");
+            recordDetails.BringIntoView();window.UpdateLayout();
+            var detailsViewport=Control<ScrollViewer>(window,"HistoryFilesScroll");
+            var detailsBounds=recordDetails.TransformToAncestor(detailsViewport).TransformBounds(new Rect(recordDetails.RenderSize));
+            Require(recordDetails.IsVisible && detailsBounds.Top>=0 && detailsBounds.Bottom<=detailsViewport.ActualHeight+1 &&
+                recordDetails.Text.Contains("Источник: Канал",StringComparison.Ordinal) && recordDetails.Text.Contains(modern.Date,StringComparison.Ordinal) &&
+                recordDetails.Text.Contains("Файлы: 4",StringComparison.Ordinal),
+                "The selected record's source, date and file metadata must remain available when compact columns are hidden.");
             double expandedResultsHeight=grid.ActualHeight;
             fileExpander.IsExpanded=false;window.UpdateLayout();
             Require(grid.ActualHeight>expandedResultsHeight+75 && !files.IsVisible && probe.Calls==0 &&
@@ -114,6 +150,8 @@ internal sealed partial class UiScenario
             checkFiles.BringIntoView();window.UpdateLayout();
             Click(window,"CheckHistoryFilesButton");
             PumpUntil(()=>modern.Availability.Contains("Доступно 1",StringComparison.Ordinal),"The selected event's file check did not finish.");
+            PumpUntil(()=>Control<TextBlock>(window,"HistoryRecordDetails").Text.Contains(modern.Availability,StringComparison.Ordinal),
+                "A background check must refresh the selected record details as well as the hidden availability column.");
             Require(cancelCheck.Visibility==Visibility.Collapsed,"The completed file check must remove its inactive cancellation command.");
             var fileRows=files.Items.Cast<HistoryFileRow>().ToArray();
             Require(fileRows.Single(row=>row.Path==existing).Availability.State==HistoryFileState.Present &&
