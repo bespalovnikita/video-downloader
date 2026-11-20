@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Collections;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows.Threading;
@@ -12,9 +14,14 @@ internal sealed class UiRunDiagnostics : IDisposable
     private readonly Stopwatch _elapsed=Stopwatch.StartNew();
     private readonly string _mode;
     private readonly string? _path;
+    private readonly string? _statePath;
+    private readonly Dispatcher _dispatcher=Dispatcher.CurrentDispatcher;
     private readonly uint _thread=GetCurrentThreadId();
     private readonly DispatcherTimer? _timer;
-    private bool _disposed;
+    private readonly System.Threading.Timer? _stateTimer;
+    private long _lastUiCapture=Stopwatch.GetTimestamp();
+    private int _stateSampleActive;
+    private volatile bool _disposed;
 
     internal UiRunDiagnostics(string mode)
     {
@@ -22,11 +29,15 @@ internal sealed class UiRunDiagnostics : IDisposable
         string? result=Environment.GetEnvironmentVariable("VD_NATIVE_UI_TEST_RESULT");
         if(string.IsNullOrWhiteSpace(result))return;
         _path=result+".diagnostics.txt";
+        _statePath=result+".dispatcher-state.txt";
         Capture("start");
         _timer=new DispatcherTimer(DispatcherPriority.Send,Dispatcher.CurrentDispatcher)
         {Interval=TimeSpan.FromSeconds(2)};
         _timer.Tick+=Heartbeat;
         _timer.Start();
+        CaptureDispatcherState(true);
+        _stateTimer=new System.Threading.Timer(_=>CaptureDispatcherState(false),null,
+            TimeSpan.FromSeconds(2),TimeSpan.FromSeconds(2));
     }
 
     private void Heartbeat(object? sender,EventArgs args)=>Capture("heartbeat");
@@ -34,6 +45,7 @@ internal sealed class UiRunDiagnostics : IDisposable
     private void Capture(string reason)
     {
         if(_disposed || _path is null)return;
+        Interlocked.Exchange(ref _lastUiCapture,Stopwatch.GetTimestamp());
         try
         {
             var text=new StringBuilder();
@@ -65,10 +77,75 @@ internal sealed class UiRunDiagnostics : IDisposable
         }
     }
 
+    private static object? Field(object? target,string name)=>target?.GetType()
+        .GetField(name,BindingFlags.Instance|BindingFlags.Public|BindingFlags.NonPublic)?.GetValue(target);
+    private static object? Property(object? target,string name)=>target?.GetType()
+        .GetProperty(name,BindingFlags.Instance|BindingFlags.Public|BindingFlags.NonPublic)?.GetValue(target);
+
+    private void CaptureDispatcherState(bool starting)
+    {
+        if(_disposed || _statePath is null)return;
+        double age=Stopwatch.GetElapsedTime(Interlocked.Read(ref _lastUiCapture)).TotalSeconds;
+        if(!starting && age<6 || Interlocked.CompareExchange(ref _stateSampleActive,1,0)!=0)return;
+        try
+        {
+            var text=new StringBuilder();
+            text.AppendLine($"UTC={DateTimeOffset.UtcNow:O}; elapsed={_elapsed.Elapsed.TotalSeconds:F3}s; mode={_mode}; reason={(starting?"start":"stale UI heartbeat")}; UI heartbeat age={age:F3}s");
+            text.AppendLine($"pid={Environment.ProcessId}; UI thread={_thread}; TickCount={Environment.TickCount}; TickCount64={Environment.TickCount64}");
+            IntPtr handle=IntPtr.Zero;
+            object? sync=Field(_dispatcher,"_instanceLock");
+            bool entered=false;
+            try
+            {
+                if(sync is not null)Monitor.TryEnter(sync,0,ref entered);
+                if(!entered)text.AppendLine("Dispatcher instance lock unavailable; private snapshot skipped.");
+                else
+                {
+                    // Read only. No Dispatcher operations, wake messages or
+                    // state changes may be issued from this observer.
+                    foreach(string name in new[]{"_hasRequestProcessingFailed","_postedProcessingType","_dueTimeFound",
+                        "_dueTimeInTicks","_isWin32TimerSet","_isTSFMessagePumpEnabled","_disableProcessingCount",
+                        "_hasShutdownStarted","_hasShutdownFinished","_startingShutdown","_frameDepth","_exitAllFrames"})
+                        text.AppendLine(name+"="+(Field(_dispatcher,name)??"<missing>"));
+                    text.AppendLine("_timers.Count="+((Field(_dispatcher,"_timers") as ICollection)?.Count.ToString()??"<missing>"));
+                    text.AppendLine("_queue.MaxPriority="+(Property(Field(_dispatcher,"_queue"),"MaxPriority")??"<missing>"));
+                    // In WPF 8 these two getters only return stored values;
+                    // HwndWrapper.Handle explicitly supports other threads.
+                    handle=Property(Property(Field(_dispatcher,"_window"),"Value"),"Handle") is IntPtr hwnd?hwnd:IntPtr.Zero;
+                    if(Field(_dispatcher,"_hasRequestProcessingFailed") is true &&
+                        Field(_dispatcher,"_reservedPtsCache") is Tuple<object,List<string>> failure)
+                        foreach(string entry in failure.Item2.TakeLast(10))
+                            text.AppendLine("request processing failure: "+entry[..Math.Min(entry.Length,512)]);
+                }
+            }
+            finally{if(entered)Monitor.Exit(sync!);}
+            // Native reads and file IO occur after releasing the Dispatcher
+            // lock. A busy UI never makes this observer wait for that lock.
+            text.AppendLine($"Dispatcher HWND=0x{handle.ToInt64():X}; IsWindow={handle!=IntPtr.Zero && IsWindow(handle)}");
+            using(var process=Process.GetCurrentProcess())
+                text.AppendLine($"GUI resources: USER={GetGuiResources(process.Handle,1)}; GDI={GetGuiResources(process.Handle,0)}");
+            byte[] bytes=Encoding.UTF8.GetBytes(text.ToString());
+            if(bytes.Length>32*1024)
+            {
+                int length=32*1024;
+                while(length>0 && (bytes[length]&0xC0)==0x80)length--;
+                Array.Resize(ref bytes,length);
+            }
+            if(!_disposed)File.WriteAllBytes(_statePath,bytes);
+        }
+        catch(Exception)
+        {
+            // Private framework fields may change. Diagnostic failure must
+            // never alter the test or hold up cancellation/disposal.
+        }
+        finally{Interlocked.Exchange(ref _stateSampleActive,0);}
+    }
+
     public void Dispose()
     {
         if(_disposed)return;
         _disposed=true;
+        _stateTimer?.Dispose(); // nonblocking; never join the UI from Dispose
         if(_timer is null)return;
         _timer.Stop();
         _timer.Tick-=Heartbeat;
@@ -82,4 +159,6 @@ internal sealed class UiRunDiagnostics : IDisposable
     [DllImport("user32.dll")] private static extern IntPtr GetWindow(IntPtr window,uint command);
     [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr window);
     [DllImport("user32.dll")] private static extern bool IsWindowEnabled(IntPtr window);
+    [DllImport("user32.dll")] private static extern bool IsWindow(IntPtr window);
+    [DllImport("user32.dll")] private static extern uint GetGuiResources(IntPtr process,uint flags);
 }
