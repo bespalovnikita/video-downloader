@@ -331,10 +331,13 @@ internal sealed partial class UiScenario
                 var disposed=cancelSession.DisposeAsync().AsTask();
                 // A failing assertion must not replace the bounded scene with
                 // an unbounded UI-thread join that hides the original failure.
-                PumpUntil(()=>disposed.IsCompleted,TimeSpan.FromSeconds(10),
-                    "Queued cancellation disposal must join its real cleanup owner");
-                disposed.GetAwaiter().GetResult();
-                controller.SessionState.AttachCoordinator(null);
+                try
+                {
+                    PumpUntil(()=>disposed.IsCompleted,TimeSpan.FromSeconds(10),
+                        "Queued cancellation disposal must join its real cleanup owner");
+                    disposed.GetAwaiter().GetResult();
+                }
+                finally{controller.SessionState.AttachCoordinator(null);}
                 Stage("queued cancellation coordinator disposed");
             }
 
