@@ -29,7 +29,9 @@ public sealed partial class NativeWindow
             bool Available()=>grid.SelectedItems.Count==1 && grid.SelectedItem is DownloadItem row &&
                 AppPersistence.ValidUrl(row.Url) && (!queue || IsVisibleQueueRow(row)) && !_closing && !_disposed && !_appUpdateHandoff;
             entry.Click+=(_,_)=>{if(Available() && grid.SelectedItem is DownloadItem row)OpenJobDiagnostics(row);};
-            menu.Opened+=(_,_)=>entry.IsEnabled=Available();
+            menu.Opened+=(_,_)=>SetMenuAvailability(entry,Available(),
+                ErrorMessages.Text("Выберите одну доступную загрузку; окно приложения не должно завершать работу.",
+                    "Select one available download while the application is not shutting down."),purpose);
             menu.Items.Add(new Separator());menu.Items.Add(entry);
         }
         AddMenu(Q,"QueueDiagnosticsMenuItem",true);AddMenu(D,"DownloadDiagnosticsMenuItem",false);

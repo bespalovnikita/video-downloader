@@ -90,13 +90,51 @@ public sealed partial class NativeWindow
         if(row==null || row.Path.Length==0 || !File.Exists(row.Path))return;
         Process.Start(new ProcessStartInfo("explorer.exe"){UseShellExecute=true,ArgumentList={"/select,",row.Path}});
     }
+    private DownloadItem? _downloadActionsRow;
+    private string _downloadActionsPath="";
+    private void RefreshDownloadActions()
+    {
+        var selected=D.SelectedItems.Count==1?D.SelectedItem as DownloadItem:null;
+        if(!ReferenceEquals(selected,_downloadActionsRow) ||
+            !string.Equals(selected?.Path??"",_downloadActionsPath,StringComparison.Ordinal))SetDownloadActions();
+    }
     private void SetDownloadActions()
     {
         var selected=D.SelectedItems.Count==1?D.SelectedItem as DownloadItem:null;
-        F<Button>("OpenFileButton").IsEnabled=selected!=null && File.Exists(selected.Path);
-        F<Button>("OpenFolderButton").IsEnabled=selected!=null && File.Exists(selected.Path);
+        _downloadActionsRow=selected;_downloadActionsPath=selected?.Path??"";
+        bool exists=selected!=null && File.Exists(selected.Path);
+        F<Button>("OpenFileButton").IsEnabled=exists;
+        F<Button>("OpenFolderButton").IsEnabled=exists;
         F<Button>("CopyPathButton").IsEnabled=selected!=null && selected.Path.Length>0;
         F<Button>("OpenUrlButton").IsEnabled=selected!=null;
+    }
+    private static void SetMenuAvailability(MenuItem item,bool available,string unavailableReason,string? purpose=null)
+    {
+        item.IsEnabled=available;
+        item.ToolTip=available?purpose:unavailableReason;
+        ToolTipService.SetShowOnDisabled(item,true);
+    }
+    private string? RetryDownloadUnavailable(DownloadItem row)
+    {
+        if(SessionState.Coordinator?.IsRunning==true || SessionState.RunningTask?.IsCompleted==false)
+            return ErrorMessages.Text("Дождитесь завершения текущего сеанса. Для пропущенных заданий доступно «Продолжить выбранные загрузки».",
+                "Wait for the current session to finish. Use Resume selected downloads for skipped tasks.");
+        if(_checkpointReadOnly || _profileBackupRecoveryRequired)
+            return ErrorMessages.Text("Сначала восстановите доступ к профилю: сейчас скачивание заблокировано.",
+                "Restore access to the profile first: downloading is currently blocked.");
+        if(_legacyEngineBlocked)
+            return ErrorMessages.Text("Завершите прежний загрузчик и перезапустите приложение.",
+                "Stop the previous downloader and restart the application.");
+        if(_restoringSession || _startingSession || _queueItemActionBusy || _dependencyOperationRunning ||
+            _profileBackupBusy || _profileBackupReplaying)
+            return ErrorMessages.Text("Дождитесь завершения текущей операции.","Wait for the current operation to finish.");
+        if(!SessionState.Queue.Contains(row))
+            return ErrorMessages.Text("Запись уже убрана из очереди. Добавьте ссылку заново.",
+                "This entry is no longer in the queue. Add its URL again.");
+        if(!row.CanResume)
+            return ErrorMessages.Text("Сначала завершите удаление или устраните ошибку очистки этого задания.",
+                "Finish removal or resolve this task's cleanup error first.");
+        return null;
     }
     internal static Forms.OpenFileDialog CreateOpenListDialog() => new()
     {
@@ -206,32 +244,57 @@ public sealed partial class NativeWindow
         Q.ContextMenu=queueMenu;
 
         var downloadMenu=new ContextMenu();
-        void DownloadAction(string title,Action<DownloadItem> callback)
+        // An external move/delete may leave Path unchanged. Refresh its
+        // availability when requested instead of polling disk on every tick.
+        downloadMenu.Opened+=(_,_)=>SetDownloadActions();
+        void DownloadAction(string title,Action<DownloadItem> callback,Func<DownloadItem,string?>? unavailable=null)
         {
             var entry=new MenuItem{Header=title};
-            entry.Click+=(_,_)=>{if(D.SelectedItems.Count==1 && D.SelectedItem is DownloadItem row)callback(row);};
-            downloadMenu.Opened+=(_,_)=>entry.IsEnabled=D.SelectedItems.Count==1 && D.SelectedItem is DownloadItem;
+            string? Unavailable()
+            {
+                if(_closing || _disposed || _appUpdateHandoff)
+                    return ErrorMessages.Text("Дождитесь завершения текущей операции приложения.","Wait for the application operation to finish.");
+                if(D.SelectedItems.Count!=1 || D.SelectedItem is not DownloadItem row)
+                    return ErrorMessages.Text("Выберите одну загрузку.","Select one download.");
+                return unavailable?.Invoke(row);
+            }
+            entry.Click+=(_,_)=>{if(Unavailable() is null && D.SelectedItem is DownloadItem row)callback(row);};
+            downloadMenu.Opened+=(_,_)=>
+            {
+                string? reason=Unavailable();
+                SetMenuAvailability(entry,reason is null,reason??"");
+            };
             downloadMenu.Items.Add(entry);
         }
-        DownloadAction(ErrorMessages.Text("Открыть файл","Open file"),row=>OpenFile(row.Path));
-        DownloadAction(ErrorMessages.Text("Показать в папке","Show in folder"),row=>ShowFileInFolder(row));
-        DownloadAction(ErrorMessages.Text("Копировать путь","Copy path"),row=>{if(row.Path.Length>0)Clipboard.SetText(row.Path);});
+        string? MissingFile(DownloadItem row)=>File.Exists(row.Path)?null:ErrorMessages.Text(
+            "Сохранённый файл ещё не создан или недоступен.","The saved file has not been created or is unavailable.");
+        DownloadAction(ErrorMessages.Text("Открыть файл","Open file"),row=>OpenFile(row.Path),MissingFile);
+        DownloadAction(ErrorMessages.Text("Показать в папке","Show in folder"),row=>ShowFileInFolder(row),MissingFile);
+        DownloadAction(ErrorMessages.Text("Копировать путь","Copy path"),row=>Clipboard.SetText(row.Path),row=>row.Path.Length>0?null:
+            ErrorMessages.Text("У этой загрузки пока нет сохранённого пути.","This download does not have a saved path yet."));
         DownloadAction(ErrorMessages.Text("Открыть ссылку","Open URL"),row=>OpenUrl(row.DisplayUrl));
         DownloadAction(ErrorMessages.Text("Копировать ссылку","Copy URL"),row=>Clipboard.SetText(row.DisplayUrl));
-        DownloadAction(ErrorMessages.Text("Скачать повторно","Retry URL"),row=>{_ = StartAsync([row]);});
+        DownloadAction(ErrorMessages.Text("Скачать повторно","Retry URL"),row=>{_ = StartAsync([row]);},RetryDownloadUnavailable);
         var skipDownloads=new MenuItem{Header=ErrorMessages.Text("Пропустить выбранные загрузки","Skip selected downloads")};
         skipDownloads.Click+=async(_,_)=>await SkipRowsAsync(SelectedDownloadRows());downloadMenu.Items.Add(skipDownloads);
         var resumeDownloads=new MenuItem{Header=ErrorMessages.Text("Продолжить выбранные загрузки","Resume selected downloads")};
         resumeDownloads.Click+=async(_,_)=>await ResumeRowsAsync(SelectedDownloadRows());downloadMenu.Items.Add(resumeDownloads);
         downloadMenu.Opened+=(_,_)=>
         {
-            skipDownloads.IsEnabled=!QueueItemActionsBlocked() && SelectedDownloadRows().Any(CanSkipQueueItem);
-            resumeDownloads.IsEnabled=!QueueItemActionsBlocked() && SelectedDownloadRows().Any(CanContinueQueueItem);
+            var selected=SelectedDownloadRows();
+            string reason=selected.Length==0?ErrorMessages.Text("Выберите загрузки.","Select downloads."):
+                QueueItemActionsBlocked()?ErrorMessages.Text("Дождитесь завершения текущей операции или восстановления доступа к профилю.",
+                    "Wait for the current operation to finish or restore access to the profile."):
+                ErrorMessages.Text("Среди выбранных загрузок нет подходящих заданий.","None of the selected downloads are eligible for this action.");
+            SetMenuAvailability(skipDownloads,!QueueItemActionsBlocked() && selected.Any(CanSkipQueueItem),reason);
+            SetMenuAvailability(resumeDownloads,!QueueItemActionsBlocked() && selected.Any(CanContinueQueueItem),reason);
         };
         DownloadAction(ErrorMessages.Text("Показать ошибку","Show error"),row=>MessageBox.Show(_window,row.ErrorMessage,
-            ErrorMessages.Text("Ошибка скачивания","Download error")));
+            ErrorMessages.Text("Ошибка скачивания","Download error")),row=>row.ErrorMessage.Length>0?null:
+            ErrorMessages.Text("У этой загрузки нет сообщения об ошибке.","This download has no error message."));
         DownloadAction(ErrorMessages.Text("Исходная диагностика","Show raw error"),row=>MessageBox.Show(_window,row.RawError,
-            ErrorMessages.Text("Исходная диагностика yt-dlp","yt-dlp error")));
+            ErrorMessages.Text("Исходная диагностика yt-dlp","yt-dlp error")),row=>row.RawError.Length>0?null:
+            ErrorMessages.Text("У этой загрузки нет исходного сообщения об ошибке.","This download has no original error message."));
         D.ContextMenu=downloadMenu;
     }
     private static void OpenUrl(string url)

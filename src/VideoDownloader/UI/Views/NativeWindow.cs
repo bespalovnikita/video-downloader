@@ -203,6 +203,7 @@ public sealed partial class NativeWindow : IDisposable
     internal void UpdateState()
     {
         if (_disposed) return;
+        RefreshDownloadActions();
         // Do not count successful downloads from a previous session again.
         // Live additions join this set; removed URLs leave it.
         var metrics=SessionState.ReadMetrics();
