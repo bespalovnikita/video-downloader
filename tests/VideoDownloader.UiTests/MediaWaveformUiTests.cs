@@ -153,6 +153,9 @@ internal sealed partial class UiScenario
             var first=Control<AudioWaveformView>(dialog,"MediaWaveformStartView");
             var last=Control<AudioWaveformView>(dialog,"MediaWaveformEndView");
             var firstThumb=Control<Thumb>(dialog,"MediaWaveformStartThumb");var lastThumb=Control<Thumb>(dialog,"MediaWaveformEndThumb");
+            var waveform=Control<Expander>(dialog,"MediaWaveformExpander");
+            Require(!waveform.IsExpanded && !first.IsVisible && !last.IsVisible && calls.Count==0,
+                "The optional waveform controls must start collapsed without preparing sound.");
             start.Text="10";end.Text="30";FlushDispatcher();
             Click(dialog,"PreviewMediaWaveformStartButton");
             Require(calls.Count==0 && !Control<Button>(dialog,"PreviewMediaWaveformStartButton").IsEnabled,
@@ -160,6 +163,9 @@ internal sealed partial class UiScenario
             dialog.ReceiveMetadata(metadata);
             Require(calls.Count==0 && clipCalls==0 && first.Data is null && last.Data is null,
                 "Metadata, typed ranges and selection must not start waveform media or playback automatically.");
+            waveform.IsExpanded=true;dialog.UpdateLayout();FlushDispatcher();
+            Require(first.IsVisible && last.IsVisible && calls.Count==0 && clipCalls==0,
+                "Opening the optional waveform section must reveal its controls without requesting media or playback.");
             Click(dialog,"PreviewMediaWaveformStartButton");
             Require(calls.Count==1 && !calls[0].Request.IsEnd && calls[0].Request.ClipRequest.Url==url &&
                 calls[0].Request.ClipRequest.StartSeconds==10 && calls[0].Request.ClipRequest.EndSeconds==30,
@@ -171,7 +177,8 @@ internal sealed partial class UiScenario
                 Control<TextBlock>(dialog,"MediaWaveformStartRange").Text.Contains(DownloadSection.FormatTimestamp(5),StringComparison.Ordinal) &&
                 Control<TextBlock>(dialog,"MediaWaveformStartRange").Text.Contains(DownloadSection.FormatTimestamp(20),StringComparison.Ordinal),
                 "The real view must expose its source-time window and accessible boundary handle.");
-            Require(VisualTreeHelper.GetOffset(first).Y>first.ActualHeight,
+            var editorBody=(Visual)Control<ScrollViewer>(dialog,"MediaSelectionScrollViewer").Content;
+            Require(first.TransformToAncestor(editorBody).Transform(new Point()).Y>first.ActualHeight,
                 "The render regression must exercise the real waveform nested below the editor's other controls.");
             var visibleCenter=first.TranslatePoint(new Point(first.ActualWidth/2,53),dialog);
             Require(first.IsVisible && visibleCenter.Y>0 && visibleCenter.Y<dialog.ActualHeight,
@@ -264,6 +271,20 @@ internal sealed partial class UiScenario
             Click(dialog,"PreviewMediaWaveformEndButton");var cancelled=calls[^1];Click(dialog,"CancelMediaWaveformEndButton");
             Require(cancelled.Token.IsCancellationRequested && last.Data is null,"The explicit cancel button must cancel preparation and clear its card.");
             cancelled.Success(Wave(23.5,38.5));FlushDispatcher();Require(last.Data is null,"A cancelled card must ignore its late result.");
+            Click(dialog,"PreviewMediaWaveformStartButton");var hiddenCall=calls[^1];int beforeCollapse=calls.Count;
+            waveform.IsExpanded=false;FlushDispatcher();
+            Require(hiddenCall.Token.IsCancellationRequested && first.Data is null && last.Data is null && !first.IsVisible,
+                "Collapsing the section must cancel preparation and clear both hidden waveform generations.");
+            Click(dialog,"PreviewMediaWaveformStartButton");Drag(firstThumb,100);
+            Require(calls.Count==beforeCollapse && start.Text=="13",
+                "Directly raised actions in the collapsed section must not fetch sound or change the draft.");
+            waveform.IsExpanded=true;FlushDispatcher();
+            Require(calls.Count==beforeCollapse,"Reopening the section must still require an explicit waveform request.");
+            Click(dialog,"PreviewMediaWaveformStartButton");var reopenedCall=calls[^1];var reopenedData=Wave(5.5,20.5);
+            reopenedCall.Success(reopenedData);PumpUntil(()=>ReferenceEquals(first.Data,reopenedData),"The reopened section did not accept a new explicit request.");
+            hiddenCall.Success(Wave(5.5,20.5));FlushDispatcher();
+            Require(ReferenceEquals(first.Data,reopenedData),
+                "Completion of the collapsed section's cancelled work must not clear or replace a newer request.");
             Click(dialog,"PreviewMediaWaveformStartButton");var readonlyCall=calls[^1];dialog.SetEditable(false);
             string readonlyStart=start.Text,readonlyEnd=end.Text;int guarded=calls.Count;
             Click(dialog,"PreviewMediaWaveformStartButton");Drag(firstThumb,100);KeyPress(lastThumb,Key.Left,dialog);
@@ -355,7 +376,8 @@ internal sealed partial class UiScenario
             options=new DownloadOptions();
             var originalPlan=new DownloadSelection(url,new(10,20),DurationSeconds:80)
                 {Sections=new DownloadSectionSet([new(10,20),new(30,40)])};row.Selection=originalPlan;
-            dialog=Open();start=Control<TextBox>(dialog,"MediaSectionStartBox");end=Control<TextBox>(dialog,"MediaSectionEndBox");
+            dialog=Open();Control<Expander>(dialog,"MediaWaveformExpander").IsExpanded=true;
+            start=Control<TextBox>(dialog,"MediaSectionStartBox");end=Control<TextBox>(dialog,"MediaSectionEndBox");
             first=Control<AudioWaveformView>(dialog,"MediaWaveformStartView");last=Control<AudioWaveformView>(dialog,"MediaWaveformEndView");
             lastThumb=Control<Thumb>(dialog,"MediaWaveformEndThumb");var list=Control<ListBox>(dialog,"MediaSectionsList");
             Click(dialog,"PreviewMediaWaveformStartButton");var oldSection=calls[^1];list.SelectedIndex=1;

@@ -15,9 +15,11 @@ internal sealed partial class MediaSelectionDialog
         internal readonly TextBlock Status=status,Range=range;
         internal CancellationTokenSource? Cancellation;
         internal long Generation;
+        internal Task Operation=Task.CompletedTask;
     }
     private Func<MediaWaveformRequest,CancellationToken,Task<MediaWaveformResult>>? _waveformPreview;
     private WaveformCard? _waveStart,_waveEnd;
+    private Expander? _waveformExpander;
     private WaveformContext? _waveContext;
     private bool _waveformClosed,_waveformEditing;
 
@@ -25,26 +27,41 @@ internal sealed partial class MediaSelectionDialog
         Func<MediaWaveformRequest,CancellationToken,Task<MediaWaveformResult>>? preview)
     {
         _waveformPreview=preview;
-        body.Children.Add(Heading("Звуковая волна у границ"));
-        body.Children.Add(Note("Нажмите «Волна начала» или «Волна конца»: показываем измеренную громкость короткого участка звука вокруг границы. Щелчок по волне или перетаскивание метки меняет только соответствующее поле времени. Стрелки сдвигают метку на 0.1 с, Shift — на 1 с."));
+        var details=new StackPanel{Margin=new Thickness(8,4,8,8)};
+        _waveformExpander=Named("MediaWaveformExpander",new Expander{Header="Звуковая волна у границ",Content=details,
+            IsExpanded=false,Margin=new Thickness(0,10,0,0)});
+        body.Children.Add(_waveformExpander);
+        details.Children.Add(Note("Нажмите «Волна начала» или «Волна конца»: показываем измеренную громкость короткого участка звука вокруг границы. Щелчок по волне или перетаскивание метки меняет только соответствующее поле времени. Стрелки сдвигают метку на 0.1 с, Shift — на 1 с."));
         WaveformCard Card(bool isEnd)
         {
             string name=isEnd?"End":"Start";
-            body.Children.Add(Heading(isEnd?"Конец фрагмента":"Начало фрагмента"));
+            details.Children.Add(Heading(isEnd?"Конец фрагмента":"Начало фрагмента"));
             var actions=new WrapPanel{Orientation=Orientation.Horizontal};
             var request=Named("PreviewMediaWaveform"+name+"Button",new Button{Content=isEnd?"Волна конца":"Волна начала"});
             var cancel=Named("CancelMediaWaveform"+name+"Button",new Button{Content="Отменить волну",IsEnabled=false});
-            actions.Children.Add(request);actions.Children.Add(cancel);body.Children.Add(actions);
+            actions.Children.Add(request);actions.Children.Add(cancel);details.Children.Add(actions);
             var view=Named("MediaWaveform"+name+"View",new AudioWaveformView(isEnd));
-            RegisterName("MediaWaveform"+name+"Thumb",view.BoundaryHandle);body.Children.Add(view);
-            var range=Named("MediaWaveform"+name+"Range",Note(""));body.Children.Add(range);
-            var status=Named("MediaWaveform"+name+"Status",Note("Укажите начало и конец фрагмента."));body.Children.Add(status);
+            RegisterName("MediaWaveform"+name+"Thumb",view.BoundaryHandle);details.Children.Add(view);
+            var range=Named("MediaWaveform"+name+"Range",Note(""));details.Children.Add(range);
+            var status=Named("MediaWaveform"+name+"Status",Note("Укажите начало и конец фрагмента."));details.Children.Add(status);
             var card=new WaveformCard(isEnd,view,request,cancel,status,range);
             request.Click+=(_,_)=>StartWaveform(card);cancel.Click+=(_,_)=>CancelWaveform(card,"Подготовка звуковой волны отменена.");
             view.BoundaryChanged+=seconds=>WaveformBoundaryChanged(card,seconds);
             return card;
         }
         _waveStart=Card(false);_waveEnd=Card(true);
+        _waveformExpander.Expanded+=(_,e)=>
+        {if(ReferenceEquals(e.OriginalSource,_waveformExpander))RefreshWaveformState(force:true);};
+        _waveformExpander.Collapsed+=async(_,e)=>
+        {
+            if(!ReferenceEquals(e.OriginalSource,_waveformExpander))return;
+            // Invalidate before awaiting the service's owned cancellation/join.
+            // A quick reopen may start a new generation; this continuation
+            // must not clear or disable that newer request when it completes.
+            CancelWaveform(_waveStart,"Подготовка звуковой волны отменена.");
+            CancelWaveform(_waveEnd,"Подготовка звуковой волны отменена.");
+            await Task.WhenAll(_waveStart.Operation,_waveEnd.Operation);
+        };
         _start.TextChanged+=WaveformTimeChanged;_end.TextChanged+=WaveformTimeChanged;
         _mode.SelectionChanged+=WaveformFormatChanged;_primary.SelectionChanged+=WaveformFormatChanged;_audio.SelectionChanged+=WaveformFormatChanged;
         if(_sectionList is not null)_sectionList.SelectionChanged+=WaveformSectionChanged;
@@ -63,7 +80,7 @@ internal sealed partial class MediaSelectionDialog
         foreach(var card in new[]{_waveStart,_waveEnd})
         {
             var data=ReferenceEquals(card,preserve)?card.View.Data:null;
-            bool valid=_waveformPreview is not null && TryPlaybackRequest(card.IsEnd,out _,out _);
+            bool valid=_waveformExpander?.IsExpanded==true && _waveformPreview is not null && TryPlaybackRequest(card.IsEnd,out _,out _);
             // A Thumb must stay enabled and captured throughout its own drag.
             // This data still describes the same fixed source window; only its
             // marker changes, while every other pending generation is revoked.
@@ -100,7 +117,7 @@ internal sealed partial class MediaSelectionDialog
     }
     private void StartWaveform(WaveformCard card)
     {
-        if(_waveformClosed || !_editable)return;
+        if(_waveformClosed || !_editable || _waveformExpander?.IsExpanded!=true)return;
         RefreshWaveformState();
         MediaClipRequest? clip=null;string explanation="";
         if(_waveformPreview is null || !TryPlaybackRequest(card.IsEnd,out clip,out explanation))
@@ -111,10 +128,10 @@ internal sealed partial class MediaSelectionDialog
         // The explicit action reveals its measured area as well as its button;
         // an asynchronous completion must not scroll a different card later.
         card.View.BringIntoView(new Rect(card.View.RenderSize));
-        _=LoadWaveformAsync(card,new MediaWaveformRequest(clip!,card.IsEnd),CurrentWaveformContext(),card.Generation,cancellation);
+        card.Operation=LoadWaveformAsync(card,new MediaWaveformRequest(clip!,card.IsEnd),CurrentWaveformContext(),card.Generation,cancellation);
     }
     private bool CurrentWaveform(WaveformCard card,WaveformContext context,long generation,CancellationTokenSource cancellation)=>
-        !_waveformClosed && _editable && !cancellation.IsCancellationRequested && ReferenceEquals(card.Cancellation,cancellation) &&
+        !_waveformClosed && _editable && _waveformExpander?.IsExpanded==true && !cancellation.IsCancellationRequested && ReferenceEquals(card.Cancellation,cancellation) &&
         card.Generation==generation && CurrentWaveformContext()==context;
     private async Task LoadWaveformAsync(WaveformCard card,MediaWaveformRequest request,WaveformContext context,long generation,CancellationTokenSource cancellation)
     {
@@ -158,7 +175,7 @@ internal sealed partial class MediaSelectionDialog
     }
     private void WaveformBoundaryChanged(WaveformCard card,double seconds)
     {
-        if(_waveformClosed || !_editable)return;
+        if(_waveformClosed || !_editable || _waveformExpander?.IsExpanded!=true)return;
         if(CurrentWaveformContext()!=_waveContext){RefreshWaveformState();return;}
         var data=card.View.Data;if(data is null)return;
         _waveformEditing=true;
