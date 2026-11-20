@@ -17,7 +17,7 @@ internal static class Program
             int nativeError=System.Runtime.InteropServices.Marshal.GetLastPInvokeError();
             string? result=Environment.GetEnvironmentVariable("VD_NATIVE_UI_TEST_RESULT");
             if(!string.IsNullOrWhiteSpace(result))
-                try{File.WriteAllText(result,"FAIL: "+error+Environment.NewLine+"Last native error: "+nativeError);}catch(IOException){}
+                try{File.WriteAllText(result,"FAIL: "+error+Environment.NewLine+"Cached P/Invoke error (context only): "+nativeError);}catch(IOException){}
         }
         AppDomain.CurrentDomain.UnhandledException+=(_,e)=>RecordFailure(e.ExceptionObject);
         System.Windows.Threading.Dispatcher.CurrentDispatcher.UnhandledException+=(_,e)=>RecordFailure(e.Exception);
