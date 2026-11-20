@@ -2,11 +2,11 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Подписки" Width="1200" Height="800" MinWidth="720" MinHeight="500"
         WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
-        Background="#111318" Foreground="#EEF1F8" FontFamily="Segoe UI">
+        Background="{DynamicResource WindowBackgroundBrush}" Foreground="{DynamicResource WindowTextBrush}" FontFamily="Segoe UI">
     <Window.Resources>
         <Style TargetType="Button">
-            <Setter Property="Background" Value="#303644"/>
-            <Setter Property="Foreground" Value="#EEF1F8"/>
+            <Setter Property="Background" Value="{DynamicResource FieldHoverBrush}"/>
+            <Setter Property="Foreground" Value="{DynamicResource WindowTextBrush}"/>
             <Setter Property="Padding" Value="12,8"/>
             <Setter Property="Margin" Value="0,0,7,0"/>
             <Setter Property="BorderThickness" Value="0"/>
@@ -15,37 +15,41 @@
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
                         <Border x:Name="Chrome" Background="{TemplateBinding Background}"
-                                Padding="{TemplateBinding Padding}" CornerRadius="6">
+                                Padding="{TemplateBinding Padding}" CornerRadius="6" BorderBrush="Transparent" BorderThickness="2">
                             <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
                         </Border>
                         <ControlTemplate.Triggers>
-                            <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Chrome" Property="Background" Value="#414B60"/></Trigger>
-                            <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Chrome" Property="Background" Value="#414B60"/></Trigger>
-                            <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.45"/></Trigger>
+                            <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Chrome" Property="BorderBrush" Value="{DynamicResource SecondaryTextBrush}"/></Trigger>
+                            <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Chrome" Property="BorderBrush" Value="{DynamicResource FocusBrush}"/></Trigger>
+                            <Trigger Property="IsEnabled" Value="False"><Setter Property="Foreground" Value="{DynamicResource DisabledTextBrush}"/><Setter Property="Cursor" Value="Arrow"/></Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
+            <Style.Triggers>
+                <Trigger Property="Tag" Value="Primary"><Setter Property="Background" Value="{DynamicResource AccentBrush}"/><Setter Property="Foreground" Value="{DynamicResource OnAccentBrush}"/></Trigger>
+                <Trigger Property="IsEnabled" Value="False"><Setter Property="Background" Value="{DynamicResource FieldBrush}"/><Setter Property="Foreground" Value="{DynamicResource DisabledTextBrush}"/></Trigger>
+            </Style.Triggers>
         </Style>
         <Style TargetType="TextBox">
-            <Setter Property="Background" Value="#252932"/>
-            <Setter Property="Foreground" Value="#EEF1F8"/>
-            <Setter Property="CaretBrush" Value="#EEF1F8"/>
-            <Setter Property="BorderBrush" Value="#454C5D"/>
+            <Setter Property="Background" Value="{DynamicResource FieldBrush}"/>
+            <Setter Property="Foreground" Value="{DynamicResource WindowTextBrush}"/>
+            <Setter Property="CaretBrush" Value="{DynamicResource WindowTextBrush}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
             <Setter Property="Padding" Value="8,6"/>
         </Style>
         <Style TargetType="CheckBox">
-            <Setter Property="Foreground" Value="#EEF1F8"/>
+            <Setter Property="Foreground" Value="{DynamicResource WindowTextBrush}"/>
             <Setter Property="Margin" Value="0,8,0,5"/>
         </Style>
         <Style TargetType="DataGrid">
-            <Setter Property="Background" Value="#1B1E25"/>
-            <Setter Property="Foreground" Value="#EEF1F8"/>
-            <Setter Property="BorderBrush" Value="#343946"/>
-            <Setter Property="RowBackground" Value="#1B1E25"/>
-            <Setter Property="AlternatingRowBackground" Value="#20242D"/>
+            <Setter Property="Background" Value="{DynamicResource PanelBrush}"/>
+            <Setter Property="Foreground" Value="{DynamicResource WindowTextBrush}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
+            <Setter Property="RowBackground" Value="{DynamicResource PanelBrush}"/>
+            <Setter Property="AlternatingRowBackground" Value="{DynamicResource AlternateRowBrush}"/>
             <Setter Property="AlternationCount" Value="2"/>
-            <Setter Property="HorizontalGridLinesBrush" Value="#343946"/>
+            <Setter Property="HorizontalGridLinesBrush" Value="{DynamicResource BorderBrush}"/>
             <Setter Property="GridLinesVisibility" Value="Horizontal"/>
             <Setter Property="HeadersVisibility" Value="Column"/>
             <Setter Property="RowHeaderWidth" Value="0"/>
@@ -59,29 +63,29 @@
             <Setter Property="EnableColumnVirtualization" Value="True"/>
         </Style>
         <Style TargetType="DataGridColumnHeader">
-            <Setter Property="Background" Value="#111318"/>
-            <Setter Property="Foreground" Value="#B3BBCD"/>
-            <Setter Property="BorderBrush" Value="#343946"/>
+            <Setter Property="Background" Value="{DynamicResource WindowBackgroundBrush}"/>
+            <Setter Property="Foreground" Value="{DynamicResource SecondaryTextBrush}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
             <Setter Property="Padding" Value="8,7"/>
         </Style>
         <Style TargetType="DataGridCell">
-            <Setter Property="Foreground" Value="#EEF1F8"/>
+            <Setter Property="Foreground" Value="{DynamicResource WindowTextBrush}"/>
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="Padding" Value="7,6"/>
             <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
             <Style.Triggers>
-                <Trigger Property="IsSelected" Value="True"><Setter Property="Background" Value="#35456D"/></Trigger>
+                <Trigger Property="IsSelected" Value="True"><Setter Property="Background" Value="{DynamicResource SelectionBrush}"/><Setter Property="Foreground" Value="{DynamicResource SelectionTextBrush}"/></Trigger>
             </Style.Triggers>
         </Style>
         <Style TargetType="DataGridRow">
-            <Setter Property="Foreground" Value="#EEF1F8"/>
+            <Setter Property="Foreground" Value="{DynamicResource WindowTextBrush}"/>
             <Style.Triggers>
-                <Trigger Property="IsSelected" Value="True"><Setter Property="Background" Value="#35456D"/></Trigger>
+                <Trigger Property="IsSelected" Value="True"><Setter Property="Background" Value="{DynamicResource SelectionBrush}"/><Setter Property="Foreground" Value="{DynamicResource SelectionTextBrush}"/></Trigger>
             </Style.Triggers>
         </Style>
         <Style TargetType="ToolTip">
-            <Setter Property="Background" Value="#252932"/>
-            <Setter Property="Foreground" Value="#EEF1F8"/>
+            <Setter Property="Background" Value="{DynamicResource FieldBrush}"/>
+            <Setter Property="Foreground" Value="{DynamicResource WindowTextBrush}"/>
             <Setter Property="MaxWidth" Value="620"/>
         </Style>
     </Window.Resources>
@@ -115,7 +119,7 @@
         </DockPanel>
         <Expander Grid.Row="1" x:Name="AddSubscriptionExpander" Header="Добавить подписку" IsExpanded="False" Margin="0,0,0,8">
         <ScrollViewer VerticalScrollBarVisibility="Auto" MaxHeight="260">
-        <Border Background="#1B1E25" CornerRadius="8" Padding="12" Margin="0,5,0,0">
+        <Border Background="{DynamicResource PanelBrush}" CornerRadius="8" Padding="12" Margin="0,5,0,0">
             <Grid>
                 <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                 <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
@@ -125,7 +129,7 @@
                          ToolTip="Полный HTTP(S) URL канала или плейлиста, включая модель или канал Pornhub. Каждый ролик добавляется отдельным заданием."/>
                 <TextBox Grid.Row="1" Grid.Column="1" x:Name="SubscriptionFeedBox" Margin="0,0,10,0"
                          ToolTip="Лента дополняет полную проверку через yt-dlp. Для YouTube лента может определиться автоматически."/>
-                <Button Grid.Row="1" Grid.Column="2" x:Name="AddSubscriptionButton" Content="Добавить и проверить" Background="#6366F1" Margin="0"/>
+                <Button Grid.Row="1" Grid.Column="2" x:Name="AddSubscriptionButton" Content="Добавить и проверить" Tag="Primary" Margin="0"/>
                 <StackPanel Grid.Row="2" Grid.ColumnSpan="3" Orientation="Horizontal" Margin="0,8,0,0">
                     <TextBlock Text="Краткое имя / папка (необязательно)" VerticalAlignment="Center" Margin="0,0,10,0"/>
                     <TextBox x:Name="NewSubscriptionNameBox" Width="300" MaxLength="160"
@@ -141,7 +145,7 @@
                     <ComboBoxItem Tag="Skip" Content="Добавить все материалы в подписку без скачивания в статусе &quot;пропущено&quot;" ContentTemplate="{StaticResource InitialActionTemplate}"/>
                     <ComboBoxItem Tag="ManualDone" Content="Добавить все материалы в подписку без скачивания в статусе &quot;готово&quot;" ContentTemplate="{StaticResource InitialActionTemplate}"/>
                 </ComboBox>
-                <TextBlock Grid.Row="4" Grid.ColumnSpan="3" Foreground="#B3BBCD" TextWrapping="Wrap"
+                <TextBlock Grid.Row="4" Grid.ColumnSpan="3" Foreground="{DynamicResource SecondaryTextBrush}" TextWrapping="Wrap"
                            Text="Первая полная проверка начнётся сразу. «Пропущено» и ручная отметка «Готово» сохраняют список без скачивания; «Готово» не означает наличие файла. При добавлении в очередь повтор уже скачанных URL потребует подтверждения. Скачивание запускается отдельно кнопкой «Скачать всю очередь»."/>
             </Grid>
         </Border>
@@ -167,7 +171,7 @@
                 <Button x:Name="SaveSubscriptionNameButton" Content="Сохранить имя"/>
             </WrapPanel>
             <TextBlock Text="Материалы сохраняются в подпапку с этим именем, например D:\Video\123. Изменение имени действует на новые задания."
-                       Foreground="#B3BBCD" TextWrapping="Wrap" FontSize="11" Margin="0,5,0,0"/>
+                       Foreground="{DynamicResource SecondaryTextBrush}" TextWrapping="Wrap" FontSize="11" Margin="0,5,0,0"/>
             <WrapPanel Margin="0,8,0,0">
                 <CheckBox x:Name="SubscriptionScheduleEnabledCheck" Content="Проверять по расписанию" Margin="0,0,12,0" VerticalAlignment="Center"
                           ToolTip="Только пока приложение открыто или в трее. Первая проверка источника выполняется вручную; расписание не добавляет материалы в очередь и не скачивает их."/>
@@ -178,7 +182,7 @@
                 <Button x:Name="SaveSubscriptionScheduleButton" Content="Сохранить расписание"/>
             </WrapPanel>
             <TextBlock x:Name="SubscriptionScheduleStatusText" Text="Проверки по расписанию выключены."
-                       Foreground="#B3BBCD" TextWrapping="Wrap" FontSize="11" Margin="0,5,0,0"/>
+                       Foreground="{DynamicResource SecondaryTextBrush}" TextWrapping="Wrap" FontSize="11" Margin="0,5,0,0"/>
             <Grid Margin="0,8,0,0">
                 <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                 <TextBlock Text="URL подписки" VerticalAlignment="Center" Margin="0,0,10,0"/>
@@ -189,36 +193,36 @@
             </Grid>
             <StackPanel DataContext="{Binding SelectedItem, ElementName=SubscriptionGrid}" Margin="0,8,0,0">
                 <TextBlock x:Name="SubscriptionLastAttemptText" Text="{Binding LastAttemptLabel, StringFormat='Последняя попытка: {0}'}"
-                           Foreground="#B3BBCD" TextWrapping="Wrap"/>
+                           Foreground="{DynamicResource SecondaryTextBrush}" TextWrapping="Wrap"/>
                 <TextBlock x:Name="SubscriptionLastSuccessText" Text="{Binding LastSuccessLabel, StringFormat='Успешная проверка: {0}'}"
-                           Foreground="#B3BBCD" TextWrapping="Wrap" Margin="0,4,0,0"/>
+                           Foreground="{DynamicResource SecondaryTextBrush}" TextWrapping="Wrap" Margin="0,4,0,0"/>
                 <TextBlock x:Name="SubscriptionNextCheckText" Text="{Binding NextCheckLabel, StringFormat='Следующая проверка: {0}'}"
-                           Foreground="#B3BBCD" TextWrapping="Wrap" Margin="0,4,0,0"/>
+                           Foreground="{DynamicResource SecondaryTextBrush}" TextWrapping="Wrap" Margin="0,4,0,0"/>
             </StackPanel>
             </StackPanel>
             </ScrollViewer>
             </Expander>
-            <Border x:Name="SubscriptionCheckProgressPanel" Visibility="Collapsed" Background="#1B2433"
-                    BorderBrush="#35456D" BorderThickness="1" CornerRadius="7" Padding="10,8" Margin="0,10,0,0">
+            <Border x:Name="SubscriptionCheckProgressPanel" Visibility="Collapsed" Background="{DynamicResource PanelBrush}"
+                    BorderBrush="{DynamicResource SelectionBrush}" BorderThickness="1" CornerRadius="7" Padding="10,8" Margin="0,10,0,0">
                 <Grid>
                     <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                     <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
                     <TextBlock x:Name="SubscriptionCheckSourceText" Text="Проверка подписок" FontWeight="SemiBold"
                                TextTrimming="CharacterEllipsis" Margin="0,0,14,0"/>
                     <TextBlock Grid.Column="1" x:Name="SubscriptionCheckCountText" Text="Проверено: 0 / 0"
-                               Foreground="#B3BBCD" Margin="0,0,18,0"/>
-                    <TextBlock Grid.Column="2" x:Name="SubscriptionCheckElapsedText" Text="Прошло: 00:00" Foreground="#B3BBCD"/>
+                               Foreground="{DynamicResource SecondaryTextBrush}" Margin="0,0,18,0"/>
+                    <TextBlock Grid.Column="2" x:Name="SubscriptionCheckElapsedText" Text="Прошло: 00:00" Foreground="{DynamicResource SecondaryTextBrush}"/>
                     <TextBlock Grid.Row="1" x:Name="SubscriptionCheckStageText" Text="Подготовка…"
-                               Foreground="#9CC9FF" TextTrimming="CharacterEllipsis" Margin="0,4,14,0"/>
+                               Foreground="{DynamicResource ActiveStateBrush}" TextTrimming="CharacterEllipsis" Margin="0,4,14,0"/>
                     <TextBlock Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" x:Name="SubscriptionCheckDetailText"
-                               Foreground="#B3BBCD" TextTrimming="CharacterEllipsis" HorizontalAlignment="Right" Margin="0,4,0,0"/>
+                               Foreground="{DynamicResource SecondaryTextBrush}" TextTrimming="CharacterEllipsis" HorizontalAlignment="Right" Margin="0,4,0,0"/>
                     <ProgressBar Grid.Row="2" Grid.ColumnSpan="3" x:Name="SubscriptionCheckOverallProgress"
                                  Minimum="0" Maximum="1" Value="0" Height="6" Margin="0,7,0,0"
-                                 Foreground="#6366F1" Background="#303644" BorderThickness="0"
+                                 Foreground="{DynamicResource AccentBrush}" Background="{DynamicResource FieldHoverBrush}" BorderThickness="0"
                                  ToolTip="Количество завершённых проверок источников"/>
                     <ProgressBar Grid.Row="3" Grid.ColumnSpan="3" x:Name="SubscriptionCheckActivityProgress"
                                  IsIndeterminate="False" Height="3" Margin="0,3,0,0"
-                                 Foreground="#56C9BB" Background="#303644" BorderThickness="0"
+                                 Foreground="{DynamicResource ProgressBrush}" Background="{DynamicResource FieldHoverBrush}" BorderThickness="0"
                                  ToolTip="Работа с текущим источником"/>
                 </Grid>
             </Border>
@@ -238,7 +242,7 @@
                             <StackPanel Margin="0,2">
                                 <TextBlock Text="{Binding Title}" TextTrimming="CharacterEllipsis" ToolTip="{Binding Url}"/>
                                 <TextBlock x:Name="SubscriptionSourceIdentity" Text="{Binding Url}" FontSize="11"
-                                           Foreground="#B3BBCD" TextTrimming="CharacterEllipsis" ToolTip="{Binding Url}"
+                                           Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=DataGridCell}}" TextTrimming="CharacterEllipsis" ToolTip="{Binding Url}"
                                            AutomationProperties.Name="{Binding Url}"/>
                             </StackPanel>
                         </DataTemplate>
@@ -256,13 +260,13 @@
                 </DataGridTextColumn>
             </DataGrid.Columns>
         </DataGrid>
-        <GridSplitter Grid.Row="4" HorizontalAlignment="Stretch" VerticalAlignment="Center" Height="4" Background="#343946"/>
+        <GridSplitter Grid.Row="4" HorizontalAlignment="Stretch" VerticalAlignment="Center" Height="4" Background="{DynamicResource BorderBrush}"/>
         <StackPanel Grid.Row="5" Margin="0,0,0,8">
             <DockPanel Margin="0,0,0,5">
-                <TextBlock x:Name="SubscriptionInboxCountText" DockPanel.Dock="Right" Foreground="#B3BBCD" VerticalAlignment="Center" Margin="8,0,0,0"/>
+                <TextBlock x:Name="SubscriptionInboxCountText" DockPanel.Dock="Right" Foreground="{DynamicResource SecondaryTextBrush}" VerticalAlignment="Center" Margin="8,0,0,0"/>
                 <TextBlock x:Name="SubscriptionInboxTitle" Text="Входящие и результаты" FontSize="17" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
             </DockPanel>
-            <TextBlock Text="Поиск по названию или URL" Foreground="#B3BBCD" Margin="0,0,0,3"/>
+            <TextBlock Text="Поиск по названию или URL" Foreground="{DynamicResource SecondaryTextBrush}" Margin="0,0,0,3"/>
             <Grid>
                 <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="185"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                 <TextBox x:Name="SubscriptionInboxSearchBox" MaxLength="2048" Margin="0,0,8,0"
@@ -292,27 +296,27 @@
                 <DataGridTextColumn Header="URL" Binding="{Binding Url}" Width="3*"/>
             </DataGrid.Columns>
         </DataGrid>
-        <TextBlock x:Name="SubscriptionInboxEmptyText" Visibility="Collapsed" Foreground="#B3BBCD" TextWrapping="Wrap"
+        <TextBlock x:Name="SubscriptionInboxEmptyText" Visibility="Collapsed" Foreground="{DynamicResource SecondaryTextBrush}" TextWrapping="Wrap"
                    IsHitTestVisible="False" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="12"/>
         </Grid>
         <WrapPanel Grid.Row="7" Margin="0,10,0,8">
-            <Button x:Name="QueueSubscriptionItemsButton" Content="Добавить выбранные в очередь" Background="#6366F1"
+            <Button x:Name="QueueSubscriptionItemsButton" Content="Добавить выбранные в очередь" Tag="Primary"
                     ToolTip="Только выделенные видимые материалы. Скачивание запускается отдельно кнопкой «Скачать всю очередь»."/>
             <Button x:Name="SkipSubscriptionItemsButton" Content="Пропустить"/>
             <Button x:Name="OpenSubscriptionItemButton" Content="Открыть URL"/>
         </WrapPanel>
         <StackPanel Grid.Row="8">
             <TextBlock x:Name="SubscriptionStatusText" Text="Выделите материалы и добавьте их в очередь. Скачивание запускается отдельно кнопкой «Скачать всю очередь»."
-                       TextWrapping="Wrap" Foreground="#B3BBCD"/>
+                       TextWrapping="Wrap" Foreground="{DynamicResource SecondaryTextBrush}"/>
         </StackPanel>
         </Grid>
         </ScrollViewer>
         <GridSplitter x:Name="SubscriptionDetailsSplitter" Grid.Column="1" Width="4"
-                      HorizontalAlignment="Center" VerticalAlignment="Stretch" Background="#343946"
+                      HorizontalAlignment="Center" VerticalAlignment="Stretch" Background="{DynamicResource BorderBrush}"
                       ResizeDirection="Columns" ResizeBehavior="PreviousAndNext"
                       ToolTip="Изменить ширину списка и информации о видео"/>
-        <Border x:Name="SubscriptionDetailsPanel" Grid.Column="2" Background="#1B1E25"
-                BorderBrush="#343946" BorderThickness="1" CornerRadius="8" Padding="14">
+        <Border x:Name="SubscriptionDetailsPanel" Grid.Column="2" Background="{DynamicResource PanelBrush}"
+                BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="8" Padding="14">
             <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                 <StackPanel>
                     <Button x:Name="BackToSubscriptionsListButton" Content="← К списку подписок" Visibility="Collapsed"
@@ -322,17 +326,17 @@
                     <TextBlock x:Name="SubscriptionPreviewTitle" Text="Видео не выбрано" FontSize="16"
                                FontWeight="SemiBold" TextWrapping="Wrap"/>
                     <TextBlock x:Name="SubscriptionPreviewStatus" Text="Выберите один материал в списке слева."
-                               Foreground="#B3BBCD" TextWrapping="Wrap" Margin="0,8,0,0"/>
+                               Foreground="{DynamicResource SecondaryTextBrush}" TextWrapping="Wrap" Margin="0,8,0,0"/>
                     <Image x:Name="SubscriptionPreviewImage" Stretch="Uniform" MaxHeight="220"
                            HorizontalAlignment="Stretch" Margin="0,12,0,0" Visibility="Collapsed"/>
                     <Image x:Name="SubscriptionPreviewSecondImage" Stretch="Uniform" MaxHeight="220"
                            HorizontalAlignment="Stretch" Margin="0,10,0,0" Visibility="Collapsed"/>
-                    <TextBlock x:Name="SubscriptionPreviewInfo" Foreground="#B3BBCD"
+                    <TextBlock x:Name="SubscriptionPreviewInfo" Foreground="{DynamicResource SecondaryTextBrush}"
                                TextWrapping="Wrap" Margin="0,12,0,0"/>
-                    <TextBlock x:Name="SubscriptionPreviewError" Foreground="#F7A3A3" TextWrapping="Wrap"
+                    <TextBlock x:Name="SubscriptionPreviewError" Foreground="{DynamicResource ValidationBrush}" TextWrapping="Wrap"
                                Margin="0,10,0,0" Visibility="Collapsed"
                                ToolTip="Диагностика получения метаданных или обложки выбранного видео."/>
-                    <TextBlock Text="URL видео" Foreground="#B3BBCD" FontSize="12" Margin="0,16,0,5"/>
+                    <TextBlock Text="URL видео" Foreground="{DynamicResource SecondaryTextBrush}" FontSize="12" Margin="0,16,0,5"/>
                     <TextBox x:Name="SubscriptionPreviewUrlBox" IsReadOnly="True" TextWrapping="Wrap"
                              MinHeight="60" MaxHeight="112" VerticalScrollBarVisibility="Auto"
                              HorizontalScrollBarVisibility="Disabled"

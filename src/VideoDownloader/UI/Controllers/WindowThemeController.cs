@@ -96,6 +96,17 @@ internal sealed class WindowThemeController : IDisposable
         if(!window.Resources.MergedDictionaries.Contains(_palette))window.Resources.MergedDictionaries.Insert(0,_palette);
         Refresh();SystemParameters.StaticPropertyChanged+=SystemSettingsChanged;
     }
+    // Share the owner's live palette instead of copying its current brushes.
+    // Owned windows must remain in the same Contrast Theme when it changes.
+    internal static void Inherit(Window window,Window owner)
+    {
+        if(!ReferenceEquals(window.Resources,owner.Resources) && !window.Resources.MergedDictionaries.Contains(owner.Resources))
+            window.Resources.MergedDictionaries.Add(owner.Resources);
+        window.SetResourceReference(System.Windows.Controls.Control.BackgroundProperty,"WindowBackgroundBrush");
+        window.SetResourceReference(System.Windows.Controls.Control.ForegroundProperty,"WindowTextBrush");
+        window.FontFamily=owner.FontFamily;
+    }
+
     internal void Refresh()
     {
         if(_disposed)return;

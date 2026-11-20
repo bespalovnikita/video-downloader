@@ -64,10 +64,10 @@ internal sealed partial class SubscriptionController
             Name="SubscriptionQueueSelectionDialog",Title="Добавить материалы в очередь",Owner=owner,
             WindowStartupLocation=WindowStartupLocation.CenterOwner,
             Width=620,MinWidth=480,SizeToContent=SizeToContent.Height,MaxHeight=600,
-            Background=owner.Background,Foreground=owner.Foreground,FontFamily=owner.FontFamily,
+            FontFamily=owner.FontFamily,
             ShowInTaskbar=false
         };
-        dialog.Resources.MergedDictionaries.Add(owner.Resources);
+        WindowThemeController.Inherit(dialog,owner);
         NameScope.SetNameScope(dialog,new NameScope());
         var panel=new StackPanel{Margin=new Thickness(20)};
         var summary=new TextBlock

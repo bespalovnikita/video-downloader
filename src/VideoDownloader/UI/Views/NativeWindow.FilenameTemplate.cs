@@ -58,16 +58,18 @@ public sealed partial class NativeWindow
         F<Button>("FilenameTemplateHelpButton").Click+=(_,_)=>ShowFilenameTemplateHelp();
     }
 
-    private void ShowFilenameTemplateHelp()
+    private void ShowFilenameTemplateHelp()=>CreateFilenameTemplateHelp(_window).ShowDialog();
+
+    internal static Window CreateFilenameTemplateHelp(Window owner)
     {
         var dialog=new Window
         {
-            Title="Шаблон имени файла — справка",Owner=_window,
+            Title="Шаблон имени файла — справка",Owner=owner,
             WindowStartupLocation=WindowStartupLocation.CenterOwner,
             Width=760,Height=660,MinWidth=500,MinHeight=380,
-            Background=_window.Background,Foreground=_window.Foreground,
-            FontFamily=_window.FontFamily,Resources=_window.Resources
+            FontFamily=owner.FontFamily
         };
+        WindowThemeController.Inherit(dialog,owner);
         var content=new DockPanel{Margin=new Thickness(16)};
         var close=new Button{Content="Закрыть",IsCancel=true,IsDefault=true,
             HorizontalAlignment=System.Windows.HorizontalAlignment.Right,Margin=new Thickness(0,12,0,0)};
@@ -83,6 +85,6 @@ public sealed partial class NativeWindow
             FontSize=14,Padding=new Thickness(6)
         });
         dialog.Content=content;
-        dialog.ShowDialog();
+        return dialog;
     }
 }

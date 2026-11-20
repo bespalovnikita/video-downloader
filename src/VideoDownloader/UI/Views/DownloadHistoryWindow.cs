@@ -62,8 +62,7 @@ internal sealed class DownloadHistoryWindow:Window
         Width=Math.Min(1120,Math.Max(660,SystemParameters.WorkArea.Width-48));
         Height=Math.Min(760,Math.Max(440,SystemParameters.WorkArea.Height-48));
         MinWidth=660;MinHeight=440;
-        Background=owner.Background;Foreground=owner.Foreground;FontFamily=owner.FontFamily;
-        Resources.MergedDictionaries.Add(owner.Resources);NameScope.SetNameScope(this,new NameScope());
+        WindowThemeController.Inherit(this,owner);NameScope.SetNameScope(this,new NameScope());
         var layout=new Grid{Margin=new Thickness(16)};
         foreach(var height in new[]{GridLength.Auto,GridLength.Auto,GridLength.Auto,new GridLength(1,GridUnitType.Star),
             GridLength.Auto,GridLength.Auto,GridLength.Auto})layout.RowDefinitions.Add(new RowDefinition{Height=height});
@@ -133,8 +132,11 @@ internal sealed class DownloadHistoryWindow:Window
     }
     private T Named<T>(string name,T control) where T:FrameworkElement
     {control.Name=name;RegisterName(name,control);return control;}
-    private static TextBlock Note(string text)=>new(){Text=text,TextWrapping=TextWrapping.Wrap,
-        Foreground=new SolidColorBrush(System.Windows.Media.Color.FromRgb(183,192,216)),Margin=new Thickness(0,3,0,3)};
+    private static TextBlock Note(string text)
+    {
+        var note=new TextBlock{Text=text,TextWrapping=TextWrapping.Wrap,Margin=new Thickness(0,3,0,3)};
+        note.SetResourceReference(TextBlock.ForegroundProperty,"SecondaryTextBrush");return note;
+    }
     private void Column(DataGrid grid,string header,string property,DataGridLength width)
     {
         var column=new DataGridTextColumn{Header=header,Binding=new Binding(property),Width=width};

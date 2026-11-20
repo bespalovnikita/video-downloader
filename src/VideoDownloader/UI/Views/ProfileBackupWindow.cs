@@ -53,8 +53,7 @@ internal sealed class ProfileBackupWindow:Window
         _pickers=pickers??ProfileBackupFilePickers.Windows;
         _ingressWarning=ingressWarning??(()=>"");
         Name="ProfileBackupWindow";Title="Резервная копия Windows";Owner=owner;Width=740;Height=650;MinWidth=540;MinHeight=450;
-        WindowStartupLocation=WindowStartupLocation.CenterOwner;Background=owner.Background;Foreground=owner.Foreground;FontFamily=owner.FontFamily;
-        Resources.MergedDictionaries.Add(owner.Resources);NameScope.SetNameScope(this,new NameScope());
+        WindowStartupLocation=WindowStartupLocation.CenterOwner;WindowThemeController.Inherit(this,owner);NameScope.SetNameScope(this,new NameScope());
         var body=new StackPanel{Margin=new Thickness(18)};Content=new ScrollViewer{Content=body,VerticalScrollBarVisibility=ScrollBarVisibility.Auto};
         TextBlock Text(string text)=>new(){Text=text,TextWrapping=TextWrapping.Wrap,Margin=new Thickness(0,5,0,5)};
         T Named<T>(string name,T element) where T:FrameworkElement{element.Name=name;RegisterName(name,element);return element;}

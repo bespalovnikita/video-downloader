@@ -61,8 +61,7 @@ internal sealed class JobDiagnosticsWindow:Window
         Width=Math.Min(1120,Math.Max(740,SystemParameters.WorkArea.Width-48));
         Height=Math.Min(800,Math.Max(520,SystemParameters.WorkArea.Height-48));MinWidth=700;MinHeight=500;
         WindowStartupLocation=WindowStartupLocation.CenterOwner;
-        Background=owner.Background;Foreground=owner.Foreground;FontFamily=owner.FontFamily;
-        Resources.MergedDictionaries.Add(owner.Resources);NameScope.SetNameScope(this,new NameScope());
+        WindowThemeController.Inherit(this,owner);NameScope.SetNameScope(this,new NameScope());
         var root=new Grid{Margin=new Thickness(14)};
         foreach(var height in new[]{GridLength.Auto,GridLength.Auto,GridLength.Auto,new GridLength(1,GridUnitType.Star),new GridLength(1,GridUnitType.Star),GridLength.Auto})
             root.RowDefinitions.Add(new RowDefinition{Height=height});
@@ -94,7 +93,7 @@ internal sealed class JobDiagnosticsWindow:Window
         _level.SelectedIndex=0;
         foreach(var (label,control,column) in new (string,Control,int)[]{("Поиск по событиям",_search,0),("Попытка загрузки",_attempt,1),("Уровень сообщения",_level,2)})
         {
-            var field=new StackPanel();field.Children.Add(new Label{Content=label,Target=control,Foreground=Foreground,Padding=new Thickness(0,0,0,3)});
+            var field=new StackPanel();field.Children.Add(new Label{Content=label,Target=control,Padding=new Thickness(0,0,0,3)});
             field.Children.Add(control);Grid.SetColumn(field,column);filters.Children.Add(field);
         }
         Grid.SetRow(filters,1);root.Children.Add(filters);
@@ -159,8 +158,11 @@ internal sealed class JobDiagnosticsWindow:Window
 
     private T Named<T>(string name,T control) where T:FrameworkElement
     {control.Name=name;RegisterName(name,control);return control;}
-    private static TextBlock Note(string text)=>new(){Text=text,TextWrapping=TextWrapping.Wrap,
-        Foreground=new SolidColorBrush(Color.FromRgb(183,192,216)),Margin=new Thickness(0,3,0,3)};
+    private static TextBlock Note(string text)
+    {
+        var note=new TextBlock{Text=text,TextWrapping=TextWrapping.Wrap,Margin=new Thickness(0,3,0,3)};
+        note.SetResourceReference(TextBlock.ForegroundProperty,"SecondaryTextBrush");return note;
+    }
     private static TextBox ReadOnlyText(double maxHeight)=>new(){IsReadOnly=true,TextWrapping=TextWrapping.Wrap,
         AcceptsReturn=true,VerticalScrollBarVisibility=ScrollBarVisibility.Auto,Margin=new Thickness(0,3,0,3),MaxHeight=maxHeight>0?maxHeight:double.PositiveInfinity};
     private static string LevelLabel(JournalLevel level)=>level switch
