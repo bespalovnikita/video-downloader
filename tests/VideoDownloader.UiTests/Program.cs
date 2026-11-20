@@ -5,14 +5,19 @@ internal static class Program
     [STAThread]
     private static int Main()
     {
+        // A failed native Dispatcher wake-up must expose its originating call
+        // instead of silently leaving every timer/queued operation asleep.
+        System.Windows.BaseCompatibilityPreferences.HandleDispatcherRequestProcessingFailure=
+            System.Windows.BaseCompatibilityPreferences.HandleDispatcherRequestProcessingFailureOptions.Throw;
         // WinExe hosts do not reliably forward CLR/dispatcher crash text to
         // the CI console. Keep the original exception in the isolated result
         // file without marking the failure handled or changing its exit code.
         static void RecordFailure(object? error)
         {
+            int nativeError=System.Runtime.InteropServices.Marshal.GetLastPInvokeError();
             string? result=Environment.GetEnvironmentVariable("VD_NATIVE_UI_TEST_RESULT");
             if(!string.IsNullOrWhiteSpace(result))
-                try{File.WriteAllText(result,"FAIL: "+error);}catch(IOException){}
+                try{File.WriteAllText(result,"FAIL: "+error+Environment.NewLine+"Last native error: "+nativeError);}catch(IOException){}
         }
         AppDomain.CurrentDomain.UnhandledException+=(_,e)=>RecordFailure(e.ExceptionObject);
         System.Windows.Threading.Dispatcher.CurrentDispatcher.UnhandledException+=(_,e)=>RecordFailure(e.Exception);
