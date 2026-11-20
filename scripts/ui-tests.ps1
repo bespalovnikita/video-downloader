@@ -28,6 +28,8 @@ $ResultPath = [IO.Path]::GetFullPath($ResultPath)
 if (Test-Path -LiteralPath $ResultPath) { Remove-Item -LiteralPath $ResultPath -Force }
 $diagnosticsPath = $ResultPath + '.diagnostics.txt'
 if (Test-Path -LiteralPath $diagnosticsPath) { Remove-Item -LiteralPath $diagnosticsPath -Force }
+$dispatcherStatePath = $ResultPath + '.dispatcher-state.txt'
+if (Test-Path -LiteralPath $dispatcherStatePath) { Remove-Item -LiteralPath $dispatcherStatePath -Force }
 $managedStacksPath = $ResultPath + '.managed-stacks.txt'
 $stackTool = $env:VD_NATIVE_UI_STACK_TOOL
 try { if (Test-Path -LiteralPath $managedStacksPath) { Remove-Item -LiteralPath $managedStacksPath -Force } }
@@ -140,6 +142,10 @@ try {
     $windowSnapshot = '(no window snapshot yet)'
     function Write-WpfFailureDiagnostics {
         Write-Host "Last native-window snapshot: $windowSnapshot"
+        if (Test-Path -LiteralPath $dispatcherStatePath) {
+            try { Write-Host ([IO.File]::ReadAllText($dispatcherStatePath)) }
+            catch { Write-Host "Cannot read WPF dispatcher state: $($_.Exception.GetType().Name)" }
+        }
         if (Test-Path -LiteralPath $diagnosticsPath) {
             try {
                 $stream = [IO.FileStream]::new($diagnosticsPath,[IO.FileMode]::Open,[IO.FileAccess]::Read,
