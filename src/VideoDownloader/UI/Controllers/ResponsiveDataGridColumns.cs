@@ -1,6 +1,7 @@
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
+using System.Windows.Threading;
 
 namespace VideoDownloader.Native;
 
@@ -12,6 +13,7 @@ internal static class ResponsiveDataGridColumns
     {
         string originalHelp=AutomationProperties.GetHelpText(grid);
         object? originalTip=grid.ToolTip;
+        bool refreshPending=false;
         void Refresh()
         {
             if(!double.IsFinite(grid.ActualWidth) || grid.ActualWidth<=0)return;
@@ -20,8 +22,23 @@ internal static class ResponsiveDataGridColumns
             AutomationProperties.SetHelpText(grid,wide?originalHelp:compactHelp);
             grid.ToolTip=wide?originalTip:compactHelp;
         }
-        grid.Loaded+=(_,_)=>Refresh();
-        grid.SizeChanged+=(_,_)=>Refresh();
-        Refresh();
+        void ScheduleRefresh()
+        {
+            if(refreshPending || !grid.IsLoaded || grid.Dispatcher.HasShutdownStarted)return;
+            refreshPending=true;
+            // DataGrid accounts for a viewport resize at Loaded priority, while
+            // changing column visibility schedules fresh widths at Render. Doing
+            // that inside SizeChanged lets the later viewport callback subtract
+            // the same shrink again. Finish that accounting first; visibility
+            // then invalidates and reallocates the actual column widths normally.
+            _=grid.Dispatcher.BeginInvoke(DispatcherPriority.ContextIdle,new Action(()=>
+            {
+                refreshPending=false;
+                if(grid.IsLoaded)Refresh();
+            }));
+        }
+        grid.Loaded+=(_,_)=>ScheduleRefresh();
+        grid.SizeChanged+=(_,_)=>ScheduleRefresh();
+        ScheduleRefresh();
     }
 }
