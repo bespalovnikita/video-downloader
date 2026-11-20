@@ -109,6 +109,30 @@ internal sealed partial class UiScenario
         string completedClearTitle=ErrorMessages.Text("Убрать завершённые записи","Remove completed entries");
         NativeWindow Create(Window owner)=>new(owner,storage,fixture,automaticUpdates:false,automaticSubscriptionChecks:false,
             localPosterFfmpegPath:Path.Combine(root,"no-local-poster-tool.exe"));
+        void ResumeWithAnswer(DataGrid grid,DownloadItem row,string answer,Action? beforeAnswer=null)
+        {
+            bool observed=false;Exception? failure=null;
+            var observer=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(20)};
+            observer.Tick+=(_,_)=>
+            {
+                var dialog=Application.Current.Windows.OfType<Window>().FirstOrDefault(candidate=>
+                    candidate.FindName("DuplicateUrl") is TextBox text && text.Text==row.Url);
+                if(dialog is null)return;
+                observer.Stop();observed=true;
+                try{beforeAnswer?.Invoke();}
+                catch(Exception error){failure=error;}
+                Control<Button>(dialog,failure is null?answer:"CancelButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            };
+            observer.Start();
+            try
+            {
+                Select(grid,row);Click(window,"ResumeQueueItemsButton");
+                PumpUntil(()=>observed && PrivateField(subject,"_queueItemActionBusy") is false,
+                    "The actual live Resume must display and finish its history decision for "+row.Url);
+            }
+            finally{observer.Stop();}
+            if(failure is not null)throw new InvalidOperationException("Live Resume modal inspection failed.",failure);
+        }
         try
         {
             window=LoadWindow();subject=Create(window);window.Show();
@@ -253,8 +277,27 @@ internal sealed partial class UiScenario
             Select(downloads,slow,next);string nextOutput=next.Path;
             var resumeMenu=MenuAction(downloads,"Продолжить");
             Require(resumeMenu.IsEnabled,"Downloads must offer Resume for a skipped row in a mixed selection.");
-            InvokeUi(resumeMenu.Dispatcher,()=>resumeMenu.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent)));
-            PumpUntil(()=>slow.Status=="Queued" && active!.IsPending(slow),"The real Resume button must readmit the skipped URL to the live session.");
+            // The original admission already obtained consent. Even if history
+            // gains this URL meanwhile, this exact retained generation keeps it.
+            storage.AppendSuccess(slow.Url);bool repeatedConsent=false;
+            var consentObserver=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(20)};
+            consentObserver.Tick+=(_,_)=>
+            {
+                var dialog=Application.Current.Windows.OfType<Window>().FirstOrDefault(candidate=>
+                    candidate.FindName("DuplicateUrl") is TextBox text && text.Text==slow.Url);
+                if(dialog is null)return;
+                repeatedConsent=true;consentObserver.Stop();
+                Control<Button>(dialog,"CancelButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            };
+            consentObserver.Start();
+            try
+            {
+                InvokeUi(resumeMenu.Dispatcher,()=>resumeMenu.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent)));
+                PumpUntil(()=>repeatedConsent || slow.Status=="Queued" && active!.IsPending(slow),
+                    "The real Resume button must readmit the skipped URL to the live session.");
+            }
+            finally{consentObserver.Stop();}
+            Require(!repeatedConsent,"An exact joined Skip generation must retain its original session consent.");
             Require(ReferenceEquals(subject.SessionState.Coordinator,active) && slow.StageDir==retained && keeper.Status=="Running" &&
                 next.Status=="Completed" && next.Path==nextOutput,
                 "Live Resume must preserve its retained stage and enqueue behind the current worker without replacing the engine.");
@@ -296,7 +339,81 @@ internal sealed partial class UiScenario
                 "An all-skipped Clear must remove the row only after its owned retained stage has been deleted.");
             Require(!storage.ReadHistory().ContainsKey(clearSkipped.Url) && existingOutputs.All(File.Exists) && File.Exists(published),
                 "Clearing skipped work must never count it successful or delete earlier published media.");
-            Console.WriteLine("PASS: real filtered multi-select Skip/Resume, guarded events, Skipped recovery, ordinary Start exclusion, mixed/all-skipped Clear and modal races, native worker handoff/live+idle resume and retained-stage cleanup");
+
+            // Fresh imported rows have never passed this coordinator's history
+            // consent. Skipping them must not create that consent implicitly.
+            gate=Path.Combine(root,"release-history");Environment.SetEnvironmentVariable("VD_NATIVE_SESSION_TIMER_GATE",gate);
+            var historyKeeper=new DownloadItem{Url="https://startup-download.invalid/resume-history-keeper-timer-slow"};
+            subject.SessionState.TryAdd(historyKeeper);subject.Reindex();Click(window,"StartButton");
+            PumpUntil(()=>historyKeeper.Status=="Running" && ReadPid(gate+".started")>0,
+                "History consent must run alongside an actual held native keeper.");
+            active=subject.SessionState.Coordinator;
+            var imported=subject.SessionState.ImportPortable(new[]{"cancel","yes","corrupt","stopped","changed"}
+                .Select(name=>new PortableQueueEntry("https://startup-download.invalid/resume-history-"+name,name)).ToArray(),subject.ReadOptions()).ToArray();
+            subject.Reindex();foreach(var row in imported)storage.AppendSuccess(row.Url);
+            Select(queue,imported);Click(window,"SkipQueueItemsButton");
+            PumpUntil(()=>imported.All(row=>row.Status=="Skipped" && row.AttemptFinished) &&
+                PrivateField(subject,"_queueItemActionBusy") is false,"The real Skip action must leave imported rows unadmitted.");
+            Require(imported.All(row=>row.DeferredToNextStart && !active!.IsPending(row)),
+                "A deferred Skip must not silently register work with the active coordinator.");
+            byte[] beforeCancel=File.ReadAllBytes(storage.HistoryPath);int beforeCount=subject.SessionState.Queue.Count;
+            ResumeWithAnswer(queue,imported[0],"CancelButton");
+            Require(subject.SessionState.Queue.Count==beforeCount && subject.SessionState.Queue.Contains(imported[0]) &&
+                imported[0].Status=="Skipped" && imported[0].DeferredToNextStart && !active!.IsPending(imported[0]) &&
+                !subject.SessionState.Urls.Contains(imported[0].Url) && File.ReadAllBytes(storage.HistoryPath).SequenceEqual(beforeCancel),
+                "Cancelling fresh live Resume must keep the row, deferred flag and history without admission.");
+            ResumeWithAnswer(queue,imported[0],"NoButton");
+            Require(!subject.SessionState.Queue.Contains(imported[0]) && !active!.IsPending(imported[0]) &&
+                storage.ReadHistory().ContainsKey(imported[0].Url) && existingOutputs.All(File.Exists),
+                "Declining fresh live Resume must remove only the selected entry and preserve successful history/files.");
+            ResumeWithAnswer(queue,imported[4],"YesButton",()=>imported[4].Selection=new DownloadSelection(imported[4].Url,new DownloadSection(0,1)));
+            Require(imported[4].Status=="Skipped" && imported[4].DeferredToNextStart && !active!.IsPending(imported[4]) &&
+                imported[4].Selection?.IsPartial==true,"A changed row plan must invalidate the captured history decision.");
+            imported[4].Selection=null;ResumeWithAnswer(queue,imported[4],"NoButton");
+
+            byte[] validHistory=File.ReadAllBytes(storage.HistoryPath);
+            File.AppendAllText(storage.HistoryPath,"{broken history\n");
+            byte[] corruptHistory=File.ReadAllBytes(storage.HistoryPath);
+            try
+            {
+                AnswerMessage(ErrorMessages.Text("Ошибка истории","History error"),1,()=>
+                {
+                    Select(queue,imported[2]);Click(window,"ResumeQueueItemsButton");
+                    PumpUntil(()=>PrivateField(subject,"_queueItemActionBusy") is false,"An unreadable history must retire the live Resume action.");
+                });
+                Require(imported[2].Status=="Skipped" && imported[2].DeferredToNextStart && !active!.IsPending(imported[2]) &&
+                    File.ReadAllBytes(storage.HistoryPath).SequenceEqual(corruptHistory),
+                    "Corrupt history must block fresh Resume without changing the file or admitting a child.");
+            }
+            finally{File.WriteAllBytes(storage.HistoryPath,validHistory);}
+            ResumeWithAnswer(queue,imported[2],"NoButton");
+            ResumeWithAnswer(queue,imported[1],"YesButton");
+            Require(ReferenceEquals(active,subject.SessionState.Coordinator) && active!.IsPending(imported[1]) &&
+                imported[1].Status=="Queued" && !imported[1].DeferredToNextStart && subject.SessionState.Urls.Contains(imported[1].Url) &&
+                historyKeeper.Status=="Running","Yes must admit exactly the captured fresh row into the same held session.");
+            File.WriteAllText(gate,"release");
+            PumpUntil(()=>imported[1].Status=="Completed" && historyKeeper.Status=="Completed" && subject.SessionState.Coordinator is null,
+                "The approved fresh Resume must actually run and publish after the keeper releases.");
+            Require(File.Exists(imported[1].Path) && imported[1].OwnedPaths.Contains(imported[1].Path) &&
+                File.ReadLines(storage.HistoryPath).Count(line=>line.Contains(imported[1].Url,StringComparison.Ordinal))==2,
+                "The seeded success plus one actual approved publication must produce exactly two history records.");
+
+            gate=Path.Combine(root,"release-stale-resume");Environment.SetEnvironmentVariable("VD_NATIVE_SESSION_TIMER_GATE",gate);
+            var stoppedKeeper=new DownloadItem{Url="https://startup-download.invalid/resume-stop-keeper-timer-slow"};
+            subject.SessionState.TryAdd(stoppedKeeper);subject.Reindex();Click(window,"StartButton");
+            PumpUntil(()=>stoppedKeeper.Status=="Running" && ReadPid(gate+".started")>0,
+                "The stale consent case must own a second actual native keeper.");
+            active=subject.SessionState.Coordinator;long beforeStop=subject.SessionState.StopVersion;
+            ResumeWithAnswer(queue,imported[3],"YesButton",()=>subject.SessionState.Stop());
+            PumpUntil(()=>subject.SessionState.Coordinator is null && subject.SessionState.RunningTask?.IsCompleted==true,
+                "Stop inside fresh Resume history consent must join its original native keeper.");
+            Require(subject.SessionState.StopVersion>beforeStop && imported[3].Status=="Skipped" && imported[3].DeferredToNextStart &&
+                !active!.IsPending(imported[3]) && imported[3].StageDir.Length==0 && stoppedKeeper.Status=="Interrupted" &&
+                File.Exists(imported[1].Path) && existingOutputs.All(File.Exists),
+                "Late Yes after Stop must leave the deferred row untouched and never start a replacement session.");
+            AnswerMessage(clearTitle,6,()=>Click(window,"ClearAllQueueButton"));
+            PumpUntil(()=>subject.SessionState.Queue.Count==0,"The history fixture must retire only its queue entries.");
+            Console.WriteLine("PASS: real filtered multi-select Skip/Resume, recovery and Clear, native handoff/live+idle resume, retained cleanup, fresh history Cancel/No/Yes/corruption and stale plan/Stop decisions");
         }
         finally
         {
