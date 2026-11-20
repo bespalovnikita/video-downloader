@@ -125,11 +125,13 @@ internal sealed partial class UiScenario
                 var closeDeadline=new DispatcherTimer{Interval=TimeSpan.FromSeconds(1)};
                 closeDeadline.Tick+=(_,_)=>closedFrame.Continue=false;
                 tooltip.Closed+=(_,_)=>closedFrame.Continue=false;
-                if(tooltip.IsOpen)
+                // IsOpen can become false before popup fade-out/destruction.
+                // Join the actual Closed event before creating the next HWND.
+                if(closes==0)
                 {
                     closeDeadline.Start();try{Dispatcher.PushFrame(closedFrame);}finally{closeDeadline.Stop();}
                 }
-                Require(!tooltip.IsOpen,"Moving the real pointer away must still dismiss the tooltip.");
+                Require(closes>0 && !tooltip.IsOpen,"Moving the real pointer away must finish closing the native tooltip.");
             }
             finally
             {
