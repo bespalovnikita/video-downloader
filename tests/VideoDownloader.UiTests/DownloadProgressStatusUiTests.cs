@@ -97,6 +97,40 @@ internal sealed partial class UiScenario
             rows[0].Status="Completed";
             rows[0].State="Done";
             CheckRows();
+
+            FrameworkElement? TransferPanel(DependencyObject parent)
+            {
+                if(parent is FrameworkElement {Name:"TransferDetailsPanel"} details)return details;
+                for(int index=0;index<VisualTreeHelper.GetChildrenCount(parent);index++)
+                    if(TransferPanel(VisualTreeHelper.GetChild(parent,index)) is {} child)return child;
+                return null;
+            }
+            var waiting=new DownloadItem{Url="https://status.invalid/waiting",Title="Ожидающее видео"};
+            var retained=new DownloadItem{Url="https://status.invalid/retained",ResumeState=new DownloadResumeState()};
+            var transferred=new DownloadItem{Url="https://status.invalid/transferred",TransferredBytes=42};
+            foreach(var grid in new[]{queue,downloads})grid.ItemsSource=new[]{waiting,retained,transferred};
+            void CheckTransfer(DownloadItem row,bool visible)
+            {
+                Pump();
+                foreach(var grid in new[]{queue,downloads})
+                {
+                    grid.ScrollIntoView(row);grid.UpdateLayout();
+                    var content=grid.Columns.OfType<DataGridTemplateColumn>().Single().GetCellContent(row);
+                    var details=content is null?null:TransferPanel(content);
+                    Require(details is not null && details.Visibility==(visible?Visibility.Visible:Visibility.Collapsed),
+                        "Real transfer details must reflect activity without phantom progress: "+row.Url+" / "+row.Status);
+                }
+            }
+            CheckTransfer(waiting,false);
+            CheckTransfer(retained,true);CheckTransfer(transferred,true);
+            waiting.Progress=12.5;CheckTransfer(waiting,true);
+            waiting.Progress=0;CheckTransfer(waiting,false);
+            waiting.Downloaded="42 KiB";CheckTransfer(waiting,true);
+            waiting.Downloaded="";waiting.RawError="Fixture retry diagnostic";CheckTransfer(waiting,true);
+            waiting.RawError="";CheckTransfer(waiting,false);
+            waiting.Status="Running";waiting.State="Starting";CheckTransfer(waiting,true);
+            waiting.Status="Skipped";waiting.State="Skipped";CheckTransfer(waiting,true);
+            waiting.Status="Completed";waiting.State="Done";waiting.Progress=100;CheckTransfer(waiting,true);
             Console.WriteLine("PASS: real Queue/Downloads phase bindings, video/audio/processing transitions, wrapped text, per-row tooltip and stable status colors");
         }
         finally
