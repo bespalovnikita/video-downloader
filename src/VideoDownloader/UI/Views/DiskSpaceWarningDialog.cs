@@ -12,8 +12,7 @@ internal sealed class DiskSpaceWarningDialog:Window
         WindowStartupLocation=WindowStartupLocation.CenterOwner;
         Width=600;MinWidth=420;SizeToContent=SizeToContent.Height;
         MaxHeight=Math.Max(300,SystemParameters.WorkArea.Height-60);
-        Background=owner.Background;Foreground=owner.Foreground;FontFamily=owner.FontFamily;
-        Resources.MergedDictionaries.Add(owner.Resources);
+        WindowThemeController.Inherit(this,owner);
         NameScope.SetNameScope(this,new NameScope());
         var root=new StackPanel{Margin=new Thickness(18)};
         root.Children.Add(new TextBlock{Text=ErrorMessages.Text("На диске мало места для этой загрузки.",

@@ -82,9 +82,7 @@ internal sealed partial class SubscriptionController : IDisposable
             using var reader=XmlReader.Create(path);
             var window=(Window)XamlReader.Load(reader);
             window.Owner=_owner;
-            // The XAML has standalone dark styles for both runtimes. Also make
-            // the main window's resource catalog available to this owned window.
-            window.Resources.MergedDictionaries.Add(_owner.Resources);
+            WindowThemeController.Inherit(window,_owner);
             _window=window;
             _details=new SubscriptionPreviewController(window,_previews,_openUrl,_log);
             BindInboxFilters(window);
@@ -348,7 +346,7 @@ internal sealed partial class SubscriptionController : IDisposable
         if (_window==null || _disposed) return;
         var text=Control<TextBlock>("SubscriptionStatusText");
         text.Text=message;
-        text.Foreground=error?Brushes.LightSalmon:Brushes.LightGray;
+        text.SetResourceReference(TextBlock.ForegroundProperty,error?"ValidationBrush":"SecondaryTextBrush");
         UpdateButtons();
     }
 
