@@ -31,6 +31,27 @@ $e = Get-VdMainReleasePlan -History $history -TargetSha $commitE
 if ($c.Tag -cne 'v2.1.0' -or $d.Tag -cne 'v2.1.1' -or $e.Tag -cne 'v2.1.2') {
     throw 'A baseline bump must reserve ordered slots even when CI is reordered or the project baseline is later lowered.'
 }
+# The final 3.0.0 baseline merge starts the major line at exactly .0. Its
+# descendant reserves .1, while retrying any earlier 2.x revision retains its
+# historical assignment even when the selector sees the newer main history.
+$commitF = 'f' * 40
+$commitG = '1' * 40
+$majorHistory = @($history) + @(
+    [pscustomobject]@{ Sha = $commitF; BaseVersion = '3.0.0' },
+    [pscustomobject]@{ Sha = $commitG; BaseVersion = '3.0.0' }
+)
+$nextMajor = Get-VdMainReleasePlan -History $majorHistory -TargetSha $commitG
+$major = Get-VdMainReleasePlan -History $majorHistory -TargetSha $commitF
+if ($major.Tag -cne 'v3.0.0' -or $major.Version -cne '3.0.0' -or $major.AndroidVersionCode -ne 3000000 -or
+    $nextMajor.Tag -cne 'v3.0.1' -or $nextMajor.Version -cne '3.0.1' -or $nextMajor.AndroidVersionCode -ne 3000001) {
+    throw 'A major baseline bump must produce exactly v3.0.0 then v3.0.1 with matching Android update codes, independently of CI completion order.'
+}
+foreach ($old in @($a, $b, $c, $d, $e)) {
+    $retried = Get-VdMainReleasePlan -History $majorHistory -TargetSha $old.Sha
+    if ($retried.Tag -cne $old.Tag -or $retried.Version -cne $old.Version -or $retried.AndroidVersionCode -ne $old.AndroidVersionCode) {
+        throw "The 3.0.0 baseline must not renumber historical 2.x revision $($old.Sha)."
+    }
+}
 $brokenHistory = @(
     $history[0],
     [pscustomobject]@{ Sha = $commitA; BaseVersion = $null },
@@ -65,6 +86,7 @@ foreach ($case in @(
     @{ Version = '2.0.9999'; Code = 2009999 },
     @{ Version = '2.1.0'; Code = 2010000 },
     @{ Version = '3.0.0'; Code = 3000000 },
+    @{ Version = '3.0.1'; Code = 3000001 },
     @{ Version = '2100.0.0'; Code = 2100000000 }
 )) {
     if ((Get-VdAndroidVersionCode -Version $case.Version) -ne $case.Code) {
