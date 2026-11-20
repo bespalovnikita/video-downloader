@@ -4,9 +4,12 @@ using System.IO.Compression;
 using System.Text;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Markup;
 using System.Windows.Threading;
 using System.Xml;
+using KeyEventArgs=System.Windows.Input.KeyEventArgs;
 
 namespace VideoDownloader.UiTests;
 
@@ -183,7 +186,24 @@ internal sealed partial class UiScenario
             PumpUntil(()=>grid.Items.Count==4,"The live sequence timer must pick up a new event without changing the captured target.");
             Require(probes==1,"Live reads must not probe component versions.");
             Require(session.SequenceEqual(File.ReadAllBytes(storage.SessionPath)) && history.SequenceEqual(File.ReadAllBytes(storage.HistoryPath)),"Opening/filtering/copy/export must preserve damaged checkpoint and history bytes.");
-            window.Close();PumpUntil(()=>window.PendingOperations.IsCompleted,"Closed diagnostics must finish reads.");window=null;
+            search.Text="403";attempts.SelectedIndex=1;level.SelectedValue=nameof(JournalLevel.Error);
+            var selectedAttempt=attempts.SelectedValue;var selectedLevel=level.SelectedValue;
+            foreach(var combo in new[]{attempts,level})
+            {
+                window.Activate();combo.BringIntoView();combo.Focus();
+                PumpUntil(()=>window.IsActive && combo.IsKeyboardFocusWithin,
+                    "An actual diagnostics filter must have keyboard focus before testing Escape.");
+                combo.IsDropDownOpen=true;
+                PumpUntil(()=>combo.IsDropDownOpen,"The actual diagnostics dropdown must open before Escape.");
+                NativeFilterEscape(window,()=>!combo.IsDropDownOpen,
+                    "The first native Escape must close the diagnostics filter dropdown.");
+                Require(window.IsVisible && search.Text=="403" && Equals(attempts.SelectedValue,selectedAttempt) &&
+                    Equals(level.SelectedValue,selectedLevel) && grid.Items.Count==1,
+                    "Dismissing a diagnostics dropdown must preserve its window, query, attempt and level.");
+            }
+            NativeFilterEscape(window,()=>!window.IsVisible,
+                "A second native Escape with closed dropdowns must close the diagnostics window.");
+            PumpUntil(()=>window.PendingOperations.IsCompleted,"Closed diagnostics must finish reads.");window=null;
 
             // Create a competing destination only after the UI's absence check.
             // This exercises the real ZIP publication guard without a dialog seam.
@@ -243,5 +263,39 @@ internal sealed partial class UiScenario
             Console.WriteLine("PASS: real WPF per-job diagnostics, in-window help/minimum layout/empty guidance, immutable targets, typed filters/live events, clipboard, private ZIP, collision/cancel and main owner lifecycle");
         }
         finally{window?.Close();if(owner.IsVisible)owner.Close();}
+    }
+
+    // Both filter scenarios use actual HWND input so child ComboBox class
+    // handling participates before the Window's bubbling Escape action.
+    private static void NativeFilterEscape(Window window,Func<bool> ready,string message)
+    {
+        int observed=0;
+        PreProcessInputEventHandler observe=(_,e)=>
+        {
+            if(e.StagingItem.Input is KeyEventArgs key && key.Key==Key.Escape &&
+                key.RoutedEvent==Keyboard.PreviewKeyDownEvent)observed++;
+        };
+        InputManager.Current.PreProcessInput+=observe;
+        try
+        {
+            nint target=FilterKeyboardInput.GetFocus();
+            if(target==0)target=new WindowInteropHelper(window).Handle;
+            const int down=(1<<16)|1;
+            if(!PostMessageW(target,0x0100,(nint)0x1b,(nint)down) ||
+                !PostMessageW(target,0x0101,(nint)0x1b,(nint)(down|unchecked((int)0xc0000000))))
+                throw new InvalidOperationException("The actual filter HWND Escape messages must be queued.");
+            var frame=new DispatcherFrame();var clock=Stopwatch.StartNew();
+            var timer=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(15)};
+            timer.Tick+=(_,_)=>{if(observed>0 && ready() || clock.Elapsed>TimeSpan.FromSeconds(8))frame.Continue=false;};
+            timer.Start();try{Dispatcher.PushFrame(frame);}finally{timer.Stop();}
+            if(observed==0 || !ready())throw new InvalidOperationException(message+" Observed native Escape events: "+observed);
+        }
+        finally{InputManager.Current.PreProcessInput-=observe;}
+    }
+
+    private static class FilterKeyboardInput
+    {
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        internal static extern nint GetFocus();
     }
 }

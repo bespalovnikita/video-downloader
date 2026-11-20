@@ -103,6 +103,20 @@ internal sealed partial class UiScenario
                 "Confirmed successes from either source must be processed; manual Done must not be treated as a download.");
             Require(Choice("Queued")=="В очереди · 1" && Rows().Single().Url==queued,"Queued must have its independent count and state predicate.");
             Reset();
+            search.Text="Ёжик";state.SelectedValue="New";
+            PumpUntil(()=>Rows().Length==2,"The keyboard filter test must start with a real combined query and state.");
+            window.Activate();state.BringIntoView();state.Focus();
+            PumpUntil(()=>window.IsActive && state.IsKeyboardFocusWithin,
+                "The actual subscription status filter must have keyboard focus before Escape.");
+            state.IsDropDownOpen=true;
+            PumpUntil(()=>state.IsDropDownOpen,"The actual subscription status dropdown must open before Escape.");
+            NativeFilterEscape(window,()=>!state.IsDropDownOpen,
+                "The first native Escape must close the subscription status dropdown.");
+            Require(window.IsVisible && search.Text=="Ёжик" && state.SelectedValue as string=="New" && Rows().Length==2,
+                "Dismissing the subscription status dropdown must preserve the query, state and actual filtered rows.");
+            NativeFilterEscape(window,()=>search.Text.Length==0 && state.SelectedValue as string=="All" && Rows().Length==7,
+                "A second native Escape in the closed status filter must reset the actual query and state.");
+            Require(window.IsVisible,"Resetting subscription filters must keep the window open.");
             var selected=Rows().Where(row=>row.Url==upper || row.Url==lower).ToArray();
             foreach(var row in selected)driver.TestInbox.SelectedItems.Add(row);
             search.Text="ЁЖИК ВЕРХ";
