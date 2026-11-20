@@ -107,7 +107,6 @@ internal sealed partial class UiScenario
                     _=window.Dispatcher.BeginInvoke(DispatcherPriority.Send,new Action(()=>
                     {Record("watchdog closing");tooltip.IsOpen=false;frame.Continue=false;}));
                 },null,TimeSpan.FromSeconds(2),Timeout.InfiniteTimeSpan);
-                Move(window.PointToScreen(new Point(5,5)));
                 Move(button.PointToScreen(new Point(button.ActualWidth/2,button.ActualHeight/2)));
                 Require(nativeMoveSeen && button.IsMouseOver,"WPF MouseDevice must acknowledge the actual native hover.");
                 Dispatcher.PushFrame(frame);
