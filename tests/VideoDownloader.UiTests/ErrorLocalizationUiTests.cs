@@ -68,6 +68,7 @@ internal sealed partial class UiScenario
                     subject=new NativeWindow(window,storage,"must-not-launch");
                     window.Show();
                     ((Button)window.FindName("OpenQueueOptionsButton")!).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    ((Expander)window.FindName("QueueAdvancedOptionsExpander")!).IsExpanded=true;
                     window.UpdateLayout();
                     Require(((Button)window.FindName("OpenListButton")!).Content.ToString()=="Открыть список",
                         "The actual main window must translate Open list.");
