@@ -1,11 +1,14 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Markup;
 using System.Windows.Threading;
 using System.Xml;
+using KeyEventHandler=System.Windows.Input.KeyEventHandler;
 
 namespace VideoDownloader.UiTests;
 
@@ -27,6 +30,37 @@ internal sealed partial class UiScenario
         static T Control<T>(Window window,string name) where T:class=>(T)(window.FindName(name)
             ??throw new InvalidOperationException("Missing queue-removal control: "+name));
         static void Click(Window window,string name)=>Control<Button>(window,name).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        static void DeleteWithKeyboard(Window window,DataGrid queue)
+        {
+            if(queue.SelectedItem is DownloadItem selected)
+            {
+                queue.CurrentCell=new DataGridCellInfo(selected,queue.Columns[0]);
+                queue.ScrollIntoView(selected);queue.UpdateLayout();
+            }
+            window.Activate();Keyboard.Focus(queue);
+            Require(queue.IsVisible && queue.IsKeyboardFocusWithin,"Native Delete must target the visible queue's keyboard focus.");
+            bool received=false;int unexpectedConfirmation=0;
+            KeyEventHandler observe=(_,e)=>{if(e.Key==Key.Delete)received=true;};
+            queue.AddHandler(Keyboard.PreviewKeyDownEvent,observe,true);
+            uint thread=GetCurrentThreadId();
+            using var watchdog=new CancellationTokenSource();
+            _=Task.Delay(TimeSpan.FromSeconds(3),watchdog.Token).ContinueWith(task=>
+            {
+                if(!task.IsCanceled && DismissDialog(thread,ErrorMessages.Text("Удалить загрузки","Delete downloads"),7))
+                    Interlocked.Exchange(ref unexpectedConfirmation,1);
+            },TaskScheduler.Default);
+            try
+            {
+                // Send real Win32 input through WPF's input manager and the
+                // DataGrid class handlers, not only a manually raised event.
+                QueueRemovalKeyboardEvent(0x2E,0,0x0001,UIntPtr.Zero);
+                QueueRemovalKeyboardEvent(0x2E,0,0x0003,UIntPtr.Zero);
+                Until(()=>received,"The queue must receive the actual native Delete key.");
+                Require(Volatile.Read(ref unexpectedConfirmation)==0,
+                    "Delete must never enter the destructive file-removal confirmation.");
+            }
+            finally{watchdog.Cancel();queue.RemoveHandler(Keyboard.PreviewKeyDownEvent,observe);}
+        }
         static void Answer(string title,int answer,Action action,Action? beforeAnswer=null)
         {
             uint thread=GetCurrentThreadId();bool seen=false;Exception? failure=null;
@@ -97,6 +131,13 @@ internal sealed partial class UiScenario
                 File.ReadAllBytes(data.HistoryPath).SequenceEqual(history),
                 "Safe record removal must preserve both owned and legacy media, history and unselected records.");
 
+            var keyboard=Completed("keyboard-safe");Add(keyboard);Select(keyboard);
+            DeleteWithKeyboard(window,queue);
+            Until(()=>!subject.SessionState.Queue.Contains(keyboard),"Delete must remove the selected completed record.");
+            Require(File.Exists(keyboard.Path) && File.ReadAllBytes(data.HistoryPath).SequenceEqual(history) &&
+                subject.SessionState.Queue.SequenceEqual(new[]{hidden}),
+                "Native Delete must preserve published media and history just like Remove queue entries.");
+
             var skipped=Retained("selected-retained");string stage=skipped.StageDir;Add(skipped);Select(skipped);
             Answer("Убрать записи из очереди",7,()=>Click(window,"ForgetQueueButton"));
             Require(subject.SessionState.Queue.Contains(skipped) && Directory.Exists(stage),
@@ -151,8 +192,9 @@ internal sealed partial class UiScenario
                 Require(!Control<Button>(window,"ForgetQueueButton").IsEnabled && !Control<Button>(window,"ClearAllQueueButton").IsEnabled,
                     "Safe record removal and full clear must explain and enforce their idle-only availability.");
                 Click(window,"ForgetQueueButton");Click(window,"ClearAllQueueButton");
+                DeleteWithKeyboard(window,queue);
                 Require(subject.SessionState.Queue.SequenceEqual(new[]{afterQuestion}),
-                    "Raised events must not bypass active-session safety guards.");
+                    "Raised events and native Delete must not bypass active-session safety guards.");
                 Require(afterQuestion.Status=="Queued" && afterQuestion.OwnedPaths.Count==0 && afterQuestion.StageDir.Length==0,
                     "The active-session confirmation case must begin with a plain queued row and no files.");
                 Answer(ErrorMessages.Text("Удалить загрузки","Delete downloads"),7,()=>Click(window,"RemoveQueueButton"));
@@ -177,4 +219,7 @@ internal sealed partial class UiScenario
             subject?.Dispose();window.Close();CultureInfo.CurrentUICulture=culture;
         }
     }
+
+    [DllImport("user32.dll",EntryPoint="keybd_event")]
+    private static extern void QueueRemovalKeyboardEvent(byte virtualKey,byte scan,uint flags,UIntPtr extraInfo);
 }
