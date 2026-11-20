@@ -20,7 +20,9 @@ public sealed partial class NativeWindow
         {
             var entry=new MenuItem{Header=ErrorMessages.Text("Сбросить выбранные и скачать заново…","Reset selected and download again…")};
             entry.Click+=async(_,_)=>await ResetRowsAsync(selected());
-            menu.Opened+=(_,_)=>entry.IsEnabled=!QueueItemActionsBlocked() && selected().Any(CanResetQueueItem);
+            menu.Opened+=(_,_)=>SetMenuAvailability(entry,!QueueItemActionsBlocked() && selected().Any(CanResetQueueItem),
+                ErrorMessages.Text("Выберите подходящие задания и дождитесь завершения текущей операции.",
+                    "Select eligible tasks and wait for the current operation to finish."));
             menu.Items.Add(entry);
         }
         AddResetAction(Q.ContextMenu,SelectedVisibleQueueRows);

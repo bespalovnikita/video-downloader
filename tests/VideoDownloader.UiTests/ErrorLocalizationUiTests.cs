@@ -233,6 +233,85 @@ internal sealed partial class UiScenario
                     Require(headers.Contains(russian?"Показать в папке":"Show in folder") &&
                             headers.Contains(russian?"Скачать повторно":"Retry URL"),
                         "The actual dynamic download menu must translate file and retry actions.");
+                    var menu=download.ContextMenu!;
+                    MenuItem DownloadEntry(string ru,string en)=>menu.Items.OfType<MenuItem>()
+                        .Single(item=>Equals(item.Header,ErrorMessages.Text(ru,en)));
+                    var openFile=DownloadEntry("Открыть файл","Open file");
+                    var openFolder=DownloadEntry("Показать в папке","Show in folder");
+                    var copyPath=DownloadEntry("Копировать путь","Copy path");
+                    var showError=DownloadEntry("Показать ошибку","Show error");
+                    var rawError=DownloadEntry("Исходная диагностика","Show raw error");
+                    var retryUrl=DownloadEntry("Скачать повторно","Retry URL");
+                    void OpenDownloadMenu()
+                    {
+                        bool opened=false;RoutedEventHandler observed=(_,_)=>opened=true;
+                        menu.Opened+=observed;
+                        try
+                        {
+                            menu.PlacementTarget=download;menu.IsOpen=true;window.UpdateLayout();
+                            AwaitPresentation(()=>opened && menu.IsOpen && ToolTipService.GetShowOnDisabled(openFile),
+                                ()=>"The real Downloads popup must update its command availability before inspection.");
+                        }
+                        finally{menu.Opened-=observed;}
+                    }
+                    void Explained(MenuItem entry)
+                    {
+                        Require(!entry.IsEnabled && entry.ToolTip is string reason && reason.Length>0 &&
+                            RussianText(reason)==russian && ToolTipService.GetShowOnDisabled(entry),
+                            "Unavailable commands must have a localized explanation reachable while disabled: "+entry.Header);
+                    }
+                    download.SelectedItem=row;OpenDownloadMenu();
+                    Explained(openFile);Explained(openFolder);Explained(copyPath);
+                    Require(showError.IsEnabled && rawError.IsEnabled && retryUrl.IsEnabled &&
+                        !((Button)window.FindName("OpenFileButton")!).IsEnabled &&
+                        !((Button)window.FindName("CopyPathButton")!).IsEnabled,
+                        "File commands must agree with toolbar guards while real errors and idle retry remain available.");
+                    menu.IsOpen=false;row.RawError="";OpenDownloadMenu();
+                    Explained(showError);Explained(rawError);menu.IsOpen=false;row.RawError=raw;
+                    string savedFile=Path.Combine(Path.GetDirectoryName(storage.SessionPath)!,"menu-file.txt");
+                    File.WriteAllText(savedFile,"context command sentinel");row.Path=savedFile;subject.UpdateState();OpenDownloadMenu();
+                    Require(openFile.IsEnabled && openFolder.IsEnabled && copyPath.IsEnabled &&
+                        ((Button)window.FindName("OpenFileButton")!).IsEnabled &&
+                        ((Button)window.FindName("CopyPathButton")!).IsEnabled,
+                        "Actual saved files must enable matching toolbar and context actions. "+
+                        $"exists={File.Exists(savedFile)}, selected={ReferenceEquals(download.SelectedItem,row)}/{download.SelectedItems.Count}, "+
+                        $"menu={openFile.IsEnabled}/{openFolder.IsEnabled}/{copyPath.IsEnabled}, "+
+                        $"toolbar={((Button)window.FindName("OpenFileButton")!).IsEnabled}/{((Button)window.FindName("CopyPathButton")!).IsEnabled}.");
+                    copyPath.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+                    Require(Clipboard.GetText()==savedFile,"The enabled path command must copy the exact saved path.");
+                    // A menu can remain open while a worker changes the row.
+                    // Recheck at invocation, including manually raised events.
+                    row.Path="";subject.UpdateState();Clipboard.SetText("unchanged clipboard sentinel");
+                    Require(!((Button)window.FindName("OpenFileButton")!).IsEnabled &&
+                        !((Button)window.FindName("CopyPathButton")!).IsEnabled,
+                        "Clearing the selected row's path must refresh toolbar actions without requiring reselection.");
+                    copyPath.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+                    Require(Clipboard.GetText()=="unchanged clipboard sentinel","Stale enabled menu items must recheck their prerequisites.");
+                    menu.IsOpen=false;row.Path=savedFile;subject.UpdateState();File.Delete(savedFile);OpenDownloadMenu();
+                    Explained(openFile);Explained(openFolder);
+                    Require(copyPath.IsEnabled && !((Button)window.FindName("OpenFileButton")!).IsEnabled &&
+                        !((Button)window.FindName("OpenFolderButton")!).IsEnabled &&
+                        ((Button)window.FindName("CopyPathButton")!).IsEnabled,
+                        "Reopening the menu must refresh external file deletion in both surfaces while retaining a copyable saved path.");
+                    menu.IsOpen=false;row.Path="";subject.UpdateState();
+                    var activeMenuSession=new DownloadCoordinator("must-not-launch",storage,
+                        new DownloadOptions{Output=Path.Combine(testRoot,"menu-output-"+language)},_=>{},_=>{});
+                    try
+                    {
+                        subject.SessionState.AttachCoordinator(activeMenuSession);OpenDownloadMenu();Explained(retryUrl);
+                        retryUrl.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+                        Require(ReferenceEquals(subject.SessionState.Coordinator,activeMenuSession) &&
+                            subject.SessionState.RunningTask is null && row.Status=="Failed" && row.RawError==raw &&
+                            !File.Exists(storage.HistoryPath),
+                            "Unavailable retry must not begin a new session or mutate the selected result/history.");
+                    }
+                    finally
+                    {
+                        menu.IsOpen=false;subject.SessionState.AttachCoordinator(null);activeMenuSession.Stop();
+                        activeMenuSession.RunAsync().GetAwaiter().GetResult();activeMenuSession.DisposeAsync().AsTask().GetAwaiter().GetResult();
+                    }
+                    download.SelectedItems.Clear();OpenDownloadMenu();
+                    Explained(DownloadEntry("Копировать ссылку","Copy URL"));menu.IsOpen=false;download.SelectedItem=row;
                     Require(DependencyCenter.Inspect().Contains(russian?"не найден":"missing",StringComparison.Ordinal) ||
                             DependencyCenter.Inspect().Contains(russian?"установлен":"installed",StringComparison.Ordinal),
                         "Component inspection must translate its display statuses.");
