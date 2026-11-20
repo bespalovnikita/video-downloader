@@ -87,6 +87,8 @@ dotnet run --no-build --configuration Release --project tests/VideoDownloader.Te
 
 ## Где искать Windows-регрессии
 
+Для «Скачать вне очереди» [OutOfOrderDownloadTests](../../tests/VideoDownloader.Tests/OutOfOrderDownloadTests.cs) держит четыре настоящих дочерних процесса, запускает пятый и шестой до освобождения обычных слотов и проверяет, что завершившиеся временные работники не забирают обычную очередь. Те же сценарии проверяют единственный запуск каждого поколения, историю/публикацию, общую паузу, Cancel/Skip/Resume и Dispose, ожидающий удержанного владельца завершения. Подготовка пути проверяется при отмене, Stop во время удержанной фоновой проверки, изменении строки/поколения и замене подготовленного каталога настоящим чужим файлом до окончательного приёма. [OutOfOrderDownloadUiTests](../../tests/VideoDownloader.UiTests/OutOfOrderDownloadUiTests.cs) открывает настоящее контекстное меню, использует штатный idle Start и подтверждение истории, проверяет повторный клик и остановку сессии внутри модального подтверждения без автоматического нового запуска.
+
 | Поведение | Основные тесты |
 | --- | --- |
 | Компактное окно 800 × 550: доступность ввода/Start/Pause/Stop, переходы Queue/Downloads/details, вкладки параметров, скрытие правой панели без потери ширин | [CompactPanelLayoutUiTests](../../tests/VideoDownloader.UiTests/CompactPanelLayoutUiTests.cs), [PanelLayoutUiTests](../../tests/VideoDownloader.UiTests/PanelLayoutUiTests.cs) |

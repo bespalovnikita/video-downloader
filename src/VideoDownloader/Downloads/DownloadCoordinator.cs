@@ -16,6 +16,9 @@ public sealed partial class DownloadCoordinator : IAsyncDisposable
     private readonly ConcurrentDictionary<string,byte> _queued=new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string,DownloadAttempt> _attempts=new(StringComparer.Ordinal);
     private readonly ConcurrentBag<Task> _queuedCleanups=new();
+    private readonly List<Task> _outOfOrderTasks=[];
+    private bool _acceptingWork=true,_runStarted;
+    private long _nextOutOfOrderSlot;
     private readonly ConcurrentDictionary<string,string> _outputRoots=new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string,DownloadSelection> _selections=new(StringComparer.Ordinal);
     // Tombstones outlive a worker's CTS registration and prevent cancellation races.
@@ -52,22 +55,24 @@ public sealed partial class DownloadCoordinator : IAsyncDisposable
     {
         AudioTrackSelection.Validate(options);
         _ytDlp=ytDlp;_data=data;_options=options.Snapshot();_changed=changed;_log=log;_trace=trace;
+        _nextOutOfOrderSlot=_options.Parallel;
         _options.PinOutputDirectory();
         OwnedFiles.NoReparseAncestors(Path.Combine(_options.OutputDirectory,"__check__"));
         Directory.CreateDirectory(_stageRoot);
     }
     public bool Add(DownloadItem item)=>Admit(item,false);
-    private bool Admit(DownloadItem item,bool resume)
+    private bool Admit(DownloadItem item,bool resume,bool enqueue=true,string? preparedOutputRoot=null)
     {
         lock(_completionGate)
         {
-            if(!IsRunning || _stop.IsCancellationRequested || item.PendingRemoval || item.CleanupError.Length>0)return false;
+            if(!_acceptingWork || !IsRunning || _stop.IsCancellationRequested || item.PendingRemoval || item.CleanupError.Length>0)return false;
             DownloadResumeStore.ValidatePersisted(item);
             var options=item.ResumeState?.Plan.ToOptions()??_options;
             var selection=item.ResumeState?.Selection??item.Selection;
             selection?.Validate(item.Url,options);
             string outputRoot=AdmissionOutputRoot(item);
-            OwnedFiles.NoReparseAncestors(Path.Combine(outputRoot,"__check__"));
+            if(preparedOutputRoot is null)OwnedFiles.NoReparseAncestors(Path.Combine(outputRoot,"__check__"));
+            else if(!string.Equals(outputRoot,preparedOutputRoot,StringComparison.Ordinal))return false;
             if(_attempts.TryGetValue(item.Url,out var previous) && !previous.Finished.Task.IsCompleted)return false;
             if(!resume && !_queued.TryAdd(item.Url,0))return false;
             if(resume)
@@ -97,7 +102,7 @@ public sealed partial class DownloadCoordinator : IAsyncDisposable
             // invocation; it must not inherit the previous attempt's key.
             _diagnosticAttempts.TryRemove(item.Url,out _);
             Trace(item,JournalLevel.Information,resume?"job_resumed":"job_queued",$"url={DownloadProgressTrace.Quoted(item.Url)} outstanding={Outstanding}",worker:"");
-            if(!_queue.Writer.TryWrite(attempt))
+            if(enqueue && !_queue.Writer.TryWrite(attempt))
             {
                 _attempts.TryRemove(item.Url,out _);_queued.TryRemove(item.Url,out _);
                 _outputRoots.TryRemove(item.Url,out _);_selections.TryRemove(item.Url,out _);
@@ -133,7 +138,14 @@ public sealed partial class DownloadCoordinator : IAsyncDisposable
                             DownloadCleanup.Retry(item);
                         }
                         catch(Exception error){_log("Queued cancellation cleanup failed: "+error.Message);}
-                        finally{lock(_completionGate)FinishQueuedAttempt(attempt,false);}
+                        finally
+                        {
+                            lock(_completionGate)FinishQueuedAttempt(attempt,false);
+                            // The cleanup task owns this callback too. Calling
+                            // external UI code under the admission gate would
+                            // make Stop/Dispose block before they can await it.
+                            _changed(item);
+                        }
                     });
                     _queuedCleanups.Add(cleanup);
                 }
@@ -148,15 +160,16 @@ public sealed partial class DownloadCoordinator : IAsyncDisposable
     }
     public void Stop()
     {
+        lock(_completionGate){_acceptingWork=false;_queue.Writer.TryComplete();}
         if(IsRunning && !_stop.IsCancellationRequested)Trace(null,JournalLevel.Information,"stop_requested",$"outstanding={Outstanding}");
         if (_pause.IsPaused) Pause(false);
         _stop.Cancel();
         foreach(var src in _itemCancels.Values) { try { src.Cancel(); } catch(ObjectDisposedException){} }
-        _queue.Writer.TryComplete();
     }
     public Task RunAsync() => _runTask ??= RunCoreAsync();
     private async Task RunCoreAsync()
     {
+        lock(_completionGate)_runStarted=true;
         Trace(null,JournalLevel.Information,"session_start",$"parallel={_options.Parallel} fragments={_options.FragmentCount} quality={DownloadProgressTrace.Quoted(_options.Quality)}");
         var workers=Enumerable.Range(1,_options.Parallel)
             .Select(i=>Task.Run(()=>WorkerAsync(i),CancellationToken.None)).ToArray();
@@ -169,7 +182,15 @@ public sealed partial class DownloadCoordinator : IAsyncDisposable
             {
                 if (Outstanding==0)
                 {
-                    if (DateTime.UtcNow-idleSince>TimeSpan.FromMilliseconds(1500)) break;
+                    if (DateTime.UtcNow-idleSince>TimeSpan.FromMilliseconds(1500))
+                    {
+                        lock(_completionGate)
+                        {
+                            // Closing admission and observing zero outstanding
+                            // share the same lock as every urgent claim.
+                            if(Outstanding==0){_acceptingWork=false;break;}
+                        }
+                    }
                 }
                 else idleSince=DateTime.UtcNow;
                 await Task.Delay(150).ConfigureAwait(false);
@@ -177,8 +198,13 @@ public sealed partial class DownloadCoordinator : IAsyncDisposable
         }
         finally
         {
-            _queue.Writer.TryComplete();
-            await Task.WhenAll(workers).ConfigureAwait(false);
+            Task[] outOfOrder;
+            lock(_completionGate)
+            {
+                _acceptingWork=false;_queue.Writer.TryComplete();
+                outOfOrder=_outOfOrderTasks.ToArray();
+            }
+            await Task.WhenAll(workers.Concat(outOfOrder)).ConfigureAwait(false);
             await Task.WhenAll(_queuedCleanups.ToArray()).ConfigureAwait(false);
             IsRunning=false;
             Trace(null,JournalLevel.Information,"session_complete",$"completed={Completed} outstanding={Outstanding} stopped={_stop.IsCancellationRequested}");
@@ -188,105 +214,118 @@ public sealed partial class DownloadCoordinator : IAsyncDisposable
             catch(IOException){} catch(UnauthorizedAccessException){}
         }
     }
+    private bool TryClaimAttempt(DownloadAttempt attempt)
+    {
+        lock(_completionGate)
+        {
+            if(attempt.Started || attempt.Finished.Task.IsCompleted ||
+                !_attempts.TryGetValue(attempt.Row.Url,out var current) || !ReferenceEquals(current,attempt))return false;
+            attempt.Started=true;return true;
+        }
+    }
     private async Task WorkerAsync(int slot)
     {
         await foreach(var attempt in _queue.Reader.ReadAllAsync())
         {
-            var item=attempt.Row;
-            lock(_completionGate)
+            if(!TryClaimAttempt(attempt))continue;
+            await ExecuteAttemptAsync(attempt,"T"+slot).ConfigureAwait(false);
+        }
+    }
+    // Regular workers and temporary slots have exactly one result/cleanup owner.
+    private async Task ExecuteAttemptAsync(DownloadAttempt attempt,string worker)
+    {
+        var item=attempt.Row;
+        var linked=attempt.Stop;
+        _itemCancels[item.Url]=linked;
+        try
+        {
+            Trace(item,JournalLevel.Information,"job_claimed",$"url={DownloadProgressTrace.Quoted(item.Url)}",worker:worker);
+            DownloadResult result;
+            if(_cancelled.ContainsKey(item.Url) || linked.IsCancellationRequested)
+                result=new DownloadResult(false,true,"",[],"",item.TransferredBytes);
+            else
             {
-                if(attempt.Started || attempt.Finished.Task.IsCompleted || !_attempts.TryGetValue(item.Url,out var current) || !ReferenceEquals(current,attempt))continue;
-                attempt.Started=true;
+                item.Slot=worker;item.Status="Running";item.State="Starting";_changed(item);
+                Trace(item,JournalLevel.Information,"job_start",$"url={DownloadProgressTrace.Quoted(item.Url)}");
+                if(_cancelled.ContainsKey(item.Url))linked.Cancel();
+                result=await DownloadAsync(item,attempt).ConfigureAwait(false);
             }
-            var linked=attempt.Stop;
-            _itemCancels[item.Url]=linked;
-            try
+            bool cancelled=result.Cancelled || linked.IsCancellationRequested || _cancelled.ContainsKey(item.Url);
+            while(true)
             {
-                Trace(item,JournalLevel.Information,"job_claimed",$"url={DownloadProgressTrace.Quoted(item.Url)}",worker:"T"+slot);
-                DownloadResult result;
-                if(_cancelled.ContainsKey(item.Url) || linked.IsCancellationRequested)
-                    result=new DownloadResult(false,true,"",[],"",item.TransferredBytes);
-                else
-                {
-                    item.Slot="T"+slot;item.Status="Running";item.State="Starting";_changed(item);
-                    Trace(item,JournalLevel.Information,"job_start",$"url={DownloadProgressTrace.Quoted(item.Url)}");
-                    if(_cancelled.ContainsKey(item.Url))linked.Cancel();
-                    result=await DownloadAsync(item,attempt).ConfigureAwait(false);
-                }
-                bool cancelled=result.Cancelled || linked.IsCancellationRequested || _cancelled.ContainsKey(item.Url);
-                while(true)
-                {
-                    bool clean=false;
-                    lock(_completionGate)
-                    {
-                        cancelled|=_cancelled.ContainsKey(item.Url) || linked.IsCancellationRequested;
-                        if(attempt.Reason==AttemptStopReason.Skip && item.CleanupError.Length==0 && !item.PendingRemoval)
-                        {
-                            item.Status="Skipped";item.State="Skipped";item.Speed="";item.ETA="";item.Slot="";
-                            break;
-                        }
-                        if(cancelled && item.CleanupError.Length==0 &&
-                            (item.OwnedPaths.Count>0 || item.CleanupPaths.Count>0 || item.StageDir.Length>0 || item.Path.Length>0))
-                        {attempt.Finalizing=true;clean=true;}
-                        else if(cancelled)
-                        {
-                            if(item.CleanupError.Length==0){item.Status="Interrupted";item.State="Cancelled";}
-                            break;
-                        }
-                        else if(result.Success && item.CleanupError.Length==0 && !item.PendingRemoval)
-                        {
-                            item.Path=result.Path;item.OwnedPaths=result.OwnedPaths.ToList();item.CleanupPaths=[];
-                            item.OutputRoot=_outputRoots[item.Url];item.CompletedSelection=_selections.GetValueOrDefault(item.Url);
-                            item.Status="Completed";item.State="Done";item.Progress=100;item.Speed="";item.ETA="";
-                            try{if(!item.IsPartialResult)_data.AppendSuccess(item);}
-                            catch(Exception e){_log($"WARNING: Could not append successful URL to history: {e.Message}");}
-                            Interlocked.Increment(ref _completed);WriteResult("success",$"{item.Url} | {item.Path}");
-                            break;
-                        }
-                        else
-                        {
-                            if(item.CleanupError.Length==0)
-                            {
-                                item.Status="Failed";item.State="Failed";item.RawError=result.Error;item.Speed="";item.ETA="";
-                                WriteResult("error",$"{item.Url} | {result.Error}");
-                            }
-                            break;
-                        }
-                    }
-                    // Filesystem cleanup may cross a slow/remote volume. The
-                    // finalizing attempt cannot be resumed and owns this work;
-                    // other rows' Skip/Cancel must not wait on a shared FS lock.
-                    if(clean)DownloadCleanup.Retry(item);
-                }
-            }
-            catch(OperationCanceledException)
-            {
-                item.Status=attempt.Reason==AttemptStopReason.Skip?"Skipped":"Interrupted";
-                item.State=attempt.Reason==AttemptStopReason.Skip?"Skipped":"Cancelled";
-            }
-            catch(Exception ex)
-            {
-                if(item.CleanupPaths.Count>0 || item.CleanupError.Length>0)DownloadCleanup.Failed(item,ex.Message);
-                else{item.Status="Failed";item.State="Failed";item.RawError=ex.Message;}
-                WriteResult("error",$"{item.Url} | {ex.Message}");_log($"ERROR {item.Url}: {ex.Message}");
-            }
-            finally
-            {
+                bool clean=false;
                 lock(_completionGate)
                 {
-                    if(item.CleanupError.Length>0)DownloadCleanup.Failed(item,item.CleanupError);
-                    item.AttemptFinished=true;item.Speed="";item.ETA="";
-                    Trace(item,item.Status=="Failed" || item.CleanupError.Length>0?JournalLevel.Error:JournalLevel.Information,
-                        "job_finished",$"status={item.Status} state={DownloadProgressTrace.Quoted(item.State)} shown_pct={DownloadProgressTrace.Number(item.Progress)} transferred={item.TransferredBytes}"+
-                        (item.RawError.Length>0?" error="+DownloadProgressTrace.Quoted(item.RawError):"")+
-                        (item.CleanupError.Length>0?" cleanup_error="+DownloadProgressTrace.Quoted(item.CleanupError):""));
-                    _itemCancels.TryRemove(item.Url,out _);Interlocked.Decrement(ref _outstanding);
-                    // Completion is signalled only after the last mutation and
-                    // process/pipes join. A new generation can now safely enter.
-                    attempt.Finished.TrySetResult(item.Status=="Skipped");
-                    attempt.Stop.Dispose();_changed(item);
+                    cancelled|=_cancelled.ContainsKey(item.Url) || linked.IsCancellationRequested;
+                    if(attempt.Reason==AttemptStopReason.Skip && item.CleanupError.Length==0 && !item.PendingRemoval)
+                    {
+                        item.Status="Skipped";item.State="Skipped";item.Speed="";item.ETA="";item.Slot="";
+                        break;
+                    }
+                    if(cancelled && item.CleanupError.Length==0 &&
+                        (item.OwnedPaths.Count>0 || item.CleanupPaths.Count>0 || item.StageDir.Length>0 || item.Path.Length>0))
+                    {attempt.Finalizing=true;clean=true;}
+                    else if(cancelled)
+                    {
+                        if(item.CleanupError.Length==0){item.Status="Interrupted";item.State="Cancelled";}
+                        break;
+                    }
+                    else if(result.Success && item.CleanupError.Length==0 && !item.PendingRemoval)
+                    {
+                        item.Path=result.Path;item.OwnedPaths=result.OwnedPaths.ToList();item.CleanupPaths=[];
+                        item.OutputRoot=_outputRoots[item.Url];item.CompletedSelection=_selections.GetValueOrDefault(item.Url);
+                        item.Status="Completed";item.State="Done";item.Progress=100;item.Speed="";item.ETA="";
+                        try{if(!item.IsPartialResult)_data.AppendSuccess(item);}
+                        catch(Exception e){_log($"WARNING: Could not append successful URL to history: {e.Message}");}
+                        Interlocked.Increment(ref _completed);WriteResult("success",$"{item.Url} | {item.Path}");
+                        break;
+                    }
+                    else
+                    {
+                        if(item.CleanupError.Length==0)
+                        {
+                            item.Status="Failed";item.State="Failed";item.RawError=result.Error;item.Speed="";item.ETA="";
+                            WriteResult("error",$"{item.Url} | {result.Error}");
+                        }
+                        break;
+                    }
                 }
+                // Filesystem cleanup may cross a slow/remote volume. The
+                // finalizing attempt cannot be resumed and owns this work;
+                // other rows' Skip/Cancel must not wait on a shared FS lock.
+                if(clean)DownloadCleanup.Retry(item);
             }
+        }
+        catch(OperationCanceledException)
+        {
+            item.Status=attempt.Reason==AttemptStopReason.Skip?"Skipped":"Interrupted";
+            item.State=attempt.Reason==AttemptStopReason.Skip?"Skipped":"Cancelled";
+        }
+        catch(Exception ex)
+        {
+            if(item.CleanupPaths.Count>0 || item.CleanupError.Length>0)DownloadCleanup.Failed(item,ex.Message);
+            else{item.Status="Failed";item.State="Failed";item.RawError=ex.Message;}
+            WriteResult("error",$"{item.Url} | {ex.Message}");_log($"ERROR {item.Url}: {ex.Message}");
+        }
+        finally
+        {
+            lock(_completionGate)
+            {
+                if(item.CleanupError.Length>0)DownloadCleanup.Failed(item,item.CleanupError);
+                item.AttemptFinished=true;item.Speed="";item.ETA="";
+                Trace(item,item.Status=="Failed" || item.CleanupError.Length>0?JournalLevel.Error:JournalLevel.Information,
+                    "job_finished",$"status={item.Status} state={DownloadProgressTrace.Quoted(item.State)} shown_pct={DownloadProgressTrace.Number(item.Progress)} transferred={item.TransferredBytes}"+
+                    (item.RawError.Length>0?" error="+DownloadProgressTrace.Quoted(item.RawError):"")+
+                    (item.CleanupError.Length>0?" cleanup_error="+DownloadProgressTrace.Quoted(item.CleanupError):""));
+                _itemCancels.TryRemove(item.Url,out _);Interlocked.Decrement(ref _outstanding);
+                // Completion is signalled only after the last mutation and
+                // process/pipes join. A new generation can now safely enter.
+                attempt.Finished.TrySetResult(item.Status=="Skipped");
+                attempt.Stop.Dispose();
+            }
+            // Keep notification inside the worker's joined lifetime without
+            // holding the lock needed by Stop and other attempts' admissions.
+            _changed(item);
         }
     }
 
