@@ -650,7 +650,7 @@
                           ToolTip="Перетащите, чтобы изменить ширину очереди и загрузок"/>
 
             <Border x:Name="DownloadsPanel" Grid.Column="2" Style="{StaticResource Panel}">
-                <Grid>
+                <Grid x:Name="DownloadsContentGrid">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
@@ -693,13 +693,34 @@
                     </WrapPanel>
 
                     <Expander x:Name="JournalExpander" Grid.Row="3" Header="Журнал и диагностика" IsExpanded="False">
-                     <Grid Height="220" MaxHeight="220">
+                     <Grid x:Name="JournalBody" Height="220">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="*"/>
                         </Grid.RowDefinitions>
-                        <WrapPanel Grid.Row="0" Margin="0,0,0,4" VerticalAlignment="Center">
+                        <Thumb x:Name="JournalResizeHandle" Grid.Row="0" Height="14" Margin="0,2,0,4"
+                               Focusable="True" Cursor="SizeNS"
+                               AutomationProperties.Name="Высота журнала"
+                               AutomationProperties.HelpText="Перетащите вверх или вниз. Стрелка вверх увеличивает высоту, вниз уменьшает; Home — минимум, End — максимум."
+                               ToolTip="Высота журнала: перетащите разделитель или используйте ↑ / ↓, Home / End">
+                            <Thumb.Template>
+                                <ControlTemplate TargetType="Thumb">
+                                    <Border x:Name="JournalResizeChrome" Background="{DynamicResource FieldBrush}"
+                                            BorderBrush="Transparent" BorderThickness="2" CornerRadius="4">
+                                        <Border Width="48" Height="2" Background="{DynamicResource MutedBrush}" VerticalAlignment="Center"/>
+                                    </Border>
+                                    <ControlTemplate.Triggers>
+                                        <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="JournalResizeChrome" Property="BorderBrush" Value="{DynamicResource SecondaryTextBrush}"/></Trigger>
+                                        <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="JournalResizeChrome" Property="BorderBrush" Value="{DynamicResource FocusBrush}"/></Trigger>
+                                    </ControlTemplate.Triggers>
+                                </ControlTemplate>
+                            </Thumb.Template>
+                        </Thumb>
+                        <ScrollViewer x:Name="JournalControlsScrollViewer" Grid.Row="1" VerticalScrollBarVisibility="Auto"
+                                      HorizontalScrollBarVisibility="Disabled">
+                         <StackPanel>
+                          <WrapPanel Margin="0,0,0,4" VerticalAlignment="Center">
                             <TextBlock Text="Журнал" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,8,4"/>
                             <ComboBox x:Name="LogProfileCombo" AutomationProperties.Name="Подробность журнала" Width="190" Margin="0,0,6,4"
                                       ToolTip="Подробность новых событий журнала; можно менять во время скачивания."/>
@@ -707,9 +728,11 @@
                             <Button x:Name="SaveJournalButton" Content="Сохранить журнал…"/>
                             <Button x:Name="ClearJournalButton" Content="Очистить"
                                     ToolTip="Очистить экран и копируемый буфер. Файлы журнала сохраняются."/>
-                        </WrapPanel>
-                        <TextBlock x:Name="JournalHint" Grid.Row="1" Margin="0,0,0,6"
+                          </WrapPanel>
+                          <TextBlock x:Name="JournalHint" Margin="0,0,0,6"
                                    Style="{StaticResource MutedText}" TextWrapping="Wrap"/>
+                         </StackPanel>
+                        </ScrollViewer>
                         <TextBox
                             x:Name="LogBox" AutomationProperties.Name="Журнал приложения"
                             Grid.Row="2"

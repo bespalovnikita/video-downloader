@@ -57,6 +57,7 @@ internal sealed partial class UiScenario
                 Require(profiles.IsVisible && log.IsVisible,"The real journal must be opened in the visible Downloads panel before interaction");
             }
             ShowJournal();
+            TestJournalResize(window);
             Require(profiles.Items.Cast<string>().SequenceEqual(JournalProfileCatalog.DisplayNames),
                 "The actual journal selector must expose all four logging profiles");
             Require(subject.ReadOptions().LogProfile=="Standard","Old settings default to the standard journal");

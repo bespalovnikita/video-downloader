@@ -25,6 +25,7 @@ public sealed partial class NativeWindow : IDisposable
     private readonly AppPersistence _storage;
     private readonly PreviewController _preview;
     private readonly PanelLayoutController _panelLayout;
+    private readonly JournalLayoutController _journalLayout;
     private readonly WindowThemeController _theme;
     private readonly DispatcherTimer _tick=new(){Interval=TimeSpan.FromMilliseconds(400)};
     private readonly WindowLifecycleController _lifecycle;
@@ -92,6 +93,7 @@ public sealed partial class NativeWindow : IDisposable
         B("OutputBox").Text=new DownloadOptions().Output;
         K("ShowVideoTitlesCheck").IsChecked=new DownloadOptions().ShowVideoTitles;
         _panelLayout=new PanelLayoutController(_window,SaveCheckpoint);
+        _journalLayout=new JournalLayoutController(_window);
         _preview=new PreviewController(_window,_storage,_ytDlp,
             ()=>_restoringSession || _profileBackupBusy || _profileBackupRecoveryRequired || _profileBackupReplaying || _checkpointReadOnly || _legacyEngineBlocked
                 ?Array.Empty<DownloadItem>():SessionState.Queue.Concat(SessionState.Downloads),SaveCheckpoint,Log,
