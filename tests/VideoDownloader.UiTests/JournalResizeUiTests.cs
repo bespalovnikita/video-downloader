@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Windows;
+using Point=System.Windows.Point;
 using System.Windows.Automation.Peers;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
