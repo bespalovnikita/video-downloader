@@ -28,7 +28,9 @@ internal sealed partial class UiScenario
                 WindowStartupLocation=WindowStartupLocation.CenterScreen,ShowInTaskbar=false,Content=button};
             // This is the same shared resource entry point used by MainWindow.xaml.
             window.Resources.MergedDictionaries.Add(new WindowThemeResources());
-            ToolTipService.SetInitialShowDelay(button,0);
+            // Let native MouseDevice/provider processing finish before opening
+            // the popup; a zero delay can open reentrantly inside WM_MOUSEMOVE.
+            ToolTipService.SetInitialShowDelay(button,100);
             ToolTipService.SetBetweenShowDelay(button,0);
             if(mode=="explicit shorter")ToolTipService.SetShowDuration(button,45_000);
             BindingExpressionBase? binding=null;
