@@ -30,8 +30,9 @@ internal sealed class HistoryRecordRow(DownloadHistoryEntry entry):INotifyProper
     public string FileCount=>Entry.DisplayFileCount;
     private string _availability=entry.OutputPaths.Count==0?"Пути не записаны":"Не проверено";
     public string Availability=>_availability;
+    public string Details=>$"Дата: {Date}\nИсточник: {Source}\nФайлы: {FileCount}\nДоступность: {Availability}";
     internal void SetAvailability(string value)
-    {_availability=value;PropertyChanged?.Invoke(this,new(nameof(Availability)));}
+    {_availability=value;PropertyChanged?.Invoke(this,new(nameof(Availability)));PropertyChanged?.Invoke(this,new(nameof(Details)));}
     public event PropertyChangedEventHandler? PropertyChanged;
 }
 
@@ -91,7 +92,13 @@ internal sealed class DownloadHistoryWindow:Window
         emptyContent.Children.Add(_clearSearch);
         _emptyState=Named("HistoryEmptyState",new Border{Child=emptyContent,Visibility=Visibility.Collapsed});
         results.Children.Add(_emptyState);
+        ResponsiveDataGridColumns.Configure(_grid,1000,
+            "В узком окне показаны дата, название и URL. Источник, число файлов и доступность — в «Файлы выбранной загрузки».",
+            _grid.Columns[2],_grid.Columns[4],_grid.Columns[5]);
         var fileDetails=new StackPanel{Margin=new Thickness(0,6,0,0)};
+        var recordDetails=Named("HistoryRecordDetails",Note(""));
+        recordDetails.SetBinding(TextBlock.TextProperty,new Binding("SelectedItem.Details"){Source=_grid});
+        fileDetails.Children.Add(recordDetails);
         _selectionStatus=Named("HistorySelectionStatus",Note("Выберите запись, чтобы увидеть сохранённые пути."));fileDetails.Children.Add(_selectionStatus);
         _fileGrid=Named("HistoryFilesGrid",new DataGrid{IsReadOnly=true,AutoGenerateColumns=false,CanUserAddRows=false,CanUserDeleteRows=false,
             EnableRowVirtualization=true,SelectionMode=DataGridSelectionMode.Single,MinHeight=75,Height=120});

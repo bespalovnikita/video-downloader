@@ -473,12 +473,13 @@ internal static class QueueSkipResumeTests
 
     private sealed class RangeOrigin:IAsyncDisposable
     {
-        internal sealed record Request(string Path,string Method,long First);
+        internal sealed record Request(string Path,string Method,long First,bool HasRange,int GetOrdinal);
         private readonly TcpListener _listener=new(IPAddress.Loopback,0);
         private readonly CancellationTokenSource _stop=new();
         private readonly ConcurrentDictionary<TcpClient,byte> _clients=[];
         private readonly ConcurrentBag<Task> _handlers=[];
         private readonly ConcurrentDictionary<string,TaskCompletionSource> _holds=new(StringComparer.Ordinal);
+        private readonly ConcurrentDictionary<string,int> _getCounts=new(StringComparer.Ordinal);
         private readonly Task _accept;
         private readonly Stopwatch _clock=Stopwatch.StartNew();
         private readonly ConcurrentQueue<string> _events=[];
@@ -501,7 +502,8 @@ internal static class QueueSkipResumeTests
         }
         internal string Diagnostics()=>"originClients="+_clients.Count+" holds=["+
             string.Join(" | ",_holds.Select(hold=>hold.Key+":"+hold.Value.Task.Status))+"] requests=["+
-            string.Join(" | ",Requests.TakeLast(16).Select(request=>request.Method+" "+request.Path+" from="+request.First))+
+            string.Join(" | ",Requests.TakeLast(16).Select(request=>request.Method+" "+request.Path+
+                " getOrdinal="+request.GetOrdinal+" rangeHeader="+(request.HasRange?"present":"absent")+" from="+request.First))+
             "] events=["+string.Join(" | ",_events.TakeLast(24))+"]";
         private async Task Accept()
         {
@@ -540,15 +542,22 @@ internal static class QueueSkipResumeTests
                     begin=long.Parse(range[0],CultureInfo.InvariantCulture);
                     if(range[1].Length>0)end=Math.Min(end,long.Parse(range[1],CultureInfo.InvariantCulture));ranged=true;
                 }
-                Requests.Enqueue(new(path,first[0],begin));
-                context="c"+connection+" "+first[0]+" "+path+" range="+begin+"-"+end;Observe(context+" parsed");
+                int getOrdinal=first[0]=="GET"?_getCounts.AddOrUpdate(path,1,(_,count)=>count+1):0;
+                string phase=first[0]=="GET"?(getOrdinal==1?"metadata":"transfer"):"headers";
+                Requests.Enqueue(new(path,first[0],begin,ranged,getOrdinal));
+                context="c"+connection+" "+first[0]+" "+path+" getOrdinal="+getOrdinal+" phase="+phase+
+                    " rangeHeader="+(header is null?"absent":header[(header.IndexOf(':')+1)..].Trim())+
+                    " served="+begin+"-"+end;Observe(context+" parsed");
                 if(begin>=body.Length){await Write(stream,"HTTP/1.1 416 Range Not Satisfiable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");return;}
                 await Write(stream,"HTTP/1.1 "+(ranged?"206 Partial Content":"200 OK")+"\r\nContent-Type: video/mp4\r\nAccept-Ranges: bytes\r\nContent-Length: "+(end-begin+1)+
                     (ranged?"\r\nContent-Range: bytes "+begin+"-"+end+"/"+body.Length:"")+"\r\nConnection: close\r\n\r\n");
                 Observe(context+" response-headers-written");
                 if(first[0]=="HEAD")return;
                 int count=(int)(end-begin+1);
-                if(_holds.TryGetValue(path,out var hold) && !hold.Task.IsCompleted)
+                // The generic extractor opens the URL for metadata before its downloader.
+                // Finish that first GET: holding it can block curl_cffi response disposal
+                // before a real .part exists. Only the later transfer is held for skip.
+                if(getOrdinal>1 && _holds.TryGetValue(path,out var hold) && !hold.Task.IsCompleted)
                 {
                     int initial=Math.Min(count,256*1024);await stream.WriteAsync(body.AsMemory((int)begin,initial),_stop.Token);await stream.FlushAsync(_stop.Token);
                     Observe(context+" initial-bytes-written="+initial+" waiting-for-hold");

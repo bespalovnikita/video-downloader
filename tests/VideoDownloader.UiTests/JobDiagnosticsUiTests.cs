@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.ComponentModel;
 using System.IO.Compression;
 using System.Text;
 using System.Windows;
@@ -15,13 +16,23 @@ internal sealed partial class UiScenario
     {
         static void Require(bool condition,string message)
         {if(!condition)throw new InvalidOperationException("Job-diagnostics WPF test: "+message);}
-        static void PumpUntil(Func<bool> condition,string message)
+        static void PumpUntil(Func<bool> condition,string message,Func<string>? diagnostics=null)
         {
             if(condition())return;
             var frame=new DispatcherFrame();var watch=Stopwatch.StartNew();
             var timer=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(15)};
             timer.Tick+=(_,_)=>{if(condition() || watch.Elapsed>TimeSpan.FromSeconds(10))frame.Continue=false;};
-            timer.Start();try{Dispatcher.PushFrame(frame);}finally{timer.Stop();}Require(condition(),message);
+            timer.Start();try{Dispatcher.PushFrame(frame);}finally{timer.Stop();}
+            if(!condition())Require(false,message+(diagnostics is null?"":Environment.NewLine+diagnostics()));
+        }
+        static string Geometry(Window window,DataGrid grid)
+        {
+            var content=window.Content as FrameworkElement;
+            return $"Loaded={window.IsLoaded}; window actual={window.ActualWidth:0.###}x{window.ActualHeight:0.###}; requested={window.Width:0.###}x{window.Height:0.###}; "+
+                $"min={window.MinWidth:0.###}x{window.MinHeight:0.###}; max={window.MaxWidth:0.###}x{window.MaxHeight:0.###}; "+
+                $"content actual={content?.ActualWidth:0.###}x{content?.ActualHeight:0.###}; grid actual={grid.ActualWidth:0.###}x{grid.ActualHeight:0.###}; "+
+                $"work area={SystemParameters.WorkArea}; DPI={System.Windows.Media.VisualTreeHelper.GetDpi(window)}; columns="+
+                string.Join("; ",grid.Columns.Select(column=>$"{column.Header}: {column.Visibility}, actual={column.ActualWidth:0.###}, requested={column.Width}"));
         }
         static T Control<T>(Window window,string name) where T:class=>(T)(window.FindName(name)??throw new InvalidOperationException("Missing diagnostics control: "+name));
         static void Click(Window window,string name)=>Control<Button>(window,name).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
@@ -99,7 +110,43 @@ internal sealed partial class UiScenario
             Require(help.IsVisible && !details.IsVisible && help.Text.Contains("скрытые фильтрами") && help.Text.Contains("что хотели сделать"),"The actual help action must explain reading errors and sharing a complete report.");
             Click(window,"JobDiagnosticsDetailsButton");window.UpdateLayout();
             Require(details.IsVisible && !help.IsVisible,"The user must be able to return from help to the selected event.");
-            window.Width=window.MinWidth;window.Height=window.MinHeight;window.UpdateLayout();
+            PumpUntil(()=>window.IsLoaded,"Diagnostics must finish loading before synthetic viewport probes.",()=>Geometry(window,grid));
+            // WPF's native desktop maximum also constrains content layout. A
+            // forced minimum permits the actual wide grid on a small CI display;
+            // isolate this probe from the separately tested work-area controller,
+            // which correctly restores the dialog's production minimum on resize.
+            OwnedWindowLayout.Attach(window,owner).Dispose();
+            window.MinWidth=0;window.MaxWidth=double.PositiveInfinity;window.MaxHeight=double.PositiveInfinity;
+            window.MinWidth=1120;window.Width=1120;window.Height=650;window.UpdateLayout();
+            PumpUntil(()=>Math.Abs(window.ActualWidth-1120)<=1 &&
+                grid.Columns.All(column=>column.Visibility==Visibility.Visible && column.ActualWidth>0) &&
+                grid.Columns.Sum(column=>column.ActualWidth)<=grid.ActualWidth+1,
+                "Wide diagnostics must restore every actual column after deferred WPF layout finishes.",()=>Geometry(window,grid));
+            grid.SelectedIndex=0;grid.UpdateLayout();
+            Require((grid.Columns[3].GetCellContent(grid.SelectedItem) as TextBlock)?.Text=="admitted",
+                "The wide DataGrid must retain the actual typed event binding.");
+            var selectedEvent=grid.SelectedItem??throw new InvalidOperationException("The diagnostics fixture must have a selected event.");
+            grid.Items.SortDescriptions.Add(new SortDescription("Event",ListSortDirection.Descending));
+            grid.SelectedItem=selectedEvent;var eventSource=grid.ItemsSource;
+            var sortedEvents=grid.Items.Cast<object>().ToArray();
+            grid.CurrentCell=new DataGridCellInfo(selectedEvent,grid.Columns[4]);
+            window.MinWidth=700;window.Width=700;window.Height=window.MinHeight;window.UpdateLayout();
+            PumpUntil(()=>Math.Abs(window.ActualWidth-700)<=1 &&
+                grid.Columns[2].Visibility==Visibility.Collapsed && grid.Columns[3].Visibility==Visibility.Collapsed &&
+                grid.Columns[4].ActualWidth>=300 &&
+                grid.Columns.Where(column=>column.Visibility==Visibility.Visible).Sum(column=>column.ActualWidth)<=grid.ActualWidth+1,
+                "Narrow diagnostics must devote a useful actual width to the message without horizontal overflow.",()=>Geometry(window,grid));
+            Require(ReferenceEquals(grid.ItemsSource,eventSource) && ReferenceEquals(grid.SelectedItem,selectedEvent) &&
+                ReferenceEquals(grid.CurrentCell.Item,selectedEvent) && grid.Items.Cast<object>().SequenceEqual(sortedEvents) &&
+                grid.Items.SortDescriptions.Single().Equals(new SortDescription("Event",ListSortDirection.Descending)) &&
+                details.Text.Contains("admitted") && details.Text.Contains("Параметры этой попытки") &&
+                System.Windows.Automation.AutomationProperties.GetHelpText(grid).Contains("Выбранном событии"),
+                "Resizing must preserve the selected event, sorting, source and full hidden technical details.");
+            grid.Items.SortDescriptions.Clear();
+            window.MinWidth=0;window.MinHeight=0;
+            window.MaxWidth=double.PositiveInfinity;window.MaxHeight=double.PositiveInfinity;
+            window.MinWidth=700;window.MinHeight=500;
+            OwnedWindowLayout.Attach(window,owner);window.UpdateLayout();
             var content=(FrameworkElement)window.Content;
             foreach(string action in new[]{"RefreshJobDiagnosticsButton","CopyJobDiagnosticsButton","ExportJobDiagnosticsButton","CloseJobDiagnosticsButton"})
             {
@@ -112,7 +159,8 @@ internal sealed partial class UiScenario
             Require(Control<TextBlock>(window,"JobDiagnosticExplanation").Text.Length>0 && Control<TextBox>(window,"JobDiagnosticError").Text.Contains("403"),"An explanation and original diagnostic must both remain visible.");
             grid.SelectedIndex=0;grid.UpdateLayout();
             Require(details.Text.Contains("Параметры этой попытки") && details.Text.Contains("1080"),"Selecting an actual admitted event must expose captured settings.");
-            Require((grid.Columns[3].GetCellContent(grid.SelectedItem) as TextBlock)?.Text=="admitted","The actual DataGrid binding must render the typed event name.");
+            Require((grid.Columns[4].GetCellContent(grid.SelectedItem) as TextBlock)?.Text=="admitted",
+                "The message must remain rendered through its actual binding while technical columns are hidden.");
             attempts.SelectedIndex=1;Require(grid.Items.Count==2,"Attempt filter must isolate the first invocation.");
             level.SelectedValue=nameof(JournalLevel.Error);Require(grid.Items.Count==1,"Level and attempt filters must compose.");
             search.Text="not-present";Require(grid.Items.Count==0 && !Control<Button>(window,"CopyJobDiagnosticsButton").IsEnabled && empty.IsVisible && empty.Text.Contains("Очистите поиск"),"No-match search must explain how to restore results without copying hidden events.");
