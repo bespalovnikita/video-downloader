@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Windows;
 using Point=System.Windows.Point;
 using System.Windows.Automation.Peers;
@@ -17,7 +18,7 @@ internal sealed partial class UiScenario
     {
         static void Require(bool condition,string message)
         {if(!condition)throw new InvalidOperationException("Journal resizing WPF test failed: "+message);}
-        void Until(Func<bool> condition,string message)
+        void Until(Func<bool> condition,string message,Func<string>? evidence=null)
         {
             window.UpdateLayout();
             if(condition())return;
@@ -25,7 +26,7 @@ internal sealed partial class UiScenario
             var timer=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(15)};
             timer.Tick+=(_,_)=>{window.UpdateLayout();if(condition() || clock.Elapsed>TimeSpan.FromSeconds(3))frame.Continue=false;};
             timer.Start();try{Dispatcher.PushFrame(frame);}finally{timer.Stop();}
-            Require(condition(),message);
+            Require(condition(),message+(evidence is null?"":" "+evidence()));
         }
         T Control<T>(string name) where T:class=>(T)(window.FindName(name)
             ??throw new InvalidOperationException("Missing journal resizing control: "+name));
@@ -44,6 +45,21 @@ internal sealed partial class UiScenario
         Require(peer is not null && peer.GetName()=="Высота журнала" && peer.GetHelpText().Contains("Home"),
             "The actual resize handle's automation peer must describe its name and keyboard controls.");
 
+        var dragDeltas=new List<string>();
+        double minimum=double.NaN,maximum=double.NaN;
+        string Geometry()=>$"window={window.ActualWidth:0.##}x{window.ActualHeight:0.##}; layout={layout.ActualWidth:0.##}x{layout.ActualHeight:0.##}; "+
+            $"body height={body.Height:0.##}, actual={body.ActualHeight:0.##}, min={minimum:0.##}, max={maximum:0.##}; rows={string.Join(",",layout.RowDefinitions.Select(row=>row.ActualHeight.ToString("0.##")))}; "+
+            $"expander={expander.ActualHeight:0.##}; handleOrigin={handle.TranslatePoint(new Point(),layout)}; mouseHandle={Mouse.GetPosition(handle)}; "+
+            $"mouseLayout={Mouse.GetPosition(layout)}; cursor={System.Windows.Forms.Cursor.Position}; button={Mouse.LeftButton}; "+
+            $"dragging={handle.IsDragging}; captured={handle.IsMouseCaptured}; deltas=[{string.Join(" | ",dragDeltas)}]";
+        // Establish room for the measured gesture on this actual viewport,
+        // independently of the journal's default or a temporary height clamp.
+        PressKey(0x23,Key.End);
+        maximum=body.ActualHeight;
+        PressKey(0x24,Key.Home);
+        minimum=body.ActualHeight;
+        Require(maximum-minimum>=80,$"The shown viewport must have at least 80 DIP of drag room (minimum={minimum:0.##}, maximum={maximum:0.##}). "+Geometry());
+
         nint hwnd=new WindowInteropHelper(window).Handle;
         nint Move(Point screen,nuint buttons=0)
         {
@@ -56,24 +72,38 @@ internal sealed partial class UiScenario
         }
         Point local=new(handle.ActualWidth/2,handle.ActualHeight/2);
         Point start=handle.PointToScreen(local);
-        nint initial=Move(start);
+        Move(start);
         Until(()=>handle.IsMouseOver && Math.Abs(Mouse.GetPosition(handle).X-local.X)<1.5 && Math.Abs(Mouse.GetPosition(handle).Y-local.Y)<1.5,
-            "WPF must acknowledge the native resize target before the mouse button goes down.");
+            "WPF must acknowledge the native resize target before the mouse button goes down.",Geometry);
         double before=body.ActualHeight;
-        _=WaveformMouseInput.SendMessage(hwnd,0x0201,1,initial);
-        nint last=initial;
+        DragDeltaEventHandler observeDelta=(_,e)=>
+        {
+            if(dragDeltas.Count<32)dragDeltas.Add($"{e.HorizontalChange:0.##},{e.VerticalChange:0.##} -> height={body.Height:0.##}/actual={body.ActualHeight:0.##}");
+        };
+        handle.DragDelta+=observeDelta;
         try
         {
-            Until(()=>handle.IsDragging && handle.IsMouseCaptured,"Native button-down must start the real Thumb drag.");
+            // Thumb.OnMouseMove checks the real MouseDevice.LeftButton state.
+            // Sending WM_LBUTTONDOWN directly starts capture without pressing
+            // the system button; the next move then cancels that fake drag.
+            // Queue real button input and release it unconditionally below.
+            JournalMouseEvent(0x0002,0,0,0,UIntPtr.Zero);
+            Until(()=>handle.IsDragging && handle.IsMouseCaptured && Mouse.LeftButton==MouseButtonState.Pressed,
+                "Native button-down must hold the real mouse button and start the Thumb drag.",Geometry);
             double scale=VisualTreeHelper.GetDpi(handle).DpiScaleY;
-            last=Move(new Point(start.X,start.Y-48*scale),1);
-            Until(()=>Math.Abs(body.ActualHeight-before-48)<2,"Dragging the upper divider upward must give the journal more height.");
-            last=Move(new Point(start.X,start.Y-80*scale),1);
+            Move(new Point(start.X,start.Y-48*scale),1);
+            Until(()=>Math.Abs(body.ActualHeight-before-48)<2,"Dragging the upper divider upward must give the journal more height.",Geometry);
+            Move(new Point(start.X,start.Y-80*scale),1);
             Until(()=>Math.Abs(body.ActualHeight-before-80)<2 && handle.IsMouseCaptured,
-                "A continuous native drag must retain capture and accumulate height changes.");
+                "A continuous native drag must retain capture and accumulate height changes.",Geometry);
         }
-        finally{_=WaveformMouseInput.SendMessage(hwnd,0x0202,0,last);}
-        Until(()=>!handle.IsMouseCaptured,"Completing the native drag must release capture.");
+        finally
+        {
+            JournalMouseEvent(0x0004,0,0,0,UIntPtr.Zero);
+            handle.DragDelta-=observeDelta;
+        }
+        Until(()=>!handle.IsMouseCaptured && Mouse.LeftButton==MouseButtonState.Released,
+            "Completing the native drag must release capture and the system mouse button.",Geometry);
 
         void PressKey(byte virtualKey,Key expected)
         {
@@ -86,7 +116,7 @@ internal sealed partial class UiScenario
             {
                 QueueRemovalKeyboardEvent(virtualKey,0,0x0001,UIntPtr.Zero);
                 QueueRemovalKeyboardEvent(virtualKey,0,0x0003,UIntPtr.Zero);
-                Until(()=>received,"The height handle must receive the actual native "+expected+" key.");
+                Until(()=>received,"The height handle must receive the actual native "+expected+" key.",Geometry);
             }
             finally{handle.RemoveHandler(Keyboard.PreviewKeyDownEvent,observed);}
         }
@@ -123,4 +153,7 @@ internal sealed partial class UiScenario
             "Growing the window after compact navigation must restore the user's height, not save the temporary clamp.");
         Console.WriteLine("PASS: journal native drag, keyboard bounds, focus, collapse/reopen and short viewport preserve a usable Downloads panel");
     }
+
+    [DllImport("user32.dll",EntryPoint="mouse_event")]
+    private static extern void JournalMouseEvent(uint flags,uint dx,uint dy,uint data,UIntPtr extraInfo);
 }
