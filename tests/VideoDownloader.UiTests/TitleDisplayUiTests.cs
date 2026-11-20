@@ -1,11 +1,14 @@
 using System.IO;
 using System.Security.Cryptography;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
+using KeyEventHandler=System.Windows.Input.KeyEventHandler;
 
 namespace VideoDownloader.UiTests;
 
@@ -43,6 +46,48 @@ internal sealed partial class UiScenario
             timer.Start();
             try{System.Windows.Threading.Dispatcher.PushFrame(frame);}finally{timer.Stop();}
             Require(condition(),error);
+        }
+        void NativeCopy(DataGrid grid,string expected,bool intercept=true,bool noSelection=false,bool shift=false)
+        {
+            F<Button>(ReferenceEquals(grid,Q)?"ShowQueuePanelButton":"ShowDownloadsPanelButton")
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            _window.UpdateLayout();
+            if(grid.SelectedItem is DownloadItem selected)
+            {
+                grid.CurrentCell=new DataGridCellInfo(selected,grid.Columns[0]);
+                grid.ScrollIntoView(selected);grid.UpdateLayout();
+            }
+            _window.Activate();Keyboard.Focus(grid);
+            Require(grid.IsVisible && grid.IsKeyboardFocusWithin,"Native Ctrl+C must target its visible focused grid.");
+            if(noSelection)grid.SelectedItems.Clear();
+            bool received=false,handled=false;
+            KeyEventHandler observed=(_,e)=>{if(e.Key==Key.C){received=true;handled=e.Handled;}};
+            grid.AddHandler(Keyboard.PreviewKeyDownEvent,observed,true);
+            Clipboard.SetText("native copy sentinel");
+            try
+            {
+                // Real input traverses WPF's preview/bubbling and DataGrid
+                // command handlers; a direct RaiseEvent cannot prove parity.
+                TitleClipboardKeyboardEvent(0x11,0,0,UIntPtr.Zero);
+                if(shift)TitleClipboardKeyboardEvent(0x10,0,0,UIntPtr.Zero);
+                TitleClipboardKeyboardEvent(0x43,0,0,UIntPtr.Zero);
+                TitleClipboardKeyboardEvent(0x43,0,2,UIntPtr.Zero);
+                if(shift)TitleClipboardKeyboardEvent(0x10,0,2,UIntPtr.Zero);
+                TitleClipboardKeyboardEvent(0x11,0,2,UIntPtr.Zero);
+                AwaitCachedTitle(()=>received && !Keyboard.IsKeyDown(Key.LeftCtrl) && !Keyboard.IsKeyDown(Key.LeftShift),
+                    "The focused grid must receive native Ctrl+C and finish releasing the modifier keys.");
+                Require(handled==intercept,"Only plain Ctrl+C with one selected row may override the table's clipboard command.");
+                if(intercept)Require(Clipboard.GetText()==expected,
+                    "Native Ctrl+C must copy exactly the displayed URL, without headers, title or other table fields.");
+                else if(shift)Require(Clipboard.GetText()=="native copy sentinel","Ctrl+Shift+C must keep its existing behavior.");
+            }
+            finally
+            {
+                TitleClipboardKeyboardEvent(0x43,0,2,UIntPtr.Zero);
+                TitleClipboardKeyboardEvent(0x10,0,2,UIntPtr.Zero);
+                TitleClipboardKeyboardEvent(0x11,0,2,UIntPtr.Zero);
+                grid.RemoveHandler(Keyboard.PreviewKeyDownEvent,observed);
+            }
         }
         // A closed controller may still have dispatcher callbacks queued by
         // its worker. They must not mutate rows/panels or checkpoint afterward.
@@ -244,6 +289,14 @@ internal sealed partial class UiScenario
             D.ContextMenu.Items.OfType<MenuItem>().Single(item=>Equals(item.Header,ErrorMessages.Text("Копировать ссылку","Copy URL")))
                 .RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
             Require(Clipboard.GetText()==second,"Downloads Copy URL must use the same current material");
+            Q.SelectedItem=collection;NativeCopy(Q,second);
+            D.SelectedItem=collection;NativeCopy(D,second);
+            NativeCopy(D,second,intercept:false,shift:true);
+            NativeCopy(D,second,intercept:false,noSelection:true);
+            D.SelectedItem=collection;
+            K("ShowVideoTitlesCheck").IsChecked=false;NativeCopy(D,second);
+            K("ShowVideoTitlesCheck").IsChecked=true;
+            F<Button>("ShowQueuePanelButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));_window.UpdateLayout();
             SaveCheckpoint();
             Require(_storage.Restore()!.Queue.Single(row=>row.Url==collection.Url).DisplayUrl==second,
                 "A current-link-only update must be included in the checkpoint fingerprint");
@@ -274,4 +327,7 @@ internal sealed partial class UiScenario
             Reindex();
         }
     }
+
+    [DllImport("user32.dll",EntryPoint="keybd_event")]
+    private static extern void TitleClipboardKeyboardEvent(byte virtualKey,byte scan,uint flags,UIntPtr extraInfo);
 }
