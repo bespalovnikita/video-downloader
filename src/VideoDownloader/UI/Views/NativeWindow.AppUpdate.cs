@@ -5,7 +5,7 @@ namespace VideoDownloader.Native;
 
 public sealed partial class NativeWindow
 {
-    private static readonly Version CurrentAppVersion=typeof(NativeWindow).Assembly.GetName().Version??new Version(2,0,0);
+    private static readonly Version CurrentAppVersion=typeof(NativeWindow).Assembly.GetName().Version??new Version(3,0,0);
     private IAppUpdateService? _appUpdateService;
     private CancellationTokenSource? _appUpdateStop;
     private AppUpdateRelease? _availableAppUpdate;

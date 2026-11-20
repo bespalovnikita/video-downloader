@@ -59,10 +59,10 @@ pwsh -NoProfile -File .\scripts\build.ps1 -Task Publish
 
 Настройки, очередь, подписки и история по умолчанию остаются в `%LOCALAPPDATA%\VideoDownloader`. Локальная и скачанная релизная сборки используют эти же данные. Закрытие прежнего экземпляра также нужно, чтобы новый EXE открыл новую сборку, а не передал управление уже работающему окну.
 
-Без `-Version` локальная сборка получает базовую версию из `src/VideoDownloader/VideoDownloader.csproj`; она может отличаться от последнего GitHub Release. Можно явно указать номер:
+Без `-Version` локальная сборка получает базовую версию `3.0.0` из `src/VideoDownloader/VideoDownloader.csproj`; она может отличаться от последнего GitHub Release. Можно явно указать номер:
 
 ```powershell
-pwsh -NoProfile -File .\scripts\build.ps1 -Task Publish -Version 2.0.0
+pwsh -NoProfile -File .\scripts\build.ps1 -Task Publish -Version 3.0.0
 ```
 
 Разрешён формат `число.число.число`. Локальная команда сама не создаёт Git-тег и ничего не загружает на GitHub.
