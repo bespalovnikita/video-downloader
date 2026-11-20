@@ -200,25 +200,48 @@ internal sealed partial class UiScenario
                 storage.Restore()!.Queue.Last().Url=="https://backup-ui.invalid/cancelled-restore-ipc" && subject.SessionState.Coordinator is null,
                 "Verified cancellation must replay accepted IPC once after rollback, keep history/subscriptions, and visibly reject an entire oversized group.");
 
-            Load(current);held.Arm("pointer");Confirm(current);PumpUntil(()=>held.Entered,"Replay cursor test did not enter the real profile transaction.");
-            string firstPortable=Path.Combine(root,"accepted-prefix.vdqueue"),laterText=Path.Combine(root,"retry-suffix.txt");
-            File.WriteAllText(firstPortable,PortableQueueCodec.Encode([new("https://backup-ui.invalid/replay-prefix","")]));
-            File.WriteAllText(laterText,"https://backup-ui.invalid/replay-suffix");subject.ReceiveArguments([firstPortable,laterText]);
-            using(var locked=new FileStream(laterText,FileMode.Open,FileAccess.ReadWrite,FileShare.None))
+            foreach(string extension in new[]{"txt","vdqueue"})
             {
-                Click(current,"CancelProfileBackupOperationButton");held.Release();PumpUntil(()=>!current.IsBusy,"A locked later argument did not release the replay barrier.");
-                Require(Status(current).Contains("Отложенные аргументы",StringComparison.Ordinal) &&
-                    subject.SessionState.Queue.Count(row=>row.Url=="https://backup-ui.invalid/replay-prefix")==1 &&
-                    subject.SessionState.Queue.All(row=>row.Url!="https://backup-ui.invalid/replay-suffix") &&
-                    storage.Restore()!.Queue.Any(row=>row.Url=="https://backup-ui.invalid/replay-prefix"),
-                    "A failed later input must keep its suffix pending and checkpoint the already accepted prefix.");
+                Load(current);held.Arm("pointer");Confirm(current);PumpUntil(()=>held.Entered,"Replay cursor test did not enter the real profile transaction.");
+                string prefix="https://backup-ui.invalid/replay-prefix-"+extension,blocked="https://backup-ui.invalid/replay-blocked-"+extension,
+                    suffix="https://backup-ui.invalid/replay-suffix-"+extension,changedPrefix="https://backup-ui.invalid/prefix-must-not-reopen-"+extension;
+                string firstPortable=Path.Combine(root,"accepted-prefix-"+extension+".vdqueue"),laterFile=Path.Combine(root,"retry-suffix."+extension);
+                File.WriteAllText(firstPortable,PortableQueueCodec.Encode([new(prefix,"")]));
+                File.WriteAllText(laterFile,extension=="txt"?blocked:PortableQueueCodec.Encode([new(blocked,"")]));
+                subject.ReceiveArguments([firstPortable,laterFile,suffix]);
+                using(var locked=new FileStream(laterFile,FileMode.Open,FileAccess.ReadWrite,FileShare.None))
+                {
+                    Click(current,"CancelProfileBackupOperationButton");held.Release();PumpUntil(()=>!current.IsBusy,"A locked later argument did not release the replay barrier.");
+                    Require(Status(current).Contains("Отложенные аргументы",StringComparison.Ordinal) &&
+                        subject.SessionState.Queue.Count(row=>row.Url==prefix)==1 &&
+                        subject.SessionState.Queue.All(row=>row.Url!=blocked && row.Url!=suffix) && storage.Restore()!.Queue.Any(row=>row.Url==prefix),
+                        "A failed TXT or portable input must keep the entire suffix pending and checkpoint only the already accepted prefix.");
+                }
+                File.WriteAllText(firstPortable,PortableQueueCodec.Encode([new(changedPrefix,"")]));
+                Load(current);
+                Require(subject.SessionState.Queue.Count(row=>row.Url==prefix)==1 &&
+                    subject.SessionState.Queue.TakeLast(2).Select(row=>row.Url).SequenceEqual(new[]{blocked,suffix}) &&
+                    subject.SessionState.Queue.All(row=>row.Url!=changedPrefix) && subject.SessionState.Coordinator is null,
+                    "Retry must resume at the first unprocessed argument in FIFO order, never reopen a successfully handled portable file, and never start a session.");
             }
-            File.WriteAllText(firstPortable,PortableQueueCodec.Encode([new("https://backup-ui.invalid/prefix-must-not-reopen","")]));
-            Load(current);
-            Require(subject.SessionState.Queue.Count(row=>row.Url=="https://backup-ui.invalid/replay-prefix")==1 &&
-                subject.SessionState.Queue.Last().Url=="https://backup-ui.invalid/replay-suffix" &&
-                subject.SessionState.Queue.All(row=>row.Url!="https://backup-ui.invalid/prefix-must-not-reopen") && subject.SessionState.Coordinator is null,
-                "Retry must resume at the first unprocessed argument, never reopen a successfully handled portable file, and never start a session.");
+
+            // A refused ordinary Add is also a failed argument, rather than a
+            // successful no-op. Keep it and its suffix until capacity is freed.
+            int baseBytes=JsonSerializer.SerializeToUtf8Bytes(new SessionSnapshot{Queue=subject.SessionState.Queue.ToList(),
+                Settings=subject.ReadOptions(),SavedAtUtc=new DateTime(2000,1,1,0,0,0,DateTimeKind.Utc).AddTicks(1)},AppPersistence.Json).Length;
+            string oldTitle=completed.Title;completed.Title+=new string('Ж',(AppPersistence.MaxCheckpointBytes-baseBytes-96)/6);
+            subject.SaveCheckpoint();Require(!subject.CheckpointReadOnly,"The replay capacity fixture must remain savable before ingress.");
+            Load(current);held.Arm("pointer");Confirm(current);PumpUntil(()=>held.Entered,"Capacity replay did not enter the real profile transaction.");
+            const string capacityFirst="https://backup-ui.invalid/replay-capacity-first",capacityLast="https://backup-ui.invalid/replay-capacity-last";
+            subject.ReceiveArguments([capacityFirst,capacityLast]);
+            Click(current,"CancelProfileBackupOperationButton");held.Release();PumpUntil(()=>!current.IsBusy,"Capacity refusal did not release replay.");
+            Require(Status(current).Contains("Отложенные аргументы",StringComparison.Ordinal) && !subject.CheckpointReadOnly &&
+                subject.SessionState.Queue.All(row=>row.Url!=capacityFirst && row.Url!=capacityLast),
+                "A normal URL refused by preflight must retain its FIFO suffix without poisoning checkpoint writes.");
+            completed.Title=oldTitle;subject.SaveCheckpoint();Load(current);
+            Require(subject.SessionState.Queue.TakeLast(2).Select(row=>row.Url).SequenceEqual(new[]{capacityFirst,capacityLast}) &&
+                storage.Restore()!.Queue.TakeLast(2).Select(row=>row.Url).SequenceEqual(new[]{capacityFirst,capacityLast}) && subject.SessionState.Coordinator is null,
+                "A later maintenance release retries the capacity-refused suffix exactly once after space is freed.");
             Load(current);before=Files(storage);held.Arm("staged");Confirm(current);PumpUntil(()=>held.Entered,"Close test did not enter actual restore.");
             var closing=current;closing.Close();Require(closing.IsVisible && closing.IsBusy,"Closing must wait for its in-flight profile operation to join.");
             held.Release();PumpUntil(()=>!closing.IsVisible && !subject.ProfileBackupBusy,"Close did not join cancellation before releasing the profile gate.");current=null;

@@ -9,6 +9,11 @@ public sealed class AppPersistence
     public static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive = true, WriteIndented = false };
     internal const int MaxCheckpointBytes=16*1024*1024;
     internal const int MaxQueueItems=100_000;
+    // Preserve the InvalidDataException contract used by ingress callers while
+    // distinguishing writer capacity from damaged input or filesystem failure.
+    private sealed class CheckpointCapacityException:Exception { }
+    private static InvalidDataException CapacityExceeded(string message)=>new(message,new CheckpointCapacityException());
+    internal static bool IsCapacityExceeded(Exception error)=>error is InvalidDataException {InnerException:CheckpointCapacityException};
     private readonly string _dir;
     private readonly SuccessfulDownloadHistory _history;
     public string SessionPath => Path.Combine(_dir, "session.json");
@@ -90,15 +95,16 @@ public sealed class AppPersistence
     }
     private static void SerializeCheckpoint(Stream stream,IReadOnlyCollection<DownloadItem> queue,DownloadOptions settings,DateTime savedAtUtc)
     {
-        if(queue.Count>MaxQueueItems)throw new InvalidDataException("Очередь не помещается в сохранение: допустимо не более 100 000 ссылок. Перенеси её частями.");
+        if(queue.Count>MaxQueueItems)throw CapacityExceeded("Очередь не помещается в сохранение: допустимо не более 100 000 ссылок. Перенеси её частями.");
         JsonSerializer.Serialize(stream,new SessionSnapshot{Queue=queue.ToList(),Settings=settings,Engine=null,SavedAtUtc=savedAtUtc},Json);
     }
     private sealed class CheckpointBuffer:MemoryStream
     {
         private void Check(int count)
         {
-            if(count<0 || Length+count>MaxCheckpointBytes)
-                throw new InvalidDataException("Очередь не помещается в сохранение размером 16 МиБ. Перенеси её частями или сократи названия.");
+            if(count<0)throw new ArgumentOutOfRangeException(nameof(count));
+            if(Length+count>MaxCheckpointBytes)
+                throw CapacityExceeded("Очередь не помещается в сохранение размером 16 МиБ. Перенеси её частями или сократи названия.");
         }
         public override void Write(byte[] buffer,int offset,int count){Check(count);base.Write(buffer,offset,count);}
         public override void Write(ReadOnlySpan<byte> buffer){Check(buffer.Length);base.Write(buffer);}

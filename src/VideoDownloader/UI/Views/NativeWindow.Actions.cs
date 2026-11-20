@@ -379,6 +379,7 @@ public sealed partial class NativeWindow
         FlushJournal();
         foreach(var column in _subscriptionColumns)column.Dispose();
         _panelLayout.Dispose();
+        _journalLayout.Dispose();
         _theme.Dispose();
         _lifecycle.Dispose();
         _closeReady=true;
@@ -406,6 +407,7 @@ public sealed partial class NativeWindow
         SessionState.Coordinator?.Stop();
         _preview.Dispose();
         _panelLayout.Dispose();
+        _journalLayout.Dispose();
         _theme.Dispose();
         _lifecycle.Dispose();
         if(!_journalCloseRequested)_journal.Dispose();

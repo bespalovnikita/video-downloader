@@ -36,7 +36,12 @@ internal sealed partial class SubscriptionController
                 e.Handled=true;_subscriptionCompactDetails=false;RefreshSubscriptionsLayout();
                 search.BringIntoView();search.Focus();search.SelectAll();
             }
-            else if(e.Key==Key.Escape && (search.IsKeyboardFocusWithin || state.IsKeyboardFocusWithin))
+        };
+        window.KeyDown+=(_,e)=>
+        {
+            if(e.Handled || e.Key!=Key.Escape)return;
+            if(state.IsDropDownOpen){e.Handled=true;state.IsDropDownOpen=false;return;}
+            if(search.IsKeyboardFocusWithin || state.IsKeyboardFocusWithin)
             {e.Handled=true;ResetInboxFilters();}
         };
     }

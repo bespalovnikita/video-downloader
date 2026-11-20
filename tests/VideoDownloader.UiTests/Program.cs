@@ -10,9 +10,10 @@ internal static class Program
         // file without marking the failure handled or changing its exit code.
         static void RecordFailure(object? error)
         {
+            int nativeError=System.Runtime.InteropServices.Marshal.GetLastPInvokeError();
             string? result=Environment.GetEnvironmentVariable("VD_NATIVE_UI_TEST_RESULT");
             if(!string.IsNullOrWhiteSpace(result))
-                try{File.WriteAllText(result,"FAIL: "+error);}catch(IOException){}
+                try{File.WriteAllText(result,"FAIL: "+error+Environment.NewLine+"Cached P/Invoke error (context only): "+nativeError);}catch(IOException){}
         }
         AppDomain.CurrentDomain.UnhandledException+=(_,e)=>RecordFailure(e.ExceptionObject);
         System.Windows.Threading.Dispatcher.CurrentDispatcher.UnhandledException+=(_,e)=>RecordFailure(e.Exception);
@@ -23,7 +24,9 @@ internal static class Program
             System.Windows.Threading.Dispatcher.CurrentDispatcher));
         try
         {
-            switch(Environment.GetEnvironmentVariable("VD_NATIVE_UI_TEST_SCENE")??"All")
+            string scene=Environment.GetEnvironmentVariable("VD_NATIVE_UI_TEST_SCENE")??"All";
+            using var diagnostics=new UiRunDiagnostics(scene);
+            switch(scene)
             {
                 case "All": UiScenario.Run();break;
                 case "SubscriptionInitialActions": UiScenario.RunSubscriptionInitialActionsOnly();break;

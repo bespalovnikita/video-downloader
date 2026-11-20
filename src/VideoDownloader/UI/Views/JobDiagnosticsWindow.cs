@@ -156,8 +156,15 @@ internal sealed class JobDiagnosticsWindow:Window
         _refresh.Click+=(_,_)=>BeginRefresh(true);_copy.Click+=(_,_)=>CopyVisible();_export.Click+=(_,_)=>BeginExport();close.Click+=(_,_)=>Close();
         PreviewKeyDown+=(_,e)=>
         {
-            if(e.Key==Key.Escape){e.Handled=true;Close();}
-            else if(e.Key==Key.F && (Keyboard.Modifiers&ModifierKeys.Control)!=0){e.Handled=true;_search.Focus();_search.SelectAll();}
+            if(e.Key==Key.F && (Keyboard.Modifiers&ModifierKeys.Control)!=0){e.Handled=true;_search.Focus();_search.SelectAll();}
+        };
+        KeyDown+=(_,e)=>
+        {
+            if(e.Handled || e.Key!=Key.Escape)return;
+            e.Handled=true;
+            var open=new[]{_attempt,_level}.FirstOrDefault(combo=>combo.IsDropDownOpen);
+            if(open is not null){open.IsDropDownOpen=false;return;}
+            Close();
         };
         _timer.Tick+=RefreshTick;Loaded+=(_,_)=>{if(!_closed){BeginRefresh(true);_timer.Start();}};Closed+=(_,_)=>CloseOperations();
         OwnedWindowLayout.Attach(this,owner);

@@ -49,6 +49,16 @@ public sealed partial class DownloadCoordinator
 
     public bool Resume(DownloadItem item)=>Admit(item,true);
 
+    // Only an exact joined Skip generation carries this coordinator's prior
+    // admission consent. A deferred or restored Skipped row has no such grant.
+    internal bool OwnsFinishedSkippedAttempt(DownloadItem item)
+    {
+        lock(_completionGate)
+            return _attempts.TryGetValue(item.Url,out var attempt) && ReferenceEquals(attempt.Row,item) &&
+                attempt.Reason==AttemptStopReason.Skip && attempt.Finished.Task.IsCompleted &&
+                item.Status=="Skipped" && item.AttemptFinished && _selections.GetValueOrDefault(item.Url)==item.Selection;
+    }
+
     // Explicit reset is the sole operation allowed to supersede a cancelled
     // URL in a live session. Ordinary Remove/re-add retains its old tombstone.
     internal bool Restart(DownloadItem item)

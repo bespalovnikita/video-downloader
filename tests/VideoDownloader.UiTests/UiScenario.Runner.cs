@@ -28,6 +28,8 @@ internal sealed partial class UiScenario
         Window? window=null;
         try
         {
+            Stage("testing long-lived tooltips and overdue DispatcherTimer delivery");
+            UiScenario.TestToolTipTimers();
             Stage("testing cold title ingress through metadata worker");
             UiScenario.TestColdTitleIngress(root);
             Stage("testing subscription preview prefetch after complete scans");
@@ -136,6 +138,18 @@ internal sealed partial class UiScenario
             static void Require(bool condition,string error)
             {
                 if(!condition) throw new InvalidOperationException("WPF UI parity test failed: "+error);
+            }
+            static void PumpUntil(Func<bool> ready,TimeSpan budget,string error)
+            {
+                if(ready())return;
+                var elapsed=System.Diagnostics.Stopwatch.StartNew();
+                var frame=new System.Windows.Threading.DispatcherFrame();
+                var timer=new System.Windows.Threading.DispatcherTimer{Interval=TimeSpan.FromMilliseconds(20)};
+                timer.Tick+=(_,_)=>{if(ready() || elapsed.Elapsed>=budget)frame.Continue=false;};
+                timer.Start();
+                try{System.Windows.Threading.Dispatcher.PushFrame(frame);}
+                finally{timer.Stop();}
+                Require(ready(),error);
             }
 
             // This Add/binding scenario uses known local metadata. Unseeded
@@ -288,18 +302,26 @@ internal sealed partial class UiScenario
                 }
                 Require(deletionConfirmed,"Removing a queued row owned by a live coordinator must obtain actual destructive confirmation");
                 Stage("pending removal confirmed; waiting for cleanup owner");
-                Require(cleanupEntered.Wait(TimeSpan.FromSeconds(5)),"The real queued cleanup owner must start before its acknowledgement is released");
+                // Cancellation is asynchronous. Keep the real UI and any
+                // pending input/preview continuations alive while the worker
+                // reaches its deliberately held acknowledgement gate.
+                PumpUntil(()=>cleanupEntered.IsSet,TimeSpan.FromSeconds(5),
+                    "The real queued cleanup owner must start before its acknowledgement is released");
+                Stage("queued cleanup owner entered; checking held acknowledgement");
                 Require(Volatile.Read(ref cleanupGateTimedOut)==0,"The controlled queued cleanup gate must not expire before the pending-removal assertion");
                 Require(queue.Items.Contains(pending) && pending.PendingRemoval && !pending.AttemptFinished,
                     "Remove must retain the row while cancellation is unacknowledged");
                 allowCleanup.Set();
+                Stage("queued cleanup acknowledgement released; starting coordinator join");
                 var task=cancelSession.RunAsync();
+                Stage("coordinator join started; waiting for cleanup notification and row removal");
                 var cancellationFrame=new System.Windows.Threading.DispatcherFrame();
                 var deadline=DateTime.UtcNow.AddSeconds(10);
                 var poll=new System.Windows.Threading.DispatcherTimer{Interval=TimeSpan.FromMilliseconds(20)};
                 poll.Tick+=(_,_)=>{if(task.IsCompleted && !queue.Items.Contains(pending) || DateTime.UtcNow>deadline)cancellationFrame.Continue=false;};
                 poll.Start();
                 try{System.Windows.Threading.Dispatcher.PushFrame(cancellationFrame);}finally{poll.Stop();}
+                Stage("cleanup notification wait returned; checking completed removal");
                 Require(task.IsCompletedSuccessfully && pending.AttemptFinished && !queue.Items.Contains(pending),
                     "Worker acknowledgement must finish removal and preserve the other queue row");
                 Require(queue.Items.Count==1,"Cancelling one row must not remove another URL");
@@ -307,8 +329,18 @@ internal sealed partial class UiScenario
             finally
             {
                 allowCleanup.Set();
-                cancelSession.DisposeAsync().AsTask().GetAwaiter().GetResult();
-                controller.SessionState.AttachCoordinator(null);
+                Stage("disposing queued cancellation coordinator");
+                var disposed=cancelSession.DisposeAsync().AsTask();
+                // A failing assertion must not replace the bounded scene with
+                // an unbounded UI-thread join that hides the original failure.
+                try
+                {
+                    PumpUntil(()=>disposed.IsCompleted,TimeSpan.FromSeconds(10),
+                        "Queued cancellation disposal must join its real cleanup owner");
+                    disposed.GetAwaiter().GetResult();
+                }
+                finally{controller.SessionState.AttachCoordinator(null);}
+                Stage("queued cancellation coordinator disposed");
             }
 
             Stage("testing tray");

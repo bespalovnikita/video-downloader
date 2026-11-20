@@ -4,9 +4,12 @@ using System.IO.Compression;
 using System.Text;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Markup;
 using System.Windows.Threading;
 using System.Xml;
+using KeyEventArgs=System.Windows.Input.KeyEventArgs;
 
 namespace VideoDownloader.UiTests;
 
@@ -14,16 +17,27 @@ internal sealed partial class UiScenario
 {
     private static void TestJobDiagnostics(string testRoot)
     {
+        static void Stage(string detail)
+        {
+            string message="per-job diagnostics: "+detail;
+            Console.WriteLine(message);
+            string? result=Environment.GetEnvironmentVariable("VD_NATIVE_UI_TEST_RESULT");
+            if(!string.IsNullOrWhiteSpace(result))
+                try{File.WriteAllText(result,message);}
+                catch(IOException error){Console.WriteLine("Diagnostics stage file: "+error.HResult);}
+        }
         static void Require(bool condition,string message)
         {if(!condition)throw new InvalidOperationException("Job-diagnostics WPF test: "+message);}
         static void PumpUntil(Func<bool> condition,string message,Func<string>? diagnostics=null)
         {
+            Stage("waiting: "+message);
             if(condition())return;
             var frame=new DispatcherFrame();var watch=Stopwatch.StartNew();
             var timer=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(15)};
             timer.Tick+=(_,_)=>{if(condition() || watch.Elapsed>TimeSpan.FromSeconds(10))frame.Continue=false;};
             timer.Start();try{Dispatcher.PushFrame(frame);}finally{timer.Stop();}
             if(!condition())Require(false,message+(diagnostics is null?"":Environment.NewLine+diagnostics()));
+            Stage("completed: "+message);
         }
         static string Geometry(Window window,DataGrid grid)
         {
@@ -35,7 +49,12 @@ internal sealed partial class UiScenario
                 string.Join("; ",grid.Columns.Select(column=>$"{column.Header}: {column.Visibility}, actual={column.ActualWidth:0.###}, requested={column.Width}"));
         }
         static T Control<T>(Window window,string name) where T:class=>(T)(window.FindName(name)??throw new InvalidOperationException("Missing diagnostics control: "+name));
-        static void Click(Window window,string name)=>Control<Button>(window,name).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        static void Click(Window window,string name)
+        {
+            Stage("click "+name);
+            Control<Button>(window,name).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Stage("clicked "+name);
+        }
         static Window Load()
         {
             using var input=File.OpenRead(Path.Combine(AppContext.BaseDirectory,"ui","MainWindow.xaml"));
@@ -43,6 +62,7 @@ internal sealed partial class UiScenario
         }
         static JournalRecord Record(JobDiagnosticTarget target,string name,int invocation=1,JournalLevel level=JournalLevel.Information,string? message=null,JobDiagnosticSettings? settings=null)=>
             new(level,"download",message??name,"session-fixture",target.Job,"T1",target.Identity,name,1,invocation,settings);
+        Stage("prepare isolated files, journal and captured targets");
         string root=Path.Combine(testRoot,"job-diagnostics");Directory.CreateDirectory(root);
         var storage=new AppPersistence(Path.Combine(root,"profile"));
         File.WriteAllText(storage.SessionPath,"damaged checkpoint must remain byte-identical");
@@ -68,10 +88,13 @@ internal sealed partial class UiScenario
             return new[]{new DiagnosticComponentVersion("Video Downloader","Доступен","fixture"),new DiagnosticComponentVersion("FFmpeg","Не установлен","")};
         }
         var service=new JobDiagnosticsService(journal,"must-not-launch",Versions);
+        Stage("load owner XAML");
         var owner=Load();JobDiagnosticsWindow? window=null;
         try
         {
+            Stage("show owner");
             owner.Show();
+            Stage("construct and show initial diagnostics");
             window=new JobDiagnosticsWindow(owner,target,service,()=>journal.Sequence,_=>
             {
                 exportChoices++;
@@ -115,6 +138,7 @@ internal sealed partial class UiScenario
             // forced minimum permits the actual wide grid on a small CI display;
             // isolate this probe from the separately tested work-area controller,
             // which correctly restores the dialog's production minimum on resize.
+            Stage("detach work-area controller and request wide geometry");
             OwnedWindowLayout.Attach(window,owner).Dispose();
             window.MinWidth=0;window.MaxWidth=double.PositiveInfinity;window.MaxHeight=double.PositiveInfinity;
             window.MinWidth=1120;window.Width=1120;window.Height=650;window.UpdateLayout();
@@ -122,6 +146,7 @@ internal sealed partial class UiScenario
                 grid.Columns.All(column=>column.Visibility==Visibility.Visible && column.ActualWidth>0) &&
                 grid.Columns.Sum(column=>column.ActualWidth)<=grid.ActualWidth+1,
                 "Wide diagnostics must restore every actual column after deferred WPF layout finishes.",()=>Geometry(window,grid));
+            Stage("verify wide bindings and configure sorted current cell");
             grid.SelectedIndex=0;grid.UpdateLayout();
             Require((grid.Columns[3].GetCellContent(grid.SelectedItem) as TextBlock)?.Text=="admitted",
                 "The wide DataGrid must retain the actual typed event binding.");
@@ -130,6 +155,7 @@ internal sealed partial class UiScenario
             grid.SelectedItem=selectedEvent;var eventSource=grid.ItemsSource;
             var sortedEvents=grid.Items.Cast<object>().ToArray();
             grid.CurrentCell=new DataGridCellInfo(selectedEvent,grid.Columns[4]);
+            Stage("request narrow geometry");
             window.MinWidth=700;window.Width=700;window.Height=window.MinHeight;window.UpdateLayout();
             PumpUntil(()=>Math.Abs(window.ActualWidth-700)<=1 &&
                 grid.Columns[2].Visibility==Visibility.Collapsed && grid.Columns[3].Visibility==Visibility.Collapsed &&
@@ -142,6 +168,7 @@ internal sealed partial class UiScenario
                 details.Text.Contains("admitted") && details.Text.Contains("Параметры этой попытки") &&
                 System.Windows.Automation.AutomationProperties.GetHelpText(grid).Contains("Выбранном событии"),
                 "Resizing must preserve the selected event, sorting, source and full hidden technical details.");
+            Stage("restore production work-area controller and verify footer bounds");
             grid.Items.SortDescriptions.Clear();
             window.MinWidth=0;window.MinHeight=0;
             window.MaxWidth=double.PositiveInfinity;window.MaxHeight=double.PositiveInfinity;
@@ -154,6 +181,7 @@ internal sealed partial class UiScenario
                 Require(button.IsVisible && point.Y>=0 && point.Y+button.ActualHeight<=content.ActualHeight+1,"Diagnostics actions must remain reachable at the minimum window size: "+action);
             }
             Require(grid.ActualHeight>27,"The minimum window size must retain a usable events area.");
+            Stage("verify captured target, event details and composed filters");
             row.Title="Позднее имя";row.Url=other.Url;row.Status="Completed";
             Require(window.Title.Contains("Выбранное видео") && !window.Title.Contains("Позднее"),"The target must remain captured when its source row changes.");
             Require(Control<TextBlock>(window,"JobDiagnosticExplanation").Text.Length>0 && Control<TextBox>(window,"JobDiagnosticError").Text.Contains("403"),"An explanation and original diagnostic must both remain visible.");
@@ -166,10 +194,12 @@ internal sealed partial class UiScenario
             search.Text="not-present";Require(grid.Items.Count==0 && !Control<Button>(window,"CopyJobDiagnosticsButton").IsEnabled && empty.IsVisible && empty.Text.Contains("Очистите поиск"),"No-match search must explain how to restore results without copying hidden events.");
             search.Text="403";Require(grid.Items.Count==1 && !empty.IsVisible,"Search must match retained raw diagnostics and clear the empty-state guidance.");
             Click(window,"CopyJobDiagnosticsButton");
+            Stage("read actual clipboard");
             string copied=Clipboard.GetText();
             Require(copied.Contains("failure") && !copied.Contains("event=retry") && !copied.Contains("event=admitted"),"Clipboard copy must contain exactly the visible event subset.");
             Click(window,"ExportJobDiagnosticsButton");
             PumpUntil(()=>window.PendingOperations.IsCompleted && File.Exists(destination),"Real ZIP export did not complete.");
+            Stage("read and verify real exported ZIP");
             using(var archive=ZipFile.OpenRead(destination))
             {
                 string text=string.Join("\n",archive.Entries.Select(entry=>{using var reader=new StreamReader(entry.Open());return reader.ReadToEnd();}));
@@ -178,34 +208,61 @@ internal sealed partial class UiScenario
                 Require(events.Contains("admitted") && events.Contains("failure") && events.Contains("retry"),"ZIP must retain all captured events even while the view is filtered.");
                 Require(!new[]{"URL_PRIVATE_CANARY","HEADER_PRIVATE_CANARY","LOCAL_PATH_CANARY","OUTPUT_PATH_CANARY","COOKIES_PATH_CANARY","OTHER_JOB_CANARY"}.Any(canary=>text.Contains(canary,StringComparison.Ordinal)),"Actual ZIP leaked private paths, secrets, settings or another job.");
             }
+            Stage("clear filters and publish a late event");
             attempts.SelectedValue="*";level.SelectedValue="*";search.Text="";
             journal.Write(Record(target,"late-event",invocation:2));
             PumpUntil(()=>grid.Items.Count==4,"The live sequence timer must pick up a new event without changing the captured target.");
             Require(probes==1,"Live reads must not probe component versions.");
             Require(session.SequenceEqual(File.ReadAllBytes(storage.SessionPath)) && history.SequenceEqual(File.ReadAllBytes(storage.HistoryPath)),"Opening/filtering/copy/export must preserve damaged checkpoint and history bytes.");
-            window.Close();PumpUntil(()=>window.PendingOperations.IsCompleted,"Closed diagnostics must finish reads.");window=null;
+            search.Text="403";attempts.SelectedIndex=1;level.SelectedValue=nameof(JournalLevel.Error);
+            var selectedAttempt=attempts.SelectedValue;var selectedLevel=level.SelectedValue;
+            foreach(var combo in new[]{attempts,level})
+            {
+                Stage("focus and open native Escape target "+combo.Name);
+                window.Activate();combo.BringIntoView();combo.Focus();
+                PumpUntil(()=>window.IsActive && combo.IsKeyboardFocusWithin,
+                    "An actual diagnostics filter must have keyboard focus before testing Escape.");
+                combo.IsDropDownOpen=true;
+                PumpUntil(()=>combo.IsDropDownOpen,"The actual diagnostics dropdown must open before Escape.");
+                Stage("send native Escape to open "+combo.Name);
+                NativeFilterEscape(window,()=>!combo.IsDropDownOpen,
+                    "The first native Escape must close the diagnostics filter dropdown.");
+                Require(window.IsVisible && search.Text=="403" && Equals(attempts.SelectedValue,selectedAttempt) &&
+                    Equals(level.SelectedValue,selectedLevel) && grid.Items.Count==1,
+                    "Dismissing a diagnostics dropdown must preserve its window, query, attempt and level.");
+            }
+            Stage("send native Escape to close diagnostics");
+            NativeFilterEscape(window,()=>!window.IsVisible,
+                "A second native Escape with closed dropdowns must close the diagnostics window.");
+            PumpUntil(()=>window.PendingOperations.IsCompleted,"Closed diagnostics must finish reads.");window=null;
 
             // Create a competing destination only after the UI's absence check.
             // This exercises the real ZIP publication guard without a dialog seam.
+            Stage("construct and show destination-collision diagnostics");
             destination=Path.Combine(root,"racing.zip");raceCollision=true;
             window=new JobDiagnosticsWindow(owner,target,service,()=>journal.Sequence,_=>new(destination));window.Show();
             PumpUntil(()=>Control<Button>(window,"ExportJobDiagnosticsButton").IsEnabled,"Collision test view did not load.");
             Click(window,"ExportJobDiagnosticsButton");
             PumpUntil(()=>window.PendingOperations.IsCompleted && Control<TextBlock>(window,"JobDiagnosticsStatus").Text.Contains("Не удалось сохранить"),"A fresh-name collision must fail visibly.");
             Require(File.ReadAllText(destination)=="FOREIGN ZIP SENTINEL","Unconfirmed export collision must preserve the existing file.");
+            Stage("close collision diagnostics and construct cancellation diagnostics");
             window.Close();window=null;raceCollision=false;cancelProbe=true;destination=Path.Combine(root,"cancelled.zip");
             window=new JobDiagnosticsWindow(owner,target,service,()=>journal.Sequence,_=>new(destination));window.Show();
             PumpUntil(()=>Control<Button>(window,"ExportJobDiagnosticsButton").IsEnabled,"Cancellation test view did not load.");
             Click(window,"ExportJobDiagnosticsButton");PumpUntil(()=>versionsStarted.Task.IsCompleted,"Export version work did not start.");
+            Stage("close diagnostics during blocked version probe");
             window.Close();string closedStatus=Control<TextBlock>(window,"JobDiagnosticsStatus").Text;
             PumpUntil(()=>window.PendingOperations.IsCompleted,"Close must cancel and join pending export work.");
             Require(!File.Exists(destination) && Control<TextBlock>(window,"JobDiagnosticsStatus").Text==closedStatus,"Cancelled close must not publish ZIP or mutate closed controls.");window=null;
 
+            Stage("construct and show diagnostics for queued-read close");
             window=new JobDiagnosticsWindow(owner,target,service,()=>journal.Sequence,_=>null);window.Show();
+            Stage("post refresh then close diagnostics immediately");
             Click(window,"RefreshJobDiagnosticsButton");window.Close();
             PumpUntil(()=>window.PendingOperations.IsCompleted,"Closing before a posted read starts must join it without touching closed controls.");
             Require(!window.IsVisible,"A cancelled queued read cannot reopen its closed window.");window=null;
 
+            Stage("construct and show diagnostics without saved events");
             var untouched=JobDiagnosticTarget.Capture(new DownloadItem{Url="https://diagnostics.invalid/not-started",Title="Ещё не запущено",Status="Queued"});
             window=new JobDiagnosticsWindow(owner,untouched,service,()=>journal.Sequence,_=>null);window.Show();
             PumpUntil(()=>window.PendingOperations.IsCompleted && Control<TextBlock>(window,"JobDiagnosticsEmptyHint").IsVisible,"A job with no saved events must finish loading its guidance.");
@@ -213,11 +270,14 @@ internal sealed partial class UiScenario
                 Control<TextBlock>(window,"JobDiagnosticsEmptyHint").Text.Contains("нет сохранённых событий"),"Purpose and a no-events explanation must remain available even without an error.");
             Click(window,"JobDiagnosticsHelpButton");window.UpdateLayout();
             Require(Control<TextBlock>(window,"JobDiagnosticsHelp").IsVisible,"A job without events must still offer the full in-window guide.");
+            Stage("close empty job guide");
             window.Close();PumpUntil(()=>window.PendingOperations.IsCompleted,"Closing the empty job guide must join its read.");window=null;
 
+            Stage("construct real NativeWindow for main-owner integration");
             var mainStorage=new AppPersistence(Path.Combine(root,"main-profile"));
             using(var native=new NativeWindow(owner,mainStorage,"must-not-launch"))
             {
+                Stage("populate real main queue and select first diagnostic target");
                 var first=new DownloadItem{Url="https://diagnostics.invalid/first",Title="Первая",Status="Failed"};
                 var second=new DownloadItem{Url="https://diagnostics.invalid/second",Title="Вторая",Status="Completed"};
                 native.SessionState.TryAdd(first);native.SessionState.TryAdd(second);native.SessionState.Downloads.Add(second);
@@ -225,23 +285,69 @@ internal sealed partial class UiScenario
                 queue.SelectedItem=first;native.UpdateState();Click(owner,"QueueDiagnosticsButton");
                 PumpUntil(()=>native.JobDiagnosticWindows.Count==1,"The queue button must open a captured diagnostics window.");
                 var firstWindow=native.JobDiagnosticWindows.Single();
+                Stage("change main selection while first diagnostics remains open");
                 queue.SelectedItem=second;native.UpdateState();
                 Require(firstWindow.Title.Contains("Первая"),"Changing main selection must not rewrite an open target.");
+                Stage("select Downloads target");
                 downloads.SelectedItem=second;Click(owner,"DownloadDiagnosticsButton");
                 PumpUntil(()=>native.JobDiagnosticWindows.Count==2,"The download button must open its own target.");
                 var menu=queue.ContextMenu!.Items.OfType<MenuItem>().Single(item=>item.Name=="QueueDiagnosticsMenuItem");
+                Stage("invoke context menu for existing first target");
                 queue.SelectedItem=first;menu.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
                 Require(native.JobDiagnosticWindows.Count==2,"The context menu must reuse the exact same job window.");
                 Require(downloads.ContextMenu!.Items.OfType<MenuItem>().Any(item=>item.Name=="DownloadDiagnosticsMenuItem"),"Downloads context menu must expose diagnostics.");
+                Stage("hide main queue selection with search");
                 Control<TextBox>(owner,"QueueSearchBox").Text="no-visible-match";native.UpdateState();
                 PumpUntil(()=>!Control<Button>(owner,"QueueDiagnosticsButton").IsEnabled,"The filtered queue must clear or reject its hidden selection.");
                 Click(owner,"QueueDiagnosticsButton");menu.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
                 Require(!Control<Button>(owner,"QueueDiagnosticsButton").IsEnabled && native.JobDiagnosticWindows.Count==2,"Hidden queue selection must not be actionable through direct routed events.");
                 Require(native.SessionState.Coordinator is null && native.SessionState.RunningTask is null && native.SessionState.Queue.Count==2 && !File.Exists(mainStorage.HistoryPath),"Diagnostics controls must not admit downloads or create successful history.");
+                Stage("dispose real main owner and its diagnostics");
                 native.Dispose();PumpUntil(()=>!firstWindow.IsVisible,"Owner disposal must close diagnostic windows.");
             }
+            Stage("all diagnostics assertions completed");
             Console.WriteLine("PASS: real WPF per-job diagnostics, in-window help/minimum layout/empty guidance, immutable targets, typed filters/live events, clipboard, private ZIP, collision/cancel and main owner lifecycle");
         }
-        finally{window?.Close();if(owner.IsVisible)owner.Close();}
+        finally
+        {
+            Stage("finally: close remaining diagnostics");window?.Close();
+            Stage("finally: close main owner");if(owner.IsVisible)owner.Close();
+            Stage("finally: owner closed");
+        }
+        Stage("dispose fixture journal and return from diagnostics scenario");
+    }
+
+    // Both filter scenarios use actual HWND input so child ComboBox class
+    // handling participates before the Window's bubbling Escape action.
+    private static void NativeFilterEscape(Window window,Func<bool> ready,string message)
+    {
+        int observed=0;
+        PreProcessInputEventHandler observe=(_,e)=>
+        {
+            if(e.StagingItem.Input is KeyEventArgs key && key.Key==Key.Escape &&
+                key.RoutedEvent==Keyboard.PreviewKeyDownEvent)observed++;
+        };
+        InputManager.Current.PreProcessInput+=observe;
+        try
+        {
+            nint target=FilterKeyboardInput.GetFocus();
+            if(target==0)target=new WindowInteropHelper(window).Handle;
+            const int down=(1<<16)|1;
+            if(!PostMessageW(target,0x0100,(nint)0x1b,(nint)down) ||
+                !PostMessageW(target,0x0101,(nint)0x1b,(nint)(down|unchecked((int)0xc0000000))))
+                throw new InvalidOperationException("The actual filter HWND Escape messages must be queued.");
+            var frame=new DispatcherFrame();var clock=Stopwatch.StartNew();
+            var timer=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(15)};
+            timer.Tick+=(_,_)=>{if(observed>0 && ready() || clock.Elapsed>TimeSpan.FromSeconds(8))frame.Continue=false;};
+            timer.Start();try{Dispatcher.PushFrame(frame);}finally{timer.Stop();}
+            if(observed==0 || !ready())throw new InvalidOperationException(message+" Observed native Escape events: "+observed);
+        }
+        finally{InputManager.Current.PreProcessInput-=observe;}
+    }
+
+    private static class FilterKeyboardInput
+    {
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        internal static extern nint GetFocus();
     }
 }

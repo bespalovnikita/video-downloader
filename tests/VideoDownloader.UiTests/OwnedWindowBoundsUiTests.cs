@@ -86,7 +86,10 @@ internal sealed partial class UiScenario
         var duplicate=(Window)XamlReader.Load(duplicateReader);duplicate.Owner=owner;duplicate.Resources.MergedDictionaries.Add(owner.Resources);
         ((TextBox)duplicate.FindName("DuplicateUrl")!).Text="https://layout.invalid/video?"+new string('x',2048);
         OwnedWindowLayout.Attach(duplicate,owner);
-        var dialogs=new[]{backup,history,diagnostics,help,duplicate};
+        var diskSpace=new DiskSpaceWarningDialog(owner,string.Join("\n\n",Enumerable.Repeat(
+            "Том C:\\ — для временных потоков и обработки требуется резерв. "+
+            "Том D:\\ — место для опубликованных файлов; размеры части материалов пока неизвестны.",12)));
+        var dialogs=new[]{backup,history,diagnostics,help,duplicate,diskSpace};
         try
         {
             foreach(var window in dialogs)
@@ -98,7 +101,8 @@ internal sealed partial class UiScenario
                         $"{window.Title} must finish loading and activate before its keyboard path is exercised.",
                         ()=>$"loaded={window.IsLoaded}, active={window.IsActive}, focused={FocusName(Keyboard.FocusedElement)}.");
                     var close=window==help?Children((DependencyObject)window.Content).OfType<Button>().Single(button=>Equals(button.Content,"Закрыть")):
-                        Control<Button>(window,window==backup?"CloseProfileBackupButton":window==history?"CloseHistoryButton":window==diagnostics?"CloseJobDiagnosticsButton":"CancelButton");
+                        Control<Button>(window,window==backup?"CloseProfileBackupButton":window==history?"CloseHistoryButton":window==diagnostics?"CloseJobDiagnosticsButton":
+                            window==diskSpace?"CancelDiskSpaceStartButton":"CancelButton");
                     var area=new Rect(10,10,640,420);var layout=OwnedWindowLayout.Attach(window,owner);layout.Refresh(area);
                     Until(()=>Fits(window,area) && Reachable(window,close),
                         $"{window.Title} must fit a 640x420 DIP work area and keep its real Close/Cancel outside scrolling content; actual {window.ActualWidth}x{window.ActualHeight}.");
@@ -124,6 +128,19 @@ internal sealed partial class UiScenario
                     }
                     Require(close.IsKeyboardFocusWithin && Reachable(window,close),
                         "The bounded dialog's Close/Cancel must remain reachable through the actual keyboard focus path. "+FocusEvidence());
+                    if(window==diskSpace)
+                    {
+                        var proceed=Control<Button>(window,"ContinueDiskSpaceStartButton");
+                        var scroll=Control<ScrollViewer>(window,"DiskSpaceWarningScroll");
+                        Require(Reachable(window,proceed) && scroll.ScrollableHeight>0 && scroll.ViewportHeight>0,
+                            "A long multi-volume warning must scroll its explanation while both actual decision buttons remain visible.");
+                        Require(NextFocus(Keyboard.FocusedElement),"The warning must support Tab from Cancel to Continue.");
+                        Until(()=>proceed.IsKeyboardFocusWithin && Reachable(window,proceed),
+                            "Continue must be reachable through the actual bounded warning's keyboard path.",FocusEvidence);
+                        scroll.ScrollToEnd();window.UpdateLayout();
+                        Require(Reachable(window,close) && Reachable(window,proceed),
+                            "Reading the end of a long warning must keep both decisions outside the scrolling body.");
+                    }
                     if(window==backup)
                     {
                         Control<Button>(backup,"CreateProfileBackupButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
@@ -140,7 +157,7 @@ internal sealed partial class UiScenario
                 }
                 finally{window.Close();}
             }
-            Console.WriteLine("PASS: owned Windows dialogs fit monitor DIP bounds, preserve reachable close/cancel and release cancelled backup preparation");
+            Console.WriteLine("PASS: owned Windows dialogs fit monitor DIP bounds, preserve reachable decisions through long disk warnings and release cancelled backup preparation");
         }
         finally
         {

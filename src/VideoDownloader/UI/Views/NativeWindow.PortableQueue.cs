@@ -83,11 +83,13 @@ public sealed partial class NativeWindow
         await _portableIngressGate.WaitAsync();
         try
         {
-            if(_closing || _disposed || _appUpdateHandoff || _restoringSession || (profileReplay?!CanReplayProfileArguments():RejectProfileBackupMutation()))return;
+            if(_closing || _disposed || _appUpdateHandoff || _restoringSession || (profileReplay?!CanReplayProfileArguments():RejectProfileBackupMutation()))
+            {if(profileReplay)throw new InvalidOperationException("Приём отложенной очереди приостановлен.");return;}
             if(_checkpointReadOnly || _legacyEngineBlocked)
                 throw new InvalidOperationException("Очередь недоступна для сохранения. Сначала устрани ошибку восстановления или заверши прежний движок.");
             var entries=await Task.Run(decode);
-            if(_closing || _disposed || _restoringSession || (profileReplay?!CanReplayProfileArguments():RejectProfileBackupMutation()))return;
+            if(_closing || _disposed || _appUpdateHandoff || _restoringSession || (profileReplay?!CanReplayProfileArguments():RejectProfileBackupMutation()))
+            {if(profileReplay)throw new InvalidOperationException("Состояние профиля изменилось во время чтения отложенной очереди.");return;}
             if(_checkpointReadOnly || _legacyEngineBlocked)
                 throw new InvalidOperationException("Очередь недоступна для сохранения.");
             var added=SessionState.ImportPortable(entries,ReadOptions());
@@ -99,6 +101,9 @@ public sealed partial class NativeWindow
         }
         catch(Exception error) when(error is IOException or InvalidDataException or ArgumentException or InvalidOperationException or UnauthorizedAccessException)
         {
+            // Replay owns the FIFO cursor and its retry warning. A failed or
+            // stale import must not look like a successfully consumed argument.
+            if(profileReplay)throw;
             PortableQueueError(error);
         }
         finally { _portableIngressGate.Release(); }
