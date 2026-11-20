@@ -3,6 +3,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using Forms=System.Windows.Forms;
+using KeyEventArgs=System.Windows.Input.KeyEventArgs;
 
 namespace VideoDownloader.Native;
 
@@ -136,6 +137,16 @@ public sealed partial class NativeWindow
                 "Finish removal or resolve this task's cleanup error first.");
         return null;
     }
+    private void CopyGridUrlFromKeyboard(DataGrid grid,KeyEventArgs e)
+    {
+        if(e.Key!=Key.C || Keyboard.Modifiers!=ModifierKeys.Control || grid.SelectedItems.Count!=1 ||
+            grid.SelectedItem is not DownloadItem row || !grid.Items.Contains(row) ||
+            ReferenceEquals(grid,Q) && !IsVisibleQueueRow(row))return;
+        Clipboard.SetText(row.DisplayUrl);
+        // Handle before DataGrid's Copy command: its template column has no
+        // tabular clipboard value and must not replace the explicit URL copy.
+        e.Handled=true;
+    }
     internal static Forms.OpenFileDialog CreateOpenListDialog() => new()
     {
         Title=ErrorMessages.Text("Открыть список ссылок","Open URL list"),
@@ -203,9 +214,9 @@ public sealed partial class NativeWindow
         Q.PreviewKeyDown+=async(_,e)=>
         {
             if (e.Key==Key.Delete){e.Handled=true;await ForgetRowsAsync(SelectedVisibleQueueRows());}
-            else if(e.Key==Key.C && Keyboard.Modifiers==ModifierKeys.Control && Q.SelectedItem is DownloadItem row && IsVisibleQueueRow(row))
-            {Clipboard.SetText(row.DisplayUrl);e.Handled=true;}
         };
+        Q.PreviewKeyDown+=(_,e)=>CopyGridUrlFromKeyboard(Q,e);
+        D.PreviewKeyDown+=(_,e)=>CopyGridUrlFromKeyboard(D,e);
         SetupContextMenus();
     }
     private void Paste(bool select)=>_ingress.Paste(select);
