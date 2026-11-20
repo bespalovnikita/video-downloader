@@ -160,9 +160,11 @@ public sealed partial class NativeWindow
         F<Button>("OpenFolderButton").Click+=(_,_)=>ShowFileInFolder(D.SelectedItems.Count==1?D.SelectedItem as DownloadItem:null);
         F<Button>("CopyPathButton").Click+=(_,_)=>{if(D.SelectedItems.Count==1 && D.SelectedItem is DownloadItem row && row.Path.Length>0)Clipboard.SetText(row.Path);};
         F<Button>("OpenUrlButton").Click+=(_,_)=>{if(D.SelectedItems.Count==1 && D.SelectedItem is DownloadItem row)OpenUrl(row.DisplayUrl);};
-        Q.KeyDown+=async(_,e)=>
+        // Own the queue shortcut before DataGrid's class command binding can
+        // consume Delete, even though row deletion is disabled on the grid.
+        Q.PreviewKeyDown+=async(_,e)=>
         {
-            if (e.Key==Key.Delete){e.Handled=true;await RemoveRowsAsync(SelectedVisibleQueueRows());}
+            if (e.Key==Key.Delete){e.Handled=true;await ForgetRowsAsync(SelectedVisibleQueueRows());}
             else if(e.Key==Key.C && Keyboard.Modifiers==ModifierKeys.Control && Q.SelectedItem is DownloadItem row && IsVisibleQueueRow(row))
             {Clipboard.SetText(row.DisplayUrl);e.Handled=true;}
         };
