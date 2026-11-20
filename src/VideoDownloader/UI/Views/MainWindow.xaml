@@ -890,13 +890,19 @@
 
         <StackPanel Grid.Row="3" Margin="0,8,0,0">
             <TextBlock x:Name="SessionStats" Text="Сеанс: ожидание" Foreground="{DynamicResource MutedBrush}" TextWrapping="Wrap" Margin="0,0,0,4"/>
-            <ProgressBar x:Name="OverallProgress" AutomationProperties.Name="Общий прогресс загрузки" Height="8" Minimum="0" Maximum="100"/>
-            <WrapPanel HorizontalAlignment="Right" Margin="0,4,0,0">
-                <Button x:Name="TrayButton" Content="В трей"/>
-                <Button x:Name="PauseButton" Content="Пауза" IsEnabled="False" Background="{DynamicResource WarnBrush}" Foreground="{DynamicResource OnWarnBrush}"/>
-                <Button x:Name="StopButton" Content="Остановить" IsEnabled="False" Background="{DynamicResource DangerBrush}" Foreground="{DynamicResource OnDangerBrush}"/>
-                <Button x:Name="StartButton" Content="Скачать всю очередь" IsEnabled="False" Background="{DynamicResource AccentBrush}" Foreground="{DynamicResource OnAccentBrush}" Padding="18,9"/>
-            </WrapPanel>
+            <ProgressBar x:Name="OverallProgress" AutomationProperties.Name="Общий прогресс загрузки" Height="8" Minimum="0" Maximum="100" Visibility="Hidden"/>
+            <Grid Margin="0,4,0,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <Button x:Name="TrayButton" Content="В трей" HorizontalAlignment="Left"/>
+                <Button x:Name="PauseButton" Grid.Column="1" Content="Пауза" IsEnabled="False" Visibility="Hidden" Background="{DynamicResource WarnBrush}" Foreground="{DynamicResource OnWarnBrush}"/>
+                <Button x:Name="StopButton" Grid.Column="2" Content="Остановить" IsEnabled="False" Visibility="Hidden" Background="{DynamicResource DangerBrush}" Foreground="{DynamicResource OnDangerBrush}"/>
+                <Button x:Name="StartButton" Grid.Column="3" Content="Скачать всю очередь" IsEnabled="False" Background="{DynamicResource AccentBrush}" Foreground="{DynamicResource OnAccentBrush}" Padding="18,9"/>
+            </Grid>
         </StackPanel>
     </Grid>
 </Window>

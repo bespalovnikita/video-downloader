@@ -63,16 +63,34 @@ internal sealed partial class UiScenario
             var queue=(DataGrid)window.FindName("QueueGrid")!;
             var downloads=(DataGrid)window.FindName("DownloadGrid")!;
             var stats=(TextBlock)window.FindName("SessionStats")!;
+            var startButton=(Button)window.FindName("StartButton")!;
+            var pauseButton=(Button)window.FindName("PauseButton")!;
+            var stopButton=(Button)window.FindName("StopButton")!;
+            var progress=(ProgressBar)window.FindName("OverallProgress")!;
             var fast=new DownloadItem{Url="https://startup-download.invalid/timer-fast"};
             var slow=new DownloadItem{Url="https://startup-download.invalid/timer-slow"};
             subject.SessionState.TryAdd(fast);subject.SessionState.TryAdd(slow);subject.Reindex();
             Require(subject.SessionState.Elapsed==TimeSpan.Zero && subject.SessionState.StartedAt==null,
                 "Adding queued work must leave the session clock idle");
+            subject.UpdateState();window.UpdateLayout();
+            Require(startButton.IsVisible && startButton.IsEnabled && !pauseButton.IsVisible && !stopButton.IsVisible && !progress.IsVisible,
+                "Before the first session, Start is available without inactive Pause/Stop controls or a misleading empty progress bar");
+            Rect StartBounds()=>startButton.TransformToAncestor((FrameworkElement)window.Content).TransformBounds(new Rect(startButton.RenderSize));
+            var idleStartBounds=StartBounds();
             string gate=Path.Combine(root,"release-success");
             Environment.SetEnvironmentVariable("VD_NATIVE_SESSION_TIMER_GATE",gate);
             Click(window,"StartButton");
             PumpUntil(()=>fast.Status=="Completed" && slow.Status=="Running" && File.Exists(gate+".started"),
                 "The real Start path must publish one media file while another worker remains active");
+            subject.UpdateState();window.UpdateLayout();
+            var runningStartBounds=StartBounds();
+            var stopBounds=stopButton.TransformToAncestor((FrameworkElement)window.Content).TransformBounds(new Rect(stopButton.RenderSize));
+            Require(startButton.IsVisible && !startButton.IsEnabled && pauseButton.IsVisible && pauseButton.IsEnabled &&
+                stopButton.IsVisible && stopButton.IsEnabled && progress.IsVisible,
+                "The actual active session must reveal Pause/Stop and progress while retaining a disabled Start in its own slot");
+            Require(Math.Abs(runningStartBounds.Left-idleStartBounds.Left)<1 && Math.Abs(runningStartBounds.Top-idleStartBounds.Top)<1 &&
+                !stopBounds.IntersectsWith(idleStartBounds),
+                "Starting a session must not move the primary action or put destructive Stop under its previous pointer target");
             PumpUntil(()=>downloads.Items.Count==2 && ReferenceEquals(downloads.Items[0],slow) && ReferenceEquals(downloads.Items[1],fast),
                 "Downloads must put the real still-running worker above the already-published worker");
             Require(subject.SessionState.Queue.SequenceEqual(new[]{fast,slow}) && fast.Order==1 && slow.Order==2,
@@ -88,11 +106,20 @@ internal sealed partial class UiScenario
                 subject.SessionState.Downloads.SequenceEqual(sourceDownloads),
                 "Pausing the real worker must preserve active-first display and the source Downloads collection");
             Click(window,"PauseButton");
+            window.Activate();Keyboard.Focus(pauseButton);
+            Require(pauseButton.IsKeyboardFocusWithin,"The completed-session focus check must begin on the real Pause button");
             File.WriteAllText(gate,"release");
             PumpUntil(()=>subject.SessionState.Coordinator==null && subject.SessionState.RunningTask?.IsCompleted==true,
                 "All successful workers must finish through the normal Start continuation");
             Require(fast.Status=="Completed" && slow.Status=="Completed" && File.Exists(fast.Path) && File.Exists(slow.Path),
                 "Both fixture media must be published before the session is complete");
+            subject.UpdateState();window.UpdateLayout();
+            Require(!pauseButton.IsVisible && !stopButton.IsVisible && progress.IsVisible &&
+                ((Button)window.FindName("TrayButton")!).IsKeyboardFocusWithin,
+                "Completion must hide inactive controls, retain the final progress and move focus from Pause to the available Tray action");
+            var completedStartBounds=StartBounds();
+            Require(Math.Abs(completedStartBounds.Left-idleStartBounds.Left)<1 && Math.Abs(completedStartBounds.Top-idleStartBounds.Top)<1,
+                "Finishing a session must preserve the primary action's position");
             PumpUntil(()=>downloads.Items.Cast<DownloadItem>().SequenceEqual(sourceDownloads),
                 "When every real worker finishes, Downloads must return to stable source order");
             void RequireFrozen(string terminal)

@@ -35,8 +35,11 @@ internal sealed partial class UiScenario
         Require(Control<FrameworkElement>(window,"QueuePanel").IsVisible &&
             !Control<FrameworkElement>(window,"DownloadsPanel").IsVisible && !Control<FrameworkElement>(window,"PreviewPanel").IsVisible,
             "Compact mode starts with the queue, without off-screen competing panels.");
-        foreach(string name in new[]{"UrlInput","PasteClipboardButton","AddUrlButton","StartButton","PauseButton","StopButton"})
+        foreach(string name in new[]{"UrlInput","PasteClipboardButton","AddUrlButton","StartButton","TrayButton"})
             Require(Inside(window,Control<FrameworkElement>(window,name)),name+" must remain inside the compact window.");
+        Require(!Control<Button>(window,"PauseButton").IsVisible && !Control<Button>(window,"StopButton").IsVisible &&
+            !Control<ProgressBar>(window,"OverallProgress").IsVisible,
+            "Idle compact mode must omit inactive session commands and an empty progress bar.");
         Require(Control<DataGrid>(window,"QueueGrid").ActualHeight>=30,
             "The default compact queue retains a usable list area.");
         var compactOptions=subject.ReadOptions();
