@@ -2,6 +2,7 @@ using System.IO;
 using System.Text.Json;
 using VideoDownloader.Native;
 
+if (OutOfOrderDownloadTests.TryRunFixture(args)) return;
 if (SubtitleTimelineTests.TryRunFixture(args)) return;
 if (ProfileBackupTests.TryRunFixture(args)) return;
 if (JobDiagnosticsTests.TryRunFixture(args)) return;
@@ -25,6 +26,7 @@ await GuiInstanceTests.RunAsync();
 await QueueSessionControllerTests.RunAsync();
 SubscriptionRequeueTests.Run();
 await QueueSkipResumeTests.RunAsync();
+await OutOfOrderDownloadTests.RunAsync();
 await DiskSpaceTests.RunAsync();
 var applicationAssembly=typeof(NativeWindow).Assembly;
 if(applicationAssembly.GetTypes().Any(type=>type.Name.Contains("SelfTest",StringComparison.Ordinal) || type.Name=="UiScenario") ||

@@ -185,6 +185,15 @@ internal sealed class QueueSessionController
         _urls.Add(row.Url);_finalStates.Remove(row.Url);row.DeferredToNextStart=false;row.RequeueRequested=false;
         return true;
     }
+    internal bool TryStartOutOfOrderActive(DownloadCoordinator expected,DownloadItem row,
+        DownloadCoordinator.OutOfOrderPreparation? preparation=null)
+    {
+        if(Stopping || !ReferenceEquals(Coordinator,expected) || !expected.IsRunning ||
+            !Queue.Contains(row) || !expected.TryStartOutOfOrder(row,preparation))return false;
+        _urls.Add(row.Url);_finalStates.Remove(row.Url);
+        row.DeferredToNextStart=false;row.RequeueRequested=false;
+        return true;
+    }
     internal DownloadItem[] ClearCandidates()=>Queue.Any(row=>row.Status!="Skipped")
         ?Queue.Where(row=>row.Status!="Skipped").ToArray():Queue.ToArray();
     internal bool TryRestartActive(DownloadCoordinator expected,DownloadItem row)

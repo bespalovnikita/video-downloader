@@ -16,14 +16,15 @@ public sealed partial class DownloadCoordinator
 
     private void FinishQueuedAttempt(DownloadAttempt attempt,bool skipped)
     {
-        // Caller owns completionGate. The old channel entry remains only as an
-        // inert generation token; resuming this URL creates a different object.
+        // Caller owns completionGate and notifies only after releasing it.
+        // The old channel entry remains an inert generation token; resuming
+        // this URL creates a different object.
         var row=attempt.Row;
         if(row.CleanupError.Length>0)DownloadCleanup.Failed(row,row.CleanupError);
         else{row.Status=skipped?"Skipped":"Interrupted";row.State=skipped?"Skipped":"Cancelled";}
         row.Speed="";row.ETA="";row.Slot="";row.AttemptFinished=true;
         Interlocked.Decrement(ref _outstanding);
-        attempt.Finished.TrySetResult(skipped);attempt.Stop.Dispose();_changed(row);
+        attempt.Finished.TrySetResult(skipped);attempt.Stop.Dispose();
     }
 
     public async Task<bool> SkipAsync(DownloadItem item)
@@ -40,8 +41,9 @@ public sealed partial class DownloadCoordinator
             joined=attempt.Finished.Task;
             attempt.Stop.Cancel();
             if(!attempt.Started)FinishQueuedAttempt(attempt,true);
-            else{item.State="Skipping";_changed(item);}
+            else item.State="Skipping";
         }
+        _changed(item);
         return await joined.ConfigureAwait(false);
     }
 
