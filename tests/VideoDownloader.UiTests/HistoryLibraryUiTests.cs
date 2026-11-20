@@ -16,14 +16,23 @@ internal sealed partial class UiScenario
     {
         static void Require(bool condition,string message)
         {if(!condition)throw new InvalidOperationException("History-library WPF test: "+message);}
-        static void PumpUntil(Func<bool> condition,string message)
+        static void PumpUntil(Func<bool> condition,string message,Func<string>? diagnostics=null)
         {
             if(condition())return;
             var frame=new DispatcherFrame();var watch=Stopwatch.StartNew();
             var timer=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(15)};
             timer.Tick+=(_,_)=>{if(condition() || watch.Elapsed>TimeSpan.FromSeconds(6))frame.Continue=false;};
             timer.Start();try{Dispatcher.PushFrame(frame);}finally{timer.Stop();}
-            Require(condition(),message);
+            if(!condition())Require(false,message+(diagnostics is null?"":Environment.NewLine+diagnostics()));
+        }
+        static string Geometry(Window window,DataGrid grid)
+        {
+            var content=window.Content as FrameworkElement;
+            return $"Loaded={window.IsLoaded}; window actual={window.ActualWidth:0.###}x{window.ActualHeight:0.###}; requested={window.Width:0.###}x{window.Height:0.###}; "+
+                $"min={window.MinWidth:0.###}x{window.MinHeight:0.###}; max={window.MaxWidth:0.###}x{window.MaxHeight:0.###}; "+
+                $"content actual={content?.ActualWidth:0.###}x{content?.ActualHeight:0.###}; grid actual={grid.ActualWidth:0.###}x{grid.ActualHeight:0.###}; "+
+                $"work area={SystemParameters.WorkArea}; DPI={System.Windows.Media.VisualTreeHelper.GetDpi(window)}; columns="+
+                string.Join("; ",grid.Columns.Select(column=>$"{column.Header}: {column.Visibility}, actual={column.ActualWidth:0.###}, requested={column.Width}"));
         }
         static T Control<T>(Window window,string name) where T:class=>(T)(window.FindName(name)??throw new InvalidOperationException("Missing history control: "+name));
         static void Click(Window window,string name)=>Control<Button>(window,name).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
@@ -77,30 +86,35 @@ internal sealed partial class UiScenario
             grid.Items.SortDescriptions.Add(new SortDescription(nameof(HistoryRecordRow.Date),ListSortDirection.Descending));
             var sortedRows=grid.Items.Cast<HistoryRecordRow>().ToArray();var historySource=grid.ItemsSource;
             grid.CurrentCell=new DataGridCellInfo(modern,grid.Columns[1]);
-            // Exercise a genuine wide layout even on a smaller CI desktop;
-            // the production owner controller otherwise clamps it back down.
-            var columnLayout=OwnedWindowLayout.Attach(window,owner);
-            columnLayout.Refresh(new Rect(0,0,1400,900));
+            PumpUntil(()=>window.IsLoaded,"History must finish loading before synthetic viewport probes.",()=>Geometry(window,grid));
+            // Force a real wide content layout beyond the native CI desktop's
+            // maximum tracking width. Temporarily detach the separately tested
+            // bounds controller, which otherwise restores the production minimum.
+            OwnedWindowLayout.Attach(window,owner).Dispose();
+            window.MinWidth=0;window.MaxWidth=double.PositiveInfinity;window.MaxHeight=double.PositiveInfinity;
             window.MinWidth=1120;window.Width=1120;window.UpdateLayout();
             PumpUntil(()=>Math.Abs(window.ActualWidth-1120)<=1 &&
                 grid.Columns.All(column=>column.Visibility==Visibility.Visible && column.ActualWidth>0) &&
                 grid.Columns.Sum(column=>column.ActualWidth)<=grid.ActualWidth+1,
-                "Wide history must restore its complete actual column layout.");
+                "Wide history must restore its complete actual column layout.",()=>Geometry(window,grid));
             window.MinWidth=660;window.Width=660;window.UpdateLayout();
             PumpUntil(()=>Math.Abs(window.ActualWidth-660)<=1 &&
                 new[]{2,4,5}.All(index=>grid.Columns[index].Visibility==Visibility.Collapsed) &&
                 grid.Columns[1].ActualWidth>=200 && grid.Columns[3].ActualWidth>=200 &&
                 grid.Columns.Where(column=>column.Visibility==Visibility.Visible).Sum(column=>column.ActualWidth)<=grid.ActualWidth+1,
-                "A narrow history must keep date, title and exact URL useful without horizontal overflow.");
+                "A narrow history must keep date, title and exact URL useful without horizontal overflow.",()=>Geometry(window,grid));
             Require(ReferenceEquals(grid.ItemsSource,historySource) && ReferenceEquals(grid.SelectedItem,modern) &&
                 ReferenceEquals(grid.CurrentCell.Item,modern) && grid.Items.Cast<HistoryRecordRow>().SequenceEqual(sortedRows) &&
                 grid.Items.SortDescriptions.Single().Equals(new SortDescription(nameof(HistoryRecordRow.Date),ListSortDirection.Descending)) && probe.Calls==0,
                 "Responsive history columns must not change the source, current row, sort or filesystem state.");
             window.Width=900;window.UpdateLayout();
             PumpUntil(()=>Math.Abs(window.ActualWidth-900)<=1 && grid.Columns[1].ActualWidth>=200,
-                "The history layout must settle when returning to its ordinary width.");
+                "The history layout must settle when returning to its ordinary width.",()=>Geometry(window,grid));
             grid.Items.SortDescriptions.Clear();
-            columnLayout.Refresh();
+            window.MinWidth=0;window.MinHeight=0;
+            window.MaxWidth=double.PositiveInfinity;window.MaxHeight=double.PositiveInfinity;
+            window.MinWidth=660;window.MinHeight=440;
+            OwnedWindowLayout.Attach(window,owner);window.UpdateLayout();
             double collapsedResultsHeight=grid.ActualHeight;
             fileExpander.IsExpanded=true;window.UpdateLayout();
             checkFiles.BringIntoView();window.UpdateLayout();
