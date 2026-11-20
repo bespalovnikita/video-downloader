@@ -23,7 +23,9 @@ internal static class Program
             System.Windows.Threading.Dispatcher.CurrentDispatcher));
         try
         {
-            switch(Environment.GetEnvironmentVariable("VD_NATIVE_UI_TEST_SCENE")??"All")
+            string scene=Environment.GetEnvironmentVariable("VD_NATIVE_UI_TEST_SCENE")??"All";
+            using var diagnostics=new UiRunDiagnostics(scene);
+            switch(scene)
             {
                 case "All": UiScenario.Run();break;
                 case "SubscriptionInitialActions": UiScenario.RunSubscriptionInitialActionsOnly();break;
