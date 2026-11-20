@@ -114,6 +114,11 @@ internal sealed partial class UiScenario
             var startBox=Control<TextBox>(dialog,"MediaSectionStartBox");var endBox=Control<TextBox>(dialog,"MediaSectionEndBox");
             var status=Control<TextBlock>(dialog,"MediaClipPlaybackStatus");var range=Control<TextBlock>(dialog,"MediaClipRangeText");
             var position=Control<TextBlock>(dialog,"MediaClipPositionText");var seek=Control<Slider>(dialog,"MediaClipSeekSlider");
+            var presentation=Control<FrameworkElement>(dialog,"MediaClipPresentation");
+            var transport=Control<FrameworkElement>(dialog,"MediaClipTransport");
+            Require(!presentation.IsVisible && !transport.IsVisible &&
+                Control<Button>(dialog,"PreviewMediaClipStartButton").IsVisible && Control<Button>(dialog,"PreviewMediaClipEndButton").IsVisible,
+                "Before an explicit request the editor must show both clip choices without an empty player or disabled transport.");
             startBox.Text="10";endBox.Text="100";PumpFor(30);
             Require(calls.Count==0,"Editing a range must not prepare or start playback automatically.");
             Require(Control<Button>(dialog,"PreviewMediaClipStartButton").IsEnabled &&
@@ -123,11 +128,16 @@ internal sealed partial class UiScenario
                 calls[0].Request.EndSeconds==100 && !calls[0].Request.FromEnd &&
                 Control<Button>(dialog,"ApplyMediaSelectionButton").IsEnabled,
                 "Preparation must retain the captured URL/range and must not block Apply.");
+            Require(!presentation.IsVisible && transport.IsVisible && !Control<Button>(dialog,"PauseMediaClipButton").IsVisible &&
+                Control<Button>(dialog,"StopMediaClipButton").IsEnabled &&
+                (string)Control<Button>(dialog,"StopMediaClipButton").Content=="Отменить подготовку",
+                "Pending preparation must expose cancellation without showing an empty player or unusable pause control.");
             var first=Clip(player,10,25);calls[0].Success(first);
             PumpUntil(()=>player.Source is not null,"Prepared local media was not attached to the actual playback view.");
             Require(range.Text.Contains(DownloadSection.FormatTimestamp(10),StringComparison.Ordinal) &&
                 range.Text.Contains(DownloadSection.FormatTimestamp(25),StringComparison.Ordinal) &&
-                range.Text.Contains("со звуком",StringComparison.Ordinal) && seek.Maximum==15,
+                range.Text.Contains("со звуком",StringComparison.Ordinal) && seek.Maximum==15 && presentation.IsVisible && transport.IsVisible &&
+                Control<Button>(dialog,"PauseMediaClipButton").IsVisible && (string)Control<Button>(dialog,"StopMediaClipButton").Content=="Стоп",
                 "A long selection must display its actual short preview range and audio state precisely.");
             player.RaiseOpened();Require(player.PlayCalls==1 && Control<Button>(dialog,"PauseMediaClipButton").IsEnabled,
                 "The actual MediaOpened event path must start the prepared clip and enable transport controls.");
@@ -139,8 +149,10 @@ internal sealed partial class UiScenario
             seek.Value=8.5;
             Require(player.Position.TotalSeconds==8.5 && position.Text.Contains(DownloadSection.FormatTimestamp(18.5),StringComparison.Ordinal),
                 "The real slider must seek within the local clip while displaying source time.");
-            Click(dialog,"StopMediaClipButton");Require(player.Position==TimeSpan.Zero && seek.Value==0 && player.StopCalls>0,
-                "Stop must reset playback position without changing the selected download range.");
+            Click(dialog,"StopMediaClipButton");Require(player.Position==TimeSpan.Zero && seek.Value==0 && player.StopCalls>0 &&
+                presentation.IsVisible && transport.IsVisible && player.Source?.LocalPath==first.Path && File.Exists(first.Path) &&
+                (string)Control<Button>(dialog,"PauseMediaClipButton").Content=="Продолжить",
+                "Stop must retain the visible prepared clip and its cache for Continue while resetting only playback position.");
 
             Click(dialog,"PreviewMediaClipEndButton");
             Require(calls.Count==2 && calls[1].Request.FromEnd && disposed.Contains(first.Path) && player.Source is null,
@@ -152,8 +164,8 @@ internal sealed partial class UiScenario
             player.RaiseEnded();Require(seek.Value==0 && status.Text.Contains("завершён",StringComparison.Ordinal),
                 "MediaEnded must stop the timer and reset the view's position.");
             startBox.Text="11";
-            Require(player.Source is null && disposed.Contains(last.Path) && !seek.IsEnabled,
-                "Time edits must immediately stop, detach and dispose the previous clip.");
+            Require(player.Source is null && disposed.Contains(last.Path) && !seek.IsEnabled && !presentation.IsVisible && !transport.IsVisible,
+                "Time edits must immediately stop, detach and dispose the previous clip and restore the compact editor.");
             Require(row.Selection is null && row.CompletedSelection==completed && row.Status=="Completed" &&
                 row.OwnedPaths.SequenceEqual(new[]{ownedDownload}) && File.ReadAllText(ownedDownload)=="existing published media",
                 "Playback must leave the queue selection, completed ownership, published media and history unchanged.");
@@ -180,6 +192,15 @@ internal sealed partial class UiScenario
             Require(player.Source is null && disposed.Contains(manualClip.Path) && status.Text.Contains("аудиоустройство",StringComparison.Ordinal) &&
                 Control<Button>(dialog,"ApplyMediaSelectionButton").IsEnabled,
                 "A real media failure must release the file and show an honest device error while preserving Apply.");
+            Require(!presentation.IsVisible && !transport.IsVisible,"A media failure must remove its released player and transport.");
+            Click(dialog,"PreviewMediaClipStartButton");var cancelledPending=calls[^1];
+            Require(transport.IsVisible && Control<Button>(dialog,"StopMediaClipButton").IsVisible,
+                "The actual pending request must keep its cancellation control visible.");
+            Click(dialog,"StopMediaClipButton");
+            Require(cancelledPending.Token.IsCancellationRequested && !presentation.IsVisible && !transport.IsVisible &&
+                Control<Button>(dialog,"PreviewMediaClipStartButton").IsVisible && Control<Button>(dialog,"PreviewMediaClipEndButton").IsVisible,
+                "Cancelling preparation must revoke its request and return to the explicit compact clip choices.");
+            cancelledPending.Completion.TrySetCanceled(cancelledPending.Token);
 
             Click(dialog,"PreviewMediaClipStartButton");var beforeReadonly=calls[^1];dialog.SetEditable(false);
             Require(beforeReadonly.Token.IsCancellationRequested && !Control<Button>(dialog,"PreviewMediaClipStartButton").IsEnabled,

@@ -20,6 +20,7 @@ internal sealed partial class MediaSelectionDialog
     private Button? _clipFirst,_clipLast,_clipPause,_clipStop;
     private Slider? _clipSeek;
     private TextBlock? _clipStatus,_clipRange,_clipPosition;
+    private FrameworkElement? _clipPresentation,_clipTransport;
     private PlaybackContext? _playbackContext;
     private long _clipGeneration;
     private bool _playbackClosed,_clipPlaying,_clipOpened,_clipAutoPlay,_clipUpdatingPosition;
@@ -31,23 +32,27 @@ internal sealed partial class MediaSelectionDialog
         body.Children.Add(Heading("Посмотреть и послушать фрагмент"));
         body.Children.Add(Note("Предпросмотр воспроизводит до 15 секунд с начала или конца выбранного диапазона. Звук зависит от выбранной дорожки и аудиоустройства Windows. Скачивание запускается отдельно."));
         body.Children.Add(Note("Если выбрано несколько языков, предпросмотр использует первый язык."));
+        var actions=new WrapPanel{Orientation=Orientation.Horizontal};
+        _clipFirst=Named("PreviewMediaClipStartButton",new Button{Content="Начало фрагмента"});
+        _clipLast=Named("PreviewMediaClipEndButton",new Button{Content="Конец фрагмента"});
+        actions.Children.Add(_clipFirst);actions.Children.Add(_clipLast);body.Children.Add(actions);
+        var presentation=Named("MediaClipPresentation",new StackPanel{Visibility=Visibility.Collapsed});
+        _clipPresentation=presentation;body.Children.Add(presentation);
         var view=Named("MediaClipVideo",_clipPlayer.View);
         var playbackBorder=new Border{BorderThickness=new Thickness(1),CornerRadius=new CornerRadius(5),
             Padding=new Thickness(4),Child=view,Margin=new Thickness(0,4,0,4)};
         playbackBorder.SetResourceReference(Border.BackgroundProperty,"MediaCardBrush");
-        playbackBorder.SetResourceReference(Border.BorderBrushProperty,"MediaCardBorderBrush");body.Children.Add(playbackBorder);
-        _clipRange=Named("MediaClipRangeText",Note("Диапазон предпросмотра ещё не подготовлен."));body.Children.Add(_clipRange);
+        playbackBorder.SetResourceReference(Border.BorderBrushProperty,"MediaCardBorderBrush");presentation.Children.Add(playbackBorder);
+        _clipRange=Named("MediaClipRangeText",Note("Диапазон предпросмотра ещё не подготовлен."));presentation.Children.Add(_clipRange);
         _clipSeek=Named("MediaClipSeekSlider",new Slider{Minimum=0,Maximum=1,IsEnabled=false,
             SmallChange=.1,LargeChange=1,IsMoveToPointEnabled=true,Margin=new Thickness(0,4,0,4)});
-        body.Children.Add(_clipSeek);
-        _clipPosition=Named("MediaClipPositionText",Note(""));body.Children.Add(_clipPosition);
-        var actions=new WrapPanel{Orientation=Orientation.Horizontal};
-        _clipFirst=Named("PreviewMediaClipStartButton",new Button{Content="Начало фрагмента"});
-        _clipLast=Named("PreviewMediaClipEndButton",new Button{Content="Конец фрагмента"});
+        presentation.Children.Add(_clipSeek);
+        _clipPosition=Named("MediaClipPositionText",Note(""));presentation.Children.Add(_clipPosition);
+        var transport=Named("MediaClipTransport",new WrapPanel{Orientation=Orientation.Horizontal,Visibility=Visibility.Collapsed});
+        _clipTransport=transport;
         _clipPause=Named("PauseMediaClipButton",new Button{Content="Пауза",IsEnabled=false});
         _clipStop=Named("StopMediaClipButton",new Button{Content="Стоп",IsEnabled=false});
-        foreach(var button in new[]{_clipFirst,_clipLast,_clipPause,_clipStop})actions.Children.Add(button);
-        body.Children.Add(actions);
+        transport.Children.Add(_clipPause);transport.Children.Add(_clipStop);body.Children.Add(transport);
         _clipStatus=Named("MediaClipPlaybackStatus",Note("Укажите начало и конец фрагмента."));body.Children.Add(_clipStatus);
         _clipFirst.Click+=(_,_)=>StartClip(false);_clipLast.Click+=(_,_)=>StartClip(true);
         _clipPause.Click+=(_,_)=>PauseClip();_clipStop.Click+=(_,_)=>StopClip();
@@ -103,6 +108,13 @@ internal sealed partial class MediaSelectionDialog
     {if(!_loading)RefreshPlaybackState();}
     private void PlaybackFormatChanged(object sender,SelectionChangedEventArgs e)
     {if(!_loading)RefreshPlaybackState();}
+    private void ShowClipControls(bool preparing,bool ready)
+    {
+        if(_clipPresentation is not null)_clipPresentation.Visibility=ready?Visibility.Visible:Visibility.Collapsed;
+        if(_clipTransport is not null)_clipTransport.Visibility=preparing || ready?Visibility.Visible:Visibility.Collapsed;
+        if(_clipPause is not null)_clipPause.Visibility=ready?Visibility.Visible:Visibility.Collapsed;
+        if(_clipStop is not null)_clipStop.Content=preparing?"Отменить подготовку":"Стоп";
+    }
     private void ResetClip()
     {
         _clipGeneration++;_clipCancellation?.Cancel();_clipCancellation=null;
@@ -114,6 +126,7 @@ internal sealed partial class MediaSelectionDialog
         if(_clipStop is not null)_clipStop.IsEnabled=false;
         if(_clipRange is not null)_clipRange.Text="Диапазон предпросмотра ещё не подготовлен.";
         if(_clipPosition is not null)_clipPosition.Text="";
+        ShowClipControls(preparing:false,ready:false);
     }
     private void StartClip(bool fromEnd)
     {
@@ -124,6 +137,7 @@ internal sealed partial class MediaSelectionDialog
         ResetClip();
         var cancel=new CancellationTokenSource();_clipCancellation=cancel;
         _clipStop!.IsEnabled=true;
+        ShowClipControls(preparing:true,ready:false);
         _clipStatus!.Text="Готовим короткий фрагмент со звуком… Можно применить выбранные параметры, не дожидаясь готовности.";
         _=LoadClipAsync(request!,_clipGeneration,cancel);
     }
@@ -138,7 +152,8 @@ internal sealed partial class MediaSelectionDialog
             if(!IsCurrentClip(generation,cancel))return;
             if(result.Url!=request.Url || result.RequestedStart!=request.StartSeconds || result.RequestedEnd!=request.EndSeconds)
                 throw new InvalidDataException("Источник вернул другой фрагмент.");
-            if(!result.Success){_clipStatus!.Text=ClipFailure(result.Error);_clipStop!.IsEnabled=false;return;}
+            if(!result.Success)
+            {_clipStatus!.Text=ClipFailure(result.Error);_clipStop!.IsEnabled=false;ShowClipControls(preparing:false,ready:false);return;}
             if(!double.IsFinite(prepared!.StartSeconds) || !double.IsFinite(prepared.EndSeconds) ||
                 prepared.StartSeconds<request.StartSeconds || prepared.EndSeconds>request.EndSeconds+.001 ||
                 prepared.DurationSeconds<=0 || prepared.DurationSeconds>15.001)
@@ -149,6 +164,7 @@ internal sealed partial class MediaSelectionDialog
                 (_clip.HasVideo?"":" · только аудио");
             _clipSeek!.Maximum=_clip.DurationSeconds;SetClipPosition(0);
             _clipAutoPlay=true;_clipStatus!.Text="Открываем подготовленный фрагмент…";
+            ShowClipControls(preparing:false,ready:true);
             _clipPlayer!.Open(new Uri(_clip.Path,UriKind.Absolute));
         }
         catch(OperationCanceledException) when(cancel.IsCancellationRequested){ }
