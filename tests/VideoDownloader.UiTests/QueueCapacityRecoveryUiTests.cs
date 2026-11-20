@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Markup;
@@ -193,6 +194,79 @@ internal sealed partial class UiScenario
                 watchdog.Cancel();observer.Stop();scenario?.Dispose();window.Close();
             }
         }
-        Console.WriteLine("PASS: real WPF near-cap queued/legacy Result recovery preserves rows, modal ingress barriers, export, confirmed owned cleanup and strict read-only after a sharing-lock save failure");
+        TestPreviewCapacityRecovery(testRoot);
+        Console.WriteLine("PASS: real WPF near-cap queued/legacy Result and preview-title recovery preserves rows, protected checkpoints, explicit reduction, owned media and strict read-only after I/O failures");
+    }
+
+    private static void TestPreviewCapacityRecovery(string testRoot)
+    {
+        static void Require(bool condition,string message)
+        {if(!condition)throw new InvalidOperationException("Preview capacity recovery WPF test failed: "+message);}
+        string root=Path.Combine(testRoot,"preview-capacity-recovery");Directory.CreateDirectory(root);
+        var storage=new AppPersistence(Path.Combine(root,"profile"));
+        using var input=File.OpenRead(Path.Combine(AppContext.BaseDirectory,"ui","MainWindow.xaml"));
+        using var reader=XmlReader.Create(input);
+        var window=(Window)XamlReader.Load(reader);
+        using var scenario=new UiScenario(window,storage,"must-not-launch");
+        var options=new DownloadOptions{Output=root,WatchClipboard=false};
+        string media=Path.Combine(root,"owned.mp4");File.WriteAllText(media,"published sentinel");
+        var completed=new DownloadItem{Url="https://capacity.invalid/preview-padding",Status="Completed",State="Done",Progress=100,
+            Path=media,OwnedPaths=[media],OutputRoot=root,AttemptFinished=true};
+        var pending=new DownloadItem{Url="https://capacity.invalid/preview-title"};
+        try
+        {
+            window.Show();scenario.ApplyOptions(options);
+            scenario.SessionState.AddBatch([completed,pending],scenario.ReadOptions());
+            int baseline=JsonSerializer.SerializeToUtf8Bytes(new SessionSnapshot{Queue=scenario.SessionState.Queue.ToList(),
+                Settings=scenario.ReadOptions(),SavedAtUtc=new DateTime(2000,1,1,0,0,0,DateTimeKind.Utc).AddTicks(1)},AppPersistence.Json).Length;
+            completed.Title=new string('Ж',(AppPersistence.MaxCheckpointBytes-baseline-96)/6);
+            scenario.Reindex();Require(!scenario.Subject.CheckpointReadOnly,"The original queue must fit before real preview enrichment");
+            byte[] original=File.ReadAllBytes(storage.SessionPath);
+
+            // Exercise the real metadata callback and its SaveCheckpoint owner;
+            // no test-only flag or direct read-only state mutation is involved.
+            var ready=new PreviewData(pending.Url,new string('Ж',512),"","",0,"fixture",0,0,"","","",DateTime.UtcNow);
+            scenario.Preview.ReceiveReady(ready);
+            Require(scenario.Subject.CheckpointReadOnly && pending.Title==ready.Title &&
+                scenario.SessionState.Queue.SequenceEqual(new[]{completed,pending}) &&
+                File.ReadAllBytes(storage.SessionPath).SequenceEqual(original) && !File.Exists(storage.HistoryPath) &&
+                completed.OwnedPaths.SequenceEqual(new[]{media}) && File.ReadAllText(media)=="published sentinel" &&
+                scenario.T("HeaderStatus").Text.Contains("сокращ",StringComparison.Ordinal),
+                "Title growth must enter reduction recovery, keeping the original file, queue rows, ownership and media");
+            scenario.Preview.ReceiveReady(ready with {Title="A later title must not modify the protected queue"});
+            scenario.AddUrls(["https://capacity.invalid/blocked-after-title"]);
+            scenario.F<Button>("StartButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Require(pending.Title==ready.Title && scenario.SessionState.Queue.Count==2 && scenario.SessionState.Coordinator is null &&
+                !scenario.F<Button>("StartButton").IsEnabled && !scenario.F<Button>("AddUrlButton").IsEnabled,
+                "Recovery blocks further enrichment, ingress and Start until an explicit queue reduction");
+
+            scenario.Q.SelectedItem=completed;
+            Require(scenario.F<Button>("ForgetQueueButton").IsEnabled,"Safe record removal remains available after preview overflow");
+            scenario.F<Button>("ForgetQueueButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            var deadline=DateTime.UtcNow.AddSeconds(8);var frame=new DispatcherFrame();
+            var timer=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(20)};
+            bool Reduced()=>scenario.SessionState.Queue.Count==1 && !scenario.Subject.CheckpointReadOnly;
+            timer.Tick+=(_,_)=>{if(Reduced() || DateTime.UtcNow>=deadline)frame.Continue=false;};timer.Start();
+            try{if(!Reduced())Dispatcher.PushFrame(frame);}finally{timer.Stop();}
+            var restored=storage.Restore()!;
+            Require(Reduced() && restored.Queue.Single().Url==pending.Url && restored.Queue.Single().Title==ready.Title &&
+                File.ReadAllText(media)=="published sentinel" && !File.Exists(storage.HistoryPath),
+                "Removing a confirmed record saves the reduced enriched queue and reopens normal operation without deleting media/history");
+
+            byte[] reduced=File.ReadAllBytes(storage.SessionPath);var attributes=File.GetAttributes(storage.SessionPath);
+            try
+            {
+                File.SetAttributes(storage.SessionPath,attributes|FileAttributes.ReadOnly);
+                pending.Title="changed after reduction";scenario.SaveCheckpoint();scenario.Subject.UpdateState();
+            }
+            finally{File.SetAttributes(storage.SessionPath,attributes);}
+            scenario.Q.SelectedItem=pending;
+            scenario.F<Button>("ForgetQueueButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            scenario.SaveCheckpoint();
+            Require(scenario.Subject.CheckpointReadOnly && scenario.SessionState.Queue.SequenceEqual(new[]{pending}) &&
+                !scenario.F<Button>("ForgetQueueButton").IsEnabled && File.ReadAllBytes(storage.SessionPath).SequenceEqual(reduced),
+                "An actual later I/O failure stays strict read-only after access returns and cannot inherit the capacity removal exception");
+        }
+        finally{scenario.Dispose();window.Close();}
     }
 }

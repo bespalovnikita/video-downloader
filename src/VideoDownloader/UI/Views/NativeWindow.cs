@@ -439,8 +439,8 @@ public sealed partial class NativeWindow : IDisposable
     private bool _checkpointReadOnly;
     private bool _checkpointCapacityRecovery;
     private static string QueueCapacityRecoveryHint=>ErrorMessages.Text(
-        "Очередь восстановлена, включая результаты и пути очистки, но после чтения прежних данных её сохранение превышает 16 МиБ. Исходный файл оставлен без изменений. Добавление и запуск заблокированы. Экспортируйте очередь, затем явно сократите её кнопками «Убрать из очереди», «Убрать завершённые» или «Очистить очередь…» — готовые файлы сохранятся. Для повторной попытки незавершённой очистки используйте «Удалить загрузки и файлы…»: эта команда удаляет только подтверждённые собственные файлы. Сохранение возобновится, когда оставшаяся очередь поместится в лимит.",
-        "The queue, results and cleanup paths were recovered, but expanding the older data exceeds the 16 MiB checkpoint limit. The original file is unchanged. Adding and starting are blocked. Export the queue, then reduce it with Remove queue entries, Remove completed entries or Clear queue; published files are kept. To retry pending cleanup, use Delete downloads and files, which deletes only confirmed owned files. Saving resumes once the remaining queue fits the limit.");
+        "Очередь, результаты и пути очистки сохранены в памяти, но текущая очередь превышает лимит сохранения: 16 МиБ или 100 000 ссылок. Исходный файл оставлен без изменений. Добавление и запуск заблокированы. Экспортируйте очередь, затем явно сократите её кнопками «Убрать из очереди», «Убрать завершённые» или «Очистить очередь…» — готовые файлы сохранятся. Для повторной попытки незавершённой очистки используйте «Удалить загрузки и файлы…»: эта команда удаляет только подтверждённые собственные файлы. Сохранение возобновится, когда оставшаяся очередь поместится в лимит.",
+        "The queue, results and cleanup paths remain in memory, but the current queue exceeds the checkpoint limit of 16 MiB or 100,000 URLs. The original file is unchanged. Adding and starting are blocked. Export the queue, then reduce it with Remove queue entries, Remove completed entries or Clear queue; published files are kept. To retry pending cleanup, use Delete downloads and files, which deletes only confirmed owned files. Saving resumes once the remaining queue fits the limit.");
     private bool QueueRemovalBlocked=>_restoringSession || (_checkpointReadOnly && !_checkpointCapacityRecovery);
     private void SaveReducedRecoveryQueue()
     {
@@ -452,13 +452,14 @@ public sealed partial class NativeWindow : IDisposable
         SaveCheckpoint();
         // A filesystem failure retains the ordinary read-only barrier. Only
         // a confirmed save completes capacity recovery and reopens ingress.
-        _checkpointCapacityRecovery=false;
         if(!_checkpointReadOnly)
         {
+            _checkpointCapacityRecovery=false;
             T("ClipboardHint").Text=ErrorMessages.Text("Сокращённая очередь сохранена. Добавление и запуск снова доступны.",
                 "The reduced queue was saved. Adding and starting are available again.");
             foreach(var row in SessionState.Queue)RequestRowPreview(row);
         }
+        else if(_checkpointCapacityRecovery)T("ClipboardHint").Text=QueueCapacityRecoveryHint;
         else T("ClipboardHint").Text=ErrorMessages.Text(
             "Не удалось сохранить сокращённую очередь. Исходный файл оставлен без изменений; добавление, запуск и дальнейшее удаление заблокированы. Подробности ошибки — в журнале.",
             "The reduced queue could not be saved. The original file is unchanged; adding, starting and further removal are blocked. See the journal for the save error.");
@@ -469,6 +470,8 @@ public sealed partial class NativeWindow : IDisposable
     {
         if (_restoringSession || _checkpointReadOnly || _disposed || _profileBackupBusy || _profileBackupRecoveryRequired || _profileBackupReplaying) return;
         SaveCheckpointCore(SessionState.Queue.ToArray(),ReadOptions());
+        if(_checkpointReadOnly && _checkpointCapacityRecovery)
+        {T("ClipboardHint").Text=QueueCapacityRecoveryHint;UpdateState();}
     }
     // Backup calls this with a frozen queue/options snapshot on a worker only
     // after its scheduling lease has joined all profile readers and writers.
@@ -489,6 +492,11 @@ public sealed partial class NativeWindow : IDisposable
         catch(Exception e)
         {
             _checkpointReadOnly=true;
+            // Enrichment or a worker result may expand an already admitted
+            // queue. Its original file remains intact because Save serializes
+            // fully before publication; allow the existing explicit reduction
+            // flow only for this typed writer limit, never for I/O/corruption.
+            _checkpointCapacityRecovery=AppPersistence.IsCapacityExceeded(e);
             Log("Cannot save session checkpoint: "+e.Message+Environment.NewLine+
                 "error_type="+e.GetType().Name+" hresult=0x"+e.HResult.ToString("X8",CultureInfo.InvariantCulture)+
                 Environment.NewLine+e.StackTrace);
