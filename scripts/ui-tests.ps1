@@ -28,6 +28,93 @@ $ResultPath = [IO.Path]::GetFullPath($ResultPath)
 if (Test-Path -LiteralPath $ResultPath) { Remove-Item -LiteralPath $ResultPath -Force }
 $diagnosticsPath = $ResultPath + '.diagnostics.txt'
 if (Test-Path -LiteralPath $diagnosticsPath) { Remove-Item -LiteralPath $diagnosticsPath -Force }
+$managedStacksPath = $ResultPath + '.managed-stacks.txt'
+$stackTool = $env:VD_NATIVE_UI_STACK_TOOL
+try { if (Test-Path -LiteralPath $managedStacksPath) { Remove-Item -LiteralPath $managedStacksPath -Force } }
+catch { Write-Host "Cannot reset optional WPF stacks: $($_.Exception.GetType().Name)"; $stackTool = $null }
+$stackReports = @{ Active = $null; AttemptedStage = $null; AttemptedHeartbeat = [DateTime]::MinValue; Saved = $false }
+function Stop-WpfStackReporter {
+    $active = $stackReports.Active
+    if ($null -eq $active) { return }
+    $stackReports.Active = $null
+    try {
+        # The diagnostic tool attaches to the UI; it does not own that process.
+        # Kill only this reporter, without waiting or extending the UI deadline.
+        if (-not $active.Process.HasExited) { $active.Process.Kill() }
+    } catch { Write-Host "Cannot stop WPF stack reporter: $($_.Exception.GetType().Name)" }
+    finally {
+        try { $active.Process.Dispose() }
+        catch { Write-Host "Cannot dispose WPF stack reporter: $($_.Exception.GetType().Name)" }
+    }
+}
+function Save-WpfManagedStacks([string]$text) {
+    $bytes = [Text.Encoding]::UTF8.GetBytes($text)
+    $limit = 256 * 1024
+    if ($bytes.Length -gt $limit) {
+        $suffix = [Text.Encoding]::UTF8.GetBytes("`n[Managed stacks truncated at 256 KiB]`n")
+        $keep = $limit - $suffix.Length
+        # End on a UTF-8 boundary rather than splitting a multibyte method name.
+        while ($keep -gt 0 -and ($bytes[$keep] -band 0xC0) -eq 0x80) { $keep-- }
+        [Array]::Resize([ref]$bytes, $keep + $suffix.Length)
+        [Array]::Copy($suffix, 0, $bytes, $keep, $suffix.Length)
+    }
+    [IO.File]::WriteAllBytes($managedStacksPath, $bytes)
+    $stackReports.Saved = $true
+}
+function Update-WpfStackReporter([DateTime]$now, [bool]$allowStart = $true) {
+    try {
+        $active = $stackReports.Active
+        if ($null -ne $active) {
+            if ($active.Process.HasExited -and $active.StandardOutput.IsCompleted -and $active.StandardError.IsCompleted) {
+                # These tasks are already complete: neither pipe can block the
+                # parent's existing process/stage polling loop.
+                $stackOutput = $active.StandardOutput.GetAwaiter().GetResult()
+                $stackError = $active.StandardError.GetAwaiter().GetResult()
+                if ($active.Process.ExitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace($stackOutput)) {
+                    Save-WpfManagedStacks ("UTC=$($now.ToString('O')); UI process=$($process.Id); stage=$($active.Stage)`n" +
+                        $stackOutput + "`nReporter stderr:`n" + $stackError)
+                    Write-Host 'Native WPF managed stacks captured from the parent.'
+                } else {
+                    $detail = "$stackError`n$stackOutput"
+                    Write-Host "WPF stack reporter exited $($active.Process.ExitCode): $($detail.Substring(0, [Math]::Min(4096, $detail.Length)))"
+                }
+                Stop-WpfStackReporter
+            } elseif ($now -ge $active.Deadline) {
+                Write-Host 'WPF stack reporter exceeded its 5-second diagnostic deadline.'
+                Stop-WpfStackReporter
+            }
+        }
+        if (-not $allowStart -or $null -ne $stackReports.Active -or [string]::IsNullOrWhiteSpace($stackTool)) { return }
+        if (-not (Test-Path -LiteralPath $diagnosticsPath -PathType Leaf)) { return }
+        $heartbeat = (Get-Item -LiteralPath $diagnosticsPath).LastWriteTimeUtc
+        if (($now - $heartbeat).TotalSeconds -lt 6 -or
+            ($stackReports.AttemptedStage -ceq $lastStage -and $stackReports.AttemptedHeartbeat -eq $heartbeat)) { return }
+        $stackReports.AttemptedStage = $lastStage
+        $stackReports.AttemptedHeartbeat = $heartbeat
+        $reportStart = [Diagnostics.ProcessStartInfo]::new($stackTool)
+        $reportStart.UseShellExecute = $false
+        $reportStart.CreateNoWindow = $true
+        $reportStart.RedirectStandardOutput = $true
+        $reportStart.RedirectStandardError = $true
+        $reportStart.ArgumentList.Add('report')
+        $reportStart.ArgumentList.Add('--process-id')
+        $reportStart.ArgumentList.Add([string]$process.Id)
+        $reporter = [Diagnostics.Process]::Start($reportStart)
+        $stackReports.Active = @{
+            Process = $reporter
+            StandardOutput = $null
+            StandardError = $null
+            Deadline = [DateTime]::UtcNow.AddSeconds(5)
+            Stage = $lastStage
+        }
+        $stackReports.Active.StandardOutput = $reporter.StandardOutput.ReadToEndAsync()
+        $stackReports.Active.StandardError = $reporter.StandardError.ReadToEndAsync()
+        Write-Host 'Native WPF heartbeat is stale; requesting parent-managed stacks.'
+    } catch {
+        Write-Host "Optional WPF stack reporter failed: $($_.Exception.GetType().Name)"
+        Stop-WpfStackReporter
+    }
+}
 if (-not ('VdUiWindowDiagnostics' -as [type])) {
     Add-Type -Path (Join-Path $PSScriptRoot 'UiWindowDiagnostics.cs')
 }
@@ -61,6 +148,10 @@ try {
                 try { Write-Host ($reader.ReadToEnd()) } finally { $reader.Dispose() }
             } catch { Write-Host "Cannot read WPF diagnostic heartbeat: $($_.Exception.GetType().Name)" }
         }
+        if ($stackReports.Saved -and (Test-Path -LiteralPath $managedStacksPath)) {
+            try { Write-Host ([IO.File]::ReadAllText($managedStacksPath)) }
+            catch { Write-Host "Cannot read parent-managed WPF stacks: $($_.Exception.GetType().Name)" }
+        }
     }
     while (-not $process.WaitForExit(250)) {
         if (Test-Path -LiteralPath $ResultPath) {
@@ -71,6 +162,7 @@ try {
             }
         }
         $now = [DateTime]::UtcNow
+        Update-WpfStackReporter $now
         if ((-not $capturedStage -and $now -ge $stageSince.AddSeconds(10)) -or
             (-not $finalSnapshot -and $now -ge $captureAt)) {
             # Capture before the unchanged process deadline. Each title read
@@ -85,6 +177,7 @@ try {
         }
     }
     $process.WaitForExit()
+    Update-WpfStackReporter ([DateTime]::UtcNow) $false
     $lastStage = if (Test-Path -LiteralPath $ResultPath) { Get-Content -LiteralPath $ResultPath -Raw } else { '(no stage marker written)' }
     if ($process.ExitCode -ne 0 -or $lastStage.Trim() -cne 'PASS') {
         Write-WpfFailureDiagnostics
@@ -99,6 +192,7 @@ try {
     }
 }
 finally {
+    Stop-WpfStackReporter
     try { if (-not $process.HasExited) { $process.Kill($true); [void]$process.WaitForExit(5000) } }
     finally { $process.Dispose() }
 }
