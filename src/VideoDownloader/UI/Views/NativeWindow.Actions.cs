@@ -300,6 +300,7 @@ public sealed partial class NativeWindow
         try { await _journal.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(2)); }
         catch(TimeoutException) { UpdateJournalHint("Время ожидания записи журнала истекло. Приложение закрывается."); }
         FlushJournal();
+        foreach(var column in _subscriptionColumns)column.Dispose();
         _panelLayout.Dispose();
         _theme.Dispose();
         _lifecycle.Dispose();
@@ -318,6 +319,7 @@ public sealed partial class NativeWindow
         FlushJournal();
         _disposed=true;
         _queueFilters?.Dispose();
+        foreach(var column in _subscriptionColumns)column.Dispose();
         _downloadsView.Dispose();
         DisposeDiskSpace();
         DisposeMediaSelection();

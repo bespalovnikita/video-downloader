@@ -63,6 +63,8 @@ internal sealed partial class UiScenario
             subject=new NativeWindow(window,storage,"must-not-launch",automaticSubscriptionChecks:false);
             window.Show();SetLayoutTestBounds(window,1280,760,compact:false);
             var grid=(DataGrid)window.FindName("DownloadGrid")!;
+            var subscriptionColumn=(DataGridColumn)window.FindName("DownloadSubscriptionColumn")!;
+            var queueSubscriptionColumn=(DataGridColumn)window.FindName("QueueSubscriptionColumn")!;
             var urlInput=(TextBox)window.FindName("UrlInput")!;
             Require(grid.IsVisible && urlInput.IsVisible,
                 "The simultaneous Downloads-scroll and URL-focus scenario requires both real wide-layout panels to be visible");
@@ -220,6 +222,28 @@ internal sealed partial class UiScenario
             SetFromWorker(running,"Failed","Failed");active=[failed,starting,queued];
             PumpUntil(()=>grid.Items.Cast<DownloadItem>().SequenceEqual(ExpectedSlot(true)),
                 "A selected failed row must leave the active group under the retained manual sort");RequireSelected();RequireSources();
+            Require(subscriptionColumn.Visibility==Visibility.Collapsed && queueSubscriptionColumn.Visibility==Visibility.Collapsed,
+                "Ordinary links must not reserve either table's empty subscription column.");
+            var displayed=grid.Items.Cast<DownloadItem>().ToArray();
+            var labelChange=Task.Run(()=>running.SubscriptionName="Подписка выбранного задания");
+            PumpUntil(()=>labelChange.IsCompleted && subscriptionColumn.Visibility==Visibility.Visible &&
+                queueSubscriptionColumn.Visibility==Visibility.Visible,"A label notification must reveal both real columns");
+            labelChange.GetAwaiter().GetResult();Drain();RequireSelected();RequireSources();
+            running.SubscriptionName="";Drain();
+            Require(subscriptionColumn.Visibility==Visibility.Collapsed && queueSubscriptionColumn.Visibility==Visibility.Collapsed &&
+                grid.Columns[0].SortDirection==ListSortDirection.Descending && grid.Items.Cast<DownloadItem>().SequenceEqual(displayed),
+                "Hiding empty columns must preserve the user's descending sort, exact displayed order and selected task.");
+            RequireSelected();RequireSources();
+            var extra=new DownloadItem{Url="https://downloads-order.invalid/subscription",SubscriptionName="Новая подписка"};
+            subject.SessionState.Queue.Add(extra);subject.SessionState.Downloads.Add(extra);Drain();
+            Require(subscriptionColumn.Visibility==Visibility.Visible && queueSubscriptionColumn.Visibility==Visibility.Visible,
+                "A newly admitted subscription row must reveal both columns without a settings toggle.");
+            subject.SessionState.Queue.Remove(extra);subject.SessionState.Downloads.Remove(extra);Drain();
+            Require(subscriptionColumn.Visibility==Visibility.Collapsed && queueSubscriptionColumn.Visibility==Visibility.Collapsed &&
+                subject.SessionState.Queue.SequenceEqual(rows) && subject.SessionState.Downloads.SequenceEqual(rows) &&
+                grid.Columns[0].SortDirection==ListSortDirection.Descending && grid.Items.Cast<DownloadItem>().SequenceEqual(displayed),
+                "Removing the last subscription row must reclaim both columns and leave the surviving tasks and sort intact.");
+            RequireSelected();
             Console.WriteLine("PASS: real Downloads view, worker-thread status moves, parallel/paused processing, stable source order, header sorts, selection/actions, scroll/focus and unchanged history/checkpoint");
         }
         finally {subject?.Dispose();window.Close();}

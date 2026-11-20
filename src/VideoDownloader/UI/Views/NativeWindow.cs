@@ -21,6 +21,7 @@ public sealed partial class NativeWindow : IDisposable
     private readonly Window _window;
     private readonly QueueSessionController _queueSession=new();
     private readonly DownloadsViewController _downloadsView;
+    private readonly SubscriptionColumnController[] _subscriptionColumns;
     private readonly AppPersistence _storage;
     private readonly PreviewController _preview;
     private readonly PanelLayoutController _panelLayout;
@@ -105,6 +106,8 @@ public sealed partial class NativeWindow : IDisposable
         InitializeJournalControls();
         InitializeMediaSelectionControls();
         InitializeQueueFilters();
+        _subscriptionColumns=[new(Q,F<DataGridColumn>("QueueSubscriptionColumn")),
+            new(D,F<DataGridColumn>("DownloadSubscriptionColumn"))];
         InitializeInputFeedback();
         InitializeQueueItemActions();
         InitializeResetQueueItemActions();

@@ -630,7 +630,7 @@
                                 </DataGridTemplateColumn.CellTemplate>
                             </DataGridTemplateColumn>
                             <DataGridTextColumn Header="Состояние" Binding="{Binding StateLabel}" Width="90" ElementStyle="{StaticResource QueueStatusTextStyle}"/>
-                            <DataGridTextColumn Header="Подписка / папка" Binding="{Binding SubscriptionName}" Width="120" ElementStyle="{StaticResource GridTextStyle}"/>
+                            <DataGridTextColumn x:Name="QueueSubscriptionColumn" Header="Подписка / папка" Binding="{Binding SubscriptionName}" Width="120" Visibility="Collapsed" ElementStyle="{StaticResource GridTextStyle}"/>
                         </DataGrid.Columns>
                     </DataGrid>
                     <TextBlock x:Name="QueueEmptyState" Text="Вставьте ссылку на видео или аудио, затем нажмите «Добавить»." Margin="18" TextWrapping="Wrap" TextAlignment="Center" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="{DynamicResource MutedBrush}" IsHitTestVisible="False"/>
@@ -670,7 +670,7 @@
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="Поток" Binding="{Binding Slot}" Width="52" ElementStyle="{StaticResource GridTextStyle}"/>
                             <DataGridTextColumn Header="Состояние" Binding="{Binding StateLabel}" Width="110" ElementStyle="{StaticResource DownloadStatusTextStyle}"/>
-                            <DataGridTextColumn Header="Подписка / папка" Binding="{Binding SubscriptionName}" Width="120" ElementStyle="{StaticResource GridTextStyle}"/>
+                            <DataGridTextColumn x:Name="DownloadSubscriptionColumn" Header="Подписка / папка" Binding="{Binding SubscriptionName}" Width="120" Visibility="Collapsed" ElementStyle="{StaticResource GridTextStyle}"/>
                             <DataGridTemplateColumn Header="Видео / прогресс" Width="*" MinWidth="220">
                                 <DataGridTemplateColumn.CellTemplate>
                                     <DataTemplate>
