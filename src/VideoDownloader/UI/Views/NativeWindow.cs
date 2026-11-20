@@ -597,6 +597,7 @@ public sealed partial class NativeWindow : IDisposable
         try { added=SessionState.AddBatch(rows,ReadOptions()); }
         catch(InvalidDataException error)
         {
+            if(_profileBackupIngressDispatch)throw;
             T("ClipboardHint").Text=error.Message;
             Log("Queue admission refused: "+error.Message);
             MessageBox.Show(_window,error.Message,ErrorMessages.Text("Очередь не добавлена","Queue was not added"),MessageBoxButton.OK,MessageBoxImage.Warning);

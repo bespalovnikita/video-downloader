@@ -227,6 +227,10 @@ public sealed partial class NativeWindow
                             try{if(protocol)_ingress.ReceiveArguments([argument]);else AddUrls(urls!);}
                             finally{_profileBackupIngressDispatch=false;}
                         }
+                        // Ordinary ingress can save synchronously, and a
+                        // portable import yields while reading/decoding. Only
+                        // advance after both acceptance and lifecycle survived.
+                        if(!CanReplayProfileArguments())throw new InvalidOperationException("Приём отложенных аргументов не завершён.");
                         group.Next++;
                     }
                     _deferredProfileArguments.Dequeue();
