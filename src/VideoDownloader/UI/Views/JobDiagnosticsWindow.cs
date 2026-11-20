@@ -74,8 +74,9 @@ internal sealed class JobDiagnosticsWindow:Window
         _explanation=Named("JobDiagnosticExplanation",Note(""));header.Children.Add(_explanation);
         _rawLabel=Note("Последнее сообщение об ошибке:");header.Children.Add(_rawLabel);
         _error=Named("JobDiagnosticError",ReadOnlyText(64));header.Children.Add(_error);ShowError(target.Error);
-        root.Children.Add(new ScrollViewer{Content=header,MaxHeight=160,VerticalScrollBarVisibility=ScrollBarVisibility.Auto,
-            HorizontalScrollBarVisibility=ScrollBarVisibility.Disabled});
+        var headerScroll=Named("JobDiagnosticsHeaderScroll",new ScrollViewer{Content=header,MaxHeight=160,VerticalScrollBarVisibility=ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility=ScrollBarVisibility.Disabled});root.Children.Add(headerScroll);
+        SizeChanged+=(_,_)=>headerScroll.MaxHeight=Math.Clamp(ActualHeight*.22,60,160);
 
         var filters=new Grid{Margin=new Thickness(0,8,0,4)};
         filters.ColumnDefinitions.Add(new ColumnDefinition{Width=new GridLength(1,GridUnitType.Star)});
@@ -134,7 +135,9 @@ internal sealed class JobDiagnosticsWindow:Window
         showDetails.Click+=(_,_)=>ShowHelp(false);showHelp.Click+=(_,_)=>ShowHelp(true);
         Grid.SetRow(detailArea,4);root.Children.Add(detailArea);
         var footer=new StackPanel{Margin=new Thickness(0,7,0,0)};
-        _status=Named("JobDiagnosticsStatus",Note("События обновляются автоматически. Отчёт можно приложить к сообщению о проблеме."));footer.Children.Add(_status);
+        _status=Named("JobDiagnosticsStatus",Note("События обновляются автоматически. Отчёт можно приложить к сообщению о проблеме."));
+        footer.Children.Add(new ScrollViewer{Content=_status,MaxHeight=60,VerticalScrollBarVisibility=ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility=ScrollBarVisibility.Disabled});
         var buttons=new WrapPanel();
         _refresh=Named("RefreshJobDiagnosticsButton",new Button{Content="Обновить",ToolTip="Перечитать доступные события. Новые записи также появляются автоматически."});
         _copy=Named("CopyJobDiagnosticsButton",new Button{Content="Копировать видимые события",IsEnabled=false,
@@ -154,6 +157,7 @@ internal sealed class JobDiagnosticsWindow:Window
             else if(e.Key==Key.F && (Keyboard.Modifiers&ModifierKeys.Control)!=0){e.Handled=true;_search.Focus();_search.SelectAll();}
         };
         _timer.Tick+=RefreshTick;Loaded+=(_,_)=>{if(!_closed){BeginRefresh(true);_timer.Start();}};Closed+=(_,_)=>CloseOperations();
+        OwnedWindowLayout.Attach(this,owner);
     }
 
     private T Named<T>(string name,T control) where T:FrameworkElement

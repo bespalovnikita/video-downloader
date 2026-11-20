@@ -54,7 +54,10 @@ internal sealed class ProfileBackupWindow:Window
         _ingressWarning=ingressWarning??(()=>"");
         Name="ProfileBackupWindow";Title="Резервная копия Windows";Owner=owner;Width=740;Height=650;MinWidth=540;MinHeight=450;
         WindowStartupLocation=WindowStartupLocation.CenterOwner;WindowThemeController.Inherit(this,owner);NameScope.SetNameScope(this,new NameScope());
-        var body=new StackPanel{Margin=new Thickness(18)};Content=new ScrollViewer{Content=body,VerticalScrollBarVisibility=ScrollBarVisibility.Auto};
+        var layout=new DockPanel{Margin=new Thickness(18)};Content=layout;
+        var footer=new StackPanel{Margin=new Thickness(0,8,0,0)};DockPanel.SetDock(footer,Dock.Bottom);layout.Children.Add(footer);
+        var body=new StackPanel();layout.Children.Add(new ScrollViewer{Content=body,VerticalScrollBarVisibility=ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility=ScrollBarVisibility.Disabled});
         TextBlock Text(string text)=>new(){Text=text,TextWrapping=TextWrapping.Wrap,Margin=new Thickness(0,5,0,5)};
         T Named<T>(string name,T element) where T:FrameworkElement{element.Name=name;RegisterName(name,element);return element;}
         Button Action(string name,string label,Panel panel)
@@ -75,9 +78,12 @@ internal sealed class ProfileBackupWindow:Window
         _confirmation.Children.Add(Text("Подтвердите применение показанных изменений к текущему профилю. При замене подписок текущий список подписок будет заменён. Очередь и файлы загрузок сохранятся."));
         _confirm=Action("ConfirmProfileRestoreButton","Подтвердить восстановление",_confirmation);
         var back=Action("CancelProfileRestoreConfirmationButton","Вернуться к просмотру",_confirmation);
-        _status=Named("ProfileBackupStatus",Text("Выберите действие."));body.Children.Add(_status);
-        _cancel=Action("CancelProfileBackupOperationButton","Отменить операцию",body);_cancel.IsEnabled=false;
-        var close=Action("CloseProfileBackupButton","Закрыть",body);
+        _status=Named("ProfileBackupStatus",Text("Выберите действие."));
+        footer.Children.Add(new ScrollViewer{Content=_status,MaxHeight=60,VerticalScrollBarVisibility=ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility=ScrollBarVisibility.Disabled});
+        var commands=new WrapPanel();footer.Children.Add(commands);
+        _cancel=Action("CancelProfileBackupOperationButton","Отменить операцию",commands);_cancel.IsEnabled=false;
+        var close=Action("CloseProfileBackupButton","Закрыть",commands);
         _create.Click+=(_,_)=>Begin(CreateAsync);_open.Click+=(_,_)=>Begin(LoadAsync);
         _policy.SelectionChanged+=(_,_)=>{if(!IsBusy && _archive is not null)Begin(PrepareAsync);};
         _restore.Click+=(_,_)=>{if(!IsBusy && _plan is not null){_confirmation.Visibility=Visibility.Visible;_confirm.Focus();}};
@@ -85,6 +91,8 @@ internal sealed class ProfileBackupWindow:Window
         back.Click+=(_,_)=>_confirmation.Visibility=Visibility.Collapsed;
         _cancel.Click+=(_,_)=>RequestCancellation();close.Click+=(_,_)=>Close();
         Closing+=OnClosing;Closed+=(_,_)=>{_closed=true;_plan?.Dispose();_plan=null;_archive=null;};RefreshControls();
+        Loaded+=(_,_)=>_create.Focus();
+        OwnedWindowLayout.Attach(this,owner);
     }
     private void Begin(Func<CancellationToken,Task> action)
     {

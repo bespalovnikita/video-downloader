@@ -134,6 +134,7 @@ internal sealed partial class UiScenario
             Console.WriteLine("PASS: real WPF splitters, persistent wide widths, compact navigation and reachable session controls");
         }
         finally {subject?.Dispose();window.Close();}
+        TestOwnedWindowBounds(testRoot);
     }
 
     private static void SetLayoutTestBounds(Window window,double width,double height,bool compact)
