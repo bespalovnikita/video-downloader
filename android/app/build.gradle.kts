@@ -22,7 +22,7 @@ val vdVersionName = vdVersionNameProperty?.also {
     require(Regex("(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)").matches(it)) {
         "vdVersionName must be a stable major.minor.patch version"
     }
-} ?: "1.0.1"
+} ?: "3.0.0"
 val vdVersionCode = vdVersionCodeProperty?.let {
     require(Regex("[1-9][0-9]*").matches(it)) {
         "vdVersionCode must be an integer between 1 and 2100000000"
@@ -34,7 +34,7 @@ val vdVersionCode = vdVersionCodeProperty?.let {
         "vdVersionCode must be an integer between 1 and 2100000000"
     }
     code
-} ?: 2
+} ?: 3_000_000
 
 // The Android wrapper's bundled extractor can lag behind YouTube changes.
 // Override its raw resource with a reviewed, checksum-pinned official zipimport.

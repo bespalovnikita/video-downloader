@@ -138,7 +138,7 @@ adb devices
 Для изменений сборки проверь также release-вариант и переопределение версии:
 
 ```bash
-./gradlew :app:lintRelease :app:assembleRelease -PvdVersionName=2.0.0 -PvdVersionCode=2000000
+./gradlew :app:lintRelease :app:assembleRelease -PvdVersionName=3.0.0 -PvdVersionCode=3000000
 ```
 
 Отчёты: `core/build/reports/tests/`, `app/build/reports/tests/`, `app/build/reports/androidTests/`, `app/build/reports/lint-results-debug.html` и `app/build/reports/lint-results-release.html`. Эти проверки запускает [переиспользуемый Android CI](../../.github/workflows/android.yml); успешный запуск сохраняет отладочный APK в артефакте **VideoDownloader-Android-debug**. Подписанный APK публикует отдельный main-only release job после проверок обеих платформ. Публикации в Google Play нет.
@@ -151,7 +151,7 @@ adb devices
 
 В текущей конфигурации команда создаёт **`app/build/outputs/apk/release/app-release-unsigned.apk`**. Неподписанный APK нельзя установить как готовое приложение. Для своей устанавливаемой release-сборки используй в Android Studio **Build → Generate Signed Bundle / APK → APK**, выбери модуль `app` и свой существующий keystore либо создай новый. Храни ключ и пароли вне репозитория, а резервную копию ключа — отдельно: следующие обновления должны иметь ту же подпись. Файлы `*.jks` и `*.keystore` исключены из Git.
 
-Для автоматического Release используется `scripts/build-android-release.ps1`: он получает версию выбранного Git-тега, передаёт Gradle оба параметра `-PvdVersionName` и `-PvdVersionCode`, подписывает APK через `apksigner` постоянным ключом и проверяет подпись. [Однократная настройка GitHub Secrets](releases.md#android-артефакт-и-подпись) обязательна: для нового ключа запусти на своём компьютере [setup-android-signing.ps1](../../scripts/setup-android-signing.ps1) по этой инструкции. Постоянный ключ не генерируется заново при каждом выпуске. Без параметров версии локальная сборка использует значения из `app/build.gradle.kts`.
+Для автоматического Release используется `scripts/build-android-release.ps1`: он получает версию выбранного Git-тега, передаёт Gradle оба параметра `-PvdVersionName` и `-PvdVersionCode`, подписывает APK через `apksigner` постоянным ключом и проверяет подпись. [Однократная настройка GitHub Secrets](releases.md#android-артефакт-и-подпись) обязательна: для нового ключа запусти на своём компьютере [setup-android-signing.ps1](../../scripts/setup-android-signing.ps1) по этой инструкции. Постоянный ключ не генерируется заново при каждом выпуске. Без параметров версии локальная сборка использует `versionName = 3.0.0` и `versionCode = 3000000` из `app/build.gradle.kts`.
 
 Публичное распространение APK требует также учёта лицензий включённого рантайма и предоставления соответствующих исходников; см. [THIRD_PARTY_NOTICES.md](../../android/THIRD_PARTY_NOTICES.md).
 
