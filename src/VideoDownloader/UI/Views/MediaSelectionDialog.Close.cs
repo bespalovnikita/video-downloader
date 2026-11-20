@@ -103,8 +103,10 @@ internal sealed partial class MediaSelectionDialog
         if(_continueEditing is not null)_continueEditing.IsDefault=false;
         _applyButton.IsDefault=true;
         _discardPrompt.Visibility=Visibility.Collapsed;
-        if(_discardReturnFocus is UIElement {IsVisible:true,IsEnabled:true} target)target.Focus();
-        else{_start.BringIntoView();_start.Focus();}
+        bool restored=_discardReturnFocus is UIElement {IsVisible:true,IsEnabled:true} target && target.Focus();
+        if(!restored && _start.IsVisible && _start.IsEnabled)
+        {_start.BringIntoView();restored=_start.Focus();}
+        if(!restored && FindName("CloseMediaSelectionButton") is Button {IsVisible:true,IsEnabled:true} close)close.Focus();
         _discardReturnFocus=null;
     }
 }

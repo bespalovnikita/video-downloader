@@ -132,6 +132,17 @@ internal sealed partial class UiScenario
             Require(Control<StackPanel>(dialog,"MediaDiscardDraftPanel").Visibility==Visibility.Collapsed &&
                 Control<Button>(dialog,"ApplyMediaSelectionButton").IsDefault && first.Selection is null,
                 "Continuing must remove the confirmation without changing the draft.");
+            NativeEditorKey(dialog,Key.Escape,()=>Control<StackPanel>(dialog,"MediaDiscardDraftPanel").IsVisible,
+                "The edited range must open its discard choice before the row becomes active.");
+            first.Status="Running";subject.UpdateState();
+            Require(!simpleStart.IsEnabled && !Control<Button>(dialog,"ApplyMediaSelectionButton").IsEnabled,
+                "A row becoming active while the discard choice is open must disable editing and Apply.");
+            NativeEditorKey(dialog,Key.Return,()=>!Control<StackPanel>(dialog,"MediaDiscardDraftPanel").IsVisible &&
+                Control<Button>(dialog,"CloseMediaSelectionButton").IsKeyboardFocused,
+                "Native Enter must continue with focus on Close when the original field has become read-only.");
+            Require(dialog.IsVisible && simpleStart.Text=="2" && simpleEnd.Text=="4" && first.Selection is null,
+                "Continuing a now read-only draft must preserve it without applying or closing the editor.");
+            first.Status="Queued";subject.UpdateState();
             Require(PostMessageW(new WindowInteropHelper(dialog).Handle,0x0112,(nint)0xf060,0),
                 "The native chrome Close command must be queued.");
             PumpUntil(()=>Control<StackPanel>(dialog,"MediaDiscardDraftPanel").IsVisible,
