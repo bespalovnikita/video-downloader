@@ -57,7 +57,7 @@ internal sealed partial class UiScenario
                     "Update controls must be reached through Settings and the expanded application-update section");
             }
             ShowUpdateSettings();
-            var appVersion=typeof(NativeWindow).Assembly.GetName().Version??new Version(2,0,0);
+            var appVersion=typeof(NativeWindow).Assembly.GetName().Version??new Version(3,0,0);
             string versionText=new Version(appVersion.Major,appVersion.Minor,Math.Max(0,appVersion.Build)).ToString();
             string installedText=installed.Text;
             Require(check.IsEnabled && !install.IsEnabled && service.CheckCalls==0 && status.Text.Length>0,
