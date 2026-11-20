@@ -96,10 +96,12 @@ internal sealed partial class UiScenario
             Require(!expert.IsExpanded && !catalog.IsVisible && simpleStart.IsVisible &&
                 rangeBounds.Top>=0 && rangeBounds.Bottom<=scroll.ActualHeight,
                 "An automatic fragment must open at its visible time fields, with the expert catalog collapsed.");
+            var unchangedMode=Control<CheckBox>(dialog,"MultipleMediaSectionsCheck");
+            unchangedMode.IsChecked=true;unchangedMode.IsChecked=false;
             dialog.Activate();simpleStart.Focus();
             PumpUntil(()=>simpleStart.IsKeyboardFocused,"The actual empty editor must accept keyboard focus before Escape.");
             NativeEditorKey(dialog,Key.Escape,()=>subject.MediaSelectionEditor is null,
-                "Escape must close an unchanged editor immediately without asking to discard a draft.");
+                "Escape must close an unchanged editor immediately even after visiting multiple-range mode without editing.");
             Require(first.Selection is null,"Closing an unchanged editor must not apply a plan.");
             Click(window,"MediaSelectionButton");dialog=subject.MediaSelectionEditor!;
             expert=Control<Expander>(dialog,"MediaFormatsExpander");catalog=Control<DataGrid>(dialog,"MediaFormatsGrid");
@@ -153,6 +155,26 @@ internal sealed partial class UiScenario
                 first.Status=="Queued" && subject.SessionState.Coordinator==null,
                 "A normal fragment must apply through the default automatic mode without opening or choosing technical formats.");
             Click(window,"MediaSelectionButton");dialog=subject.MediaSelectionEditor!;
+            var savedSingle=first.Selection;
+            var hiddenMultiple=Control<CheckBox>(dialog,"MultipleMediaSectionsCheck");
+            var retainedList=Control<System.Windows.Controls.ListBox>(dialog,"MediaSectionsList");
+            var retainedStart=Control<TextBox>(dialog,"MediaSectionStartBox");
+            var retainedEnd=Control<TextBox>(dialog,"MediaSectionEndBox");
+            hiddenMultiple.IsChecked=true;Click(dialog,"AddMediaSectionButton");
+            retainedStart.Text="6";retainedEnd.Text="8";retainedList.SelectedIndex=0;hiddenMultiple.IsChecked=false;
+            Require(retainedList.Items.Count==2 && !retainedList.IsVisible &&
+                retainedStart.Text==DownloadSection.FormatTimestamp(2) && retainedEnd.Text==DownloadSection.FormatTimestamp(4) &&
+                first.Selection==savedSingle,
+                "The saved single range must remain unchanged while an additional unapplied draft is hidden.");
+            dialog.Activate();retainedStart.BringIntoView();retainedStart.Focus();
+            PumpUntil(()=>retainedStart.IsKeyboardFocused,"The unchanged active range must own focus before Escape with hidden drafts.");
+            NativeEditorKey(dialog,Key.Escape,()=>Control<StackPanel>(dialog,"MediaDiscardDraftPanel").IsVisible,
+                "Native Escape must protect retained extra drafts even when the visible single range matches the saved plan.");
+            Require(dialog.IsVisible && ReferenceEquals(subject.MediaSelectionEditor,dialog) && first.Selection==savedSingle,
+                "Protecting hidden drafts must not close the editor or apply its inactive ranges.");
+            Click(dialog,"ContinueMediaEditingButton");hiddenMultiple.IsChecked=true;retainedList.SelectedIndex=1;
+            Require(retainedStart.Text=="6" && retainedEnd.Text=="8" && first.Selection==savedSingle,
+                "Continuing after Escape must restore the additional draft without persisting it.");
             Click(dialog,"ResetMediaSelectionButton");
             Require(first.Selection==null,"Reset must restore the full automatic selection after the simple-fragment probe.");
             Click(window,"MediaSelectionButton");dialog=subject.MediaSelectionEditor!;
