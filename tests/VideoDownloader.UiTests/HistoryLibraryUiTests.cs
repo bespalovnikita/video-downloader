@@ -53,6 +53,9 @@ internal sealed partial class UiScenario
             window.Width=900;window.Height=650;window.UpdateLayout();
             var grid=Control<DataGrid>(window,"HistoryGrid");var files=Control<DataGrid>(window,"HistoryFilesGrid");
             var search=Control<TextBox>(window,"HistorySearchBox");var status=Control<TextBlock>(window,"HistoryStatusText");
+            var emptyState=Control<FrameworkElement>(window,"HistoryEmptyState");
+            var emptyText=Control<TextBlock>(window,"HistoryEmptyStateText");
+            var clearSearch=Control<Button>(window,"ClearHistorySearchButton");
             PumpUntil(()=>grid.Items.Count==2,"The actual history grid did not load modern and legacy events.");
             window.UpdateLayout();
             var fileExpander=Control<Expander>(window,"HistoryFilesExpander");
@@ -90,7 +93,23 @@ internal sealed partial class UiScenario
             search.Text="legacy";PumpUntil(()=>grid.Items.Count==1 && ((HistoryRecordRow)grid.Items[0]).Entry.OutputPaths.Count==0,"Legacy search did not expose unknown path metadata.");
             Require(Control<TextBlock>(window,"HistorySelectionStatus").Text.Contains("не сохранены",StringComparison.Ordinal) &&
                 !Control<Button>(window,"CheckHistoryFilesButton").IsEnabled,"Legacy records must explain unknown paths, without inventing a missing file.");
-            search.Text="";PumpUntil(()=>grid.Items.Count==2,"Clearing search must restore both historical attempts.");
+            fileExpander.IsExpanded=false;window.UpdateLayout();
+            search.Text="no-such-history-entry";
+            Require(emptyState.Visibility==Visibility.Collapsed,
+                "A pending debounced query must not present the preceding query's empty result as its own.");
+            PumpUntil(()=>grid.Items.Count==0 && emptyState.IsVisible && emptyText.Text=="Поиск не нашёл записей.",
+                "A no-match query must explain its result in the main viewport, outside collapsed file details.");
+            window.UpdateLayout();
+            Require(VisibleInWindow(window,emptyText) && VisibleInWindow(window,clearSearch) && !files.IsVisible &&
+                System.Windows.Automation.Peers.UIElementAutomationPeer.CreatePeerForElement(clearSearch)?.GetName()=="Сбросить поиск",
+                "Search recovery must remain visible and accessibly labelled without reopening the file group.");
+            Click(window,"ClearHistorySearchButton");
+            Require(search.Text=="" && emptyState.Visibility==Visibility.Collapsed,
+                "Explicit search reset must clear only the query and hide stale no-match feedback while loading.");
+            PumpUntil(()=>grid.Items.Count==2,"Clearing search must restore both historical attempts.");
+            Require(!emptyState.IsVisible && !fileExpander.IsExpanded && search.IsKeyboardFocusWithin,
+                "Search recovery must restore results and keyboard focus without opening file details.");
+            fileExpander.IsExpanded=true;window.UpdateLayout();
             modern=grid.Items.Cast<HistoryRecordRow>().Single(row=>row.Entry.Title.Length>0);grid.SelectedItem=modern;
             checkFiles.BringIntoView();window.UpdateLayout();
             Click(window,"CheckHistoryFilesButton");
@@ -117,6 +136,17 @@ internal sealed partial class UiScenario
                 "Directly raised clicks cannot turn an imported executable path into a shell action.");
             Require(history.SequenceEqual(File.ReadAllBytes(storage.HistoryPath)) && session.SequenceEqual(File.ReadAllBytes(storage.SessionPath)),
                 "Reading, searching, missing-file checks and explicit opening cannot rewrite successes or a damaged queue checkpoint.");
+            window.Close();window=null;
+
+            var damaged=new AppPersistence(Path.Combine(root,"damaged-profile"));
+            File.WriteAllText(damaged.HistoryPath,"not a history JSON record\n");
+            byte[] damagedHistory=File.ReadAllBytes(damaged.HistoryPath);
+            window=new DownloadHistoryWindow(owner,damaged);window.Show();
+            PumpUntil(()=>Control<TextBlock>(window,"HistoryStatusText").Text.StartsWith("Не удалось прочитать историю",StringComparison.Ordinal),
+                "A damaged history must report its read failure.");
+            Require(Control<FrameworkElement>(window,"HistoryEmptyState").Visibility==Visibility.Collapsed &&
+                damagedHistory.SequenceEqual(File.ReadAllBytes(damaged.HistoryPath)),
+                "A read failure must not masquerade as an empty history or rewrite the damaged input.");
             window.Close();window=null;
 
             using(var held=new HistoryUiHeldProbe())
@@ -149,7 +179,16 @@ internal sealed partial class UiScenario
                 Click(owner,"OpenHistoryButton");PumpUntil(()=>native.HistoryLibrary?.IsVisible==true,"The main history button did not open the actual library.");
                 Require(native.SessionState.Coordinator==null && native.SessionState.RunningTask==null && !File.Exists(isolated.HistoryPath),
                     "Opening the main history library must neither create successful history nor start a download.");
-                var ownedWindow=native.HistoryLibrary!;native.Dispose();Require(!ownedWindow.IsVisible,"Disposing the main owner must close its history window.");
+                var ownedWindow=native.HistoryLibrary!;
+                PumpUntil(()=>Control<FrameworkElement>(ownedWindow,"HistoryEmptyState").IsVisible &&
+                    Control<TextBlock>(ownedWindow,"HistoryEmptyStateText").Text=="История пока пуста.",
+                    "A fresh profile must explain the empty history in the main results area.");
+                ownedWindow.UpdateLayout();
+                Require(VisibleInWindow(ownedWindow,Control<TextBlock>(ownedWindow,"HistoryEmptyStateText")) &&
+                    Control<Button>(ownedWindow,"ClearHistorySearchButton").Visibility==Visibility.Collapsed &&
+                    !Control<Expander>(ownedWindow,"HistoryFilesExpander").IsExpanded && !File.Exists(isolated.HistoryPath),
+                    "A truly empty history must stay distinct from no search matches, without a pointless reset or data writes.");
+                native.Dispose();Require(!ownedWindow.IsVisible,"Disposing the main owner must close its history window.");
             }
             Console.WriteLine("PASS: real WPF history search, legacy metadata, distinct availability, explicit safe open actions and cancelled close without queue/history writes");
         }

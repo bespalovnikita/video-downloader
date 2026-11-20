@@ -47,8 +47,9 @@ internal sealed class DownloadHistoryWindow:Window
     private readonly Dictionary<string,HistoryFileAvailability> _knownFiles=new(StringComparer.OrdinalIgnoreCase);
     private readonly DataGrid _grid,_fileGrid;
     private readonly TextBox _search;
-    private readonly TextBlock _status,_selectionStatus;
-    private readonly Button _check,_cancelCheck,_openFile,_openFolder;
+    private readonly TextBlock _status,_selectionStatus,_emptyStateText;
+    private readonly FrameworkElement _emptyState;
+    private readonly Button _check,_cancelCheck,_openFile,_openFolder,_clearSearch;
     private long _generation;
     private bool _closed,_opening;
     internal IReadOnlyCollection<HistoryRecordRow> Rows=>_rows;
@@ -79,7 +80,17 @@ internal sealed class DownloadHistoryWindow:Window
             EnableRowVirtualization=true,SelectionMode=DataGridSelectionMode.Single,ItemsSource=_rows});
         Column(_grid,"Дата","Date",145);Column(_grid,"Название","Title",new DataGridLength(2,DataGridLengthUnitType.Star));
         Column(_grid,"Источник","Source",130);Column(_grid,"URL","Url",new DataGridLength(2,DataGridLengthUnitType.Star));
-        Column(_grid,"Файлы","FileCount",125);Column(_grid,"Доступность","Availability",160);Add(_grid,3);
+        Column(_grid,"Файлы","FileCount",125);Column(_grid,"Доступность","Availability",160);
+        var results=new Grid();results.Children.Add(_grid);Add(results,3);
+        var emptyContent=new StackPanel{HorizontalAlignment=System.Windows.HorizontalAlignment.Center,
+            VerticalAlignment=System.Windows.VerticalAlignment.Center,MaxWidth=440,Margin=new Thickness(20)};
+        _emptyStateText=Named("HistoryEmptyStateText",Note(""));
+        _emptyStateText.TextAlignment=System.Windows.TextAlignment.Center;emptyContent.Children.Add(_emptyStateText);
+        _clearSearch=Named("ClearHistorySearchButton",new Button{Content="Сбросить поиск",
+            HorizontalAlignment=System.Windows.HorizontalAlignment.Center,Margin=new Thickness(0,8,0,0)});
+        emptyContent.Children.Add(_clearSearch);
+        _emptyState=Named("HistoryEmptyState",new Border{Child=emptyContent,Visibility=Visibility.Collapsed});
+        results.Children.Add(_emptyState);
         var fileDetails=new StackPanel{Margin=new Thickness(0,6,0,0)};
         _selectionStatus=Named("HistorySelectionStatus",Note("Выберите запись, чтобы увидеть сохранённые пути."));fileDetails.Children.Add(_selectionStatus);
         _fileGrid=Named("HistoryFilesGrid",new DataGrid{IsReadOnly=true,AutoGenerateColumns=false,CanUserAddRows=false,CanUserDeleteRows=false,
@@ -92,7 +103,7 @@ internal sealed class DownloadHistoryWindow:Window
         _openFolder=Named("OpenHistoryFolderButton",new Button{Content="Открыть папку"});
         var copy=Named("CopyHistoryPathButton",new Button{Content="Копировать путь"});
         var close=Named("CloseHistoryButton",new Button{Content="Закрыть"});
-        foreach(var button in new[]{_check,_cancelCheck,_openFile,_openFolder,copy,close})
+        foreach(var button in new[]{_check,_cancelCheck,_openFile,_openFolder,copy,close,_clearSearch})
         {
             if(TryFindResource("GuardedActionButton") is Style guarded)button.Style=guarded;
         }
@@ -112,6 +123,7 @@ internal sealed class DownloadHistoryWindow:Window
         _status=Named("HistoryStatusText",Note("Читаем историю…"));Add(_status,6);
         SizeChanged+=(_,_)=>fileScroll.MaxHeight=Math.Clamp(ActualHeight*.3,100,240);
         _search.TextChanged+=(_,_)=>QueueLoad(true);
+        _clearSearch.Click+=(_,_)=>{if(!_closed){_search.Clear();_search.Focus();}};
         reload.Click+=(_,_)=>QueueLoad(false);
         _grid.SelectionChanged+=(_,_)=>SelectRecord();
         _fileGrid.SelectionChanged+=(_,_)=>RefreshActions();
@@ -150,6 +162,9 @@ internal sealed class DownloadHistoryWindow:Window
         _generation++;_load?.Cancel();_checking?.Cancel();
         var cancellation=CancellationTokenSource.CreateLinkedTokenSource(_stop.Token);_load=cancellation;
         string query=_search.Text;_status.Text="Читаем историю…";
+        // The preceding query's empty state is not a result for this request.
+        // Keep loading and read failures distinct from a successfully empty list.
+        _emptyState.Visibility=Visibility.Collapsed;
         _=LoadAsync(query,_generation,cancellation,debounce);
     }
     private async Task LoadAsync(string query,long generation,CancellationTokenSource cancellation,bool debounce)
@@ -166,7 +181,10 @@ internal sealed class DownloadHistoryWindow:Window
             _grid.SelectedItem=_rows.FirstOrDefault();
             _status.Text=$"Найдено записей: {library.MatchCount} из {library.TotalCount}."+
                 (library.Truncated?$" Показаны последние {_rows.Count}; уточните поиск для более ранних записей.":"");
-            if(_rows.Count==0)_selectionStatus.Text=query.Trim().Length==0?"История пока пуста.":"Поиск не нашёл записей.";
+            bool noMatches=query.Trim().Length>0;
+            _emptyStateText.Text=noMatches?"Поиск не нашёл записей.":"История пока пуста.";
+            _clearSearch.Visibility=noMatches?Visibility.Visible:Visibility.Collapsed;
+            _emptyState.Visibility=_rows.Count==0?Visibility.Visible:Visibility.Collapsed;
         }
         catch(OperationCanceledException) when(cancellation.IsCancellationRequested) { }
         catch(Exception error)
