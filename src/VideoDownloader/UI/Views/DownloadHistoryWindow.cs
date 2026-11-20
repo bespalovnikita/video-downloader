@@ -65,8 +65,8 @@ internal sealed class DownloadHistoryWindow:Window
         Background=owner.Background;Foreground=owner.Foreground;FontFamily=owner.FontFamily;
         Resources.MergedDictionaries.Add(owner.Resources);NameScope.SetNameScope(this,new NameScope());
         var layout=new Grid{Margin=new Thickness(16)};
-        foreach(var height in new[]{GridLength.Auto,GridLength.Auto,GridLength.Auto,new GridLength(3,GridUnitType.Star),GridLength.Auto,
-            new GridLength(1,GridUnitType.Star),GridLength.Auto,GridLength.Auto})layout.RowDefinitions.Add(new RowDefinition{Height=height});
+        foreach(var height in new[]{GridLength.Auto,GridLength.Auto,GridLength.Auto,new GridLength(1,GridUnitType.Star),
+            GridLength.Auto,GridLength.Auto,GridLength.Auto})layout.RowDefinitions.Add(new RowDefinition{Height=height});
         Content=layout;
         void Add(UIElement element,int row){Grid.SetRow(element,row);layout.Children.Add(element);}
         Add(new TextBlock{Text="История подтверждённых загрузок",FontSize=19,FontWeight=FontWeights.SemiBold,Margin=new Thickness(0,0,0,6)},0);
@@ -81,10 +81,11 @@ internal sealed class DownloadHistoryWindow:Window
         Column(_grid,"Дата","Date",145);Column(_grid,"Название","Title",new DataGridLength(2,DataGridLengthUnitType.Star));
         Column(_grid,"Источник","Source",130);Column(_grid,"URL","Url",new DataGridLength(2,DataGridLengthUnitType.Star));
         Column(_grid,"Файлы","FileCount",125);Column(_grid,"Доступность","Availability",160);Add(_grid,3);
-        _selectionStatus=Named("HistorySelectionStatus",Note("Выберите запись, чтобы увидеть сохранённые пути."));Add(_selectionStatus,4);
+        var fileDetails=new StackPanel{Margin=new Thickness(0,6,0,0)};
+        _selectionStatus=Named("HistorySelectionStatus",Note("Выберите запись, чтобы увидеть сохранённые пути."));fileDetails.Children.Add(_selectionStatus);
         _fileGrid=Named("HistoryFilesGrid",new DataGrid{IsReadOnly=true,AutoGenerateColumns=false,CanUserAddRows=false,CanUserDeleteRows=false,
-            EnableRowVirtualization=true,SelectionMode=DataGridSelectionMode.Single,MinHeight=75});
-        Column(_fileGrid,"Сохранённый путь","Path",new DataGridLength(1,DataGridLengthUnitType.Star));Column(_fileGrid,"Проверка","StateLabel",230);Add(_fileGrid,5);
+            EnableRowVirtualization=true,SelectionMode=DataGridSelectionMode.Single,MinHeight=75,Height=120});
+        Column(_fileGrid,"Сохранённый путь","Path",new DataGridLength(1,DataGridLengthUnitType.Star));Column(_fileGrid,"Проверка","StateLabel",230);fileDetails.Children.Add(_fileGrid);
         var actions=new WrapPanel{Margin=new Thickness(0,9,0,4)};
         _check=Named("CheckHistoryFilesButton",new Button{Content="Проверить файлы записи"});
         _cancelCheck=Named("CancelHistoryFileCheckButton",new Button{Content="Отменить проверку"});
@@ -95,10 +96,22 @@ internal sealed class DownloadHistoryWindow:Window
         foreach(var button in new[]{_check,_cancelCheck,_openFile,_openFolder,copy,close})
         {
             if(TryFindResource("GuardedActionButton") is Style guarded)button.Style=guarded;
-            actions.Children.Add(button);
         }
-        Add(actions,6);
-        _status=Named("HistoryStatusText",Note("Читаем историю…"));Add(_status,7);
+        foreach(var button in new[]{_check,_openFile,_openFolder,copy})actions.Children.Add(button);
+        fileDetails.Children.Add(actions);
+        var fileScroll=Named("HistoryFilesScroll",new ScrollViewer{Content=fileDetails,
+            VerticalScrollBarVisibility=ScrollBarVisibility.Auto,HorizontalScrollBarVisibility=ScrollBarVisibility.Disabled,
+            MaxHeight=Math.Clamp(Height*.3,100,240)});
+        var fileExpander=Named("HistoryFilesExpander",new Expander{Header="Файлы выбранной загрузки",IsExpanded=false,
+            HorizontalContentAlignment=System.Windows.HorizontalAlignment.Stretch,Content=fileScroll,Margin=new Thickness(0,8,0,0),
+            ToolTip="Сохранённые пути выбранной записи и действия с файлами. Просмотр не меняет историю."});
+        Add(fileExpander,4);
+        // Cancellation stays reachable even if the user closes the file group
+        // while a bounded filesystem probe is still running.
+        var footer=new WrapPanel{HorizontalAlignment=System.Windows.HorizontalAlignment.Right,Margin=new Thickness(0,9,0,4)};
+        footer.Children.Add(_cancelCheck);footer.Children.Add(close);Add(footer,5);
+        _status=Named("HistoryStatusText",Note("Читаем историю…"));Add(_status,6);
+        SizeChanged+=(_,_)=>fileScroll.MaxHeight=Math.Clamp(ActualHeight*.3,100,240);
         _search.TextChanged+=(_,_)=>QueueLoad(true);
         reload.Click+=(_,_)=>QueueLoad(false);
         _grid.SelectionChanged+=(_,_)=>SelectRecord();
@@ -179,6 +192,7 @@ internal sealed class DownloadHistoryWindow:Window
         bool safe=_fileGrid.SelectedItem is HistoryFileRow file && HistoryFileAccess.TryNormalize(file.Path,out _);
         _check.IsEnabled=hasPaths && _checking is null;
         _cancelCheck.IsEnabled=_checking is not null;
+        _cancelCheck.Visibility=_checking is not null?Visibility.Visible:Visibility.Collapsed;
         _openFile.IsEnabled=safe && !_opening;
         _openFolder.IsEnabled=safe && !_opening;
         ((Button)FindName("CopyHistoryPathButton")).IsEnabled=_fileGrid.SelectedItem is HistoryFileRow;
