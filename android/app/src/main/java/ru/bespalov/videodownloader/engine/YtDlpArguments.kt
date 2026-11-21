@@ -12,6 +12,9 @@ import java.io.File
 
 /** Pure request construction, shared by production and contract tests. */
 object YtDlpArguments {
+    private const val DOWNLOAD_PROGRESS_TEMPLATE =
+        "download:__VD_PROGRESS__|%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s|%(progress.downloaded_bytes)s|%(progress.total_bytes,progress.total_bytes_estimate)s|%(info.id)s:%(info.format_id)s|%(info.vcodec)s|%(info.acodec)s"
+
     fun qualityLevels(settings: Settings): List<String> = when (settings.quality) {
         "2160" -> listOf("2160", "1440", "1080", "720")
         "1440" -> listOf("1440", "1080", "720")
@@ -32,7 +35,7 @@ object YtDlpArguments {
             "--continue", "--windows-filenames", "--abort-on-error", "--socket-timeout", "20",
             "-N", settings.fragments.coerceIn(1, 8).toString(),
             "-o", File(stage, settings.filenameTemplate).absolutePath,
-            "--progress-template", "download:__VD_PROGRESS__|%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s|%(progress.downloaded_bytes)s|%(progress.total_bytes,progress.total_bytes_estimate)s|%(info.id)s:%(info.format_id)s|%(info.vcodec)s|%(info.acodec)s",
+            "--progress-template", DOWNLOAD_PROGRESS_TEMPLATE,
             "--print", "before_dl:__VD_TITLE__:%(title)s",
             // A full requested_formats dump contains signed media URLs. Retain only IDs/counts.
             "--print", "before_dl:__VD_PLAN__:%(.{id,format_id,requested_formats.:.format_id,playlist_autonumber,n_entries})j",
@@ -61,6 +64,23 @@ object YtDlpArguments {
         return args
     }
 
+    internal fun speedDebug(settings: Settings, profile: SpeedDebugProfile, stage: File): List<String> = buildList {
+        addAll(listOf(
+            "--ignore-config", "--encoding", "utf-8", "--newline", "--progress", "--no-color",
+            "--no-playlist", "--playlist-items", "1", "--windows-filenames", "--abort-on-error",
+            "--abort-on-unavailable-fragments",
+            "--no-continue", "--socket-timeout", "8", "--retries", "0", "--fragment-retries", "0",
+            "--fixup", "never", "--progress-delta", "0.25",
+            "-N", profile.fragments.toString(), "-o", File(stage, "sample.%(ext)s").absolutePath,
+            "--progress-template", DOWNLOAD_PROGRESS_TEMPLATE,
+        ))
+        profile.httpChunkSize?.let { addAll(listOf("--http-chunk-size", it)) }
+        val format = AudioTracks.formatSelector(settings, qualityLevels(settings).first())
+        (format ?: "ba/b").let { addAll(listOf("-f", it)) }
+        if (AudioTracks.multiple(settings)) add("--audio-multistreams")
+        val container = AudioTracks.container(settings)
+        if (!settings.audioOnly && container != "Auto") addAll(listOf("--merge-output-format", container.lowercase()))
+    }
 }
 
 sealed interface MarkerEvent {

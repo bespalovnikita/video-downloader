@@ -181,6 +181,7 @@ public sealed partial class NativeWindow
         F<Button>("OpenOutputDirectoryButton").Click+=(_,_)=>OpenConfiguredOutputFolder();
         F<Button>("StartButton").Click+=async(_,_)=>await StartAsync();
         F<Button>("StopButton").Click+=(_,_)=>{SessionState.Stop();UpdateState();};
+        F<Button>("SpeedDebugButton").Click+=(_,_)=>OpenSpeedDebug();
         F<Button>("PauseButton").Click+=(_,_)=>{SessionState.Pause();UpdateState();};
         F<Button>("TrayButton").Click+=(_,_)=>_lifecycle.Hide();
         F<Button>("PickOutputButton").Click+=(_,_)=>
@@ -354,6 +355,7 @@ public sealed partial class NativeWindow
         await StopDependencyOperationAsync();
         Task previewsStopped=_preview.StopAsync();
         Task diagnosticsStopped=StopJobDiagnosticsAsync();
+        Task speedDebugStopped=StopSpeedDebugAsync();
         DisposeProfileBackup();
         DisposeDiskSpace();
         SessionState.MarkStopping();
@@ -371,6 +373,7 @@ public sealed partial class NativeWindow
         }
         catch(Exception error) { Log("Shutdown cleanup failed: "+error.Message); }
         await diagnosticsStopped;
+        await speedDebugStopped;
         await previewsStopped;
         SaveCheckpoint();
         _journalCloseRequested=true;
@@ -392,6 +395,7 @@ public sealed partial class NativeWindow
         if(_disposed)return;
         DisposeDependencyControls();
         DisposeJobDiagnostics();
+        _speedDebugWindow?.CancelRun();
         DisposeProfileBackup();
         DisposeSubscriptions();
         FlushJournal();

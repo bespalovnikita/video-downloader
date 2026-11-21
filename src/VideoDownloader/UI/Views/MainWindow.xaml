@@ -923,6 +923,9 @@
                     <TabItem x:Name="MaintenanceTab" Header="Настройки">
                         <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="0,10,0,0"><StackPanel>
                             <TextBlock Text="Настройки приложения" Style="{StaticResource SectionTitle}"/>
+                        <Button x:Name="SpeedDebugButton" Content="Speed debug mode" HorizontalAlignment="Left"
+                                Style="{StaticResource GuardedActionButton}" ToolTipService.ShowOnDisabled="True"/>
+
                         <Expander Header="Компоненты" IsExpanded="False" Margin="0,6,0,0">
                             <StackPanel Margin="8">
                                 <TextBlock x:Name="DependencyStatus" Text="Проверка…" TextWrapping="Wrap" Foreground="{DynamicResource SecondaryTextBrush}"/>

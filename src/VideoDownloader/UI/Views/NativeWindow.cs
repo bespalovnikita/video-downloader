@@ -266,6 +266,7 @@ public sealed partial class NativeWindow : IDisposable
         RefreshJobDiagnosticActions();
         PollDiskSpace();
         RefreshProfileBackupControls();
+        RefreshSpeedDebugButton();
         RefreshDependencyControls();
         RefreshQueueEmptyState();
         RefreshAdvancedOptionsSummary();
@@ -638,7 +639,7 @@ public sealed partial class NativeWindow : IDisposable
     private Task StartAsync(IEnumerable<DownloadItem>? custom=null)=>StartWithConfirmationAsync(custom,null);
     private async Task StartWithConfirmationAsync(IEnumerable<DownloadItem>? custom,IReadOnlySet<DownloadItem>? duplicateConsents,DownloadOptions? preparedOptions=null)
     {
-        if(_closing || _disposed || _restoringSession || _startingSession || _queueItemActionBusy || _dependencyOperationRunning || _appUpdateHandoff || _checkpointReadOnly || _profileBackupReplaying || RejectProfileBackupMutation())return;
+        if(_closing || _disposed || _speedDebugWindow is not null || _restoringSession || _startingSession || _queueItemActionBusy || _dependencyOperationRunning || _appUpdateHandoff || _checkpointReadOnly || _profileBackupReplaying || RejectProfileBackupMutation())return;
         _startingSession=true;
         try { await StartSessionCoreAsync(custom,duplicateConsents,preparedOptions); }
         finally { _startingSession=false;UpdateState();_preview.BackfillLocalPosters(); }

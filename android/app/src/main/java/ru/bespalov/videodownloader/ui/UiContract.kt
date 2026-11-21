@@ -5,6 +5,8 @@ import ru.bespalov.video.core.AppState
 import ru.bespalov.video.core.Settings
 import ru.bespalov.videodownloader.download.DownloadSessionSnapshot
 import ru.bespalov.videodownloader.engine.EngineProgress
+import ru.bespalov.videodownloader.engine.SpeedDebugProfile
+import ru.bespalov.videodownloader.engine.SpeedDebugResult
 import java.util.UUID
 
 data class EntryKey(val subscriptionId: String, val url: String)
@@ -50,6 +52,15 @@ data class DuplicateNotice(val title: String, val url: String, val sourceTitle: 
 
 data class UiMessage(val text: String, val details: String = "")
 
+data class SpeedDebugUiState(
+    val running: Boolean = false,
+    val cancelling: Boolean = false,
+    val cancelled: Boolean = false,
+    val profile: SpeedDebugProfile? = null,
+    val results: List<SpeedDebugResult> = emptyList(),
+    val error: String = "",
+)
+
 data class MobileUiState(
     val snapshot: AppState = AppState(),
     val runtimeReady: Boolean = false,
@@ -68,6 +79,7 @@ data class MobileUiState(
     val subscriptionQueuePrompt: SubscriptionQueuePrompt? = null,
     val session: DownloadSessionSnapshot? = null,
     val taskProgress: Map<String, EngineProgress> = emptyMap(),
+    val speedDebug: SpeedDebugUiState = SpeedDebugUiState(),
 )
 
 internal val MobileUiState.locked: Boolean get() = readOnly || importing
@@ -84,6 +96,8 @@ interface MobileActions {
     fun importCookies(uri: Uri)
     fun selectOutput(uri: Uri)
     fun saveSettings(settings: Settings)
+    fun startSpeedDebug(text: String)
+    fun cancelSpeedDebug()
     fun start(taskIds: List<String>? = null)
     fun resolveDuplicate(decision: DuplicateDecision)
     fun pause()

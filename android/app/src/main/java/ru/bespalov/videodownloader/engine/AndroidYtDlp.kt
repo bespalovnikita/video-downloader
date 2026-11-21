@@ -1,6 +1,7 @@
 package ru.bespalov.videodownloader.engine
 
 import android.content.Context
+import android.os.SystemClock
 import com.yausername.ffmpeg.FFmpeg
 import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLRequest
@@ -31,6 +32,7 @@ import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.SocketTimeoutException
+import java.nio.file.Files
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
@@ -263,6 +265,32 @@ class AndroidYtDlp internal constructor(context: Context, private val runtimeUpd
             }
         }
         throw EngineException("No suitable quality available")
+    }
+
+    internal suspend fun measureSpeed(
+        urls: List<String>,
+        settings: Settings,
+        onProfile: (Int, SpeedDebugProfile) -> Unit,
+        onResult: (SpeedDebugResult) -> Unit,
+    ) = withContext(Dispatchers.IO) {
+        initialize()
+        val root = Files.createTempDirectory(app.cacheDir.toPath(), "speed-debug-").toFile()
+        try {
+            SpeedDebug.measure(urls, SpeedDebug.profiles(settings), root, SystemClock::elapsedRealtime, onProfile, onResult) {
+                url, stage, profile, counter ->
+                val sampleCookies = cookie(settings.cookiesFile)?.takeIf(File::isFile)?.let { source ->
+                    Files.copy(source.toPath(), stage.toPath().resolve("cookies.txt")).toFile()
+                }
+                execute("speed-debug-${UUID.randomUUID()}", request(url, YtDlpArguments.speedDebug(settings, profile, stage),
+                    sampleCookies), SpeedDebug.BUDGET_MILLIS, 4 * 1024 * 1024) { line ->
+                    val event = ProgressMarkers.parse(line)
+                    if (event is MarkerEvent.Progress && event.downloadedBytesKnown)
+                        counter.observe(event.component, event.value.downloadedBytes)
+                }
+            }
+        } finally {
+            SpeedDebug.removeStage(root)
+        }
     }
 
     /** Marks cancellation; completion is still awaited before the caller may clean its stage. */

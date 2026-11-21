@@ -5,6 +5,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -28,6 +29,7 @@ internal fun SettingsScreen(
     var draft by remember(ui.snapshot.settings) { mutableStateOf(ui.snapshot.settings) }
     var restore by remember { mutableStateOf(false) }
     var templateHelp by remember { mutableStateOf(false) }
+    var speedDebug by rememberSaveable { mutableStateOf(false) }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text("Настройки скачивания", style = MaterialTheme.typography.titleLarge)
         Text("Параметры скачивания применятся при следующем запуске задания. Параметры текущей загрузки сохраняются до её завершения.", style = MaterialTheme.typography.bodySmall)
@@ -48,6 +50,9 @@ internal fun SettingsScreen(
         Text("«Оригинальная» требует отметки источника. Несколько языков сохраняются в MKV. Недоступная дорожка даст ошибку.", style = MaterialTheme.typography.bodySmall)
         ChoiceField("Фрагментов на видео", draft.fragments.toString(), (1..8).associate { it.toString() to it.toString() }, !ui.locked) { draft = draft.copy(fragments = it.toInt()) }
         ChoiceField("Ограничение скорости", draft.rateLimit, linkedMapOf("Unlimited" to "Без ограничения", "1M" to "1 МБ/с", "5M" to "5 МБ/с", "10M" to "10 МБ/с", "25M" to "25 МБ/с"), !ui.locked) { draft = draft.copy(rateLimit = it) }
+        OutlinedButton(onClick = { speedDebug = true }, enabled = ui.runtimeReady, modifier = Modifier.testTag("speedDebug")) {
+            Text("Speed debug mode")
+        }
         SettingToggle("Только аудио MP3", draft.audioOnly, !ui.locked) { draft = draft.copy(audioOnly = it) }
         SettingToggle("Подпапка по дате", draft.archive, !ui.locked) { draft = draft.copy(archive = it) }
         OutlinedTextField(value = draft.filenameTemplate, onValueChange = { draft = draft.copy(filenameTemplate = it) }, label = { Text("Шаблон имени файла") },
@@ -105,6 +110,13 @@ internal fun SettingsScreen(
         confirmButton = { TextButton(onClick = { restore = false; importBackup() }) { Text("Выбрать копию") } },
         dismissButton = { TextButton(onClick = { restore = false }) { Text("Отмена") } })
     if (templateHelp) FilenameTemplateHelpDialog { templateHelp = false }
+    if (speedDebug || ui.speedDebug.running) SpeedDebugDialog(
+        state = ui.speedDebug,
+        ready = ui.runtimeReady && !ui.locked && !ui.running && ui.operation?.active != true,
+        start = actions::startSpeedDebug,
+        cancel = actions::cancelSpeedDebug,
+        close = { speedDebug = false },
+    )
 }
 
 @Composable
