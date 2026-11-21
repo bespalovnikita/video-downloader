@@ -3,6 +3,7 @@ using System.Text.Json;
 using VideoDownloader.Native;
 
 if (OutOfOrderDownloadTests.TryRunFixture(args)) return;
+if (SpeedDebugBenchmarkTests.TryRunFixture(args)) return;
 if (SubtitleTimelineTests.TryRunFixture(args)) return;
 if (ProfileBackupTests.TryRunFixture(args)) return;
 if (JobDiagnosticsTests.TryRunFixture(args)) return;
@@ -36,6 +37,7 @@ if(applicationAssembly.GetTypes().Any(type=>type.Name.Contains("SelfTest",String
 LegacyCompatibilityTests.Run();
 TitleDisplaySettingsTests.Run();
 await NativeContractTests.RunAsync();
+await SpeedDebugBenchmarkTests.RunAsync();
 await AudioTrackSelectionTests.RunAsync();
 await DownloadSelectionTests.RunAsync();
 await DownloadSelectionTests.RunNativeMediaAsync();

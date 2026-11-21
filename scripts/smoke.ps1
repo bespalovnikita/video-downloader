@@ -3,7 +3,7 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $xamlFiles = @{
     'MainWindow.xaml' = @('QueueGrid','DownloadGrid','PasteClipboardButton','PauseButton','CodecCombo','ContainerCombo',
-        'WriteSubsCheck','FilenameTemplateBox','FilenameTemplateLabel','FilenameTemplateHelpButton','DependencyStatus','OpenOutputDirectoryButton','OpenAppSettingsButton','ShowVideoTitlesCheck',
+        'WriteSubsCheck','FilenameTemplateBox','FilenameTemplateLabel','FilenameTemplateHelpButton','DependencyStatus','OpenOutputDirectoryButton','OpenAppSettingsButton','SpeedDebugButton','ShowVideoTitlesCheck',
         'MediaSelectionButton','MediaSelectionSummary','CheckAppUpdateButton','InstallAppUpdateButton','AppUpdateStatusText','CurrentAppVersionText',
         'QueueSearchBox','QueueStatusFilter','QueueSubscriptionFilter','ResetQueueFiltersButton','QueueEmptyFilterHint','QueueFilterScopeHint','OpenHistoryButton',
         'DiskSpaceSummaryText','DiskSpaceWarningText','MainSubscriptionScheduleStatusText',

@@ -26,6 +26,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.decodeFromString
 import ru.bespalov.video.core.*
 import ru.bespalov.videodownloader.download.DownloadService
+import ru.bespalov.videodownloader.engine.SpeedDebug
 import ru.bespalov.videodownloader.ui.*
 import java.io.File
 import java.util.Locale
@@ -43,6 +44,7 @@ class DownloaderViewModel(application: Application) : AndroidViewModel(applicati
     private var checkJob: Job? = null
     private var checkRequest: String? = null
     private var maintenanceJob: Job? = null
+    private var speedDebugJob: Job? = null
     private var subscriptionOfferEpoch = 0L
 
     init {
@@ -235,10 +237,50 @@ class DownloaderViewModel(application: Application) : AndroidViewModel(applicati
         repository.update { it.copy(settings = settings) }
     }
 
+    override fun startSpeedDebug(text: String) {
+        if (speedDebugJob?.isCompleted == false) return
+        speedDebugJob = viewModelScope.launch {
+            mutable.update { it.copy(speedDebug = SpeedDebugUiState(running = true)) }
+            try {
+                val sample = SpeedDebug.sample(text)
+                graph.ready.await()
+                check(graph.dataOperation.tryLock()) { "Дождитесь завершения текущей операции." }
+                try {
+                    idle()
+                    check(graph.runtimeReady.value) { "Движок ещё не готов." }
+                    val settings = repository.state.value.settings
+                    graph.engine.measureSpeed(sample, settings, onProfile = { _, profile ->
+                        mutable.update { state -> state.copy(speedDebug = state.speedDebug.copy(profile = profile)) }
+                    }) { result ->
+                        mutable.update { state -> state.copy(speedDebug = state.speedDebug.copy(results = state.speedDebug.results + result)) }
+                    }
+                } finally {
+                    graph.dataOperation.unlock()
+                }
+            } catch (cancel: CancellationException) {
+                mutable.update { it.copy(speedDebug = it.speedDebug.copy(cancelled = true)) }
+                throw cancel
+            } catch (error: Exception) {
+                val reason = JournalSanitizer.redact(error.message ?: error.javaClass.simpleName)
+                mutable.update { it.copy(speedDebug = it.speedDebug.copy(error = reason)) }
+            } finally {
+                mutable.update { it.copy(speedDebug = it.speedDebug.copy(running = false, cancelling = false, profile = null)) }
+            }
+        }
+    }
+
+    override fun cancelSpeedDebug() {
+        if (!mutable.value.speedDebug.running) return
+        val job = speedDebugJob?.takeIf { it.isActive } ?: return
+        mutable.update { it.copy(speedDebug = it.speedDebug.copy(cancelling = true)) }
+        job.cancel()
+    }
+
     override fun start(taskIds: List<String>?) = work {
         writable()
         check(graph.runtimeReady.value) { "Движок ещё не готов." }
         check(!mutable.value.recoveryRequired) { "Сначала выберите, восстанавливать ли прерванную очередь." }
+        check(!mutable.value.speedDebug.running) { "Дождитесь окончания проверки скорости." }
         check(maintenanceJob?.isActive != true) { "Дождитесь обновления движка." }
         startGate.withLock {
           graph.dataOperation.withLock admission@{
@@ -358,7 +400,7 @@ class DownloaderViewModel(application: Application) : AndroidViewModel(applicati
     override fun checkSubscriptionsFully(ids: List<String>) = beginSubscriptionCheck(ids, forceFull = true)
 
     private fun beginSubscriptionCheck(ids: List<String>, forceFull: Boolean) {
-        if (checkJob?.isActive == true || maintenanceJob?.isActive == true) return
+        if (checkJob?.isActive == true || maintenanceJob?.isActive == true || mutable.value.speedDebug.running) return
         subscriptionOfferEpoch++
         val operation = UiOperation("Проверка подписок", "Подготовка…", total = ids.distinct().size, cancellable = true)
         mutable.update { it.copy(subscriptionQueuePrompt = null, operation = operation) }
@@ -589,7 +631,7 @@ class DownloaderViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     override fun updateRuntime() {
-        if (maintenanceJob?.isActive == true) return
+        if (maintenanceJob?.isActive == true || mutable.value.speedDebug.running) return
         maintenanceJob = viewModelScope.launch {
             try {
                 check(!DownloadService.isRunning.value && !DownloadService.hasOwnedTasks && checkJob?.isActive != true) { "Сначала завершите загрузки, отмену и проверку подписок." }

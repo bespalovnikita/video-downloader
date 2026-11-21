@@ -27,7 +27,8 @@ public sealed partial class NativeWindow
         controller.ScheduleChanged+=RefreshSubscriptionScheduleStatus;
         controller.StartScheduling(()=>!_disposed && !_closing && !_restoringSession && !_checkpointReadOnly &&
             !_legacyEngineBlocked && !_startingSession && !_dependencyOperationRunning && !_appUpdateBusy &&
-            !_appUpdateHandoff && !_profileBackupBusy && !_profileBackupRecoveryRequired && !_profileBackupReplaying && _window.IsEnabled,message=>
+            !_appUpdateHandoff && !_profileBackupBusy && !_profileBackupRecoveryRequired && !_profileBackupReplaying &&
+            _speedDebugWindow is null && _window.IsEnabled,message=>
             {
                 if(_disposed || _closing)return;
                 _lifecycle.NotifyWarning("Новые материалы подписок",message);
