@@ -17,6 +17,9 @@ internal class AndroidRuntimeProcess(private val context: Context) {
     private val python get() = File(binaries, "libpython.so")
     private val pythonHome get() = File(packages, "python/usr")
     private val archive get() = File(context.noBackupFilesDir, "youtubedl-android/yt-dlp/yt-dlp")
+    val aria2cCertificate get() = File(pythonHome, "etc/tls/cert.pem")
+
+    fun aria2cExecutable(): File? = File(binaries, "libaria2c.so").takeIf { it.isFile && it.canExecute() }
 
     fun session(): ProcessSession = ProcessSession("\u001eVD_PROCESS_${UUID.randomUUID()}:") { group ->
         // The nonce-confirmed group was created by our launcher with setsid().
@@ -32,10 +35,13 @@ internal class AndroidRuntimeProcess(private val context: Context) {
         return pythonBuilder(session, listOf(archive.path) + arguments)
     }
 
-    internal fun pythonBuilder(session: ProcessSession, arguments: List<String>): ProcessBuilder {
+    internal fun pythonBuilder(session: ProcessSession, arguments: List<String>): ProcessBuilder =
+        executableBuilder(session, python, arguments)
+
+    internal fun executableBuilder(session: ProcessSession, executable: File, arguments: List<String>): ProcessBuilder {
         require(session.controlPrefix != null)
         check(python.isFile) { "Bundled Python is unavailable for this device" }
-        val builder = ProcessBuilder(listOf(python.path, "-c", LAUNCHER, session.controlPrefix, python.path) + arguments)
+        val builder = ProcessBuilder(listOf(python.path, "-c", LAUNCHER, session.controlPrefix, executable.path) + arguments)
         builder.environment().putAll(NativeMedia.environment(context))
         builder.environment()["LD_LIBRARY_PATH"] = listOf("python", "ffmpeg", "aria2c")
             .joinToString(":") { File(packages, "$it/usr/lib").path }

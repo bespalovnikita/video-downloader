@@ -3,6 +3,7 @@ package ru.bespalov.videodownloader.engine
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -77,5 +78,38 @@ class SpeedDebugTest {
         assertTrue(option("-f").contains("[height<=720][vcodec^=avc1]"))
         assertTrue(arguments.containsAll(listOf("--ignore-config", "--no-continue", "--no-playlist")))
         assertFalse(arguments.any { it in setOf("--limit-rate", "--sponsorblock-remove", "--write-subs", "--embed-metadata") })
+    }
+
+    @Test fun comparisonDoesNotGiveAria2cUnusedNativeTime() = runTest {
+        val results = mutableListOf<SpeedDebugResult>()
+        SpeedDebug.measure(urls.take(4), SpeedDebug.comparisonProfiles(), temp.newFolder(), { testScheduler.currentTime },
+            { _, _ -> }, results::add, accept = { url, profile ->
+                profile.downloader != SpeedDebugDownloader.ARIA2C || url != urls[0]
+            }) { _, _, profile, counter ->
+            counter.observe("https", 2048)
+            if (profile.downloader == SpeedDebugDownloader.ARIA2C) awaitCancellation() else delay(100)
+        }
+        assertEquals(listOf(100L, 30_000L), results.map { it.millis })
+        assertEquals(listOf(4, 3), results.map { it.started })
+        assertEquals(listOf(4, 3), results.map { it.measured })
+    }
+
+    @Test fun pairedComparisonSelectsOneIdenticalHttpsFormatAndReadsExactAria2Counters() {
+        val stage = temp.newFolder()
+        val native = YtDlpArguments.speedDebugComparison(stage, null, null, File(stage, "cert.pem"))
+        val external = YtDlpArguments.speedDebugComparison(stage, "mp4-720", File(stage, "libaria2c.so"), File(stage, "cert.pem"))
+        fun List<String>.option(name: String) = this[indexOf(name) + 1]
+
+        assertEquals("native", native.option("--downloader"))
+        assertEquals("best[protocol=https]", native.option("-f"))
+        assertEquals("best[protocol=https][format_id=mp4-720]", external.option("-f"))
+        assertEquals("http:${File(stage, "libaria2c.so").absolutePath}", external.option("--downloader"))
+        assertTrue(external.option("--downloader-args").contains("-x4 -s4 --min-split-size=1M --human-readable=false"))
+        assertTrue(external.option("--downloader-args").contains("--summary-interval=1"))
+        assertEquals("mp4-720", SpeedDebug.pairedFormat("__VD_ARIA2_FORMAT__:\"mp4-720\""))
+        assertEquals(null, SpeedDebug.pairedFormat("__VD_ARIA2_FORMAT__:\"mp4][height>0\""))
+        assertEquals(4_456_448L, SpeedDebug.aria2cBytes("[#2c2f01 4456448B/18874368B(23%) CN:8 DL:2176000B ETA:6s]"))
+        assertEquals(null, SpeedDebug.aria2cBytes("[#2c2f01 4MiB/18MiB(23%) CN:8 DL:2MiB ETA:6s]"))
+        assertTrue(SpeedDebug.aria2cCompleted("94878f|OK  |   2.5MiB/s|100|/tmp/./fixture.mp4.part"))
     }
 }

@@ -64,22 +64,41 @@ object YtDlpArguments {
         return args
     }
 
+    private fun speedDebugBase(stage: File, fragments: Int) = listOf(
+        "--ignore-config", "--encoding", "utf-8", "--newline", "--progress", "--no-color",
+        "--no-playlist", "--playlist-items", "1", "--windows-filenames", "--abort-on-error",
+        "--abort-on-unavailable-fragments",
+        "--no-continue", "--socket-timeout", "8", "--retries", "0", "--fragment-retries", "0",
+        "--fixup", "never", "--progress-delta", "0.25",
+        "-N", fragments.toString(), "-o", File(stage, "sample.%(ext)s").absolutePath,
+        "--progress-template", DOWNLOAD_PROGRESS_TEMPLATE,
+    )
+
     internal fun speedDebug(settings: Settings, profile: SpeedDebugProfile, stage: File): List<String> = buildList {
-        addAll(listOf(
-            "--ignore-config", "--encoding", "utf-8", "--newline", "--progress", "--no-color",
-            "--no-playlist", "--playlist-items", "1", "--windows-filenames", "--abort-on-error",
-            "--abort-on-unavailable-fragments",
-            "--no-continue", "--socket-timeout", "8", "--retries", "0", "--fragment-retries", "0",
-            "--fixup", "never", "--progress-delta", "0.25",
-            "-N", profile.fragments.toString(), "-o", File(stage, "sample.%(ext)s").absolutePath,
-            "--progress-template", DOWNLOAD_PROGRESS_TEMPLATE,
-        ))
+        addAll(speedDebugBase(stage, profile.fragments))
         profile.httpChunkSize?.let { addAll(listOf("--http-chunk-size", it)) }
         val format = AudioTracks.formatSelector(settings, qualityLevels(settings).first())
         (format ?: "ba/b").let { addAll(listOf("-f", it)) }
         if (AudioTracks.multiple(settings)) add("--audio-multistreams")
         val container = AudioTracks.container(settings)
         if (!settings.audioOnly && container != "Auto") addAll(listOf("--merge-output-format", container.lowercase()))
+    }
+
+    internal fun speedDebugComparison(stage: File, matchedFormat: String?, aria2c: File?, certificate: File): List<String> = buildList {
+        addAll(speedDebugBase(stage, 1))
+        addAll(listOf("--no-simulate", "--print", "before_dl:${SpeedDebug.FORMAT_MARKER}%(format_id)j"))
+        val format = matchedFormat?.let { "best[protocol=https][format_id=$it]" }
+            ?: "best[protocol=https]"
+        addAll(listOf("-f", format))
+        if (aria2c == null) addAll(listOf("--downloader", "native"))
+        else {
+            require(matchedFormat != null)
+            val caArgument = certificate.absolutePath.replace("'", "'\\''")
+            addAll(listOf("--downloader", "http:${aria2c.absolutePath}", "--downloader-args",
+                "aria2c:-x4 -s4 --min-split-size=1M --human-readable=false --enable-color=false " +
+                    "--show-console-readout=true --summary-interval=1 --download-result=full --max-tries=1 " +
+                    "--ca-certificate='$caArgument'"))
+        }
     }
 }
 
