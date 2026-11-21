@@ -57,6 +57,8 @@ data class SpeedDebugUiState(
     val compareAria2c: Boolean = false,
     val cancelling: Boolean = false,
     val cancelled: Boolean = false,
+    val saving: Boolean = false,
+    val saved: SpeedDebugProfile? = null,
     val profile: SpeedDebugProfile? = null,
     val results: List<SpeedDebugResult> = emptyList(),
     val error: String = "",

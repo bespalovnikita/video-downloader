@@ -31,6 +31,22 @@ internal static class SpeedDebugBenchmark
         SpeedDebugKind Kind = SpeedDebugKind.Regular);
     private sealed record Sample(long Bytes, string? Error, string? HttpsFormat = null);
 
+    internal static SpeedDebugResult? SelectDefaults(IReadOnlyList<SpeedDebugResult> results, bool compareAria2)
+    {
+        if (!compareAria2)
+            return results.Where(row => row.Kind == SpeedDebugKind.Regular && row.FailedUrls == 0 &&
+                    row.MeasuredUrls == SampleCount && row.BytesPerSecond > 0)
+                .MaxBy(row => row.BytesPerSecond);
+
+        var native = results.FirstOrDefault(row => row.Kind == SpeedDebugKind.HttpsNative);
+        var aria2 = results.FirstOrDefault(row => row.Kind == SpeedDebugKind.HttpsAria2);
+        if (native is not { EligibleUrls: > 0, FailedUrls: 0, BytesPerSecond: > 0 } ||
+            aria2 is not { FailedUrls: 0, BytesPerSecond: > 0 } ||
+            native.EligibleUrls != aria2.EligibleUrls || native.MeasuredUrls != native.EligibleUrls ||
+            aria2.MeasuredUrls != aria2.EligibleUrls) return null;
+        return aria2.BytesPerSecond > native.BytesPerSecond ? aria2 : native;
+    }
+
     internal static Task<IReadOnlyList<SpeedDebugResult>> RunAsync(IReadOnlyList<string> urls, DownloadOptions currentOptions,
         IProgress<SpeedDebugUpdate>? progress, CancellationToken ct, string? executable = null, bool compareAria2 = false) =>
         RunAsync(urls, currentOptions, progress, ct, executable, Budget, Path.GetTempPath(),
@@ -66,15 +82,16 @@ internal static class SpeedDebugBenchmark
         Profile[] profiles = aria2 is not null
         ?
         [
-            new(ErrorMessages.Text("Прямой HTTPS · yt-dlp", "Direct HTTPS · yt-dlp"), SampleCount, 1, Kind: SpeedDebugKind.HttpsNative),
+            new(ErrorMessages.Text("Прямой HTTPS · yt-dlp", "Direct HTTPS · yt-dlp"), SampleCount, 1, options.UseHttpChunks, SpeedDebugKind.HttpsNative),
             new(ErrorMessages.Text("Прямой HTTPS · aria2c", "Direct HTTPS · aria2c"), SampleCount, 1, Kind: SpeedDebugKind.HttpsAria2)
         ]
         :
         [
-            new(ErrorMessages.Text("Текущие параметры", "Current settings"), parallel, fragments),
-            new(ErrorMessages.Text("Другое число фрагментов", "Alternate fragment count"), parallel, alternateFragments),
-            new(ErrorMessages.Text("Другая параллельность", "Alternate URL concurrency"), alternateParallel, 8),
-            new("HTTP --http-chunk-size 4M", SampleCount, 8, Chunked: true)
+            new(ErrorMessages.Text("Текущие параметры", "Current settings"), parallel, fragments, options.UseHttpChunks),
+            new(ErrorMessages.Text("Другое число фрагментов", "Alternate fragment count"), parallel, alternateFragments, options.UseHttpChunks),
+            new(ErrorMessages.Text("Другая параллельность", "Alternate URL concurrency"), alternateParallel, 8, options.UseHttpChunks),
+            new(options.UseHttpChunks?ErrorMessages.Text("HTTP без блоков", "HTTP without chunking"):"HTTP --http-chunk-size 4M",
+                SampleCount, 8, Chunked: !options.UseHttpChunks)
         ];
 
         var results = new List<SpeedDebugResult>();
@@ -249,7 +266,8 @@ internal static class SpeedDebugBenchmark
         if (profile.Kind == SpeedDebugKind.HttpsAria2)
             // aria2 flushes periodic summaries when output is redirected.
             args.AddRange(["--downloader", "http:" + aria2, "--downloader-args",
-                "aria2c:-x4 -s4 --min-split-size=1M --max-tries=1 --human-readable=false --enable-color=false --show-console-readout=false --summary-interval=1 --download-result=default"]);
+                "aria2c:" + YtDlpArguments.Aria2DownloadOptions +
+                " --max-tries=1 --human-readable=false --enable-color=false --show-console-readout=false --summary-interval=1 --download-result=default"]);
         string ffmpeg = DependencyCenter.Executable("ffmpeg.exe");
         if (File.Exists(ffmpeg)) args.AddRange(["--ffmpeg-location", ffmpeg]);
         if (File.Exists(options.Cookies))

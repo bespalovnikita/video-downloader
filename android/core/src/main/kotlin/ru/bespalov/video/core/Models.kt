@@ -13,6 +13,12 @@ data class Settings(
     val container: String = "Auto",
     val threads: Int = 2,
     val fragments: Int = 4,
+    @OptIn(ExperimentalSerializationApi::class)
+    @EncodeDefault(EncodeDefault.Mode.NEVER)
+    val httpChunked: Boolean = false,
+    @OptIn(ExperimentalSerializationApi::class)
+    @EncodeDefault(EncodeDefault.Mode.NEVER)
+    val preferAria2c: Boolean = false,
     val rateLimit: String = "Unlimited",
     val filenameTemplate: String = "%(title)s [%(id)s].%(ext)s",
     val subtitleLangs: String = "ru.*,en.*",

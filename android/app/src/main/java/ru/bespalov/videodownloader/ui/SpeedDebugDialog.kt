@@ -36,8 +36,6 @@ internal fun SpeedDebugDialog(
 ) {
     var urls by rememberSaveable { mutableStateOf(SpeedDebug.defaultUrls) }
     val focus = LocalFocusManager.current
-    val best = state.results.filter { it.measured == SpeedDebug.SOURCE_COUNT && it.failures == 0 }
-        .maxByOrNull { it.mebibytesPerSecond }
     AlertDialog(
         onDismissRequest = { if (!state.running) close() },
         modifier = Modifier.testTag("speedDebugDialog"),
@@ -46,7 +44,8 @@ internal fun SpeedDebugDialog(
             Column(Modifier.heightIn(max = 460.dp).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("Тест выбирает четыре ссылки и сравнивает параметры скачивания за минуту. " +
-                    "Используются сохранённые настройки формата и cookies. Ограничение скорости выключено.")
+                    "Используются сохранённые настройки формата и cookies. Ограничение скорости выключено. " +
+                    "Победивший вариант применяется к новым загрузкам на этом устройстве.")
                 OutlinedTextField(
                     value = urls,
                     onValueChange = { if (it.length <= 65_536) urls = it },
@@ -68,7 +67,11 @@ internal fun SpeedDebugDialog(
                 }
                 if (state.running) {
                     LinearProgressIndicator(Modifier.fillMaxWidth())
-                    Text(if (state.cancelling) "Остановка и очистка…" else state.profile?.label ?: "Подготовка…")
+                    Text(when {
+                        state.cancelling -> "Остановка и очистка…"
+                        state.saving -> "Сохранение настроек…"
+                        else -> state.profile?.label ?: "Подготовка…"
+                    })
                 } else if (!ready) {
                     Text("Дождитесь окончания других операций перед запуском.")
                 }
@@ -76,9 +79,16 @@ internal fun SpeedDebugDialog(
                 if (state.error.isNotBlank()) Text(state.error, color = MaterialTheme.colorScheme.error)
                 if (state.results.isNotEmpty() && !state.running && !state.cancelled && state.error.isBlank()) {
                     if (state.compareAria2c) Text(aria2cSummary(state))
-                    else if (best == null) Text("Для выбора лучшего профиля нужны данные от всех четырёх видео.")
-                    else Text("Лучший результат: ${speedText(best.mebibytesPerSecond)} · ${best.profile.label}",
-                        style = MaterialTheme.typography.titleSmall, modifier = Modifier.testTag("speedDebugBest"))
+                    else if (state.saved == null) Text("Для сохранения лучшего профиля нужен завершённый тест с данными от всех четырёх видео.")
+                    state.saved?.let { saved ->
+                        val message = when (saved.downloader) {
+                            SpeedDebugDownloader.STANDARD -> "Сохранено для новых загрузок · ${saved.label}"
+                            SpeedDebugDownloader.MATCHED_NATIVE -> "Сохранено для прямых HTTP(S)-потоков · встроенный yt-dlp"
+                            SpeedDebugDownloader.ARIA2C -> "Сохранено для прямых HTTP(S)-потоков · aria2c"
+                        }
+                        Text(message,
+                            style = MaterialTheme.typography.titleSmall, modifier = Modifier.testTag("speedDebugBest"))
+                    }
                 }
                 state.results.forEach { result ->
                     Text(result.profile.label, style = MaterialTheme.typography.labelLarge)
@@ -91,7 +101,7 @@ internal fun SpeedDebugDialog(
         },
         confirmButton = {
             if (state.running) {
-                TextButton(onClick = cancel, enabled = !state.cancelling) { Text("Отменить") }
+                TextButton(onClick = cancel, enabled = !state.cancelling && !state.saving) { Text("Отменить") }
             } else {
                 TextButton(onClick = { focus.clearFocus(); start(urls, false) }, enabled = ready && urls.isNotBlank(),
                     modifier = Modifier.testTag("speedDebugStart")) { Text("Запустить") }

@@ -17,8 +17,9 @@ internal sealed class SpeedDebugWindow : Window
         https://rt.pornhub.com/view_video.php?viewkey=6911ce334ae78
         https://rt.pornhub.com/view_video.php?viewkey=6793cd8049d00
         """;
-    private readonly DownloadOptions _options;
+    private DownloadOptions _options;
     private readonly string _executable;
+    private readonly Func<SpeedDebugResult,DownloadOptions?> _saveDefaults;
     private readonly TextBox _urls;
     private readonly TextBlock _step,_summary,_details,_aria2Availability;
     private readonly ProgressBar _progress;
@@ -31,10 +32,11 @@ internal sealed class SpeedDebugWindow : Window
     private SpeedDebugUpdate? _update;
     private bool _closeWhenDone,_closed,_aria2Available;
 
-    internal SpeedDebugWindow(Window owner,DownloadOptions options,string executable)
+    internal SpeedDebugWindow(Window owner,DownloadOptions options,string executable,Func<SpeedDebugResult,DownloadOptions?> saveDefaults)
     {
         _options=options;
         _executable=executable;
+        _saveDefaults=saveDefaults;
         Owner=owner;
         Name="SpeedDebugWindow";
         Title="Speed debug mode";
@@ -81,8 +83,8 @@ internal sealed class SpeedDebugWindow : Window
 
         var footer=new StackPanel{Margin=new Thickness(0,6,0,0)};
         _summary=Named("SpeedDebugSummary",Note(ErrorMessages.Text(
-            "Тест использует временные файлы. Подходящие параметры можно выставить в настройках после замера.",
-            "The benchmark uses temporary files. You can set the recommended values in Settings after the run.")));
+            "Тест использует временные файлы. Настройки победившего варианта сохраняются для новых загрузок.",
+            "The benchmark uses temporary files. The winning settings are saved for new downloads.")));
         footer.Children.Add(_summary);
         _details=Named("SpeedDebugDetails",Note(""));
         var detailScroll=new ScrollViewer{Content=_details,MaxHeight=54,VerticalScrollBarVisibility=ScrollBarVisibility.Auto};
@@ -238,21 +240,33 @@ internal sealed class SpeedDebugWindow : Window
         IEnumerable<SpeedDebugResult> displayResults=compareAria2?results.OrderBy(result=>result.Kind):results;
         _results.ItemsSource=displayResults.Select(ResultRow.From).ToArray();
         if(results.Count>0)_results.SelectedIndex=0;
-        if(compareAria2)
+        var best=SpeedDebugBenchmark.SelectDefaults(results,compareAria2);
+        if(compareAria2)ShowAria2Comparison(results,best);
+        else
+            _summary.Text=best is null
+                ? ErrorMessages.Text("Для сохранения настроек нужен вариант с замерами по всем четырём ссылкам без ошибок.",
+                    "Saving defaults requires an error-free profile with measurements for all four URLs.")
+                : ErrorMessages.Text(
+                    $"Лучший вариант — {best.Profile}, {best.Parallel} одновременных загрузок, {best.Fragments} фрагментов, {FormatSpeed(best.BytesPerSecond)}.",
+                    $"Fastest profile: {best.Profile}, {best.Parallel} simultaneous downloads, {best.Fragments} fragments, {FormatSpeed(best.BytesPerSecond)}.");
+        if(best is null)return;
+
+        _cancel.IsEnabled=false;
+        if(_saveDefaults(best) is not {} saved)
         {
-            ShowAria2Comparison(results);
+            _summary.Text+=ErrorMessages.Text(" Не удалось сохранить настройки для новых загрузок."," The settings could not be saved for new downloads.");
             return;
         }
-        var best=results.FirstOrDefault(result=>result.Kind==SpeedDebugKind.Regular && result.MeasuredUrls==SpeedDebugBenchmark.SampleCount &&
-            result.FailedUrls==0 && result.Bytes>0);
-        _summary.Text=best is null
-            ? ErrorMessages.Text("Для рекомендации нужны замеры по всем четырём ссылкам в одном варианте.",
-                "A recommendation requires measurements for all four URLs in one profile.")
-            : ErrorMessages.Text(
-                $"Лучший вариант — {best.Profile}, {best.Parallel} одновременных загрузок, {best.Fragments} фрагментов, {FormatSpeed(best.BytesPerSecond)}.",
-                $"Fastest profile: {best.Profile}, {best.Parallel} simultaneous downloads, {best.Fragments} fragments, {FormatSpeed(best.BytesPerSecond)}.");
-        if(best?.Chunked==true)
-            _summary.Text+=ErrorMessages.Text(" Параметр HTTP-блоков доступен в этом тесте."," The HTTP chunk size option is available in this benchmark.");
+        // A second run uses the newly committed settings as its baseline.
+        _options=saved;
+        _summary.Text+=best.Kind switch
+        {
+            SpeedDebugKind.HttpsNative=>ErrorMessages.Text(" yt-dlp сохранён как загрузчик прямого HTTP(S).",
+                " yt-dlp was saved as the direct HTTP(S) downloader."),
+            SpeedDebugKind.HttpsAria2=>ErrorMessages.Text(" aria2c сохранён как загрузчик прямого HTTP(S).",
+                " aria2c was saved as the direct HTTP(S) downloader."),
+            _=>ErrorMessages.Text(" Настройки сохранены для новых загрузок."," Settings were saved for new downloads.")
+        };
     }
 
     private async Task RefreshAria2AvailabilityAsync()
@@ -268,13 +282,11 @@ internal sealed class SpeedDebugWindow : Window
                 "To compare direct HTTPS downloads, put aria2c.exe next to the app or add it to PATH.");
     }
 
-    private void ShowAria2Comparison(IReadOnlyList<SpeedDebugResult> results)
+    private void ShowAria2Comparison(IReadOnlyList<SpeedDebugResult> results,SpeedDebugResult? winner)
     {
         var native=results.FirstOrDefault(result=>result.Kind==SpeedDebugKind.HttpsNative);
         var aria2=results.FirstOrDefault(result=>result.Kind==SpeedDebugKind.HttpsAria2);
-        if(native is {EligibleUrls: > 0,FailedUrls: 0,BytesPerSecond: > 0} &&
-            aria2 is {FailedUrls: 0,BytesPerSecond: > 0} &&
-            native.EligibleUrls==aria2.EligibleUrls && native.MeasuredUrls==native.EligibleUrls && aria2.MeasuredUrls==aria2.EligibleUrls)
+        if(winner is not null && native is not null && aria2 is not null)
         {
             double ratio=aria2.BytesPerSecond/native.BytesPerSecond;
             _summary.Text=ErrorMessages.Text(

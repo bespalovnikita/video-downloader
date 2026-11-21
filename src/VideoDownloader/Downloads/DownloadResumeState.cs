@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 
 namespace VideoDownloader.Native;
@@ -16,6 +17,11 @@ public sealed record DownloadResumePlan
     public string Container { get; init; }="Auto";
     public string RateLimit { get; init; }="Unlimited";
     public int FragmentCount { get; init; }=4;
+    // Keep the serialized hash of plans written by older versions.
+    [JsonIgnore(Condition=JsonIgnoreCondition.WhenWritingDefault)]
+    public bool UseHttpChunks { get; init; }
+    [JsonIgnore(Condition=JsonIgnoreCondition.WhenWritingDefault)]
+    public bool PreferAria2c { get; init; }
     public string FilenameTemplate { get; init; }="%(title)s [%(id)s].%(ext)s";
     public string Cookies { get; init; }="";
     public string SubtitleLangs { get; init; }="ru.*,en.*";
@@ -34,6 +40,7 @@ public sealed record DownloadResumePlan
     {
         Output=OutputRoot,Quality=Quality,Codec=Codec,Container=Container,RateLimit=RateLimit,
         Fragments=FragmentCount.ToString(System.Globalization.CultureInfo.InvariantCulture),
+        UseHttpChunks=UseHttpChunks,PreferAria2c=PreferAria2c,
         FilenameTemplate=FilenameTemplate,Cookies=Cookies,SubtitleLangs=SubtitleLangs,
         AudioTrack=AudioTrack,AudioLanguages=AudioLanguages,WriteSubs=WriteSubs,AutoSubs=AutoSubs,
         EmbedSubs=EmbedSubs,EmbedThumbnail=EmbedThumbnail,EmbedMetadata=EmbedMetadata,
@@ -43,6 +50,7 @@ public sealed record DownloadResumePlan
     {
         OutputRoot=root,Quality=options.Quality,Codec=options.Codec,Container=options.Container,
         RateLimit=options.RateLimit,FragmentCount=options.FragmentCount,FilenameTemplate=options.FilenameTemplate,
+        UseHttpChunks=options.UseHttpChunks,PreferAria2c=options.PreferAria2c,
         Cookies=options.Cookies,SubtitleLangs=options.SubtitleLangs,AudioTrack=options.AudioTrack,
         AudioLanguages=options.AudioLanguages,WriteSubs=options.WriteSubs,AutoSubs=options.AutoSubs,
         EmbedSubs=options.EmbedSubs,EmbedThumbnail=options.EmbedThumbnail,EmbedMetadata=options.EmbedMetadata,

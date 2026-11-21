@@ -78,7 +78,7 @@ public sealed partial class NativeWindow : IDisposable
             ("ContainerCombo",["Auto","MP4","MKV","WebM"]),
             ("AudioTrackCombo",AudioTrackSelection.DisplayNames),
             ("RateLimitCombo",["Unlimited","1M","5M","10M","25M","50M"]),
-            ("FragmentsCombo",["Auto","1","2","3","4","6","8"]),
+            ("FragmentsCombo",["Auto","1","2","3","4","5","6","7","8"]),
             ("ProfileCombo",ProfileCatalog.DisplayNames)})
         {
             foreach(var v in values) C(control).Items.Add(control=="RateLimitCombo"?DisplayValueConverter.Display(v):v);
@@ -345,6 +345,7 @@ public sealed partial class NativeWindow : IDisposable
         Profile=ProfileCatalog.ToId(Pick(C("ProfileCombo"))),Quality=Pick(C("QualityCombo")),Codec=Pick(C("CodecCombo")),
         Container=Pick(C("ContainerCombo")),RateLimit=DisplayValueConverter.OptionId(C("RateLimitCombo").Text),
         Threads=B("ThreadsBox").Text,Fragments=Pick(C("FragmentsCombo")),
+        UseHttpChunks=Check(K("HttpChunksCheck")),PreferAria2c=Check(K("PreferAria2cCheck")),
         FilenameTemplate=B("FilenameTemplateBox").Text,Output=B("OutputBox").Text,
         Cookies=B("CookiesBox").Text,SubtitleLangs=B("SubtitleLangsBox").Text,
         AudioTrack=AudioTrackSelection.ToId(Pick(C("AudioTrackCombo"))),AudioLanguages=B("AudioLanguagesBox").Text,
@@ -376,6 +377,7 @@ public sealed partial class NativeWindow : IDisposable
             ("EmbedThumbnailCheck",o.EmbedThumbnail),("EmbedMetadataCheck",o.EmbedMetadata),
             ("EmbedChaptersCheck",o.EmbedChapters),("ArchiveCheck",o.Archive),
             ("SponsorCheck",o.Sponsor),("AudioOnlyCheck",o.AudioOnly),("WatchClipboardCheck",o.WatchClipboard),
+            ("HttpChunksCheck",o.UseHttpChunks),("PreferAria2cCheck",o.PreferAria2c),
             ("ShowVideoTitlesCheck",o.ShowVideoTitles)})
             K(name).IsChecked=value;
         RefreshAdvancedOptionsSummary();
@@ -476,7 +478,7 @@ public sealed partial class NativeWindow : IDisposable
     }
     // Backup calls this with a frozen queue/options snapshot on a worker only
     // after its scheduling lease has joined all profile readers and writers.
-    private void SaveCheckpointCore(IReadOnlyList<DownloadItem> rows,DownloadOptions options)
+    private bool SaveCheckpointCore(IReadOnlyList<DownloadItem> rows,DownloadOptions options,bool force=false)
     {
         try
         {
@@ -487,8 +489,9 @@ public sealed partial class NativeWindow : IDisposable
                 i.SubscriptionId,i.SubscriptionName,i.Selection,i.CompletedSelection
             }),AppPersistence.Json)+
                 ":"+System.Text.Json.JsonSerializer.Serialize(options,AppPersistence.Json)+":"+rows.Count;
-            if (fingerprint==_lastSavedSnapshot) return;
+            if (!force && fingerprint==_lastSavedSnapshot) return true;
             _storage.Save(rows.ToArray(),options);_lastSavedSnapshot=fingerprint;
+            return true;
         }
         catch(Exception e)
         {
@@ -501,6 +504,7 @@ public sealed partial class NativeWindow : IDisposable
             Log("Cannot save session checkpoint: "+e.Message+Environment.NewLine+
                 "error_type="+e.GetType().Name+" hresult=0x"+e.HResult.ToString("X8",CultureInfo.InvariantCulture)+
                 Environment.NewLine+e.StackTrace);
+            return false;
         }
     }
     private enum DuplicateChoice{Yes,No,YesAll,NoAll,Cancel}

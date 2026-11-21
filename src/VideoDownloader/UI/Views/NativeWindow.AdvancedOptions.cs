@@ -13,6 +13,11 @@ public sealed partial class NativeWindow
         B("ThreadsBox").TextChanged+=(_,_)=>RefreshAdvancedOptionsSummary();
         B("FilenameTemplateBox").TextChanged+=(_,_)=>RefreshAdvancedOptionsSummary();
         C("FragmentsCombo").SelectionChanged+=(_,_)=>RefreshAdvancedOptionsSummary();
+        foreach(string name in new[]{"HttpChunksCheck","PreferAria2cCheck"})
+        {
+            K(name).Checked+=(_,_)=>RefreshAdvancedOptionsSummary();
+            K(name).Unchecked+=(_,_)=>RefreshAdvancedOptionsSummary();
+        }
         C("RateLimitCombo").AddHandler(TextBox.TextChangedEvent,new TextChangedEventHandler((_,_)=>RefreshAdvancedOptionsSummary()));
         F<Button>("ResetQueueAdvancedOptionsButton").Click+=(_,_)=>ResetAdvancedOptions();
         RefreshAdvancedOptionsSummary();
@@ -30,6 +35,10 @@ public sealed partial class NativeWindow
             parts.Add(ErrorMessages.Text("Параллельно: ","Parallel: ")+B("ThreadsBox").Text.Trim());
         if(Pick(C("FragmentsCombo"))!=defaults.Fragments)
             parts.Add(ErrorMessages.Text("Фрагменты: ","Fragments: ")+DisplayValueConverter.Display(Pick(C("FragmentsCombo"))));
+        if(Check(K("HttpChunksCheck")))
+            parts.Add(ErrorMessages.Text("Блоки HTTP по 4 МиБ","4 MiB HTTP chunks"));
+        if(Check(K("PreferAria2cCheck")))
+            parts.Add(ErrorMessages.Text("aria2c для прямого HTTP(S)","aria2c for direct HTTP(S)"));
         if(B("FilenameTemplateBox").Text!=defaults.FilenameTemplate)
             parts.Add(ErrorMessages.Text("Свой шаблон имени","Custom filename template"));
         string text=string.Join(" · ",parts);
@@ -53,6 +62,8 @@ public sealed partial class NativeWindow
         C("RateLimitCombo").Text=DisplayValueConverter.Display(defaults.RateLimit);
         B("ThreadsBox").Text=defaults.Threads;
         C("FragmentsCombo").SelectedItem=defaults.Fragments;
+        K("HttpChunksCheck").IsChecked=defaults.UseHttpChunks;
+        K("PreferAria2cCheck").IsChecked=defaults.PreferAria2c;
         B("FilenameTemplateBox").Text=defaults.FilenameTemplate;
         RefreshAdvancedOptionsSummary();SaveCheckpoint();
     }

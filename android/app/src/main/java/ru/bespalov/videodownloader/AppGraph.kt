@@ -131,7 +131,16 @@ class AppRepository(private val file: File) : StateRepository {
         initialized.await()
         gate.withLock {
             if (readOnly && file.exists()) file.readBytes()
-            else JsonStateRepository.JSON.encodeToString(state.value).toByteArray(Charsets.UTF_8)
+            else {
+                val snapshot = state.value
+                val export = snapshot.copy(
+                    settings = snapshot.settings.copy(httpChunked = false, preferAria2c = false),
+                    queue = snapshot.queue.map { task ->
+                        task.copy(settingsSnapshot = task.settingsSnapshot?.copy(httpChunked = false, preferAria2c = false))
+                    },
+                )
+                JsonStateRepository.JSON.encodeToString(export).toByteArray(Charsets.UTF_8)
+            }
         }
     }
 

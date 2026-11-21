@@ -28,7 +28,7 @@ object YtDlpArguments {
         "--dump-single-json", "--playlist-items", "1", "--socket-timeout", "20",
     )
 
-    fun download(settings: Settings, stage: File, quality: String): List<String> {
+    fun download(settings: Settings, stage: File, quality: String, aria2c: File? = null, certificate: File? = null): List<String> {
         SettingsRules.validate(settings)
         val args = mutableListOf(
             "--ignore-config", "--encoding", "utf-8", "--newline", "--progress", "--no-color", "--no-quiet",
@@ -43,6 +43,8 @@ object YtDlpArguments {
         )
         if (settings.rateLimit.isNotBlank() && settings.rateLimit != "Unlimited")
             args += listOf("--limit-rate", settings.rateLimit)
+        if (settings.httpChunked) args += listOf("--http-chunk-size", SpeedDebug.HTTP_CHUNK_SIZE)
+        if (settings.preferAria2c && aria2c != null && certificate != null) args += aria2cOptions(aria2c, certificate)
         if (settings.sponsor) args += listOf("--sponsorblock-remove", "sponsor")
         AudioTracks.formatSelector(settings, quality)?.let { args += listOf("-f", it) }
         if (settings.audioOnly) args += listOf("-x", "--audio-format", "mp3") else {
@@ -84,21 +86,29 @@ object YtDlpArguments {
         if (!settings.audioOnly && container != "Auto") addAll(listOf("--merge-output-format", container.lowercase()))
     }
 
-    internal fun speedDebugComparison(stage: File, matchedFormat: String?, aria2c: File?, certificate: File): List<String> = buildList {
+    internal fun speedDebugComparison(stage: File, matchedFormat: String?, aria2c: File?, certificate: File,
+                                      httpChunkSize: String? = null): List<String> = buildList {
         addAll(speedDebugBase(stage, 1))
         addAll(listOf("--no-simulate", "--print", "before_dl:${SpeedDebug.FORMAT_MARKER}%(format_id)j"))
         val format = matchedFormat?.let { "best[protocol=https][format_id=$it]" }
             ?: "best[protocol=https]"
         addAll(listOf("-f", format))
-        if (aria2c == null) addAll(listOf("--downloader", "native"))
-        else {
+        if (aria2c == null) {
+            addAll(listOf("--downloader", "native"))
+            httpChunkSize?.let { addAll(listOf("--http-chunk-size", it)) }
+        } else {
             require(matchedFormat != null)
-            val caArgument = certificate.absolutePath.replace("'", "'\\''")
-            addAll(listOf("--downloader", "http:${aria2c.absolutePath}", "--downloader-args",
-                "aria2c:-x4 -s4 --min-split-size=1M --human-readable=false --enable-color=false " +
-                    "--show-console-readout=true --summary-interval=1 --download-result=full --max-tries=1 " +
-                    "--ca-certificate='$caArgument'"))
+            addAll(aria2cOptions(aria2c, certificate, measureProgress = true))
         }
+    }
+
+    private fun aria2cOptions(aria2c: File, certificate: File, measureProgress: Boolean = false): List<String> {
+        val caArgument = certificate.absolutePath.replace("'", "'\\''")
+        val display = if (measureProgress) {
+            "--human-readable=false --enable-color=false --show-console-readout=true --summary-interval=1 --download-result=full"
+        } else "--show-console-readout=false --summary-interval=0 --download-result=hide"
+        return listOf("--downloader", "http:${aria2c.absolutePath}", "--downloader-args",
+            "aria2c:-x4 -s4 --min-split-size=1M --max-tries=1 $display --ca-certificate='$caArgument'")
     }
 }
 

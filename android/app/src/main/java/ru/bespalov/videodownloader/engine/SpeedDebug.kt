@@ -74,18 +74,42 @@ internal object SpeedDebug {
     fun profiles(settings: Settings): List<SpeedDebugProfile> {
         val parallel = settings.threads.coerceIn(1, SOURCE_COUNT)
         val fragments = settings.fragments.coerceIn(1, 8)
+        val chunkSize = HTTP_CHUNK_SIZE.takeIf { settings.httpChunked }
         return listOf(
-            SpeedDebugProfile(parallel, fragments),
-            SpeedDebugProfile(parallel, if (fragments == 8) 2 else 8),
-            SpeedDebugProfile(if (parallel == SOURCE_COUNT) 2 else SOURCE_COUNT, 8),
-            SpeedDebugProfile(SOURCE_COUNT, 8, "4M"),
+            SpeedDebugProfile(parallel, fragments, chunkSize),
+            SpeedDebugProfile(parallel, if (fragments == 8) 2 else 8, chunkSize),
+            SpeedDebugProfile(if (parallel == SOURCE_COUNT) 2 else SOURCE_COUNT, 8, chunkSize),
+            SpeedDebugProfile(SOURCE_COUNT, 8, HTTP_CHUNK_SIZE.takeUnless { settings.httpChunked }),
         )
     }
 
-    fun comparisonProfiles() = listOf(
-        SpeedDebugProfile(SOURCE_COUNT, 1, downloader = SpeedDebugDownloader.MATCHED_NATIVE),
+    const val HTTP_CHUNK_SIZE = "4M"
+
+    fun comparisonProfiles(settings: Settings = Settings()) = listOf(
+        SpeedDebugProfile(SOURCE_COUNT, 1, HTTP_CHUNK_SIZE.takeIf { settings.httpChunked },
+            downloader = SpeedDebugDownloader.MATCHED_NATIVE),
         SpeedDebugProfile(SOURCE_COUNT, 1, downloader = SpeedDebugDownloader.ARIA2C),
     )
+
+    fun winner(results: List<SpeedDebugResult>, settings: Settings, comparing: Boolean): SpeedDebugProfile? {
+        val expected = if (comparing) comparisonProfiles(settings) else profiles(settings)
+        if (results.map { it.profile } != expected) return null
+        if (!comparing) return results.filter { it.measured == SOURCE_COUNT && it.failures == 0 && it.bytes > 0 }
+            .maxByOrNull { it.mebibytesPerSecond }?.profile
+
+        val (native, aria2c) = results
+        val eligible = native.eligible ?: return null
+        if (eligible < 1 || aria2c.eligible != eligible ||
+            results.any { it.measured != eligible || it.failures != 0 || it.bytes <= 0 }) return null
+        return if (aria2c.mebibytesPerSecond > native.mebibytesPerSecond) aria2c.profile else native.profile
+    }
+
+    fun applyWinner(settings: Settings, winner: SpeedDebugProfile): Settings = when (winner.downloader) {
+        SpeedDebugDownloader.STANDARD -> settings.copy(threads = winner.parallel, fragments = winner.fragments,
+            httpChunked = winner.httpChunkSize != null)
+        SpeedDebugDownloader.MATCHED_NATIVE -> settings.copy(preferAria2c = false)
+        SpeedDebugDownloader.ARIA2C -> settings.copy(preferAria2c = true)
+    }
 
     fun pairedFormat(line: String): String? {
         if (!line.startsWith(FORMAT_MARKER) || line.length > 1024) return null

@@ -27,11 +27,13 @@ internal sealed partial class UiScenario
                 "Queue settings must keep quality available while throughput and naming controls start collapsed");
             Require(summary.Visibility==Visibility.Collapsed && reset.Visibility==Visibility.Collapsed,
                 "Default advanced settings must not add an empty summary or a redundant reset action.");
-            subject.ApplyOptions(new DownloadOptions{RateLimit="5M",Threads="7",Fragments="3",FilenameTemplate="%(title)s.%(ext)s",
+            subject.ApplyOptions(new DownloadOptions{RateLimit="5M",Threads="7",Fragments="5",FilenameTemplate="%(title)s.%(ext)s",
+                UseHttpChunks=true,PreferAria2c=true,
                 Output=Path.Combine(testRoot,"advanced-output"),Cookies=Path.Combine(testRoot,"advanced-cookies.txt")});
             summary.BringIntoView();window.UpdateLayout();
             Require(!advanced.IsExpanded && summary.IsVisible && summary.Text.Contains("5M") &&
-                summary.Text.Contains("7") && summary.Text.Contains("3") &&
+                summary.Text.Contains("7") && summary.Text.Contains("5") && summary.Text.Contains("aria2c") &&
+                summary.Text.Contains(ErrorMessages.Text("4 МиБ","4 MiB")) &&
                 summary.Text.Contains(ErrorMessages.Text("шаблон","template")) &&
                 System.Windows.Automation.Peers.UIElementAutomationPeer.CreatePeerForElement(advanced)?.GetName().Contains("5M")==true,
                 "Restored nondefault limits and naming must remain visible and accessible while their fields are collapsed.");
@@ -41,7 +43,8 @@ internal sealed partial class UiScenario
             advanced.IsExpanded=true;
             advanced.IsExpanded=false;
             var hiddenOptions=subject.ReadOptions();
-            Require(hiddenOptions.RateLimit=="5M" && hiddenOptions.Threads=="7" && hiddenOptions.Fragments=="3" &&
+            Require(hiddenOptions.RateLimit=="5M" && hiddenOptions.Threads=="7" && hiddenOptions.Fragments=="5" &&
+                    hiddenOptions.UseHttpChunks && hiddenOptions.PreferAria2c &&
                     hiddenOptions.FilenameTemplate=="%(title)s.%(ext)s",
                 "Opening and closing advanced settings must preserve restored throughput and filename options");
             advanced.IsExpanded=true;
@@ -50,6 +53,7 @@ internal sealed partial class UiScenario
             var defaults=new DownloadOptions();var resetOptions=subject.ReadOptions();
             Require(resetOptions.RateLimit==defaults.RateLimit && resetOptions.Threads==defaults.Threads &&
                 resetOptions.Fragments==defaults.Fragments && resetOptions.FilenameTemplate==defaults.FilenameTemplate &&
+                !resetOptions.UseHttpChunks && !resetOptions.PreferAria2c &&
                 resetOptions.Output==hiddenOptions.Output && resetOptions.Cookies==hiddenOptions.Cookies &&
                 resetOptions.Profile==hiddenOptions.Profile && resetOptions.Quality==hiddenOptions.Quality &&
                 resetOptions.Container==hiddenOptions.Container && resetOptions.Archive==hiddenOptions.Archive &&
@@ -57,6 +61,7 @@ internal sealed partial class UiScenario
                 "Group reset must clear only throughput/naming overrides and preserve profile, folder, cookies and primary selections.");
             var persisted=storage.Restore()?.Settings;
             Require(persisted is not null && persisted.RateLimit==defaults.RateLimit && persisted.Threads==defaults.Threads &&
+                !persisted.UseHttpChunks && !persisted.PreferAria2c &&
                 persisted.Output==hiddenOptions.Output && persisted.Cookies==hiddenOptions.Cookies,
                 "An explicit group reset must checkpoint its values without resetting unrelated saved settings.");
             template.BringIntoView();window.UpdateLayout();
