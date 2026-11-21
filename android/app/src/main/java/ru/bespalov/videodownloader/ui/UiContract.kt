@@ -54,6 +54,7 @@ data class UiMessage(val text: String, val details: String = "")
 
 data class SpeedDebugUiState(
     val running: Boolean = false,
+    val compareAria2c: Boolean = false,
     val cancelling: Boolean = false,
     val cancelled: Boolean = false,
     val profile: SpeedDebugProfile? = null,
@@ -80,6 +81,7 @@ data class MobileUiState(
     val session: DownloadSessionSnapshot? = null,
     val taskProgress: Map<String, EngineProgress> = emptyMap(),
     val speedDebug: SpeedDebugUiState = SpeedDebugUiState(),
+    val aria2cAvailable: Boolean = false,
 )
 
 internal val MobileUiState.locked: Boolean get() = readOnly || importing
@@ -96,7 +98,7 @@ interface MobileActions {
     fun importCookies(uri: Uri)
     fun selectOutput(uri: Uri)
     fun saveSettings(settings: Settings)
-    fun startSpeedDebug(text: String)
+    fun startSpeedDebug(text: String, compareAria2c: Boolean)
     fun cancelSpeedDebug()
     fun start(taskIds: List<String>? = null)
     fun resolveDuplicate(decision: DuplicateDecision)

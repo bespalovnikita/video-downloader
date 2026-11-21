@@ -63,7 +63,9 @@ class DownloaderViewModel(application: Application) : AndroidViewModel(applicati
         viewModelScope.launch { DownloadService.session.collect { session -> mutable.update { it.copy(session = session) } } }
         viewModelScope.launch {
             graph.ready.await()
+            val aria2cAvailable = graph.runtimeReady.value && withContext(Dispatchers.IO) { graph.engine.hasAria2c() }
             mutable.update { it.copy(runtimeReady = graph.runtimeReady.value, readOnly = repository.readOnly,
+                aria2cAvailable = aria2cAvailable,
                 recoveryRequired = repository.state.value.queue.any { task -> task.status == DownloadStatus.INTERRUPTED }) }
             if (graph.startupError.value.isNotBlank()) message(graph.startupError.value)
             else if (repository.readOnly) message(repository.error.ifBlank { "Хранилище доступно только для чтения. Экспортируйте данные перед восстановлением." })
@@ -237,10 +239,10 @@ class DownloaderViewModel(application: Application) : AndroidViewModel(applicati
         repository.update { it.copy(settings = settings) }
     }
 
-    override fun startSpeedDebug(text: String) {
+    override fun startSpeedDebug(text: String, compareAria2c: Boolean) {
         if (speedDebugJob?.isCompleted == false) return
         speedDebugJob = viewModelScope.launch {
-            mutable.update { it.copy(speedDebug = SpeedDebugUiState(running = true)) }
+            mutable.update { it.copy(speedDebug = SpeedDebugUiState(running = true, compareAria2c = compareAria2c)) }
             try {
                 val sample = SpeedDebug.sample(text)
                 graph.ready.await()
@@ -249,7 +251,7 @@ class DownloaderViewModel(application: Application) : AndroidViewModel(applicati
                     idle()
                     check(graph.runtimeReady.value) { "Движок ещё не готов." }
                     val settings = repository.state.value.settings
-                    graph.engine.measureSpeed(sample, settings, onProfile = { _, profile ->
+                    graph.engine.measureSpeed(sample, settings, compareAria2c, onProfile = { _, profile ->
                         mutable.update { state -> state.copy(speedDebug = state.speedDebug.copy(profile = profile)) }
                     }) { result ->
                         mutable.update { state -> state.copy(speedDebug = state.speedDebug.copy(results = state.speedDebug.results + result)) }

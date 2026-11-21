@@ -1,12 +1,17 @@
 using System.Diagnostics;
 using System.Globalization;
 using System.Text;
+using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace VideoDownloader.Native;
 
 internal sealed record SpeedDebugUpdate(int ProfileIndex, int ProfileCount, string Profile, TimeSpan Elapsed);
+internal enum SpeedDebugKind { Regular, HttpsNative, HttpsAria2 }
+
 internal sealed record SpeedDebugResult(string Profile, int Parallel, int Fragments, long Bytes, TimeSpan Duration,
-    int MeasuredUrls, int FailedUrls, string? Error, bool Chunked)
+    int MeasuredUrls, int FailedUrls, string? Error, bool Chunked, SpeedDebugKind Kind = SpeedDebugKind.Regular,
+    int EligibleUrls = SpeedDebugBenchmark.SampleCount)
 {
     internal double BytesPerSecond => Duration.TotalSeconds > 0 ? Bytes / Duration.TotalSeconds : 0;
 }
@@ -16,17 +21,24 @@ internal static class SpeedDebugBenchmark
     internal const int SampleCount = 4;
     internal static readonly TimeSpan Budget = TimeSpan.FromMinutes(1);
     private const string ProgressMarker = "__VD_SPEED__|";
+    private const string FormatMarker = "__VD_SPEED_HTTPS__|";
     private const int MaxPipeChars = 256 * 1024;
+    private static readonly Regex AriaProgress = new(@"^\[#[a-f0-9]+ (?<bytes>[0-9]+)B/(?:[0-9]+B|0)(?:\(|\s)",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
+    internal static bool Aria2Available => File.Exists(DependencyCenter.Executable("aria2c.exe"));
 
-    private sealed record Profile(string Name, int Parallel, int Fragments, bool Chunked = false);
-    private sealed record Sample(long Bytes, string? Error);
+    private sealed record Profile(string Name, int Parallel, int Fragments, bool Chunked = false,
+        SpeedDebugKind Kind = SpeedDebugKind.Regular);
+    private sealed record Sample(long Bytes, string? Error, string? HttpsFormat = null);
 
     internal static Task<IReadOnlyList<SpeedDebugResult>> RunAsync(IReadOnlyList<string> urls, DownloadOptions currentOptions,
-        IProgress<SpeedDebugUpdate>? progress, CancellationToken ct, string? executable = null) =>
-        RunAsync(urls, currentOptions, progress, ct, executable, Budget, Path.GetTempPath());
+        IProgress<SpeedDebugUpdate>? progress, CancellationToken ct, string? executable = null, bool compareAria2 = false) =>
+        RunAsync(urls, currentOptions, progress, ct, executable, Budget, Path.GetTempPath(),
+            compareAria2 ? DependencyCenter.Executable("aria2c.exe") : null);
 
     internal static async Task<IReadOnlyList<SpeedDebugResult>> RunAsync(IReadOnlyList<string> urls, DownloadOptions currentOptions,
-        IProgress<SpeedDebugUpdate>? progress, CancellationToken ct, string? executable, TimeSpan budget, string workParent)
+        IProgress<SpeedDebugUpdate>? progress, CancellationToken ct, string? executable, TimeSpan budget, string workParent,
+        string? aria2 = null)
     {
         if (urls.Count != SampleCount || urls.Distinct(StringComparer.Ordinal).Count() != SampleCount ||
             urls.Any(url => !Uri.TryCreate(url, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https")))
@@ -35,16 +47,29 @@ internal static class SpeedDebugBenchmark
         ct.ThrowIfCancellationRequested();
         string ytDlp = executable ?? DependencyCenter.Executable("yt-dlp.exe");
         if (!File.Exists(ytDlp)) throw new FileNotFoundException("Не найден yt-dlp.exe.", ytDlp);
+        if (aria2 is not null && !File.Exists(aria2))
+            throw new FileNotFoundException(ErrorMessages.Text("Не найден aria2c.exe.", "aria2c.exe was not found."));
+        if (aria2 is not null) aria2 = Path.GetFullPath(aria2);
         var options = currentOptions.Snapshot();
-        string quality = new YtDlpArguments(options).QualityLevels().First();
-        string? format = AudioTrackSelection.FormatSelector(options, quality);
-        if (options.AudioOnly && format is null) format = "bestaudio/best";
+        string? format = null;
+        if (aria2 is null)
+        {
+            string quality = new YtDlpArguments(options).QualityLevels().First();
+            format = AudioTrackSelection.FormatSelector(options, quality);
+            if (options.AudioOnly && format is null) format = "bestaudio/best";
+        }
 
         int parallel = Math.Min(options.Parallel, SampleCount);
         int fragments = options.FragmentCount;
         int alternateFragments = fragments == 8 ? 2 : 8;
         int alternateParallel = parallel == SampleCount ? 2 : SampleCount;
-        Profile[] profiles =
+        Profile[] profiles = aria2 is not null
+        ?
+        [
+            new(ErrorMessages.Text("Прямой HTTPS · yt-dlp", "Direct HTTPS · yt-dlp"), SampleCount, 1, Kind: SpeedDebugKind.HttpsNative),
+            new(ErrorMessages.Text("Прямой HTTPS · aria2c", "Direct HTTPS · aria2c"), SampleCount, 1, Kind: SpeedDebugKind.HttpsAria2)
+        ]
+        :
         [
             new(ErrorMessages.Text("Текущие параметры", "Current settings"), parallel, fragments),
             new(ErrorMessages.Text("Другое число фрагментов", "Alternate fragment count"), parallel, alternateFragments),
@@ -53,6 +78,7 @@ internal static class SpeedDebugBenchmark
         ];
 
         var results = new List<SpeedDebugResult>();
+        var httpsFormats = new Dictionary<string, string>(StringComparer.Ordinal);
         // Reuse the staging ownership checks without touching the user's output or queue.
         string stage = Path.Combine(workParent, Guid.NewGuid().ToString("N"));
         OwnedFiles.NoReparseAncestors(Path.Combine(stage, "probe"));
@@ -67,33 +93,55 @@ internal static class SpeedDebugBenchmark
             {
                 var profile = profiles[index];
                 progress?.Report(new(index + 1, profiles.Length, profile.Name, clock.Elapsed));
-                var waves = urls.Chunk(profile.Parallel).ToArray();
+                var candidates = profile.Kind == SpeedDebugKind.HttpsAria2 ? urls.Where(httpsFormats.ContainsKey) : urls;
+                var waves = candidates.Chunk(profile.Parallel).ToArray();
                 var samples = new List<Sample>();
+                TimeSpan remaining = budget - clock.Elapsed;
+                TimeSpan window = remaining < slice ? remaining : slice;
+                if (window <= TimeSpan.Zero) break;
                 var measurement = Stopwatch.StartNew();
                 using var profileDeadline = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token);
-                profileDeadline.CancelAfter(slice);
+                profileDeadline.CancelAfter(window);
 
                 for (int wave = 0; wave < waves.Length && !profileDeadline.IsCancellationRequested; wave++)
                 {
-                    var left = slice - measurement.Elapsed;
+                    var left = window - measurement.Elapsed;
                     if (left <= TimeSpan.Zero) break;
                     // Give each wave a share of the remaining profile window so
                     // slow first URLs cannot use all of a lower-concurrency profile.
                     using var waveDeadline = CancellationTokenSource.CreateLinkedTokenSource(profileDeadline.Token);
                     waveDeadline.CancelAfter(left / (waves.Length - wave));
-                    var batch = waves[wave].Select(url => MeasureAsync(ytDlp, options, format, profile, url, stage, waveDeadline.Token));
-                    samples.AddRange(await Task.WhenAll(batch).ConfigureAwait(false));
+                    var batch = await Task.WhenAll(waves[wave].Select(async url =>
+                    {
+                        string? selector = profile.Kind switch
+                        {
+                            SpeedDebugKind.HttpsNative => "best[protocol=https]",
+                            SpeedDebugKind.HttpsAria2 => $"best[protocol=https][format_id={httpsFormats[url]}]",
+                            _ => format
+                        };
+                        var sample = await MeasureAsync(ytDlp, options, selector, profile, url, stage, waveDeadline.Token, aria2)
+                            .ConfigureAwait(false);
+                        return (url, sample);
+                    })).ConfigureAwait(false);
+                    foreach (var (url, sample) in batch)
+                    {
+                        samples.Add(sample);
+                        if (profile.Kind == SpeedDebugKind.HttpsNative && sample.HttpsFormat is { } id)
+                            httpsFormats.Add(url, id);
+                    }
                 }
 
                 TimeSpan duration = measurement.Elapsed;
+                if (profile.Kind != SpeedDebugKind.Regular && duration > window) duration = window;
                 ct.ThrowIfCancellationRequested();
                 int measured = samples.Count(sample => sample.Bytes > 0);
                 int failed = samples.Count(sample => sample.Error is not null);
                 results.Add(new(profile.Name, profile.Parallel, profile.Fragments, samples.Sum(sample => sample.Bytes),
-                    duration, measured, failed, samples.FirstOrDefault(sample => sample.Error is not null)?.Error, profile.Chunked));
+                    duration, measured, failed, samples.FirstOrDefault(sample => sample.Error is not null)?.Error, profile.Chunked,
+                    profile.Kind, profile.Kind == SpeedDebugKind.Regular ? urls.Count : httpsFormats.Count));
             }
             ct.ThrowIfCancellationRequested();
-            return results.OrderByDescending(result => result.BytesPerSecond).ToArray();
+            return aria2 is null ? results.OrderByDescending(result => result.BytesPerSecond).ToArray() : results;
         }
         finally
         {
@@ -102,7 +150,7 @@ internal static class SpeedDebugBenchmark
     }
 
     private static async Task<Sample> MeasureAsync(string ytDlp, DownloadOptions options, string? format, Profile profile,
-        string url, string stage, CancellationToken token)
+        string url, string stage, CancellationToken token, string? aria2)
     {
         string target = Path.Combine(stage, Guid.NewGuid().ToString("N"));
         try
@@ -120,7 +168,14 @@ internal static class SpeedDebugBenchmark
                 StandardErrorEncoding = Encoding.UTF8,
                 WorkingDirectory = AppContext.BaseDirectory
             };
-            foreach (string arg in BuildArguments(options, format, profile, url, target)) start.ArgumentList.Add(arg);
+            if (profile.Kind != SpeedDebugKind.Regular)
+            {
+                // The external downloader can create a temporary cookie jar.
+                start.Environment["TEMP"] = target;
+                start.Environment["TMP"] = target;
+                start.Environment["TMPDIR"] = target;
+            }
+            foreach (string arg in BuildArguments(options, format, profile, url, target, aria2)) start.ArgumentList.Add(arg);
             if (token.IsCancellationRequested) return new(0, null);
 
             using var child = ManagedChildProcess.Start(start);
@@ -130,6 +185,7 @@ internal static class SpeedDebugBenchmark
             await Task.WhenAll(stdout, stderr, child.Process.WaitForExitAsync()).ConfigureAwait(false);
 
             long bytes = MediaBytes(stdout.Result);
+            string? formatId = profile.Kind == SpeedDebugKind.HttpsNative ? HttpsFormat(stdout.Result) : null;
             string? error = null;
             if (stdout.Result.Length >= MaxPipeChars || stderr.Result.Length >= MaxPipeChars)
                 error = ErrorMessages.Text("Превышен лимит диагностического вывода.", "Diagnostic output limit exceeded.");
@@ -141,7 +197,27 @@ internal static class SpeedDebugBenchmark
                 else if (!token.IsCancellationRequested && child.Process.ExitCode != 0)
                     error = $"yt-dlp exit {child.Process.ExitCode}";
             }
-            return new(bytes, error);
+            if (profile.Kind == SpeedDebugKind.HttpsNative)
+            {
+                if (error is not null && YtDlpOutputParser.FormatUnavailable(error)) return new(0, null);
+                if (bytes > 0 && formatId is null)
+                    return new(0, ErrorMessages.Text("Не удалось зафиксировать формат HTTPS.", "Could not pin the HTTPS format."));
+            }
+            if (profile.Kind == SpeedDebugKind.HttpsAria2)
+            {
+                long partial = AriaBytes(stdout.Result);
+                string? ariaError = stdout.Result.Split(['\r', '\n'])
+                    .FirstOrDefault(line => line.Contains("[ERROR]", StringComparison.Ordinal));
+                if (ariaError is not null && (error is null || error.StartsWith("ERROR: aria2c exited", StringComparison.Ordinal)))
+                    error = JournalSanitizer.Redact(ariaError.Trim());
+                // yt-dlp can fall back to its own downloader when aria2 fails
+                // the executable check or the format requires impersonation.
+                bool ariaRan = partial > 0 || stdout.Result.Contains("Download Results:", StringComparison.Ordinal);
+                if (!ariaRan && bytes > 0)
+                    error ??= ErrorMessages.Text("yt-dlp не подтвердил запуск aria2c.", "yt-dlp did not confirm aria2c ran.");
+                bytes = ariaRan ? Math.Max(bytes, partial) : 0;
+            }
+            return new(bytes, error, formatId);
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
         {
@@ -154,7 +230,7 @@ internal static class SpeedDebugBenchmark
     }
 
     private static IEnumerable<string> BuildArguments(DownloadOptions options, string? format, Profile profile,
-        string url, string target)
+        string url, string target, string? aria2)
     {
         var args = new List<string>
         {
@@ -167,7 +243,13 @@ internal static class SpeedDebugBenchmark
         };
         if (profile.Chunked) args.AddRange(["--http-chunk-size", "4M"]);
         if (format is not null) args.AddRange(["-f", format]);
-        if (AudioTrackSelection.Multiple(options)) args.Add("--audio-multistreams");
+        if (profile.Kind == SpeedDebugKind.Regular && AudioTrackSelection.Multiple(options)) args.Add("--audio-multistreams");
+        if (profile.Kind == SpeedDebugKind.HttpsNative)
+            args.AddRange(["--no-simulate", "--print", "before_dl:" + FormatMarker + "%(format_id)j", "--downloader", "http:native"]);
+        if (profile.Kind == SpeedDebugKind.HttpsAria2)
+            // aria2 flushes periodic summaries when output is redirected.
+            args.AddRange(["--downloader", "http:" + aria2, "--downloader-args",
+                "aria2c:-x4 -s4 --min-split-size=1M --max-tries=1 --human-readable=false --enable-color=false --show-console-readout=false --summary-interval=1 --download-result=default"]);
         string ffmpeg = DependencyCenter.Executable("ffmpeg.exe");
         if (File.Exists(ffmpeg)) args.AddRange(["--ffmpeg-location", ffmpeg]);
         if (File.Exists(options.Cookies))
@@ -219,5 +301,30 @@ internal static class SpeedDebugBenchmark
             components[key] = Math.Max(components.GetValueOrDefault(key), bytes);
         }
         return components.Values.Sum();
+    }
+
+    private static string? HttpsFormat(string output)
+    {
+        string? line = output.Split('\n').FirstOrDefault(line => line.StartsWith(FormatMarker, StringComparison.Ordinal));
+        if (line is null) return null;
+        try
+        {
+            string? id = JsonSerializer.Deserialize<string>(line[FormatMarker.Length..]);
+            return id is not null && Regex.IsMatch(id, @"\A[A-Za-z0-9_.-]{1,128}\z", RegexOptions.CultureInvariant) ? id : null;
+        }
+        catch (JsonException) { return null; }
+    }
+
+    internal static long AriaBytes(string output)
+    {
+        long highest = 0;
+        foreach (string line in output.Split(['\r', '\n']))
+        {
+            var match = AriaProgress.Match(line);
+            if (match.Success && long.TryParse(match.Groups["bytes"].ValueSpan, NumberStyles.None, CultureInfo.InvariantCulture,
+                out long bytes) && bytes <= (1L << 40))
+                highest = Math.Max(highest, bytes);
+        }
+        return highest;
     }
 }

@@ -9,6 +9,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -22,12 +23,14 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import ru.bespalov.videodownloader.engine.SpeedDebug
+import ru.bespalov.videodownloader.engine.SpeedDebugDownloader
 
 @Composable
 internal fun SpeedDebugDialog(
     state: SpeedDebugUiState,
     ready: Boolean,
-    start: (String) -> Unit,
+    aria2cAvailable: Boolean,
+    start: (String, Boolean) -> Unit,
     cancel: () -> Unit,
     close: () -> Unit,
 ) {
@@ -53,6 +56,16 @@ internal fun SpeedDebugDialog(
                     maxLines = 6,
                     enabled = !state.running,
                 )
+                if (!state.running) {
+                    OutlinedButton(onClick = { focus.clearFocus(); start(urls, true) },
+                        enabled = ready && aria2cAvailable && urls.isNotBlank(), modifier = Modifier.testTag("speedDebugCompareAria2c")) {
+                        Text("Сравнить с aria2c")
+                    }
+                    Text(if (aria2cAvailable) "Сравнение загружает один и тот же прямой HTTPS-формат каждого видео. " +
+                        "Встроенный загрузчик и aria2c получают до 30 секунд каждый."
+                        else "aria2c отсутствует в этой сборке Android.",
+                        style = MaterialTheme.typography.bodySmall)
+                }
                 if (state.running) {
                     LinearProgressIndicator(Modifier.fillMaxWidth())
                     Text(if (state.cancelling) "Остановка и очистка…" else state.profile?.label ?: "Подготовка…")
@@ -62,7 +75,8 @@ internal fun SpeedDebugDialog(
                 if (state.cancelled) Text("Тест отменён.")
                 if (state.error.isNotBlank()) Text(state.error, color = MaterialTheme.colorScheme.error)
                 if (state.results.isNotEmpty() && !state.running && !state.cancelled && state.error.isBlank()) {
-                    if (best == null) Text("Для выбора лучшего профиля нужны данные от всех четырёх видео.")
+                    if (state.compareAria2c) Text(aria2cSummary(state))
+                    else if (best == null) Text("Для выбора лучшего профиля нужны данные от всех четырёх видео.")
                     else Text("Лучший результат: ${speedText(best.mebibytesPerSecond)} · ${best.profile.label}",
                         style = MaterialTheme.typography.titleSmall, modifier = Modifier.testTag("speedDebugBest"))
                 }
@@ -79,7 +93,7 @@ internal fun SpeedDebugDialog(
             if (state.running) {
                 TextButton(onClick = cancel, enabled = !state.cancelling) { Text("Отменить") }
             } else {
-                TextButton(onClick = { focus.clearFocus(); start(urls) }, enabled = ready && urls.isNotBlank(),
+                TextButton(onClick = { focus.clearFocus(); start(urls, false) }, enabled = ready && urls.isNotBlank(),
                     modifier = Modifier.testTag("speedDebugStart")) { Text("Запустить") }
             }
         },
@@ -87,6 +101,19 @@ internal fun SpeedDebugDialog(
             if (!state.running) TextButton(onClick = close) { Text("Закрыть") }
         },
     )
+}
+
+private fun aria2cSummary(state: SpeedDebugUiState): String {
+    val native = state.results.firstOrNull { it.profile.downloader == SpeedDebugDownloader.MATCHED_NATIVE }
+    val aria2c = state.results.firstOrNull { it.profile.downloader == SpeedDebugDownloader.ARIA2C }
+    val eligible = native?.eligible ?: 0
+    if (eligible == 0 && native?.failures == 0) return "Подходящие прямые HTTPS-потоки не найдены."
+    if (native == null || aria2c == null || eligible == 0 || aria2c.eligible != eligible ||
+        native.measured != eligible || aria2c.measured != eligible || native.failures != 0 || aria2c.failures != 0) {
+        return "Для сравнения нужны результаты обоих загрузчиков по всем подходящим прямым HTTPS-потокам."
+    }
+    val percent = aria2c.mebibytesPerSecond / native.mebibytesPerSecond * 100
+    return "Прямой HTTPS · $eligible видео · скорость aria2c составляет ${"%.0f".format(percent)}% от скорости yt-dlp."
 }
 
 private fun speedText(value: Double) =

@@ -6,6 +6,8 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonPrimitive
 import ru.bespalov.video.core.JournalSanitizer
 import ru.bespalov.video.core.Settings
 import ru.bespalov.video.core.Urls
@@ -15,10 +17,21 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.random.Random
 
-data class SpeedDebugProfile(val parallel: Int, val fragments: Int, val httpChunkSize: String? = null) {
+enum class SpeedDebugDownloader { STANDARD, MATCHED_NATIVE, ARIA2C }
+
+data class SpeedDebugProfile(
+    val parallel: Int,
+    val fragments: Int,
+    val httpChunkSize: String? = null,
+    val downloader: SpeedDebugDownloader = SpeedDebugDownloader.STANDARD,
+) {
     val label: String
-        get() = "Видео: $parallel · фрагменты: $fragments" +
-            (httpChunkSize?.let { " · --http-chunk-size $it" } ?: "")
+        get() = when (downloader) {
+            SpeedDebugDownloader.STANDARD -> "Видео: $parallel · фрагменты: $fragments" +
+                (httpChunkSize?.let { " · --http-chunk-size $it" } ?: "")
+            SpeedDebugDownloader.MATCHED_NATIVE -> "yt-dlp · $parallel видео · прямой HTTPS"
+            SpeedDebugDownloader.ARIA2C -> "aria2c · $parallel видео · до 4 соединений на файл"
+        }
 }
 
 data class SpeedDebugResult(
@@ -29,6 +42,7 @@ data class SpeedDebugResult(
     val measured: Int,
     val failures: Int,
     val error: String,
+    val eligible: Int? = null,
 ) {
     val mebibytesPerSecond: Double get() = bytes * 1000.0 / (1024 * 1024 * millis)
 }
@@ -36,6 +50,11 @@ data class SpeedDebugResult(
 internal object SpeedDebug {
     const val SOURCE_COUNT = 4
     const val BUDGET_MILLIS = 60_000L
+    private const val COMPARISON_SLOT_MILLIS = 30_000L
+    const val FORMAT_MARKER = "__VD_ARIA2_FORMAT__:"
+    private val formatId = Regex("[A-Za-z0-9._-]{1,200}")
+    private val readout = Regex("""^\[#([0-9a-fA-F]{6})\s+([0-9]+)B?/[0-9]+B?\([0-9]+%\)(?:\s|]).*""")
+    private val completed = Regex("""^[0-9a-fA-F]{6,16}\|OK\s*\|.*""")
 
     val defaultUrls = """
         https://rt.pornhub.com/view_video.php?viewkey=6afda993ab932
@@ -63,6 +82,22 @@ internal object SpeedDebug {
         )
     }
 
+    fun comparisonProfiles() = listOf(
+        SpeedDebugProfile(SOURCE_COUNT, 1, downloader = SpeedDebugDownloader.MATCHED_NATIVE),
+        SpeedDebugProfile(SOURCE_COUNT, 1, downloader = SpeedDebugDownloader.ARIA2C),
+    )
+
+    fun pairedFormat(line: String): String? {
+        if (!line.startsWith(FORMAT_MARKER) || line.length > 1024) return null
+        return runCatching {
+            (Json.parseToJsonElement(line.removePrefix(FORMAT_MARKER)) as? JsonPrimitive)?.takeIf { it.isString }?.content
+        }
+            .getOrNull()?.takeIf(formatId::matches)
+    }
+
+    fun aria2cBytes(line: String): Long? = readout.matchEntire(line.trim())?.groupValues?.get(2)?.toLongOrNull()
+    fun aria2cCompleted(line: String): Boolean = completed.matches(line.trim())
+
     suspend fun measure(
         urls: List<String>,
         profiles: List<SpeedDebugProfile>,
@@ -70,12 +105,15 @@ internal object SpeedDebug {
         now: () -> Long,
         onProfile: (Int, SpeedDebugProfile) -> Unit,
         onResult: (SpeedDebugResult) -> Unit,
+        accept: (String, SpeedDebugProfile) -> Boolean = { _, _ -> true },
         download: suspend (String, File, SpeedDebugProfile, EngineTransferCounters) -> Unit,
     ) {
         val deadline = now() + BUDGET_MILLIS
         profiles.forEachIndexed { index, profile ->
             currentCoroutineContext().ensureActive()
-            val slot = (deadline - now()) / (profiles.size - index)
+            val available = (deadline - now()) / (profiles.size - index)
+            val slot = if (profile.downloader == SpeedDebugDownloader.STANDARD) available
+                else minOf(available, COMPARISON_SLOT_MILLIS)
             if (slot <= 0) return
             onProfile(index, profile)
             val stage = Files.createDirectory(root.toPath().resolve("profile-$index")).toFile()
@@ -84,7 +122,7 @@ internal object SpeedDebug {
             val error = AtomicReference("")
             val counters = urls.map { EngineTransferCounters() }
             val profileDeadline = minOf(deadline, now() + slot)
-            val waves = urls.indices.chunked(profile.parallel)
+            val waves = urls.indices.filter { accept(urls[it], profile) }.chunked(profile.parallel)
             var elapsed = 0L
             try {
                 waves.forEachIndexed { wave, sources ->

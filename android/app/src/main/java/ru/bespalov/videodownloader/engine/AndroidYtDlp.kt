@@ -267,25 +267,93 @@ class AndroidYtDlp internal constructor(context: Context, private val runtimeUpd
         throw EngineException("No suitable quality available")
     }
 
+    internal fun hasAria2c(): Boolean = processes.aria2cExecutable() != null
+
     internal suspend fun measureSpeed(
         urls: List<String>,
         settings: Settings,
+        compareAria2c: Boolean,
         onProfile: (Int, SpeedDebugProfile) -> Unit,
         onResult: (SpeedDebugResult) -> Unit,
     ) = withContext(Dispatchers.IO) {
         initialize()
+        val aria2c = if (compareAria2c) {
+            val executable = checkNotNull(processes.aria2cExecutable()) { "В этой сборке Android нет aria2c." }
+            val version = try {
+                execute("aria2c-version-${UUID.randomUUID()}", 3_000L, 32 * 1024, null) { session ->
+                    processes.executableBuilder(session, executable, listOf("--version"))
+                }
+            } catch (cancel: CancellationException) {
+                currentCoroutineContext().ensureActive()
+                throw EngineException("Не удалось проверить версию aria2c.", cancel)
+            } catch (error: EngineException) {
+                throw EngineException("Не удалось запустить aria2c: ${error.message}", error)
+            }
+            check(version.out.lineSequence().any { it.startsWith("aria2 version ") }) { "Версия aria2c не подтверждена." }
+            executable
+        } else null
+        val profiles = if (compareAria2c) SpeedDebug.comparisonProfiles() else SpeedDebug.profiles(settings)
+        val matchedFormats = ConcurrentHashMap<String, String>()
         val root = Files.createTempDirectory(app.cacheDir.toPath(), "speed-debug-").toFile()
         try {
-            SpeedDebug.measure(urls, SpeedDebug.profiles(settings), root, SystemClock::elapsedRealtime, onProfile, onResult) {
+            SpeedDebug.measure(urls, profiles, root, SystemClock::elapsedRealtime, onProfile,
+                onResult = { result -> onResult(if (compareAria2c) result.copy(eligible = matchedFormats.size) else result) },
+                accept = { url, profile -> profile.downloader != SpeedDebugDownloader.ARIA2C || matchedFormats.containsKey(url) }) {
                 url, stage, profile, counter ->
                 val sampleCookies = cookie(settings.cookiesFile)?.takeIf(File::isFile)?.let { source ->
                     Files.copy(source.toPath(), stage.toPath().resolve("cookies.txt")).toFile()
-                }
-                execute("speed-debug-${UUID.randomUUID()}", request(url, YtDlpArguments.speedDebug(settings, profile, stage),
-                    sampleCookies), SpeedDebug.BUDGET_MILLIS, 4 * 1024 * 1024) { line ->
-                    val event = ProgressMarkers.parse(line)
-                    if (event is MarkerEvent.Progress && event.downloadedBytesKnown)
-                        counter.observe(event.component, event.value.downloadedBytes)
+                } ?: if (compareAria2c) File(stage, "cookies.txt").apply { writeText("# Netscape HTTP Cookie File\n") } else null
+                val useAria2c = profile.downloader == SpeedDebugDownloader.ARIA2C
+                val expected = if (useAria2c) {
+                    matchedFormats[url] ?: throw EngineException("У встроенного загрузчика нет подходящего формата HTTPS для этой ссылки.")
+                } else null
+                val arguments = if (compareAria2c) {
+                    YtDlpArguments.speedDebugComparison(stage, expected, aria2c.takeIf { useAria2c }, processes.aria2cCertificate)
+                } else YtDlpArguments.speedDebug(settings, profile, stage)
+                var actual: String? = null
+                var aria2cConfirmed = false
+                var highWaterMark = 0L
+                var ariaError: String? = null
+                try {
+                    execute("speed-debug-${UUID.randomUUID()}", request(url, arguments,
+                        sampleCookies), SpeedDebug.BUDGET_MILLIS, 4 * 1024 * 1024) { line ->
+                        if (compareAria2c) SpeedDebug.pairedFormat(line)?.let {
+                            actual = it
+                            if (!useAria2c) matchedFormats[url] = it
+                        }
+                        if (useAria2c && ariaError == null && "[ERROR]" in line) {
+                            ariaError = line.trim()
+                        }
+                        if (useAria2c && actual == expected) {
+                            SpeedDebug.aria2cBytes(line)?.let {
+                                aria2cConfirmed = true
+                                highWaterMark = maxOf(highWaterMark, it)
+                            }
+                            if (SpeedDebug.aria2cCompleted(line)) aria2cConfirmed = true
+                        }
+                        val event = ProgressMarkers.parse(line) as? MarkerEvent.Progress
+                        if (event?.downloadedBytesKnown == true) {
+                            if (!useAria2c && (!compareAria2c || actual != null)) {
+                                counter.observe(event.component, event.value.downloadedBytes)
+                            } else if (useAria2c && aria2cConfirmed && actual == expected) {
+                                highWaterMark = maxOf(highWaterMark, event.value.downloadedBytes)
+                            }
+                        }
+                    }
+                    if (useAria2c && (!aria2cConfirmed || actual != expected)) {
+                        throw EngineException("Получение того же формата через aria2c не подтверждено.")
+                    }
+                    if (compareAria2c && !useAria2c && actual == null) {
+                        throw EngineException("Не удалось зафиксировать формат HTTPS.")
+                    }
+                } catch (error: EngineException) {
+                    val unsupported = compareAria2c && !useAria2c && actual == null &&
+                        DownloadRetryBoundary().decide(error.message.orEmpty(), 1, true) == DownloadRetryDecision.LOWER_QUALITY
+                    if (!unsupported) throw error
+                } finally {
+                    // Errors emitted by aria2c itself can precede a successful yt-dlp exit or a trial timeout.
+                    ariaError?.let { throw EngineException(it) }
+                    if (aria2cConfirmed && actual == expected) counter.observe("aria2c", highWaterMark)
                 }
             }
         } finally {
@@ -315,7 +383,11 @@ class AndroidYtDlp internal constructor(context: Context, private val runtimeUpd
     }
 
     private suspend fun execute(requestId: String, request: YoutubeDLRequest, timeout: Long,
-                                outputLimit: Int = 32 * 1024 * 1024, line: ((String) -> Unit)? = null): NativeProcessResult {
+                                outputLimit: Int = 32 * 1024 * 1024, line: ((String) -> Unit)? = null): NativeProcessResult =
+        execute(requestId, timeout, outputLimit, line) { session -> processes.builder(request, session) }
+
+    private suspend fun execute(requestId: String, timeout: Long, outputLimit: Int, line: ((String) -> Unit)?,
+                                builder: (ProcessSession) -> ProcessBuilder): NativeProcessResult {
         currentCoroutineContext().ensureActive()
         val operation = Operation(processes.session())
         admission.withLock {
@@ -326,7 +398,7 @@ class AndroidYtDlp internal constructor(context: Context, private val runtimeUpd
         executor.execute {
             completed.complete(runCatching {
                 if (operation.cancelled.get()) throw CancellationException("Request cancelled")
-                val response = BoundedProcessRunner.run(processes.builder(request, operation.session), operation.session,
+                val response = BoundedProcessRunner.run(builder(operation.session), operation.session,
                     outputLimit, onLine = line)
                 if (response.exitCode != 0) throw EngineException(response.err.trim().ifBlank { "yt-dlp exited with code ${response.exitCode}" })
                 response

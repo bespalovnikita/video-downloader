@@ -20,16 +20,16 @@ internal sealed class SpeedDebugWindow : Window
     private readonly DownloadOptions _options;
     private readonly string _executable;
     private readonly TextBox _urls;
-    private readonly TextBlock _step,_summary,_details;
+    private readonly TextBlock _step,_summary,_details,_aria2Availability;
     private readonly ProgressBar _progress;
     private readonly DataGrid _results;
-    private readonly Button _start,_cancel;
+    private readonly Button _start,_compareAria2,_cancel;
     private readonly DispatcherTimer _timer=new(){Interval=TimeSpan.FromMilliseconds(250)};
     private readonly Stopwatch _elapsed=new();
     private CancellationTokenSource? _runCancellation;
     private Task _runTask=Task.CompletedTask;
     private SpeedDebugUpdate? _update;
-    private bool _closeWhenDone,_closed;
+    private bool _closeWhenDone,_closed,_aria2Available;
 
     internal SpeedDebugWindow(Window owner,DownloadOptions options,string executable)
     {
@@ -41,7 +41,7 @@ internal sealed class SpeedDebugWindow : Window
         ShowInTaskbar=false;
         WindowStartupLocation=WindowStartupLocation.CenterOwner;
         Width=Math.Min(870,SystemParameters.WorkArea.Width-32);
-        Height=Math.Min(570,SystemParameters.WorkArea.Height-32);
+        Height=Math.Min(610,SystemParameters.WorkArea.Height-32);
         MinWidth=580;
         MinHeight=440;
         Background=owner.Background;
@@ -53,8 +53,10 @@ internal sealed class SpeedDebugWindow : Window
         var root=new DockPanel{Margin=new Thickness(16)};
         var setup=new StackPanel();
         setup.Children.Add(Note(ErrorMessages.Text(
-            "Тест сравнивает настройки на четырёх случайных ссылках из списка. На все замеры отводится до минуты, ограничение скорости отключено.",
-            "The benchmark compares settings on four random URLs from the list. All measurements share a one-minute budget with no speed cap.")));
+            "Тест использует четыре случайные ссылки из списка. На каждый запуск отводится до минуты, ограничение скорости отключено.",
+            "The benchmark uses four random URLs from the list. Each run has a one-minute budget with no speed cap.")));
+        _aria2Availability=Named("SpeedDebugAria2Availability",Note(ErrorMessages.Text("Проверяем доступность aria2c…","Checking for aria2c…")));
+        setup.Children.Add(_aria2Availability);
         _urls=Named("SpeedDebugUrls",new TextBox
         {
             Text=DefaultUrls,AcceptsReturn=true,MinLines=4,MaxLines=5,
@@ -88,10 +90,12 @@ internal sealed class SpeedDebugWindow : Window
         footer.Children.Add(detailScroll);
         var buttons=new WrapPanel{HorizontalAlignment=System.Windows.HorizontalAlignment.Right};
         _start=Named("StartSpeedDebugButton",ActionButton(ErrorMessages.Text("Запустить тест","Run benchmark")));
+        _compareAria2=Named("CompareAria2SpeedDebugButton",ActionButton(ErrorMessages.Text("Сравнить с aria2c","Compare with aria2c")));
+        _compareAria2.IsEnabled=false;
         _cancel=Named("CancelSpeedDebugButton",ActionButton(ErrorMessages.Text("Отменить","Cancel")));
         _cancel.IsEnabled=false;
         var close=Named("CloseSpeedDebugButton",ActionButton(ErrorMessages.Text("Закрыть","Close")));
-        foreach(var button in new[]{_start,_cancel,close})buttons.Children.Add(button);
+        foreach(var button in new[]{_start,_compareAria2,_cancel,close})buttons.Children.Add(button);
         footer.Children.Add(buttons);
         DockPanel.SetDock(footer,Dock.Bottom);
         root.Children.Add(footer);
@@ -111,7 +115,8 @@ internal sealed class SpeedDebugWindow : Window
         root.Children.Add(_results);
         Content=root;
 
-        _start.Click+=async(_,_)=>await StartRunAsync();
+        _start.Click+=async(_,_)=>await StartRunAsync(compareAria2:false);
+        _compareAria2.Click+=async(_,_)=>await StartRunAsync(compareAria2:true);
         _cancel.Click+=(_,_)=>CancelRun();
         close.Click+=(_,_)=>Close();
         _results.SelectionChanged+=(_,_)=>
@@ -120,6 +125,7 @@ internal sealed class SpeedDebugWindow : Window
             detailScroll.Visibility=_details.Text.Length>0?Visibility.Visible:Visibility.Collapsed;
         };
         _timer.Tick+=(_,_)=>RefreshProgress();
+        Loaded+=async(_,_)=>await RefreshAria2AvailabilityAsync();
         PreviewKeyDown+=(_,e)=>
         {
             if(e.Key!=Key.Escape)return;
@@ -146,9 +152,9 @@ internal sealed class SpeedDebugWindow : Window
         _results.Columns.Add(column);
     }
 
-    private Task StartRunAsync()
+    private Task StartRunAsync(bool compareAria2)
     {
-        if(_closed || _runCancellation is not null)return Task.CompletedTask;
+        if(_closed || _runCancellation is not null || (compareAria2 && !_aria2Available))return Task.CompletedTask;
         string[] urls=_urls.Text.Split('\n',StringSplitOptions.TrimEntries|StringSplitOptions.RemoveEmptyEntries)
             .Distinct(StringComparer.Ordinal).ToArray();
         if(urls.Length<SpeedDebugBenchmark.SampleCount || urls.Any(url=>!AppPersistence.ValidUrl(url) || url.Any(char.IsControl)))
@@ -161,14 +167,14 @@ internal sealed class SpeedDebugWindow : Window
 
         Random.Shared.Shuffle(urls);
         _runCancellation=new CancellationTokenSource();
-        return _runTask=MeasureAsync(urls[..SpeedDebugBenchmark.SampleCount],_runCancellation);
+        return _runTask=MeasureAsync(urls[..SpeedDebugBenchmark.SampleCount],_runCancellation,compareAria2);
     }
 
-    private async Task MeasureAsync(IReadOnlyList<string> samples,CancellationTokenSource cancellation)
+    private async Task MeasureAsync(IReadOnlyList<string> samples,CancellationTokenSource cancellation,bool compareAria2)
     {
         _results.ItemsSource=null;
         _summary.Text="";
-        _urls.IsEnabled=_start.IsEnabled=false;
+        _urls.IsEnabled=_start.IsEnabled=_compareAria2.IsEnabled=false;
         _cancel.IsEnabled=true;
         _progress.Visibility=Visibility.Visible;
         _update=null;
@@ -183,9 +189,9 @@ internal sealed class SpeedDebugWindow : Window
         });
         try
         {
-            var result=await Task.Run(()=>SpeedDebugBenchmark.RunAsync(samples,_options,progress,cancellation.Token,_executable),cancellation.Token);
+            var result=await Task.Run(()=>SpeedDebugBenchmark.RunAsync(samples,_options,progress,cancellation.Token,_executable,compareAria2),cancellation.Token);
             cancellation.Token.ThrowIfCancellationRequested();
-            if(!_closed)ShowResults(result);
+            if(!_closed)ShowResults(result,compareAria2);
         }
         catch(OperationCanceledException) when(cancellation.IsCancellationRequested)
         {
@@ -206,6 +212,7 @@ internal sealed class SpeedDebugWindow : Window
             {
                 _step.Text="";
                 _urls.IsEnabled=_start.IsEnabled=true;
+                _compareAria2.IsEnabled=_aria2Available;
                 _cancel.IsEnabled=false;
                 _progress.Visibility=Visibility.Collapsed;
                 if(_closeWhenDone)_=Dispatcher.BeginInvoke(()=>{if(!_closed)Close();});
@@ -226,11 +233,17 @@ internal sealed class SpeedDebugWindow : Window
             : ErrorMessages.Text($"Подготовка · {time}",$"Preparing · {time}");
     }
 
-    private void ShowResults(IReadOnlyList<SpeedDebugResult> results)
+    private void ShowResults(IReadOnlyList<SpeedDebugResult> results,bool compareAria2)
     {
-        _results.ItemsSource=results.Select(ResultRow.From).ToArray();
+        IEnumerable<SpeedDebugResult> displayResults=compareAria2?results.OrderBy(result=>result.Kind):results;
+        _results.ItemsSource=displayResults.Select(ResultRow.From).ToArray();
         if(results.Count>0)_results.SelectedIndex=0;
-        var best=results.FirstOrDefault(result=>result.MeasuredUrls==SpeedDebugBenchmark.SampleCount &&
+        if(compareAria2)
+        {
+            ShowAria2Comparison(results);
+            return;
+        }
+        var best=results.FirstOrDefault(result=>result.Kind==SpeedDebugKind.Regular && result.MeasuredUrls==SpeedDebugBenchmark.SampleCount &&
             result.FailedUrls==0 && result.Bytes>0);
         _summary.Text=best is null
             ? ErrorMessages.Text("Для рекомендации нужны замеры по всем четырём ссылкам в одном варианте.",
@@ -240,6 +253,42 @@ internal sealed class SpeedDebugWindow : Window
                 $"Fastest profile: {best.Profile}, {best.Parallel} simultaneous downloads, {best.Fragments} fragments, {FormatSpeed(best.BytesPerSecond)}.");
         if(best?.Chunked==true)
             _summary.Text+=ErrorMessages.Text(" Параметр HTTP-блоков доступен в этом тесте."," The HTTP chunk size option is available in this benchmark.");
+    }
+
+    private async Task RefreshAria2AvailabilityAsync()
+    {
+        bool available=await Task.Run(()=>SpeedDebugBenchmark.Aria2Available);
+        if(_closed)return;
+        _aria2Available=available;
+        _compareAria2.IsEnabled=available && _runCancellation is null;
+        _aria2Availability.Text=available
+            ? ErrorMessages.Text("aria2c найден. Сравнение доступно для прямых HTTPS-потоков.",
+                "aria2c found. Comparison is available for direct HTTPS streams.")
+            : ErrorMessages.Text("Для сравнения на прямых HTTPS-потоках разместите aria2c.exe рядом с приложением или добавьте его в PATH.",
+                "To compare direct HTTPS downloads, put aria2c.exe next to the app or add it to PATH.");
+    }
+
+    private void ShowAria2Comparison(IReadOnlyList<SpeedDebugResult> results)
+    {
+        var native=results.FirstOrDefault(result=>result.Kind==SpeedDebugKind.HttpsNative);
+        var aria2=results.FirstOrDefault(result=>result.Kind==SpeedDebugKind.HttpsAria2);
+        if(native is {EligibleUrls: > 0,FailedUrls: 0,BytesPerSecond: > 0} &&
+            aria2 is {FailedUrls: 0,BytesPerSecond: > 0} &&
+            native.EligibleUrls==aria2.EligibleUrls && native.MeasuredUrls==native.EligibleUrls && aria2.MeasuredUrls==aria2.EligibleUrls)
+        {
+            double ratio=aria2.BytesPerSecond/native.BytesPerSecond;
+            _summary.Text=ErrorMessages.Text(
+                $"Прямой HTTPS · {native.EligibleUrls} видео · скорость aria2c составляет {ratio:P0} от скорости yt-dlp.",
+                $"Direct HTTPS · {native.EligibleUrls} videos · aria2c reached {ratio:P0} of yt-dlp’s speed.");
+        }
+        else
+        {
+            _summary.Text=native is {EligibleUrls: 0,FailedUrls: 0}
+                ? ErrorMessages.Text("Тест не получил подходящих прямых HTTPS-потоков для сравнения с aria2c.",
+                    "The benchmark found no eligible direct HTTPS streams for the aria2c comparison.")
+                : ErrorMessages.Text("Для сравнения с aria2c нужны результаты обоих загрузчиков по всем выбранным прямым HTTPS-потокам.",
+                    "The aria2c comparison requires results from both downloaders for every eligible direct HTTPS stream.");
+        }
     }
 
     private static string FormatSpeed(double bytesPerSecond)=>ErrorMessages.Text(
@@ -279,16 +328,17 @@ internal sealed class SpeedDebugWindow : Window
         base.OnClosed(e);
     }
 
-    private sealed record ResultRow(string Profile,int Parallel,int Fragments,string Speed,string Volume,string Elapsed,string Coverage,string Details)
+    private sealed record ResultRow(string Profile,int Parallel,string Fragments,string Speed,string Volume,string Elapsed,string Coverage,string Details)
     {
         internal static ResultRow From(SpeedDebugResult result)
         {
             string speed=result.Bytes>0?FormatSpeed(result.BytesPerSecond):"—";
             string seconds=ErrorMessages.Text($"{result.Duration.TotalSeconds:0.#} с",$"{result.Duration.TotalSeconds:0.#} s");
-            string coverage=$"{result.MeasuredUrls}/{SpeedDebugBenchmark.SampleCount}";
+            string fragments=result.Kind==SpeedDebugKind.Regular?result.Fragments.ToString():"—";
+            string coverage=result.EligibleUrls>0?$"{result.MeasuredUrls}/{result.EligibleUrls}":"—";
             string details=result.FailedUrls>0?ErrorMessages.Text($"Ошибок: {result.FailedUrls}. ",$"Failed: {result.FailedUrls}. "):"";
             if(result.Error is {} error)details+=DiagnosticPrivacy.Text(ErrorMessages.ForDisplay(error));
-            return new(result.Profile,result.Parallel,result.Fragments,speed,DisplayValueConverter.Bytes(result.Bytes),seconds,coverage,details);
+            return new(result.Profile,result.Parallel,fragments,speed,DisplayValueConverter.Bytes(result.Bytes),seconds,coverage,details);
         }
     }
 }

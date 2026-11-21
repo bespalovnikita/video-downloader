@@ -113,6 +113,7 @@ internal fun SettingsScreen(
     if (speedDebug || ui.speedDebug.running) SpeedDebugDialog(
         state = ui.speedDebug,
         ready = ui.runtimeReady && !ui.locked && !ui.running && ui.operation?.active != true,
+        aria2cAvailable = ui.aria2cAvailable,
         start = actions::startSpeedDebug,
         cancel = actions::cancelSpeedDebug,
         close = { speedDebug = false },
