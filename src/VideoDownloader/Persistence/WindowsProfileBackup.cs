@@ -194,6 +194,7 @@ internal sealed class WindowsProfileBackup
         foreach(var property in restored)Set(property.Key,property.Value?.DeepClone());
         // Local-only values are taken from this GUI, never from the archive.
         Set("Output",JsonValue.Create(settings.Output));Set("Cookies",JsonValue.Create(settings.Cookies));Set("WatchClipboard",JsonValue.Create(settings.WatchClipboard));
+        Set("UseHttpChunks",JsonValue.Create(settings.UseHttpChunks));Set("PreferAria2c",JsonValue.Create(settings.PreferAria2c));
         byte[] bytes=JsonSerializer.SerializeToUtf8Bytes(node,AppPersistence.Json);
         if(bytes.Length>AppPersistence.MaxCheckpointBytes)throw new InvalidDataException("Восстановленный checkpoint превышает 16 МиБ.");
         return bytes;

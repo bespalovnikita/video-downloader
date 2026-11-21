@@ -249,12 +249,20 @@ class DownloaderViewModel(application: Application) : AndroidViewModel(applicati
                 check(graph.dataOperation.tryLock()) { "Дождитесь завершения текущей операции." }
                 try {
                     idle()
+                    writable()
                     check(graph.runtimeReady.value) { "Движок ещё не готов." }
                     val settings = repository.state.value.settings
                     graph.engine.measureSpeed(sample, settings, compareAria2c, onProfile = { _, profile ->
                         mutable.update { state -> state.copy(speedDebug = state.speedDebug.copy(profile = profile)) }
                     }) { result ->
                         mutable.update { state -> state.copy(speedDebug = state.speedDebug.copy(results = state.speedDebug.results + result)) }
+                    }
+                    currentCoroutineContext().ensureActive()
+                    val winner = SpeedDebug.winner(mutable.value.speedDebug.results, settings, compareAria2c)
+                    if (winner != null) {
+                        mutable.update { state -> state.copy(speedDebug = state.speedDebug.copy(saving = true)) }
+                        repository.update { state -> state.copy(settings = SpeedDebug.applyWinner(state.settings, winner)) }
+                        mutable.update { state -> state.copy(speedDebug = state.speedDebug.copy(saved = winner)) }
                     }
                 } finally {
                     graph.dataOperation.unlock()
@@ -266,13 +274,13 @@ class DownloaderViewModel(application: Application) : AndroidViewModel(applicati
                 val reason = JournalSanitizer.redact(error.message ?: error.javaClass.simpleName)
                 mutable.update { it.copy(speedDebug = it.speedDebug.copy(error = reason)) }
             } finally {
-                mutable.update { it.copy(speedDebug = it.speedDebug.copy(running = false, cancelling = false, profile = null)) }
+                mutable.update { it.copy(speedDebug = it.speedDebug.copy(running = false, cancelling = false, saving = false, profile = null)) }
             }
         }
     }
 
     override fun cancelSpeedDebug() {
-        if (!mutable.value.speedDebug.running) return
+        if (!mutable.value.speedDebug.running || mutable.value.speedDebug.saving) return
         val job = speedDebugJob?.takeIf { it.isActive } ?: return
         mutable.update { it.copy(speedDebug = it.speedDebug.copy(cancelling = true)) }
         job.cancel()
@@ -622,7 +630,10 @@ class DownloaderViewModel(application: Application) : AndroidViewModel(applicati
                 }
                 // Service admission uses the same gate; a pending command also forbids replacement.
                 idle()
-                repository.replaceFromBackup(safe)
+                val local = repository.state.value.settings
+                repository.replaceFromBackup(safe.copy(settings = safe.settings.copy(
+                    httpChunked = local.httpChunked, preferAria2c = local.preferAria2c,
+                )))
                 mutable.update { it.copy(readOnly = false, subscriptionQueuePrompt = null, preview = null,
                     recoveryRequired = safe.queue.any { row -> row.status == DownloadStatus.INTERRUPTED }) }
             } finally {

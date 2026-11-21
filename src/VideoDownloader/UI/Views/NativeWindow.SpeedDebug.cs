@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Windows.Controls;
 
 namespace VideoDownloader.Native;
@@ -26,10 +27,35 @@ public sealed partial class NativeWindow
     private void OpenSpeedDebug()
     {
         if(_speedDebugWindow is not null || !CanOpenSpeedDebug())return;
-        var dialog=new SpeedDebugWindow(_window,ReadOptions(),_ytDlp);
+        var dialog=new SpeedDebugWindow(_window,ReadOptions(),_ytDlp,SaveSpeedDebugDefaults);
         _speedDebugWindow=dialog;
         try { dialog.ShowDialog(); }
         finally { _speedDebugWindow=null; }
+    }
+
+    private DownloadOptions? SaveSpeedDebugDefaults(SpeedDebugResult winner)
+    {
+        if(_speedDebugWindow is null || _checkpointReadOnly || !CanOpenSpeedDebug())return null;
+        var options=ReadOptions();
+        if(winner.Kind==SpeedDebugKind.Regular)
+        {
+            options.Threads=winner.Parallel.ToString(CultureInfo.InvariantCulture);
+            options.Fragments=winner.Fragments.ToString(CultureInfo.InvariantCulture);
+            options.UseHttpChunks=winner.Chunked;
+        }
+        else options.PreferAria2c=winner.Kind==SpeedDebugKind.HttpsAria2;
+
+        if(!SaveCheckpointCore(SessionState.Queue.ToArray(),options,force:true))
+        {
+            UpdateState();
+            return null;
+        }
+        B("ThreadsBox").Text=options.Threads;
+        C("FragmentsCombo").SelectedItem=options.Fragments;
+        K("HttpChunksCheck").IsChecked=options.UseHttpChunks;
+        K("PreferAria2cCheck").IsChecked=options.PreferAria2c;
+        SessionState.SetOptions(options);
+        return options;
     }
 
     private Task StopSpeedDebugAsync()=>_speedDebugWindow?.CancelAndWaitAsync()??Task.CompletedTask;

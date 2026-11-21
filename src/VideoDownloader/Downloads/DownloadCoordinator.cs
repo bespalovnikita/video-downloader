@@ -374,7 +374,17 @@ public sealed partial class DownloadCoordinator : IAsyncDisposable
         if(!retained)item.ResetCurrentVideo();
         DownloadResumeStore.Validated? validated=retained?DownloadResumeStore.Validate(item,requireMatchingSelection:false):null;
         var options=validated?.State.Plan.ToOptions()??_options;
+        var selection=_selections.GetValueOrDefault(item.Url);
         var arguments=new YtDlpArguments(options);
+        string? aria2=arguments.Aria2Executable(selection);
+        if(!retained && options.PreferAria2c && aria2 is null)
+        {
+            options=options.Snapshot();
+            options.PreferAria2c=false;
+            arguments=new YtDlpArguments(options);
+        }
+        bool mayHaveAriaPartials=retained && options.PreferAria2c;
+        bool reuseRetainedCounters=retained;
         string stage=retained?item.StageDir:Path.Combine(_stageRoot,Guid.NewGuid().ToString("N"));
         if(!retained)Directory.CreateDirectory(stage);
         if(!retained){item.RunDir=_stageRoot;item.StageDir=stage;}
@@ -390,7 +400,6 @@ public sealed partial class DownloadCoordinator : IAsyncDisposable
         var fragmentPlans=new Dictionary<int,DownloadProgressPlan>();
         var fragmentPercent=new Dictionary<int,double>();
         int launch=0;
-        var selection=_selections.GetValueOrDefault(item.Url);
         int selectedFragments=selection?.EffectiveSections.Count??0;
         int FragmentIndex(double? start,double? end)
         {
@@ -419,6 +428,18 @@ public sealed partial class DownloadCoordinator : IAsyncDisposable
                 for (int attempt=0;attempt<=3;attempt++)
                 {
                     ct.ThrowIfCancellationRequested();
+                    if(mayHaveAriaPartials)
+                    {
+                        // A killed range download can leave holes even before
+                        // aria2 has written a control file. Restart within the
+                        // validated stage before changing tools or retrying.
+                        OwnedFiles.DeleteStage(stage,item.RunDir);
+                        Directory.CreateDirectory(stage);
+                        reuseRetainedCounters=false;
+                        streamed.Clear();
+                        if(item.ResumeState is {} resume)
+                            item.ResumeState=resume with{ComponentBytes=new Dictionary<string,long>()};
+                    }
                     DownloadResumeStore.UpdateQuality(item,q);
                     launch++;
                     double previousShown=item.Progress;
@@ -486,7 +507,7 @@ public sealed partial class DownloadCoordinator : IAsyncDisposable
                                     int fragment=FragmentIndex(progress.SectionStart,progress.SectionEnd);
                                     string component=selectedFragments>1?fragment.ToString(CultureInfo.InvariantCulture)+":"+progress.Component:progress.Component;
                                     string counterKey=DownloadResumeStore.ComponentIdentity(component);
-                                    if(!streamed.TryGetValue(component,out long previous) && retained)
+                                    if(!streamed.TryGetValue(component,out long previous) && reuseRetainedCounters)
                                         previous=validated!.State.ComponentBytes.GetValueOrDefault(counterKey);
                                     long bytes=Math.Max(0,progress.DownloadedBytes);
                                     // A retry can reset a component counter. Keep
@@ -539,7 +560,29 @@ public sealed partial class DownloadCoordinator : IAsyncDisposable
                                 break;
                         }
                     }
-                    int exitCode=await RunProcessAsync(item,q,attempt+1,arguments.Build(item.Url,stage,q,selection),Line,ct).ConfigureAwait(false);
+                    int exitCode;
+                    string? ariaTemp=aria2 is null?null:Path.Combine(stage,Guid.NewGuid().ToString("N"));
+                    try
+                    {
+                        string? cookies=null;
+                        if(ariaTemp is not null)
+                        {
+                            Directory.CreateDirectory(ariaTemp);
+                            if(File.Exists(options.Cookies))
+                            {
+                                cookies=Path.Combine(ariaTemp,"cookies.txt");
+                                File.Copy(options.Cookies,cookies);
+                                File.SetAttributes(cookies,FileAttributes.Normal);
+                            }
+                        }
+                        exitCode=await RunProcessAsync(item,q,attempt+1,
+                            arguments.Build(item.Url,stage,q,selection,aria2,cookies),Line,ct,ariaTemp).ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        if(ariaTemp is not null)OwnedFiles.DeleteStage(ariaTemp,stage);
+                    }
+                    mayHaveAriaPartials=aria2 is not null;
                     ct.ThrowIfCancellationRequested();
                     if (exitCode==0)
                     {
@@ -625,6 +668,13 @@ public sealed partial class DownloadCoordinator : IAsyncDisposable
                         Trace(item,JournalLevel.Error,"processing_failed",$"attempt={attempt+1} error={DownloadProgressTrace.Quoted(err)}");
                         return new DownloadResult(false,false,"",[],err,transferred);
                     }
+                    if(aria2 is not null && reportedMedia.IsEmpty && err.Contains("aria2c exited with code",StringComparison.OrdinalIgnoreCase))
+                    {
+                        Trace(item,JournalLevel.Warning,"aria2_fallback",$"attempt={attempt+1} error={DownloadProgressTrace.Quoted(err)}");
+                        aria2=null;
+                        attempt--;
+                        continue;
+                    }
                     if (YtDlpOutputParser.FormatUnavailable(err) && q != qualities[^1])
                     {
                         Trace(item,JournalLevel.Warning,"quality_fallback",$"attempt={attempt+1} quality={DownloadProgressTrace.Quoted(q)} error={DownloadProgressTrace.Quoted(err)}");
@@ -693,7 +743,8 @@ public sealed partial class DownloadCoordinator : IAsyncDisposable
         finally{_pause.Unregister(item.Url);}
     }
 
-    private async Task<int> RunProcessAsync(DownloadItem item,string quality,int attempt,IEnumerable<string> args,Action<string,string> onLine,CancellationToken token)
+    private async Task<int> RunProcessAsync(DownloadItem item,string quality,int attempt,IEnumerable<string> args,Action<string,string> onLine,
+        CancellationToken token,string? tempDirectory=null)
     {
         var psi=new ProcessStartInfo(_ytDlp)
         {
@@ -702,6 +753,12 @@ public sealed partial class DownloadCoordinator : IAsyncDisposable
             WorkingDirectory=AppContext.BaseDirectory
         };
         foreach(string arg in args) psi.ArgumentList.Add(arg);
+        if(tempDirectory is not null)
+        {
+            psi.Environment["TMP"]=tempDirectory;
+            psi.Environment["TEMP"]=tempDirectory;
+            psi.Environment["TMPDIR"]=tempDirectory;
+        }
         await _pause.WaitForResumeAsync(token).ConfigureAwait(false);
         token.ThrowIfCancellationRequested();
         using var child=ManagedChildProcess.Start(psi);
@@ -710,8 +767,16 @@ public sealed partial class DownloadCoordinator : IAsyncDisposable
         Trace(item,JournalLevel.Information,"process_start",$"attempt={attempt} quality={DownloadProgressTrace.Quoted(quality)} pid={process.Id}");
         using var reg=token.Register(()=>
         {
-            try { if (!process.HasExited) { _pause.ResumeForCancellation(process); process.Kill(true); } }
+            try
+            {
+                if (!process.HasExited)
+                {
+                    _pause.ResumeForCancellation(process);
+                    if(tempDirectory is null)process.Kill(true);
+                }
+            }
             catch (InvalidOperationException) { } catch(System.ComponentModel.Win32Exception) { }
+            if(tempDirectory is not null)child.Terminate();
         });
         async Task Pump(StreamReader stream,string source)
         {

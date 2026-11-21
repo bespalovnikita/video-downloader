@@ -130,10 +130,12 @@ class AndroidYtDlp internal constructor(context: Context, private val runtimeUpd
         validateStage(stage)
         stage.mkdirs()
         val levels = YtDlpArguments.qualityLevels(settings)
+        var aria2c = if (settings.preferAria2c) processes.aria2cExecutable() else null
         var invocation = 0
         var last = EngineProgress(title = task.title, transferredBytes = transferCounters.totalBytes)
         for ((qualityIndex, quality) in levels.withIndex()) {
-            for (attempt in 1..4) {
+            var attempt = 1
+            while (attempt <= 4) {
                 currentCoroutineContext().ensureActive()
                 invocation++
                 val previousShown = last.percent
@@ -152,8 +154,9 @@ class AndroidYtDlp internal constructor(context: Context, private val runtimeUpd
                 report(onProgress, last)
                 trace("attempt_start", "previous_shown_pct=$previousShown transferred=${last.transferredBytes}")
                 try {
-                    execute(requestId, request(task.url, YtDlpArguments.download(settings, stage, quality), cookie(settings.cookiesFile)),
-                        6 * 60 * 60_000L, outputLimit = 4 * 1024 * 1024) { text ->
+                    Aria2Stage.prepare(stage, aria2c != null)
+                    val arguments = YtDlpArguments.download(settings, stage, quality, aria2c, processes.aria2cCertificate)
+                    executeDownload(requestId, task.url, arguments, cookie(settings.cookiesFile), aria2c != null) { text ->
                         for (line in text.lineSequence()) synchronized(eventsGate) {
                             val marker = ProgressMarkers.parse(line)
                             val wasProcessing = retryBoundary.processingStarted
@@ -212,6 +215,7 @@ class AndroidYtDlp internal constructor(context: Context, private val runtimeUpd
                     // From here even a verify/manifest failure is final processing failure.
                     // Restarting the entire native request cannot repair it.
                     retryBoundary.nativeFinished()
+                    if (aria2c != null) Aria2Stage.complete(stage)
                     currentCoroutineContext().ensureActive()
                     last = last.copy(stage = EngineStage.VERIFYING, detail = "Проверка файла", speed = "", eta = "")
                     report(onProgress, last)
@@ -227,7 +231,8 @@ class AndroidYtDlp internal constructor(context: Context, private val runtimeUpd
                     }
                     val files = stage.walkTopDown().onEnter { folder -> validateOwned(stage, folder, allowRoot = true); true }
                         .filter(File::isFile).onEach { validateOwned(stage, it) }
-                        .filterNot { it.name.endsWith(".part") || it.name.contains(".part-Frag") || it.name.endsWith(".ytdl") || it.name.endsWith(".temp") }
+                        .filterNot { it.name.endsWith(".part") || it.name.endsWith(".part.aria2") || it.name.contains(".part-Frag") ||
+                            it.name.endsWith(".ytdl") || it.name.endsWith(".temp") }
                         .toList()
                     val manifest = files.map(File::getCanonicalFile).toSet()
                     require(mediaFiles.all { it.canonicalFile in manifest }) { "Downloaded media was outside the staging manifest" }
@@ -240,6 +245,14 @@ class AndroidYtDlp internal constructor(context: Context, private val runtimeUpd
                 } catch (cancel: CancellationException) { throw cancel }
                 catch (error: Exception) {
                     val diagnostic = error.message.orEmpty()
+                    if (aria2c != null && !retryBoundary.processingStarted &&
+                        diagnostic.contains("aria2c exited with code ", ignoreCase = true)) {
+                        aria2c = null
+                        trace("aria2c_fallback", diagnostic, EngineTraceLevel.WARNING)
+                        last = last.copy(stage = EngineStage.RETRYING, detail = "Пробуем встроенный загрузчик", speed = "", eta = "")
+                        report(onProgress, last)
+                        continue
+                    }
                     when (retryBoundary.decide(diagnostic, attempt, qualityIndex < levels.lastIndex)) {
                         DownloadRetryDecision.LOWER_QUALITY -> {
                             trace("quality_fallback", diagnostic, EngineTraceLevel.WARNING)
@@ -254,6 +267,7 @@ class AndroidYtDlp internal constructor(context: Context, private val runtimeUpd
                                 detail = "Повтор ${attempt + 1}/4 через ${delayMillis / 1000} с", speed = "", eta = "")
                             report(onProgress, last)
                             delay(delayMillis)
+                            attempt++
                         }
                         DownloadRetryDecision.FAIL -> {
                             val processing = retryBoundary.processingStarted || diagnostic.lineSequence().any(ProgressMarkers::isPostprocessing)
@@ -268,6 +282,25 @@ class AndroidYtDlp internal constructor(context: Context, private val runtimeUpd
     }
 
     internal fun hasAria2c(): Boolean = processes.aria2cExecutable() != null
+
+    private suspend fun executeDownload(
+        requestId: String, url: String, arguments: List<String>, cookies: File?, useAria2c: Boolean,
+        line: (String) -> Unit,
+    ) {
+        // The external downloader writes its cookie jar before the transfer.
+        // Give each invocation a private copy even if no user jar is connected.
+        val temporary = if (useAria2c) File.createTempFile("aria2-cookies-", ".txt", app.cacheDir) else null
+        try {
+            temporary?.let { target ->
+                if (cookies?.isFile == true) cookies.copyTo(target, overwrite = true)
+                else target.writeText("# Netscape HTTP Cookie File\n")
+            }
+            execute(requestId, request(url, arguments, temporary ?: cookies), 6 * 60 * 60_000L,
+                outputLimit = 4 * 1024 * 1024, line = line)
+        } finally {
+            temporary?.delete()
+        }
+    }
 
     internal suspend fun measureSpeed(
         urls: List<String>,
@@ -292,7 +325,7 @@ class AndroidYtDlp internal constructor(context: Context, private val runtimeUpd
             check(version.out.lineSequence().any { it.startsWith("aria2 version ") }) { "Версия aria2c не подтверждена." }
             executable
         } else null
-        val profiles = if (compareAria2c) SpeedDebug.comparisonProfiles() else SpeedDebug.profiles(settings)
+        val profiles = if (compareAria2c) SpeedDebug.comparisonProfiles(settings) else SpeedDebug.profiles(settings)
         val matchedFormats = ConcurrentHashMap<String, String>()
         val root = Files.createTempDirectory(app.cacheDir.toPath(), "speed-debug-").toFile()
         try {
@@ -308,7 +341,8 @@ class AndroidYtDlp internal constructor(context: Context, private val runtimeUpd
                     matchedFormats[url] ?: throw EngineException("У встроенного загрузчика нет подходящего формата HTTPS для этой ссылки.")
                 } else null
                 val arguments = if (compareAria2c) {
-                    YtDlpArguments.speedDebugComparison(stage, expected, aria2c.takeIf { useAria2c }, processes.aria2cCertificate)
+                    YtDlpArguments.speedDebugComparison(stage, expected, aria2c.takeIf { useAria2c }, processes.aria2cCertificate,
+                        profile.httpChunkSize)
                 } else YtDlpArguments.speedDebug(settings, profile, stage)
                 var actual: String? = null
                 var aria2cConfirmed = false

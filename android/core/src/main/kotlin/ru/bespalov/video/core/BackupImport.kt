@@ -11,7 +11,7 @@ object BackupImport {
     fun sanitize(imported: AppState): AppState {
         JsonStateRepository.validate(imported)
         val sanitized = imported.copy(
-            settings = imported.settings.copy(cookiesFile = "", outputTreeUri = ""),
+            settings = imported.settings.copy(cookiesFile = "", outputTreeUri = "", httpChunked = false, preferAria2c = false),
             queue = imported.queue.map { task -> task.copy(
                 // No other model references queue IDs. A fresh local identity
                 // also invalidates stale commands and UUID-case path aliases.

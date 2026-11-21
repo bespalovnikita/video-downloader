@@ -14,6 +14,7 @@ import androidx.compose.ui.unit.dp
 import ru.bespalov.video.core.Profiles
 import ru.bespalov.video.core.AudioTracks
 import ru.bespalov.video.core.JournalProfile
+import ru.bespalov.video.core.Settings
 import java.io.File
 
 @Composable
@@ -26,7 +27,13 @@ internal fun SettingsScreen(
     importBackup: () -> Unit,
     cookiesHelp: () -> Unit,
 ) {
-    var draft by remember(ui.snapshot.settings) { mutableStateOf(ui.snapshot.settings) }
+    var saved by remember { mutableStateOf(ui.snapshot.settings) }
+    var draft by remember { mutableStateOf(saved) }
+    LaunchedEffect(ui.snapshot.settings) {
+        val latest = ui.snapshot.settings
+        draft = if (saved.withSpeedFrom(latest) == latest) draft.withSpeedFrom(latest) else latest
+        saved = latest
+    }
     var restore by remember { mutableStateOf(false) }
     var templateHelp by remember { mutableStateOf(false) }
     var speedDebug by rememberSaveable { mutableStateOf(false) }
@@ -50,6 +57,11 @@ internal fun SettingsScreen(
         Text("«Оригинальная» требует отметки источника. Несколько языков сохраняются в MKV. Недоступная дорожка даст ошибку.", style = MaterialTheme.typography.bodySmall)
         ChoiceField("Фрагментов на видео", draft.fragments.toString(), (1..8).associate { it.toString() to it.toString() }, !ui.locked) { draft = draft.copy(fragments = it.toInt()) }
         ChoiceField("Ограничение скорости", draft.rateLimit, linkedMapOf("Unlimited" to "Без ограничения", "1M" to "1 МБ/с", "5M" to "5 МБ/с", "10M" to "10 МБ/с", "25M" to "25 МБ/с"), !ui.locked) { draft = draft.copy(rateLimit = it) }
+        SettingToggle("HTTP-блоки по 4 МиБ", draft.httpChunked, !ui.locked) { draft = draft.copy(httpChunked = it) }
+        SettingToggle("aria2c для прямых HTTP(S)-потоков", draft.preferAria2c,
+            !ui.locked && (ui.aria2cAvailable || draft.preferAria2c)) { draft = draft.copy(preferAria2c = it) }
+        if (draft.preferAria2c && !ui.aria2cAvailable) Text("aria2c отсутствует в этой сборке. Используется встроенный загрузчик.",
+            style = MaterialTheme.typography.bodySmall)
         OutlinedButton(onClick = { speedDebug = true }, enabled = ui.runtimeReady, modifier = Modifier.testTag("speedDebug")) {
             Text("Speed debug mode")
         }
@@ -119,6 +131,11 @@ internal fun SettingsScreen(
         close = { speedDebug = false },
     )
 }
+
+private fun Settings.withSpeedFrom(other: Settings): Settings = copy(
+    threads = other.threads, fragments = other.fragments,
+    httpChunked = other.httpChunked, preferAria2c = other.preferAria2c,
+)
 
 @Composable
 internal fun FilenameTemplateHelpDialog(close: () -> Unit) {

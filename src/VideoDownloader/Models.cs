@@ -167,6 +167,10 @@ public sealed class DownloadOptions : IJsonOnDeserialized
     public string RateLimit { get; set; } = "Unlimited";
     public string Threads { get; set; } = "4";
     public string Fragments { get; set; } = "Auto";
+    [JsonIgnore(Condition=JsonIgnoreCondition.WhenWritingDefault)]
+    public bool UseHttpChunks { get; set; }
+    [JsonIgnore(Condition=JsonIgnoreCondition.WhenWritingDefault)]
+    public bool PreferAria2c { get; set; }
     public string FilenameTemplate { get; set; } = "%(title)s [%(id)s].%(ext)s";
     public string Output { get; set; } = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads", "downloaded-video");
     public string Cookies { get; set; } = "";

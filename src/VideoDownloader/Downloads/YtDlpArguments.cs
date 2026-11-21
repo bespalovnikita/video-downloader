@@ -14,7 +14,17 @@ internal sealed class YtDlpArguments(DownloadOptions options)
         _=>["best"]
     };
 
-    internal IEnumerable<string> Build(string url,string stage,string quality,DownloadSelection? selection=null)
+    internal const string Aria2DownloadOptions = "-x4 -s4 --min-split-size=1M";
+
+    internal string? Aria2Executable(DownloadSelection? selection)
+    {
+        if(!options.PreferAria2c || selection?.IsPartial==true)return null;
+        string path=DependencyCenter.Executable("aria2c.exe");
+        return File.Exists(path)?Path.GetFullPath(path):null;
+    }
+
+    internal IEnumerable<string> Build(string url,string stage,string quality,DownloadSelection? selection=null,string? aria2=null,
+        string? cookies=null)
     {
         selection?.Validate(url,options);
         string? format=selection?.FormatSelector??AudioTrackSelection.FormatSelector(options,quality);
@@ -37,8 +47,12 @@ internal sealed class YtDlpArguments(DownloadOptions options)
         // GUI URL validation still restricts user-entered links to HTTP/HTTPS.
         if (Uri.TryCreate(url,UriKind.Absolute,out var source) && source.Scheme=="file")
             args.Add("--enable-file-urls");
-        if (File.Exists(options.Cookies)) args.AddRange(["--cookies",options.Cookies]);
+        cookies??=options.Cookies;
+        if (File.Exists(cookies)) args.AddRange(["--cookies",cookies]);
         if (options.RateLimit.Length>0 && options.RateLimit!="Unlimited") args.AddRange(["--limit-rate",options.RateLimit]);
+        if (options.UseHttpChunks) args.AddRange(["--http-chunk-size","4M"]);
+        if (aria2 is not null && selection?.IsPartial!=true)
+            args.AddRange(["--downloader","http:"+aria2,"--downloader-args","aria2c:"+Aria2DownloadOptions+" --show-console-readout=false"]);
         if (options.Sponsor) args.AddRange(["--sponsorblock-remove","sponsor"]);
         if(selection?.IsPartial==true)
         {

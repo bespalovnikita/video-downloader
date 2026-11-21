@@ -137,7 +137,8 @@ internal sealed class PortableProfileSettings
             WriteSubs=WriteSubs,AutoSubs=AutoSubs,EmbedSubs=EmbedSubs,EmbedThumbnail=EmbedThumbnail,
             EmbedMetadata=EmbedMetadata,EmbedChapters=EmbedChapters,Archive=Archive,Sponsor=Sponsor,
             AudioOnly=AudioOnly,ShowVideoTitles=ShowVideoTitles,QueuePanelWidth=QueuePanelWidth,
-            PreviewPanelWidth=PreviewPanelWidth,Output=local.Output,Cookies=local.Cookies,WatchClipboard=local.WatchClipboard
+            PreviewPanelWidth=PreviewPanelWidth,Output=local.Output,Cookies=local.Cookies,WatchClipboard=local.WatchClipboard,
+            UseHttpChunks=local.UseHttpChunks,PreferAria2c=local.PreferAria2c
         };
     }
     internal void Validate()

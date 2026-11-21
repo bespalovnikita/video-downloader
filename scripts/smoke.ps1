@@ -7,6 +7,7 @@ $xamlFiles = @{
         'MediaSelectionButton','MediaSelectionSummary','CheckAppUpdateButton','InstallAppUpdateButton','AppUpdateStatusText','CurrentAppVersionText',
         'QueueSearchBox','QueueStatusFilter','QueueSubscriptionFilter','ResetQueueFiltersButton','QueueEmptyFilterHint','QueueFilterScopeHint','OpenHistoryButton',
         'DiskSpaceSummaryText','DiskSpaceWarningText','MainSubscriptionScheduleStatusText',
+        'HttpChunksCheck','PreferAria2cCheck',
         'CompactNavigation','DetailsTabs','ReadinessCard','ForgetQueueButton','ClearAllQueueButton','InputFeedbackText','JournalExpander',
         'ReadinessText','ReadinessInstallButton','ReadinessRefreshButton','DependencyProgress','DependencyProgressText','CancelDependencyButton')
     'DuplicateDownloadDialog.xaml' = @('YesButton','NoButton','YesAllButton','NoAllButton','CancelButton','DuplicateUrl')
