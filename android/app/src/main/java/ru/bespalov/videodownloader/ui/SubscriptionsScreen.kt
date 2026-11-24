@@ -7,6 +7,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -208,11 +209,13 @@ private fun AddSubscriptionDialog(
             if (error.isNotBlank()) Text(error, color = MaterialTheme.colorScheme.error)
             if (profiles.isNotEmpty()) {
                 Text(if (profiles.size == 1) "Профиль модели Pornhub" else "Выберите профиль модели Pornhub")
-                profiles.forEach { candidate ->
-                    Row(Modifier.fillMaxWidth().selectable(selected = profile == candidate, role = Role.RadioButton,
-                        onClick = { profile = candidate }).padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        RadioButton(selected = profile == candidate, onClick = null)
-                        Text(candidate, modifier = Modifier.padding(start = 8.dp))
+                Column(Modifier.selectableGroup()) {
+                    profiles.forEach { candidate ->
+                        Row(Modifier.fillMaxWidth().selectable(selected = profile == candidate, role = Role.RadioButton,
+                            onClick = { profile = candidate }).padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            RadioButton(selected = profile == candidate, onClick = null)
+                            Text(candidate, modifier = Modifier.padding(start = 8.dp))
+                        }
                     }
                 }
             }

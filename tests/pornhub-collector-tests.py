@@ -75,9 +75,9 @@ class ProfileExtractorTests(unittest.TestCase):
     def test_credits_precede_uploader_and_ignore_unrelated_links(self):
         html = video_page(body="""
             <script>var MODEL_PROFILE = {"modelProfileLink":"/model/uploader"};</script>
-            <div class="recommendedVideos"><a class="pstar-list-btn" href="/model/unrelated">Unrelated</a></div>
+            <div class="recommendedVideos"><a data-label="pornstar" href="/model/unrelated">Unrelated</a></div>
+            <a data-label="pornstar" href="/pornstar/credited">Credited</a>
             <div class="pornstarsWrapper">
-              <a href="/pornstar/credited">Credited</a>
               <a href="//rt.pornhub.com/pornstar/credited/videos/upload">Same profile</a>
               <a href="/model/another">Another</a>
               <a href="https://www.pornhub.com.example/model/foreign">Foreign</a>

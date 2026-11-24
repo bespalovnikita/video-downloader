@@ -56,7 +56,8 @@ class _Credits(HTMLParser):
         role = self.stack[-1][1] if self.stack else None
         if role == 'excluded' or tag in {'nav', 'aside', 'footer'} or any(self._UNRELATED.search(m) for m in markers):
             role = 'excluded'
-        elif markers & self._PERFORMERS or attrs.get('itemprop') == 'actor':
+        elif (markers & self._PERFORMERS or attrs.get('itemprop') == 'actor'
+              or attrs.get('data-label') == 'pornstar'):
             role = 'performer'
         elif markers & self._UPLOADER:
             role = 'uploader'
