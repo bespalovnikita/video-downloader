@@ -35,6 +35,34 @@ internal sealed partial class UiScenario
                 combo.SelectedItem is ComboBoxItem {Tag:SubscriptionInitialActions.Skip} && combo.IsEnabled,
                 "The real dropdown has exactly the three requested actions and defaults to skipped.");
 
+            string model="https://www.pornhub.com/pornstar/lookup-fixture";
+            driver.TestControl<Expander>("AddSubscriptionExpander").IsExpanded=true;
+            var sourceBox=driver.TestControl<TextBox>("SubscriptionUrlBox");
+            var addButton=driver.TestControl<Button>("AddSubscriptionButton");
+            var profileBox=driver.TestControl<ComboBox>("PornHubProfilesCombo");
+            void WriteFixture(string mode,object response)=>File.WriteAllText(config,
+                JsonSerializer.Serialize(new {Mode=mode,Response=JsonSerializer.Serialize(response)}),Encoding.UTF8);
+            WriteFixture("profiles",new {id="abcdef1234567",vd_ph_profiles=new[]{model,"https://www.pornhub.com/model/other-fixture"}});
+            sourceBox.Text="Скачанное видео [abcdef1234567].mp4";
+            int sourceCount=ui.Store.Read().Subscriptions.Count;
+            RequeueUi.Require((string)addButton.Content=="Найти модель","A downloaded filename must offer a model lookup.");
+            addButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            RequeueUi.Until(()=>!driver.TestIsMutating && profileBox.Items.Count==2,"Lookup must display verified profiles.");
+            RequeueUi.Require(ui.Store.Read().Subscriptions.Count==sourceCount && !addButton.IsEnabled,
+                "Multiple results require selection and confirmation before persisting a source.");
+            profileBox.SelectedItem=model;
+            WriteFixture("complete",new {
+                title="Fixture profiles",entries=Array.Empty<object>(),
+                vd_ph_scan=new {version=1,complete=true,verified_first_page=true,source_url=model,
+                    listing_url=model+"/videos/upload",item_count=0,pages=new[]{new {number=1,count=0,has_next=false}}}
+            });
+            addButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            RequeueUi.Until(()=>!driver.TestIsMutating && ui.Store.Read().Subscriptions.Any(item=>item.Url==model && item.Initialized),
+                "Confirmation must store the selected profile and run its first collection check.");
+            RequeueUi.Require(ui.Store.Read().Subscriptions.Count==sourceCount+1 && ui.Subject.SessionState.Queue.Count==0,
+                "Profile confirmation must not add any other source or change the queue.");
+            ui.RequireIdle(history);
+
             void Response(string mode,params string[] urls)=>File.WriteAllText(config,JsonSerializer.Serialize(new
             {
                 Mode=mode,Response=JsonSerializer.Serialize(new

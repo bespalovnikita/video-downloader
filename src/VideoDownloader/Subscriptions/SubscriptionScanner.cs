@@ -194,12 +194,54 @@ public sealed class SubscriptionScanner : IDisposable
             start.ArgumentList.Add(recent ? "--flat-playlist" : "--no-flat-playlist");start.ArgumentList.Add("--playlist-end");
             start.ArgumentList.Add((recent ? RecentWindowSize : _limits.MaxItems+1).ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
+        AddCookieAndUrlArguments(start, cookiePath, url);
+        return await RunMetadataAsync(start, _limits.MaxMetadataBytes, "Полный обход yt-dlp не завершён",
+            token, progress, recent).ConfigureAwait(false);
+    }
+
+    internal async Task<string[]> FindPornHubProfilesAsync(string watchUrl, string cookiePath, CancellationToken token)
+    {
+        if (PornHubVideo.WatchUrl(watchUrl) != watchUrl)
+            throw new ArgumentException("Укажите ссылку на ролик Pornhub.", nameof(watchUrl));
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
+        deadline.CancelAfter(TimeSpan.FromSeconds(30));
+        var start = new ProcessStartInfo(_ytDlpPath) {
+            UseShellExecute = false, CreateNoWindow = true,
+            RedirectStandardOutput = true, RedirectStandardError = true
+        };
+        foreach (string argument in new[] {
+            "--ignore-config", "--dump-single-json", "--skip-download", "--abort-on-error", "--no-color",
+            "--no-progress", "--encoding", "utf-8", "--socket-timeout", "15", "--impersonate", "chrome",
+            "--no-plugin-dirs", "--plugin-dirs", PornHubChannel.PluginDirectory, "--use-extractors", PornHubVideo.ProfileExtractor
+        }) start.ArgumentList.Add(argument);
+        AddCookieAndUrlArguments(start, cookiePath, watchUrl);
+        try
+        {
+            string json = await RunMetadataAsync(start, 128 * 1024, "Не удалось получить профили Pornhub",
+                deadline.Token).ConfigureAwait(false);
+            token.ThrowIfCancellationRequested();
+            return PornHubVideo.ParseProfiles(json, watchUrl);
+        }
+        catch (OperationCanceledException) when (!token.IsCancellationRequested)
+        {
+            throw new TimeoutException("Pornhub не ответил за 30 секунд.");
+        }
+    }
+
+    private static void AddCookieAndUrlArguments(ProcessStartInfo start, string cookiePath, string url)
+    {
         if (!string.IsNullOrWhiteSpace(cookiePath))
         {
             if (!File.Exists(cookiePath)) throw new FileNotFoundException("Файл cookies не найден.", cookiePath);
             start.ArgumentList.Add("--cookies"); start.ArgumentList.Add(cookiePath);
         }
         start.ArgumentList.Add("--"); start.ArgumentList.Add(url);
+    }
+
+    private static async Task<string> RunMetadataAsync(ProcessStartInfo start, int maxBytes, string failure,
+        CancellationToken token, IProgress<SubscriptionScanProgress>? progress = null, bool recent = false)
+    {
+        token.ThrowIfCancellationRequested();
         using var child=ManagedChildProcess.Start(start);
         var process=child.Process;
         using var stop = CancellationTokenSource.CreateLinkedTokenSource(token);
@@ -220,7 +262,7 @@ public sealed class SubscriptionScanner : IDisposable
             try { return await ReadBoundedAsync(stream, maximum, stop.Token, progress is null ? null : Received).ConfigureAwait(false); }
             catch { stop.Cancel(); throw; }
         }
-        var stdout = ReadOutput(child.StandardOutput.BaseStream, _limits.MaxMetadataBytes);
+        var stdout = ReadOutput(child.StandardOutput.BaseStream, maxBytes);
         async Task<(string Text, bool Incomplete)> ReadErrors()
         {
             try { return await ReadDiagnosticsAsync(child.StandardError.BaseStream, stop.Token).ConfigureAwait(false); }
@@ -233,7 +275,7 @@ public sealed class SubscriptionScanner : IDisposable
             token.ThrowIfCancellationRequested();
             string diagnostic = stderr.Result.Text;
             if (process.ExitCode != 0 || stderr.Result.Incomplete)
-                throw new IOException("Полный обход yt-dlp не завершён: " +
+                throw new IOException(failure + ": " +
                     (diagnostic.Trim() is { Length: > 0 } text ? text[..Math.Min(text.Length, 4096)] : $"код {process.ExitCode}"));
             return StrictUtf8.GetString(stdout.Result);
         }

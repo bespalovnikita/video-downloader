@@ -113,6 +113,7 @@ interface MobileActions {
     fun showPreview(url: String, knownTitle: String = "")
     fun showSubscriptionPreview(key: EntryKey) { showPreview(key.url) }
     fun closePreview()
+    suspend fun findPornHubProfiles(watchUrl: String): List<String>
     fun addSubscription(url: String, feedUrl: String, shortName: String, downloadExisting: Boolean)
     fun checkSubscriptions(ids: List<String>)
     fun checkSubscriptionsFully(ids: List<String>) { checkSubscriptions(ids) }

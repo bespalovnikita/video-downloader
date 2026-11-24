@@ -393,6 +393,13 @@ class DownloaderViewModel(application: Application) : AndroidViewModel(applicati
     }
     override fun closePreview() { mutable.update { it.copy(preview = null) } }
 
+    override suspend fun findPornHubProfiles(watchUrl: String): List<String> {
+        graph.ready.await()
+        check(graph.runtimeReady.value) { "Движок ещё не готов." }
+        val cookies = repository.state.value.settings.cookiesFile.takeIf(String::isNotBlank)?.let(::File)
+        return graph.engine.findPornHubProfiles(watchUrl, cookies)
+    }
+
     override fun addSubscription(url: String, feedUrl: String, shortName: String, downloadExisting: Boolean) = work {
         writable()
         require(Urls.isHttp(url) && (feedUrl.isBlank() || Urls.isHttp(feedUrl))) { "Укажите HTTP(S) URL коллекции и, при необходимости, RSS/Atom." }

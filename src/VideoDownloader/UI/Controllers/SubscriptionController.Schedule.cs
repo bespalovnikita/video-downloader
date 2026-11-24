@@ -209,8 +209,8 @@ internal sealed partial class SubscriptionController
     }
     internal async Task StopChecksAsync()
     {
-        StopScheduleTimer();_cancellation?.Cancel();
-        var tasks=new[]{_manualCheckTask,_scheduledCheckTask,_scheduleReadTask,_schedulePollTask}.OfType<Task>()
+        StopScheduleTimer();_cancellation?.Cancel();_profileLookup?.Cancel();
+        var tasks=new[]{_manualCheckTask,_scheduledCheckTask,_scheduleReadTask,_schedulePollTask,_profileLookupTask}.OfType<Task>()
             .Concat(_subscriptionReloads).ToArray();
         if(tasks.Length>0)await Task.WhenAll(tasks);
     }
