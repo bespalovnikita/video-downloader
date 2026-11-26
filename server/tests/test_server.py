@@ -246,7 +246,7 @@ class ServerIntegrationTests(unittest.TestCase):
     def test_browser_queue_is_shared_persistent_and_explicit(self):
         process, pc = self.start_service()
         second_browser = Browser(pc.port)
-        for path in ("/", "/api/jobs", "/api/jobs/1/file"):
+        for path in ("/", "/status", "/api/jobs", "/api/jobs/1/file"):
             with self.subTest(path=path):
                 response = pc.request("GET", path, authenticated=False)
                 self.assertEqual(response.status, 401)
@@ -255,7 +255,16 @@ class ServerIntegrationTests(unittest.TestCase):
         home = pc.request("GET", "/")
         self.assertEqual(home.status, 200)
         self.assertIn("text/html", home.headers["content-type"])
-        self.assertEqual(self.queue(pc), {"jobs": [], "running": False})
+        status = pc.request("GET", "/status")
+        self.assertEqual(status.status, 200)
+        self.assertEqual(status.headers["cache-control"], "no-store")
+        self.assertEqual(status.body, home.body)
+        self.assertIn(b'id="server-storage"', status.body)
+        empty = self.queue(pc)
+        self.assertEqual(empty["jobs"], [])
+        self.assertFalse(empty["running"])
+        self.assertGreaterEqual(empty["freeDiskBytes"], 0)
+        self.assertLessEqual(empty["freeDiskBytes"], shutil.disk_usage(self.directory / "data").total)
 
         first = "https://example.com/video.mp4?key=A"
         second = "https://example.com/video.mp4?key=a"
@@ -281,7 +290,9 @@ class ServerIntegrationTests(unittest.TestCase):
 
         self.stop_service(process)
         _, reopened = self.start_service()
-        self.assertEqual(self.queue(reopened), original)
+        restored = self.queue(reopened)
+        self.assertEqual(restored["jobs"], original["jobs"])
+        self.assertEqual(restored["running"], original["running"])
         removed = reopened.request("DELETE", f"/api/jobs/{original['jobs'][0]['id']}")
         self.assertLess(removed.status, 300, removed.body)
         self.assertEqual(self.queue(reopened)["jobs"], original["jobs"][1:])
@@ -291,7 +302,11 @@ class ServerIntegrationTests(unittest.TestCase):
         process, client = self.start_service(VD_SERVER_MAX_CONCURRENT="2", VD_SERVER_FREE_RESERVE_MIB="1000000000")
         capabilities = "/api/remote/capabilities"
         self.assertEqual(client.request("GET", capabilities, authenticated=False).status, 401)
-        self.assertEqual(client.request("GET", capabilities).json(), {"version": 1, "maxConcurrent": 2})
+        probe = client.request("GET", capabilities).json()
+        self.assertEqual(probe["version"], 1)
+        self.assertEqual(probe["maxConcurrent"], 2)
+        self.assertGreaterEqual(probe["freeDiskBytes"], 0)
+        self.assertLessEqual(probe["freeDiskBytes"], shutil.disk_usage(self.directory / "data").total)
         path = "/api/remote/jobs/" + "a" * 32
         url = "https://example.invalid/video.mp4"
         body = self.remote_body(url, container="WEBM")
@@ -304,7 +319,9 @@ class ServerIntegrationTests(unittest.TestCase):
         self.assertEqual(client.request("PUT", path, body=dict(body, container="WebM")).json()["state"], "queued")
         self.assertEqual(client.request("PUT", path, body=dict(body, url=url + "?different=1")).status, 409)
         self.assertEqual(client.request("POST", path + "/received").status, 409)
-        self.assertEqual(self.queue(client), {"jobs": [], "running": False})
+        browser_queue = self.queue(client)
+        self.assertEqual(browser_queue["jobs"], [])
+        self.assertFalse(browser_queue["running"])
 
         second = "/api/remote/jobs/" + "b" * 32
         self.assertEqual(client.request("PUT", second, body=body).json()["state"], "queued")
@@ -406,6 +423,8 @@ class ServerIntegrationTests(unittest.TestCase):
 
                 disk.free = 32 * MIB
                 self.assertEqual(wait_for(active, "failed")["error"], DISK_ERROR)
+                self.assertEqual(store.list_jobs()["freeDiskBytes"], 32 * MIB)
+                self.assertEqual(store.remote_capabilities()["freeDiskBytes"], 32 * MIB)
                 self.assertEqual(store.get_remote(pending)["state"], "queued")
                 self.assertIsNotNone(store.get_file(ready))
                 source.release_transfer.set()
@@ -485,7 +504,9 @@ class ServerIntegrationTests(unittest.TestCase):
 
         self.stop_service(process)
         _, after_restart = self.start_service()
-        self.assertEqual(self.queue(after_restart), completed)
+        restored = self.queue(after_restart)
+        self.assertEqual(restored["jobs"], completed["jobs"])
+        self.assertEqual(restored["running"], completed["running"])
         self.assertEqual(after_restart.request("GET", path).body, full.body)
 
     @unittest.skipUnless(HAS_MEDIA_TOOLS, "requires yt-dlp, ffmpeg and ffprobe on PATH")

@@ -18,6 +18,10 @@ internal static class RemoteCoordinatorTests
         string control=Environment.GetEnvironmentVariable(ControlVariable) ??
             throw new InvalidOperationException("Missing fixture control directory.");
         string template=args[Array.IndexOf(args,"-o")+1];
+        Require(args.Contains("-N") && args[Array.IndexOf(args,"-N")+1]=="8" &&
+            args.Contains("--http-chunk-size") && args[Array.IndexOf(args,"--http-chunk-size")+1]=="4M" &&
+            args.Contains("--limit-rate") && args[Array.IndexOf(args,"--limit-rate")+1]=="5M" &&
+            Path.GetFileName(template)=="%(id)s.%(ext)s","Local workers must still use the chosen additional options.");
         string media=Path.Combine(Path.GetDirectoryName(template)!,name+".mp4");
         File.WriteAllText(media,"LOCAL FIXTURE MEDIA");
         File.WriteAllText(Path.Combine(control,name+"."+Environment.ProcessId+".starts"),"started");
@@ -44,7 +48,11 @@ internal static class RemoteCoordinatorTests
     private static async Task SharesQueueAsync(string root)
     {
         var data=new AppPersistence(Path.Combine(root,"profile"));
-        var options=new DownloadOptions { Output=Path.Combine(root,"output"),Threads="1" };
+        var options=new DownloadOptions
+        {
+            Output=Path.Combine(root,"output"),Threads="1",Fragments="8",UseHttpChunks=true,RateLimit="5M",
+            FilenameTemplate="%(id)s.%(ext)s"
+        };
         var local=Row("local");
         var first=Row("vps-first");
         var second=Row("vps-second");
@@ -55,9 +63,13 @@ internal static class RemoteCoordinatorTests
         var initial=new[]{local,first,second,collection,recovered};
         var rows=initial.Append(invalid).ToArray();
         var remote=new FixtureClient(data,root,recovered,collection,invalid);
+        var remoteSpeeds=new ConcurrentDictionary<string,string>(StringComparer.Ordinal);
         string executable=Path.Combine(AppContext.BaseDirectory,typeof(RemoteCoordinatorTests).Assembly.GetName().Name+
             (OperatingSystem.IsWindows()?".exe":""));
-        await using var engine=new DownloadCoordinator(executable,data,options,_=>{},_=>{},null,remote);
+        await using var engine=new DownloadCoordinator(executable,data,options,row=>
+        {
+            if(row.Speed.Length>0 && row.Slot.StartsWith("VPS ",StringComparison.Ordinal))remoteSpeeds[row.Url]=row.Speed;
+        },_=>{},null,remote);
         foreach(var row in initial)Require(engine.Add(row),"The initial mixed queue must admit every row.");
         Task run=engine.RunAsync();
         try
@@ -94,6 +106,9 @@ internal static class RemoteCoordinatorTests
                 "Every verified publication must finish through the common success and history owner once.");
             Require(invalid.Status=="Failed" && invalid.AttemptFinished && invalid.Path.Length==0 && invalid.StageDir.Length==0,
                 "A complete transfer containing invalid media must fail local verification and clean its own staging.");
+            Require(rows.All(row=>row.Speed.Length==0) && new[]{first,second,recovered,invalid}.All(row=>
+                remoteSpeeds.GetValueOrDefault(row.Url)=="1.5 MiB/s"),
+                "Windows rows must display the VPS-to-PC rate while receiving and clear it when reception ends.");
             Require(recovered.CompletedSelection is null && !recovered.IsPartialResult && recovered.Selection?.IsPartial==true,
                 "The recovered full result must not inherit the row's later fragment selection.");
             Require(rows.All(row=>remote.Starts(row)==(ReferenceEquals(row,local)?0:1)) &&
@@ -138,7 +153,7 @@ internal static class RemoteCoordinatorTests
             return Task.CompletedTask;
         }
         public bool Supports(DownloadItem row,DownloadOptions options)=>
-            row.Url.StartsWith(Prefix+"vps-",StringComparison.Ordinal) && row.Selection is null;
+            row.Url.StartsWith(Prefix+"vps-",StringComparison.Ordinal) && RemoteDownloadRequest.For(row,options) is not null;
         public bool OwnsAssignment(DownloadItem row)=>_prepared && ReferenceEquals(row,recovered);
         internal void Release(DownloadItem row)=>Gate(row).TrySetResult();
         private TaskCompletionSource Gate(DownloadItem row)=>_gates.GetOrAdd(row,_=>new(TaskCreationOptions.RunContinuationsAsynchronously));
@@ -159,7 +174,7 @@ internal static class RemoteCoordinatorTests
                 if(ReferenceEquals(row,invalid))File.WriteAllText(path,"RECEIVED INVALID MEDIA");
                 else WriteWave(path);
                 long size=new FileInfo(path).Length;
-                progress(new(RemoteDownloadStage.Receiving,100,size,size));
+                progress(new(RemoteDownloadStage.Receiving,100,size,size,1_572_864));
                 string id=Guid.NewGuid().ToString("N");
                 _jobs[id]=row;
                 return new(id,path,Name(row),size);
