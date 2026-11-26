@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Headers;
+using System.Security.Authentication;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -76,7 +77,12 @@ internal sealed class RemoteDownloadClient : IRemoteDownloadClient
     {
         _log = log;
         _journal = new RemoteDownloadJournal(persistence, connection, log);
-        _http = new HttpClient(handler ?? new HttpClientHandler
+        _http = CreateHttpClient(connection, handler);
+    }
+
+    private static HttpClient CreateHttpClient(RemoteDownloadConnection connection, HttpMessageHandler? handler)
+    {
+        var client = new HttpClient(handler ?? new HttpClientHandler
         {
             AllowAutoRedirect = false,
             UseCookies = false,
@@ -86,9 +92,34 @@ internal sealed class RemoteDownloadClient : IRemoteDownloadClient
             BaseAddress = connection.Address,
             Timeout = Timeout.InfiniteTimeSpan
         };
-        _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic",
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic",
             Convert.ToBase64String(Encoding.UTF8.GetBytes(connection.Username + ":" + connection.Password)));
-        _http.DefaultRequestHeaders.Add("X-Video-Downloader", "1");
+        client.DefaultRequestHeaders.Add("X-Video-Downloader", "1");
+        return client;
+    }
+
+    internal static async Task<int> CheckConnectionAsync(RemoteDownloadConnection connection, CancellationToken token,
+        HttpMessageHandler? handler = null)
+    {
+        using var client = CreateHttpClient(connection, handler);
+        return (await ReadCapabilitiesAsync(client, token).ConfigureAwait(false)).MaxConcurrent;
+    }
+
+    private static async Task<RemoteCapabilities> ReadCapabilitiesAsync(HttpClient client, CancellationToken token)
+    {
+        using var deadline = Deadline(token, TimeSpan.FromSeconds(5));
+        using var request = new HttpRequestMessage(HttpMethod.Get, "api/remote/capabilities");
+        try
+        {
+            var capability = await ReadJsonAsync<RemoteCapabilities>(client, request, deadline.Token).ConfigureAwait(false);
+            if (capability is not { Version: 1, MaxConcurrent: >= 1 and <= 4 })
+                throw new InvalidDataException("Сервер использует несовместимую версию протокола.");
+            return capability;
+        }
+        catch (OperationCanceledException) when (!token.IsCancellationRequested)
+        {
+            throw new TimeoutException("Сервер очереди не ответил вовремя.");
+        }
     }
 
     public async Task PrepareAsync(CancellationToken token)
@@ -96,17 +127,14 @@ internal sealed class RemoteDownloadClient : IRemoteDownloadClient
         var received = await Task.Run(_journal.Load, token).ConfigureAwait(false);
         try
         {
-            using var deadline = Deadline(token, TimeSpan.FromSeconds(5));
-            using var request = new HttpRequestMessage(HttpMethod.Get, "api/remote/capabilities");
-            var capability = await ReadJsonAsync<RemoteCapabilities>(request, deadline.Token).ConfigureAwait(false);
-            if (capability is not { Version: 1, MaxConcurrent: >= 1 and <= 4 })
-                throw new InvalidDataException("Сервер использует несовместимую версию протокола.");
+            var capability = await ReadCapabilitiesAsync(_http, token).ConfigureAwait(false);
             MaxConcurrent = capability.MaxConcurrent;
             IsAvailable = true;
         }
         catch (Exception error) when (!token.IsCancellationRequested && IsRemoteFailure(error))
         {
-            _log("Сервер совместной загрузки недоступен. Новые задания остаются в локальной очереди.");
+            _log(DescribeConnectionFailure(error) + " " + ErrorMessages.Text("Новые задания остаются в локальной очереди.",
+                "New jobs stay in the local queue."));
             return;
         }
         foreach (var assignment in received)
@@ -229,7 +257,7 @@ internal sealed class RemoteDownloadClient : IRemoteDownloadClient
         }
         try
         {
-            var result = await ReadJsonAsync<RemoteJobStatus>(request, deadline.Token).ConfigureAwait(false);
+            var result = await ReadJsonAsync<RemoteJobStatus>(_http, request, deadline.Token).ConfigureAwait(false);
             if (result is null || result.State is not ("queued" or "downloading" or "completed" or "failed" or "interrupted" or "received" or "cancelled") ||
                 result.Progress is < 0 or > 100 || (result.State == "completed" && (result.Size is null or <= 0 || string.IsNullOrWhiteSpace(result.Filename))))
                 throw new InvalidDataException("Сервер вернул неверные данные о задании.");
@@ -239,9 +267,9 @@ internal sealed class RemoteDownloadClient : IRemoteDownloadClient
         { throw new TimeoutException("Сервер очереди не ответил вовремя."); }
     }
 
-    private async Task<T?> ReadJsonAsync<T>(HttpRequestMessage request, CancellationToken token)
+    private static async Task<T?> ReadJsonAsync<T>(HttpClient client, HttpRequestMessage request, CancellationToken token)
     {
-        using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token).ConfigureAwait(false);
+        using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token).ConfigureAwait(false);
         RequireSuccess(response);
         if (response.Content.Headers.ContentLength > MaxResponseBytes)
             throw new InvalidDataException("Ответ сервера превышает допустимый размер.");
@@ -392,8 +420,40 @@ internal sealed class RemoteDownloadClient : IRemoteDownloadClient
         throw new HttpRequestException(error, null, response.StatusCode);
     }
 
-    private static bool IsRemoteFailure(Exception error) =>
-        error is HttpRequestException or IOException or InvalidDataException or TimeoutException or OperationCanceledException or JsonException;
+    internal static bool IsRemoteFailure(Exception error) =>
+        error is HttpRequestException or AuthenticationException or IOException or InvalidDataException or
+            TimeoutException or OperationCanceledException or JsonException;
+
+    internal static string DescribeConnectionFailure(Exception error)
+    {
+        if (error is AuthenticationException or HttpRequestException { HttpRequestError: HttpRequestError.SecureConnectionError }
+            or { InnerException: AuthenticationException })
+            return ErrorMessages.Text("Не удалось установить HTTPS-соединение. Проверьте сертификат сервера и совпадение его имени с адресом.",
+                "Could not establish an HTTPS connection. Check the server certificate and whether its name matches the address.");
+        if (error is HttpRequestException { StatusCode: HttpStatusCode.Unauthorized })
+            return ErrorMessages.Text("Сервер отклонил логин или пароль.", "The server rejected the username or password.");
+        if (error is HttpRequestException { StatusCode: HttpStatusCode.Forbidden })
+            return ErrorMessages.Text("Сервер запретил доступ. Проверьте права подключения и настройки HTTPS-прокси.",
+                "The server denied access. Check connection permissions and HTTPS proxy settings.");
+        if (error is InvalidDataException or JsonException or
+            HttpRequestException { StatusCode: HttpStatusCode.NotFound or HttpStatusCode.MethodNotAllowed })
+            return ErrorMessages.Text("По этому адресу нет совместимого сервера. Проверьте адрес или обновите серверную часть.",
+                "No compatible server responded at this address. Check the address or update the server application.");
+        if (error is HttpRequestException { HttpRequestError: HttpRequestError.NameResolutionError })
+            return ErrorMessages.Text("Не удалось найти сервер. Проверьте адрес и DNS.", "Could not find the server. Check the address and DNS.");
+        if (error is HttpRequestException { StatusCode: { } status })
+        {
+            if ((int)status is >= 300 and < 400)
+                return ErrorMessages.Text("Сервер перенаправляет запрос. Введите конечный HTTPS-адрес.",
+                    "The server redirected the request. Enter the final HTTPS address.");
+            return ErrorMessages.Text($"Сервер вернул HTTP {(int)status}.", $"The server returned HTTP {(int)status}.");
+        }
+        if (error is TimeoutException or OperationCanceledException)
+            return ErrorMessages.Text("Сервер не ответил вовремя. Проверьте адрес и доступность сервера.",
+                "The server did not respond in time. Check the address and whether the server is reachable.");
+        return ErrorMessages.Text("Не удалось подключиться к серверу. Проверьте адрес и доступность сервера.",
+            "Could not connect to the server. Check the address and whether the server is reachable.");
+    }
 
     private static bool IsTransient(Exception error) =>
         error is TimeoutException or EndOfStreamException or HttpIOException ||

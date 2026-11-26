@@ -23,13 +23,54 @@ internal static class RemoteDownloadClientTests
         try
         {
             using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+            await CheckConnectionProbeAsync(deadline.Token);
             await CheckAvailabilityAsync(new AppPersistence(Path.Combine(root, "old-server")), deadline.Token);
             await TransferAndReplayReceiptAsync(new AppPersistence(Path.Combine(root, "transfer")), deadline.Token);
             await RefuseChangedTransferAsync(new AppPersistence(Path.Combine(root, "invalid-range")), deadline.Token);
             await ReuseLostSubmissionAsync(new AppPersistence(Path.Combine(root, "restart")), deadline.Token);
-            Console.WriteLine("PASS: server protocol availability, verified ranges, durable receipts and idempotent assignment recovery");
+            Console.WriteLine("PASS: authenticated server connection checks, protocol availability, verified ranges, durable receipts and assignment recovery");
         }
         finally { Directory.Delete(root, recursive: true); }
+    }
+
+    private static async Task CheckConnectionProbeAsync(CancellationToken token)
+    {
+        int requests = 0;
+        int slots = await RemoteDownloadClient.CheckConnectionAsync(Connection, token, new Handler((request, _) =>
+        {
+            requests++;
+            string basic = Convert.ToBase64String(Encoding.UTF8.GetBytes("fixture-user:fixture-password"));
+            Require(request.Method == HttpMethod.Get && request.RequestUri!.Scheme == "https" &&
+                PathOf(request) == Capabilities && request.Content is null && request.Headers.Authorization?.Scheme == "Basic" &&
+                request.Headers.Authorization.Parameter == basic,
+                "The probe must use one authenticated GET at the configured HTTPS base address, without a request body.");
+            return Task.FromResult(Json(new { version = 1, maxConcurrent = 3 }));
+        }));
+        Require(requests == 1 && slots == 3, "The explicit connection probe must return the server slot limit.");
+
+        async Task ExpectFailure(Func<HttpResponseMessage> respond, string expected)
+        {
+            try
+            {
+                await RemoteDownloadClient.CheckConnectionAsync(Connection, token, new Handler((_, _) => Task.FromResult(respond())));
+            }
+            catch (Exception error) when (RemoteDownloadClient.IsRemoteFailure(error))
+            {
+                string description = RemoteDownloadClient.DescribeConnectionFailure(error);
+                Require(description.Contains(expected, StringComparison.OrdinalIgnoreCase) &&
+                    !description.Contains("fixture-password", StringComparison.Ordinal),
+                    "Probe diagnostics must identify the failure without including credentials.");
+                return;
+            }
+            throw new InvalidOperationException("The explicit connection probe accepted an incompatible or inaccessible server.");
+        }
+
+        await ExpectFailure(() => new HttpResponseMessage(HttpStatusCode.Unauthorized),ErrorMessages.Text("логин или пароль","username or password"));
+        await ExpectFailure(() => throw new HttpRequestException(HttpRequestError.SecureConnectionError,"fixture-password"),
+            ErrorMessages.Text("сертификат","certificate"));
+        await ExpectFailure(() => throw new HttpRequestException(HttpRequestError.NameResolutionError,"fixture-password"),"DNS");
+        await ExpectFailure(() => new HttpResponseMessage(HttpStatusCode.NotFound),ErrorMessages.Text("совместимого сервера","compatible server"));
+        await ExpectFailure(() => Json(new { version = 2, maxConcurrent = 4 }),ErrorMessages.Text("совместимого сервера","compatible server"));
     }
 
     private static async Task CheckAvailabilityAsync(AppPersistence persistence, CancellationToken token)

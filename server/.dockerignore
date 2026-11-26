@@ -3,5 +3,6 @@
 !queue_worker.py
 !egress.nft
 !entrypoint.sh
+!Caddyfile
 !static/
 !static/**

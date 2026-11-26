@@ -1,3 +1,6 @@
+using System.Net;
+using System.Net.Sockets;
+using System.Text;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Automation.Peers;
@@ -37,7 +40,7 @@ internal sealed partial class UiScenario
 
         static void Click(Button button)=>button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
 
-        static void WaitForSave(Button button)
+        static void WaitForButton(Button button)
         {
             if(button.IsEnabled)return;
             var deadline=DateTime.UtcNow.AddSeconds(5);
@@ -47,7 +50,7 @@ internal sealed partial class UiScenario
             timer.Start();
             try{Dispatcher.PushFrame(frame);}
             finally{timer.Stop();}
-            Require(button.IsEnabled,"The settings writer must finish without blocking the dispatcher.");
+            Require(button.IsEnabled,"The server settings action must finish without blocking the dispatcher.");
         }
 
         var initial=OpenWindow();
@@ -63,21 +66,54 @@ internal sealed partial class UiScenario
                 var login=Control<TextBox>(initial,"RemoteDownloadUsernameBox");
                 var secret=Control<PasswordBox>(initial,"RemoteDownloadPasswordBox");
                 var save=Control<Button>(initial,"SaveRemoteDownloadSettingsButton");
+                var check=Control<Button>(initial,"CheckRemoteDownloadConnectionButton");
+                var status=Control<TextBlock>(initial,"RemoteDownloadSettingsStatus");
                 Require(option.IsVisible && option.IsChecked==false && !File.Exists(settingsFile),
                     "A new profile must show the unchecked opt-in without creating a server settings file.");
                 option.IsChecked=true;
                 initial.UpdateLayout();
                 Require(secret.IsVisible && new PasswordBoxAutomationPeer(secret).IsPassword(),
                     "First enable must reveal a masked password field with a password automation peer.");
+                option.IsChecked=false;
+                using(var server=new TcpListener(IPAddress.Loopback,0))
+                using(var deadline=new CancellationTokenSource(TimeSpan.FromSeconds(10)))
+                {
+                    server.Start();
+                    var response=ReplyToCapabilityProbeAsync(server,username,password,deadline.Token);
+                    endpoint.Text=$"http://127.0.0.1:{((IPEndPoint)server.LocalEndpoint).Port}/bridge/";
+                    login.Text=username;
+                    secret.Password=password;
+                    Click(check);
+                    WaitForButton(check);
+                    response.GetAwaiter().GetResult();
+                    Require(status.Text.Contains(ErrorMessages.Text("Предел параллельных заданий — 3","Concurrent job limit is 3"),
+                        StringComparison.Ordinal) && option.IsChecked==false && controller.SessionState.Queue.Count==0 &&
+                        controller.SessionState.Coordinator is null && !File.Exists(settingsFile) && !Directory.Exists(Path.Combine(directory,"remote-jobs")),
+                        "The explicit connection check must display the three slots without opting in, saving settings or starting a queue.");
+                    Click(save);
+                    WaitForButton(save);
+                    Require(secret.Password.Length==0 && File.Exists(settingsFile),"Saving the connection must clear the editable password field.");
+                    string saved=File.ReadAllText(settingsFile);
+                    response=ReplyToCapabilityProbeAsync(server,username,password,deadline.Token);
+                    Click(check);
+                    WaitForButton(check);
+                    response.GetAwaiter().GetResult();
+                    Require(status.Text.Contains(ErrorMessages.Text("Предел параллельных заданий — 3","Concurrent job limit is 3"),
+                        StringComparison.Ordinal) && File.ReadAllText(settingsFile)==saved,
+                        "A fresh probe at the exact saved address and login must reuse saved credentials without rewriting settings.");
+                }
+                string settingsBeforeInvalidAddress=File.ReadAllText(settingsFile);
+                option.IsChecked=true;
                 endpoint.Text="http://remote-settings-canary.invalid/";
                 login.Text=username;
                 secret.Password=password;
                 Click(save);
-                WaitForSave(save);
-                Require(!File.Exists(settingsFile),"Credentials must be rejected at an insecure non-loopback address.");
+                WaitForButton(save);
+                Require(File.ReadAllText(settingsFile)==settingsBeforeInvalidAddress,
+                    "Credentials must be rejected at an insecure non-loopback address without rewriting the saved connection.");
                 endpoint.Text=address;
                 Click(save);
-                WaitForSave(save);
+                WaitForButton(save);
                 var persisted=store.Read();
                 Require(persisted.Enabled && persisted.Connection?.Address.AbsoluteUri==address && persisted.Connection.Username==username &&
                     persisted.Connection.Password==password && secret.Password.Length==0,
@@ -103,17 +139,38 @@ internal sealed partial class UiScenario
                 "A restarted window must restore the opt-in and address without placing the saved password in the textbox.");
             endpoint.Text="https://another-endpoint.invalid/";
             Click(save);
-            WaitForSave(save);
+            WaitForButton(save);
             Require(store.Read().Connection?.Address.AbsoluteUri==address,
                 "Changing the server address without a fresh password must preserve the existing binding.");
             endpoint.Text=address;
             option.IsChecked=false;
             Click(save);
-            WaitForSave(save);
+            WaitForButton(save);
             var disabled=store.Read();
             Require(!disabled.Enabled && disabled.Connection?.Password==password,
                 "Disabling shared downloads can preserve the encrypted connection for the next opt-in.");
         }
         finally{reopened.Dispose();restored.Close();}
+    }
+
+    private static async Task ReplyToCapabilityProbeAsync(TcpListener server,string username,string password,CancellationToken token)
+    {
+        using var client=await server.AcceptTcpClientAsync(token).ConfigureAwait(false);
+        using var stream=client.GetStream();
+        using var reader=new StreamReader(stream,Encoding.ASCII,leaveOpen:true);
+        if(await reader.ReadLineAsync(token).ConfigureAwait(false)!="GET /bridge/api/remote/capabilities HTTP/1.1")
+            throw new InvalidDataException("The server connection check must use a GET at the configured subpath.");
+        bool authenticated=false;
+        string expected=Convert.ToBase64String(Encoding.UTF8.GetBytes(username+":"+password));
+        for(int count=0;await reader.ReadLineAsync(token).ConfigureAwait(false) is {Length:>0} header;count++)
+        {
+            if(count>32)throw new InvalidDataException("The capability probe sent too many headers.");
+            authenticated|=header.StartsWith("Authorization: Basic ",StringComparison.OrdinalIgnoreCase) &&
+                header["Authorization: Basic ".Length..]==expected;
+        }
+        if(!authenticated)throw new InvalidDataException("The capability probe must use the current form's credentials.");
+        const string body="{\"version\":1,\"maxConcurrent\":3}";
+        byte[] response=Encoding.ASCII.GetBytes($"HTTP/1.1 200 OK\r\nContent-Length: {body.Length}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{body}");
+        await stream.WriteAsync(response,token).ConfigureAwait(false);
     }
 }

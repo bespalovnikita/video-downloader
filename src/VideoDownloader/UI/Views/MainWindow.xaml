@@ -848,9 +848,9 @@
                                   AutomationProperties.Name="Подключение к серверу" IsExpanded="False" Margin="0,2,0,6">
                             <StackPanel x:Name="RemoteDownloadSettingsFields" Margin="8">
                                 <TextBlock Text="Адрес сервера" Style="{StaticResource MutedText}"/>
-                                <TextBox x:Name="RemoteDownloadAddressBox" Text="http://127.0.0.1:8080/" MaxLength="2048"
+                                <TextBox x:Name="RemoteDownloadAddressBox" MaxLength="2048"
                                          AutomationProperties.Name="Адрес сервера"
-                                         ToolTip="HTTPS-адрес или локальный HTTP-адрес SSH-туннеля."/>
+                                         ToolTip="Для прямого подключения укажи HTTPS-адрес, например https://video.example.com/. Для SSH-туннеля укажи его локальный HTTP-адрес."/>
                                 <TextBlock Text="Логин" Style="{StaticResource MutedText}" Margin="0,5,0,0"/>
                                 <TextBox x:Name="RemoteDownloadUsernameBox" Text="downloader" MaxLength="3072"
                                          AutomationProperties.Name="Логин сервера"/>
@@ -860,8 +860,10 @@
                                              BorderBrush="{DynamicResource BorderBrush}" CaretBrush="{DynamicResource WindowTextBrush}"
                                              AutomationProperties.Name="Пароль сервера"
                                              ToolTip="Пустое поле сохраняет прежний пароль для того же адреса и логина."/>
-                                <Button x:Name="SaveRemoteDownloadSettingsButton" Content="Сохранить настройки сервера"
-                                        HorizontalAlignment="Left" Margin="0,8,0,0"/>
+                                <WrapPanel Margin="0,8,0,0">
+                                    <Button x:Name="CheckRemoteDownloadConnectionButton" Content="Проверить подключение" Margin="0,0,6,4"/>
+                                    <Button x:Name="SaveRemoteDownloadSettingsButton" Content="Сохранить настройки сервера" Margin="0,0,0,4"/>
+                                </WrapPanel>
                                 <TextBlock x:Name="RemoteDownloadSettingsStatus" Style="{StaticResource MutedText}"
                                            TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" Margin="0,4,0,0"/>
                             </StackPanel>

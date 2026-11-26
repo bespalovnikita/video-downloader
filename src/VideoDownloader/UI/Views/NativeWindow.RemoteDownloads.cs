@@ -9,6 +9,8 @@ public sealed partial class NativeWindow
     private RemoteDownloadSettings _savedRemoteDownloadSettings=new(false,null);
     private bool _remoteDownloadSettingsUnreadable;
     private Task? _remoteDownloadSettingsWrite;
+    private CancellationTokenSource? _remoteDownloadConnectionCheck;
+    private Task? _remoteDownloadConnectionCheckTask;
 
     private void InitializeRemoteDownloadSettings()
     {
@@ -37,6 +39,11 @@ public sealed partial class NativeWindow
                 F<Expander>("RemoteDownloadSettingsExpander").IsExpanded=true;
         };
         F<Button>("SaveRemoteDownloadSettingsButton").Click+=async(_,_)=>await SaveRemoteDownloadSettingsFromControlsAsync();
+        F<Button>("CheckRemoteDownloadConnectionButton").Click+=async(_,_)=>await CheckRemoteDownloadConnectionFromControlsAsync();
+        void ClearConnectionStatus()=>T("RemoteDownloadSettingsStatus").Text="";
+        B("RemoteDownloadAddressBox").TextChanged+=(_,_)=>ClearConnectionStatus();
+        B("RemoteDownloadUsernameBox").TextChanged+=(_,_)=>ClearConnectionStatus();
+        F<PasswordBox>("RemoteDownloadPasswordBox").PasswordChanged+=(_,_)=>ClearConnectionStatus();
     }
 
     private RemoteDownloadSettings CaptureRemoteDownloadSettings(bool forStart)
@@ -45,18 +52,68 @@ public sealed partial class NativeWindow
         if(forStart && !enabled)return _savedRemoteDownloadSettings with {Enabled=false};
         string password=F<PasswordBox>("RemoteDownloadPasswordBox").Password;
         if(!enabled && password.Length==0 && _savedRemoteDownloadSettings.Connection is null)return new(false,null);
+        return new(enabled,CaptureRemoteDownloadConnection(password));
+    }
+
+    private RemoteDownloadConnection CaptureRemoteDownloadConnection(string password)
+    {
         var address=RemoteDownloadConnection.ParseAddress(B("RemoteDownloadAddressBox").Text);
         string username=B("RemoteDownloadUsernameBox").Text;
         if(password.Length==0 && _savedRemoteDownloadSettings.Connection is { } previous &&
             address.AbsoluteUri==previous.Address.AbsoluteUri && username==previous.Username)
-            return new(enabled,previous);
-        return new(enabled,new RemoteDownloadConnection(address,username,password));
+            return previous;
+        return new RemoteDownloadConnection(address,username,password);
+    }
+
+    private async Task CheckRemoteDownloadConnectionFromControlsAsync()
+    {
+        if(_disposed || _closing || _appUpdateHandoff || RejectProfileBackupMutation() ||
+            _remoteDownloadConnectionCheck is not null || _remoteDownloadSettingsWrite is not null)return;
+        var status=T("RemoteDownloadSettingsStatus");
+        RemoteDownloadConnection connection;
+        try { connection=CaptureRemoteDownloadConnection(F<PasswordBox>("RemoteDownloadPasswordBox").Password); }
+        catch(ArgumentException error) { status.Text=ErrorMessages.ForException(error);return; }
+
+        using var cancellation=new CancellationTokenSource();
+        _remoteDownloadConnectionCheck=cancellation;
+        var fields=F<StackPanel>("RemoteDownloadSettingsFields");
+        fields.IsEnabled=false;
+        status.Text=ErrorMessages.Text("Проверяем подключение…","Checking the connection…");
+        var probe=RemoteDownloadClient.CheckConnectionAsync(connection,cancellation.Token);
+        _remoteDownloadConnectionCheckTask=probe;
+        try
+        {
+            int slots=await probe;
+            if(!_disposed && !_closing && !cancellation.IsCancellationRequested)
+                status.Text=ErrorMessages.Text($"Подключение подтверждено. Предел параллельных заданий — {slots}.",
+                    $"Connection verified. Concurrent job limit is {slots}.");
+        }
+        catch(Exception error) when(RemoteDownloadClient.IsRemoteFailure(error))
+        {
+            if(!_disposed && !_closing && !cancellation.IsCancellationRequested)
+                status.Text=RemoteDownloadClient.DescribeConnectionFailure(error);
+        }
+        finally
+        {
+            _remoteDownloadConnectionCheck=null;
+            _remoteDownloadConnectionCheckTask=null;
+            if(!_disposed && !_closing)fields.IsEnabled=true;
+        }
+    }
+
+    private async Task StopRemoteDownloadConnectionCheckAsync()
+    {
+        var probe=_remoteDownloadConnectionCheckTask;
+        _remoteDownloadConnectionCheck?.Cancel();
+        if(probe is null)return;
+        try { await probe; }
+        catch(Exception error) when(RemoteDownloadClient.IsRemoteFailure(error)) { }
     }
 
     private async Task SaveRemoteDownloadSettingsFromControlsAsync()
     {
         if(_disposed || _closing || (_startingSession && SessionState.Coordinator?.IsRunning!=true) || _appUpdateHandoff || RejectProfileBackupMutation() ||
-            _remoteDownloadSettingsWrite is not null)return;
+            _remoteDownloadSettingsWrite is not null || _remoteDownloadConnectionCheck is not null)return;
         var fields=F<StackPanel>("RemoteDownloadSettingsFields");
         var enabled=K("RemoteDownloadsEnabledCheck");
         var status=T("RemoteDownloadSettingsStatus");
