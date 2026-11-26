@@ -5,14 +5,13 @@ import logging
 import os
 import re
 import signal
-import stat
 from contextlib import contextmanager
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import quote, urlsplit
 
-from queue_worker import JobStore, MIB, RemoteOptions
+from queue_worker import JobStore, MIB, REMOTE_RESULT_EXPIRED, RemoteOptions, RemoteResultExpired
 from update_bridge import UpdateBridge
 
 
@@ -350,18 +349,14 @@ class DownloadHandler(BaseHTTPRequestHandler):
             self._send_file(job_id)
 
     def _send_file(self, job_id):
-        result = self.server.store.get_file(job_id)
+        try:
+            result = self.server.store.open_file(job_id)
+        except RemoteResultExpired:
+            raise RequestError(HTTPStatus.GONE, REMOTE_RESULT_EXPIRED) from None
         if result is None:
             raise RequestError(HTTPStatus.NOT_FOUND, "Готовый файл не найден.")
-        path, filename = result
-        try:
-            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-        except OSError:
-            raise RequestError(HTTPStatus.NOT_FOUND, "Готовый файл не найден.") from None
-        with os.fdopen(descriptor, "rb") as stream:
-            info = os.fstat(stream.fileno())
-            if not stat.S_ISREG(info.st_mode):
-                raise RequestError(HTTPStatus.NOT_FOUND, "Готовый файл не найден.")
+        stream, info, filename = result
+        with stream:
             self.stream_file(stream, info, filename)
 
     def stream_file(self, stream, info, filename):

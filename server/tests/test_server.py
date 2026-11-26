@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import socket
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -407,13 +408,62 @@ class ServerIntegrationTests(unittest.TestCase):
                 disk.free = 32 * MIB
                 self.assertEqual(wait_for(active, "failed")["error"], DISK_ERROR)
                 self.assertEqual(store.get_remote(pending)["state"], "queued")
-                self.assertIsNotNone(store.get_file(ready))
+                with store.open_file(ready)[0] as stream:
+                    self.assertTrue(stream.read(1))
                 source.release_transfer.set()
                 disk.free = 1024 * MIB
                 wait_for(pending, "completed")
                 self.assertEqual(store.list_jobs()["jobs"][0]["error"], DISK_ERROR)
             finally:
                 store.close()
+
+    @unittest.skipUnless(HAS_MEDIA_TOOLS, "requires yt-dlp, ffmpeg and ffprobe on PATH")
+    def test_unclaimed_remote_result_expires_and_frees_its_slot(self):
+        source = self.make_video_source()
+        process, client = self.start_service(VD_SERVER_MAX_CONCURRENT="1")
+        root = self.directory / "data"
+        database = root / "queue.sqlite3"
+        first, retry = (f"/api/remote/jobs/{index:032x}" for index in (1, 2))
+        first_id = first.rsplit("/", 1)[1]
+        result_path = root / "files" / first_id
+        body = self.remote_body(source.url("remote-expiry.mp4"))
+
+        client.request("POST", "/api/jobs", body={"urls": [source.url("browser-expiry.mp4")]})
+        self.start_jobs(client)
+        browser_job, = self.wait_for_queue(client, lambda queue: queue["jobs"][0]["status"] == "completed")["jobs"]
+        browser_file = root / "files" / str(browser_job["id"])
+
+        self.assertEqual(client.request("PUT", first, body=body).status, 200)
+        self.wait_for_remote(client, first, "completed")
+        with sqlite3.connect(database) as db:
+            expires_at, = db.execute("SELECT expires_at FROM remote_jobs WHERE id = ?", (first_id,)).fetchone()
+        self.assertAlmostEqual(expires_at - time.time(), 3600, delta=5)
+
+        # An upgrade uses the local publication time for results from older databases.
+        self.stop_service(process)
+        with sqlite3.connect(database) as db:
+            db.execute("DROP INDEX remote_jobs_expiry")
+            db.execute("ALTER TABLE remote_jobs DROP COLUMN expires_at")
+        old_media_time = time.time() - 7200
+        os.utime(result_path, (old_media_time, old_media_time))
+        _, client = self.start_service(VD_SERVER_MAX_CONCURRENT="1")
+        self.assertEqual(client.request("GET", first + "/file").status, 200)
+        self.assertEqual(client.request("PUT", retry, body=body).json()["state"], "queued")
+        with sqlite3.connect(database) as db:
+            db.execute("UPDATE remote_jobs SET expires_at = ? WHERE id = ?", (time.time() - 1, first_id))
+
+        # Expiry frees the slot without a request for the original assignment.
+        self.wait_for_remote(client, retry, "completed")
+        self.assertFalse(result_path.exists())
+        expired = client.request("GET", first).json()
+        self.assertEqual(expired["state"], "failed")
+        self.assertTrue(expired["expired"])
+        self.assertEqual(client.request("GET", first + "/file", headers={"Range": "bytes=16-"}).status, 410)
+        self.assertEqual(client.request("PUT", first, body=body).json(), expired)
+        self.assertEqual(client.request("POST", first + "/received").status, 204)
+        self.assertEqual(client.request("GET", first).json(), expired)
+        self.assertTrue(browser_file.is_file())
+        self.assertEqual(client.request("GET", f"/api/jobs/{browser_job['id']}/file").status, 200)
 
     @unittest.skipUnless(HAS_MEDIA_TOOLS, "requires yt-dlp, ffmpeg and ffprobe on PATH")
     def test_remote_collection_fails_without_publishing_its_first_video(self):

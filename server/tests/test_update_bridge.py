@@ -163,7 +163,8 @@ class UpdateBridgeTests(unittest.TestCase):
         remote = "/api/remote/jobs/" + remote_id
         body = {"url": "https://fixture.test/video", "quality": "Best", "container": "Auto",
                 "videoCodec": "Auto", "embedMetadata": False, "embedChapters": False}
-        with mock.patch.object(store, "get_file", return_value=(file_path, "ready.mp4")) as lookup:
+        with mock.patch.object(store, "open_file",
+                               side_effect=lambda _: (file_path.open("rb"), file_path.stat(), "ready.mp4")) as lookup:
             with exclusive_lock(self.lock_path):
                 for method, path, payload in (
                     ("POST", "/api/jobs", {"urls": [body["url"]]}), ("POST", "/api/start", None),
@@ -251,7 +252,7 @@ class UpdateBridgeTests(unittest.TestCase):
             release.wait(5)
             return stream_file(handler, stream, info, filename)
 
-        with (mock.patch.object(store, "get_file", return_value=(file_path, "ready.mp4")),
+        with (mock.patch.object(store, "open_file", side_effect=lambda _: (file_path.open("rb"), file_path.stat(), "ready.mp4")),
               mock.patch.object(self.handler_class, "stream_file", held_stream),
               ThreadPoolExecutor(max_workers=1) as pool):
             future = pool.submit(browser.request, "GET", "/api/jobs/1/file", headers={"Range": "bytes=1-3"})

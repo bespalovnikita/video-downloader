@@ -174,9 +174,10 @@ internal sealed class RemoteDownloadClient : IRemoteDownloadClient
         try
         {
             var status = await PutAsync(assignment, token).ConfigureAwait(false);
-            if (reopening && !status.Unsupported && status.State is "cancelled" or "interrupted" or "failed")
+            if (reopening && !status.Unsupported && !status.Expired && status.State is "cancelled" or "interrupted" or "failed")
             {
                 _journal.Remove(assignment);
+                if (status.Expired) throw ExpiredResult();
                 assignment = Register(request);
                 status = await PutAsync(assignment, token).ConfigureAwait(false);
             }
@@ -198,6 +199,11 @@ internal sealed class RemoteDownloadClient : IRemoteDownloadClient
             string path = await ReceiveAsync(assignment, status, stage, waitForResume, progress, token).ConfigureAwait(false);
             return new RemoteDownloadArtifact(assignment.JobId, path, status.Title ?? Path.GetFileNameWithoutExtension(path), status.Size!.Value);
         }
+        catch (HttpRequestException error) when (error.StatusCode == HttpStatusCode.Gone)
+        {
+            _journal.Remove(assignment);
+            throw ExpiredResult();
+        }
         catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
             // A timed-out PUT may have reached the server. Cancellation of an
@@ -209,6 +215,10 @@ internal sealed class RemoteDownloadClient : IRemoteDownloadClient
             throw;
         }
     }
+
+    private static IOException ExpiredResult() => new(ErrorMessages.Text(
+        "Срок хранения файла на сервере истёк. Запустите скачивание повторно.",
+        "The server's copy has expired. Start the download again."));
 
     public async Task AcknowledgeAsync(RemoteDownloadArtifact artifact, string publishedPath, CancellationToken token)
     {
@@ -483,5 +493,5 @@ internal sealed class RemoteDownloadClient : IRemoteDownloadClient
 
     private sealed record RemoteCapabilities(int Version, int MaxConcurrent);
     private sealed record RemoteJobStatus(string State, int? Progress, string? Filename, long? Size, string? Error, string? Title,
-        bool Unsupported);
+        bool Unsupported, bool Expired);
 }
