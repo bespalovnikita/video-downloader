@@ -21,6 +21,9 @@ TEST_USER = "test-user"
 TEST_PASSWORD = "test-password-for-local-integration"
 AUTHORIZATION = "Basic " + base64.b64encode(f"{TEST_USER}:{TEST_PASSWORD}".encode()).decode()
 HAS_MEDIA_TOOLS = all(shutil.which(tool) for tool in ("yt-dlp", "ffmpeg", "ffprobe"))
+PAGE_TOKEN = "private-page-fixture-token"
+MEDIA_TOKEN = "private-media-fixture-token"
+DENIAL_DETAIL = "Private fixture denial detail"
 
 
 @dataclass
@@ -62,6 +65,7 @@ class VideoSource:
     def __init__(self, data):
         self.transfer_requested = threading.Event()
         self.release_transfer = threading.Event()
+        self.client_hints = {}
         source = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -77,8 +81,24 @@ class VideoSource:
                 self.end_headers()
 
             def do_GET(self):
+                path = urlsplit(self.path).path
+                source.client_hints[path] = self.headers.get("Sec-CH-UA", "")
+                if path in {"/forbidden-page", "/forbidden-media.mp4"}:
+                    self.send_error(403, DENIAL_DETAIL)
+                    return
+                if path == "/playable-page":
+                    html = (
+                        '<html><title>Video fixture</title>'
+                        f'<video src="/forbidden-media.mp4?token={MEDIA_TOKEN}"></video></html>'
+                    ).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html")
+                    self.send_header("Content-Length", str(len(html)))
+                    self.end_headers()
+                    self.wfile.write(html)
+                    return
                 self.do_HEAD()
-                if urlsplit(self.path).path == "/slow.mp4":
+                if path == "/slow.mp4":
                     source.transfer_requested.set()
                     if not source.release_transfer.wait(15):
                         return
@@ -276,6 +296,31 @@ class ServerIntegrationTests(unittest.TestCase):
         _, after_restart = self.start_service()
         self.assertEqual(self.queue(after_restart), completed)
         self.assertEqual(after_restart.request("GET", path).body, full.body)
+
+    @unittest.skipUnless(HAS_MEDIA_TOOLS, "requires yt-dlp, ffmpeg and ffprobe on PATH")
+    def test_http_403_is_reported_at_the_failed_phase_without_source_details(self):
+        source = VideoSource(b"")
+        self.addCleanup(source.close)
+        _, pc = self.start_service()
+        urls = [source.url(f"{path}?token={PAGE_TOKEN}") for path in ("forbidden-page", "playable-page")]
+        added = pc.request("POST", "/api/jobs", body={"urls": urls})
+        self.assertLess(added.status, 300, added.body)
+        self.start_jobs(pc)
+
+        failed = self.wait_for_queue(pc, lambda queue: not queue["running"])["jobs"]
+        self.assertEqual([job["url"] for job in failed], urls)
+        self.assertEqual([job["status"] for job in failed], ["failed", "failed"])
+        errors = [job["error"] for job in failed]
+        self.assertEqual(errors, [
+            "Источник отклонил запрос данных о видео (HTTP 403).",
+            "Источник отклонил запрос медиафайла (HTTP 403).",
+        ])
+        diagnostics = "\n".join([*errors, self.server_log.read_text(errors="replace")])
+        for private_value in [PAGE_TOKEN, MEDIA_TOKEN, DENIAL_DETAIL, *urls]:
+            self.assertNotIn(private_value, diagnostics)
+        for path in ("/forbidden-page", "/playable-page", "/forbidden-media.mp4"):
+            with self.subTest(path=path):
+                self.assertIn("Chromium", source.client_hints.get(path, ""))
 
     @unittest.skipUnless(HAS_MEDIA_TOOLS, "requires yt-dlp, ffmpeg and ffprobe on PATH")
     def test_interrupted_download_requires_retry_and_another_start(self):

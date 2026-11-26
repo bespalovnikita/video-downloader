@@ -6,7 +6,7 @@ RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.l
     && apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates ffmpeg nftables tini util-linux \
     && rm -rf /var/lib/apt/lists/* \
-    && pip install --no-cache-dir --no-compile 'yt-dlp[default]==2026.11.23' \
+    && pip install --no-cache-dir --no-compile 'yt-dlp[default,pin-curl-cffi]==2026.11.23' \
     && groupadd --gid 10001 downloader \
     && useradd --uid 10001 --gid downloader --no-create-home downloader \
     && install -d -m 0700 -o downloader -g downloader /data
