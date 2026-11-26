@@ -33,6 +33,8 @@ internal sealed partial class SubscriptionController : IDisposable
     private Window? _window;
     private SubscriptionSnapshot? _snapshot;
     private CancellationTokenSource? _cancellation;
+    private CancellationTokenSource? _profileLookup;
+    private Task? _profileLookupTask;
     private bool _mutation;
     private bool _finalizingCheck;
     private bool _noticeShowing;
@@ -104,6 +106,12 @@ internal sealed partial class SubscriptionController : IDisposable
             };
             Control<Button>("CancelSubscriptionCheckButton").Click+=(_,_)=>
             {
+                if (_profileLookup is {} lookup)
+                {
+                    lookup.Cancel();
+                    Status("Поиск модели отменяется…");
+                    return;
+                }
                 _cancellation?.Cancel();
                 _checkProgress.Cancel();
                 Status("Проверка отменяется. Уже сохранённые результаты и обычная очередь останутся на месте.");
@@ -118,6 +126,13 @@ internal sealed partial class SubscriptionController : IDisposable
             {
                 if (e.Key==Key.Enter && !Busy) { e.Handled=true;await AddAsync(); }
             };
+            Control<TextBox>("SubscriptionUrlBox").TextChanged+=(_,_)=>
+            {
+                Control<ComboBox>("PornHubProfilesCombo").ItemsSource=null;
+                Control<StackPanel>("PornHubProfilesPanel").Visibility=Visibility.Collapsed;
+                UpdateButtons();
+            };
+            Control<ComboBox>("PornHubProfilesCombo").SelectionChanged+=(_,_)=>UpdateButtons();
             Control<TextBox>("SubscriptionNameBox").TextChanged+=(_,_)=>UpdateButtons();
             Control<TextBox>("SubscriptionNameBox").KeyDown+=async(_,e)=>
             {
@@ -134,6 +149,7 @@ internal sealed partial class SubscriptionController : IDisposable
             {
                 if (!ReferenceEquals(_window,window)) return;
                 if(!_automaticCheck)_cancellation?.Cancel();
+                _profileLookup?.Cancel();
                 _checkProgress.Stop();
                 _details?.Dispose();_details=null;
                 StopInboxFilterTimer();
@@ -161,6 +177,7 @@ internal sealed partial class SubscriptionController : IDisposable
         _disposed=true;
         StopScheduleTimer();
         _cancellation?.Cancel();
+        _profileLookup?.Cancel();
         _checkProgress.Stop();
         _details?.Dispose();_details=null;
         _window?.Close();
@@ -301,12 +318,19 @@ internal sealed partial class SubscriptionController : IDisposable
         var source=Sources.SelectedItem as SubscriptionSourceView;
         var items=VisibleInboxSelection();
         bool ready=!Busy;
-        Control<Button>("AddSubscriptionButton").IsEnabled=ready;
+        var profiles=Control<ComboBox>("PornHubProfilesCombo");
+        var add=Control<Button>("AddSubscriptionButton");
+        add.IsEnabled=ready && (profiles.Items.Count==0 || profiles.SelectedItem!=null);
+        add.Content=profiles.Items.Count==0 && PornHubVideo.WatchUrl(Control<TextBox>("SubscriptionUrlBox").Text)!=null
+            ? "Найти модель" : "Добавить и проверить";
+        profiles.IsEnabled=ready;
         Control<Button>("CheckSubscriptionButton").IsEnabled=ready && source!=null && !source.Definition.Paused;
         // This button also retries reading a repaired persistence file.
         Control<Button>("CheckAllSubscriptionsButton").IsEnabled=ready;
         Control<CheckBox>("FullSubscriptionCheck").IsEnabled=ready;
-        Control<Button>("CancelSubscriptionCheckButton").IsEnabled=_cancellation!=null && !_cancellation.IsCancellationRequested;
+        var cancel=Control<Button>("CancelSubscriptionCheckButton");
+        cancel.IsEnabled=(_profileLookup??_cancellation) is {IsCancellationRequested:false};
+        cancel.Content=_profileLookup!=null?"Отменить поиск модели":"Отменить проверку";
         var pause=Control<Button>("PauseSubscriptionButton");
         pause.IsEnabled=ready && source!=null;
         pause.Content=source?.Definition.Paused==true?"Возобновить":"Приостановить";
@@ -362,7 +386,18 @@ internal sealed partial class SubscriptionController : IDisposable
     {
         if (Busy || _window==null) return;
         var window=_window;
-        string url=Control<TextBox>("SubscriptionUrlBox").Text.Trim();
+        string input=Control<TextBox>("SubscriptionUrlBox").Text.Trim();
+        var profiles=Control<ComboBox>("PornHubProfilesCombo");
+        if (profiles.Items.Count>0 && profiles.SelectedItem==null) return;
+        if (profiles.SelectedItem==null && PornHubVideo.WatchUrl(input) is {} watchUrl)
+        {
+            var lookup=FindProfilesAsync(window,watchUrl);
+            _profileLookupTask=lookup;
+            try { await lookup; }
+            finally { _profileLookupTask=null; }
+            return;
+        }
+        string url=profiles.SelectedItem as string??input;
         string feed=Control<TextBox>("SubscriptionFeedBox").Text.Trim();
         string shortName=Control<TextBox>("NewSubscriptionNameBox").Text.Trim();
         string initialAction=(Control<ComboBox>("SubscriptionInitialActionCombo").SelectedItem as ComboBoxItem)?.Tag as string
@@ -380,11 +415,51 @@ internal sealed partial class SubscriptionController : IDisposable
             Control<TextBox>("SubscriptionFeedBox").Clear();
             Control<TextBox>("NewSubscriptionNameBox").Clear();
             await ReloadAsync();
-            Sources.SelectedItem=Sources.Items.Cast<SubscriptionSourceView>().FirstOrDefault(x=>x.Id==added.Id);
+            if (CurrentWindow(window))
+                Sources.SelectedItem=Sources.Items.Cast<SubscriptionSourceView>().FirstOrDefault(x=>x.Id==added.Id);
         }
         catch(Exception e) { if (CurrentWindow(window)) Status("Не удалось добавить подписку: "+DisplayError(e),true); }
         finally { _mutation=false;UpdateButtons(); }
         if (added!=null && CurrentWindow(window)) await CheckAsync([added.Id]);
+    }
+
+    private async Task FindProfilesAsync(Window window,string watchUrl)
+    {
+        using var cancellation=new CancellationTokenSource();
+        _profileLookup=cancellation;
+        _mutation=true;
+        Status("Ищем профиль модели на странице ролика Pornhub…");
+        try
+        {
+            string cookies=_readCookies();
+            string[] profiles=await Task.Run(async () =>
+            {
+                using var scanner=new SubscriptionScanner(_ytDlp);
+                return await scanner.FindPornHubProfilesAsync(watchUrl,cookies,cancellation.Token);
+            });
+            if (!CurrentWindow(window) || cancellation.IsCancellationRequested) return;
+            var choice=Control<ComboBox>("PornHubProfilesCombo");
+            choice.ItemsSource=profiles;
+            choice.SelectedIndex=profiles.Length==1?0:-1;
+            Control<StackPanel>("PornHubProfilesPanel").Visibility=Visibility.Visible;
+            Status(profiles.Length==1
+                ? "Профиль найден. Нажмите «Добавить и проверить», чтобы сохранить подписку."
+                : "Найдено несколько моделей. Выберите профиль и нажмите «Добавить и проверить».");
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+            if (CurrentWindow(window)) Status("Поиск модели отменён.");
+        }
+        catch (Exception error)
+        {
+            if (CurrentWindow(window)) Status("Не удалось найти модель: "+DisplayError(error),true);
+        }
+        finally
+        {
+            _profileLookup=null;
+            _mutation=false;
+            UpdateButtons();
+        }
     }
 
     private async Task SaveNameAsync()

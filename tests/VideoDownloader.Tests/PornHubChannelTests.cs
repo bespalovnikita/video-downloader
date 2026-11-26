@@ -7,15 +7,25 @@ using VideoDownloader.Native;
 internal static class PornHubChannelTests
 {
     private const string Source="https://rt.pornhub.com/model/fixture-model";
+    private const string TestWatch="https://www.pornhub.com/view_video.php?viewkey=abcdef1234567";
+    private const string TestProfile="https://www.pornhub.com/pornstar/lookup-fixture";
     private static string Fixture=>File.ReadAllText(Path.Combine(AppContext.BaseDirectory,"fixtures","pornhub-discovery.json"));
     internal static bool TryRunFixture(string[] args)
     {
         string? url=args.LastOrDefault();
-        bool collection=url==Source;
-        if(!collection && url?.StartsWith("https://www.pornhub.com/view_video.php?viewkey=phfixture",StringComparison.Ordinal)!=true)return false;
+        bool profile=url==TestWatch && args.Contains(PornHubVideo.ProfileExtractor);
+        bool collection=url==Source || url==TestProfile;
+        if(!profile && !collection && url?.StartsWith("https://www.pornhub.com/view_video.php?viewkey=phfixture",StringComparison.Ordinal)!=true)return false;
         int cookie=Array.IndexOf(args,"--cookies");
         using var config=JsonDocument.Parse(File.ReadAllText(args[cookie+1]));
         string mode=config.RootElement.GetProperty("Mode").GetString()!;
+        if(profile)
+        {
+            Require(args.Contains("--skip-download") && args.Contains("--ignore-config") && args.Contains("--plugin-dirs") &&
+                args[Array.IndexOf(args,"--use-extractors")+1]==PornHubVideo.ProfileExtractor,"Profile lookup must run the metadata-only extractor");
+            Console.WriteLine(config.RootElement.GetProperty("Response").GetString());
+            return true;
+        }
         if(collection)
         {
             foreach(string flag in new[]{"--ignore-config","--flat-playlist","--no-plugin-dirs","--plugin-dirs","--use-extractors"})
@@ -46,6 +56,15 @@ internal static class PornHubChannelTests
             Require(PornHubChannel.ListingUrl("https://www.pornhub.com/channels/fixture")=="https://www.pornhub.com/channels/fixture/videos","Channels must keep their collection");
             foreach(string url in new[]{"https://pornhub.com.evil.example/model/a","https://user@pornhub.com/model/a","https://example.com/model/a",Source+"/videos/favorites"})
                 Require(PornHubChannel.ListingUrl(url)==null,"Only supported publication routes may use the site collector");
+            foreach(string input in new[]{"abcdef1234567","Clip [abcdef1234567]",@"C:\Video\Clip [abcdef1234567].mp4",
+                "https://rt.pornhub.com/view_video.php?src=x&viewkey=abcdef1234567#clip"})
+                Require(PornHubVideo.WatchUrl(input)==TestWatch,"Watch URL must resolve from pasted input");
+            foreach(string input in new[]{"Clip [2160p].mp4","https://example.com/[abcdef1234567]",
+                "https://www.pornhub.com/view_video.php?viewkey=abcdef1234567&viewkey=other",TestProfile})
+                Require(PornHubVideo.WatchUrl(input)==null,"Unrelated or ambiguous input must stay out of watch-page lookup");
+            string profiles=JsonSerializer.Serialize(new {id="abcdef1234567",vd_ph_profiles=new[]{TestProfile,TestProfile}});
+            Require(PornHubVideo.ParseProfiles(profiles,TestWatch).SequenceEqual(new[]{TestProfile}),"Valid exact profile links are reusable");
+            Refuses(()=>PornHubVideo.ParseProfiles(profiles.Replace(TestProfile,"https://www.pornhub.com.example/model/other"),TestWatch));
             string json=Fixture;
             var parsed=PornHubChannel.ParseScan(json,Source);
             Require(parsed.Items.Count==3 && parsed.Items.Select(x=>x.Url).Distinct().Count()==3,"Every publication must become one video URL");

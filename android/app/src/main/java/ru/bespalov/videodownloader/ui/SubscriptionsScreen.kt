@@ -6,6 +6,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -14,11 +16,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.launch
 import ru.bespalov.video.core.EntryState
 import ru.bespalov.video.core.ErrorText
+import ru.bespalov.video.core.PornHubVideo
 import ru.bespalov.video.core.Subscription
 import java.text.DateFormat
 import java.util.Date
@@ -108,7 +114,8 @@ internal fun SubscriptionsScreen(ui: MobileUiState, actions: MobileActions) {
             }
         }
     }
-    if (add) AddSubscriptionDialog(onDismiss = { add = false }) { url, feed, name, existing ->
+    if (add) AddSubscriptionDialog(onDismiss = { add = false }, findProfiles = actions::findPornHubProfiles,
+        locked = ui.locked) { url, feed, name, existing ->
         add = false
         actions.addSubscription(url, feed, name, existing)
     }
@@ -173,14 +180,45 @@ private fun SourceCard(source: Subscription, ui: MobileUiState, actions: MobileA
 }
 
 @Composable
-private fun AddSubscriptionDialog(onDismiss: () -> Unit, add: (String, String, String, Boolean) -> Unit) {
+private fun AddSubscriptionDialog(
+    onDismiss: () -> Unit,
+    findProfiles: suspend (String) -> List<String>,
+    locked: Boolean,
+    add: (String, String, String, Boolean) -> Unit,
+) {
     var url by rememberSaveable { mutableStateOf("") }
     var feed by rememberSaveable { mutableStateOf("") }
     var name by rememberSaveable { mutableStateOf("") }
     var existing by rememberSaveable { mutableStateOf(false) }
+    var profiles by remember { mutableStateOf(emptyList<String>()) }
+    var profile by remember { mutableStateOf<String?>(null) }
+    var searching by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf("") }
+    val scope = rememberCoroutineScope()
+    val watchUrl = remember(url) { PornHubVideo.watchUrl(url) }
     AlertDialog(onDismissRequest = onDismiss, title = { Text("Добавить подписку") },
         text = { Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedTextField(value = url, onValueChange = { url = it }, label = { Text("URL канала / плейлиста") }, modifier = Modifier.testTag("subscriptionUrl"), maxLines = 3)
+            OutlinedTextField(value = url, onValueChange = {
+                url = it
+                profiles = emptyList()
+                profile = null
+                error = ""
+            }, label = { Text("URL канала / плейлиста") },
+                supportingText = { Text("Для Pornhub также подойдёт ссылка на видео, его ID или имя файла с ID.") },
+                modifier = Modifier.testTag("subscriptionUrl"), maxLines = 3, enabled = !searching)
+            if (error.isNotBlank()) Text(error, color = MaterialTheme.colorScheme.error)
+            if (profiles.isNotEmpty()) {
+                Text(if (profiles.size == 1) "Профиль модели Pornhub" else "Выберите профиль модели Pornhub")
+                Column(Modifier.selectableGroup()) {
+                    profiles.forEach { candidate ->
+                        Row(Modifier.fillMaxWidth().selectable(selected = profile == candidate, role = Role.RadioButton,
+                            onClick = { profile = candidate }).padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            RadioButton(selected = profile == candidate, onClick = null)
+                            Text(candidate, modifier = Modifier.padding(start = 8.dp))
+                        }
+                    }
+                }
+            }
             OutlinedTextField(value = feed, onValueChange = { feed = it }, label = { Text("RSS / Atom — необязательно") }, maxLines = 2)
             OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Краткое имя папки — необязательно") }, singleLine = true)
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -189,7 +227,35 @@ private fun AddSubscriptionDialog(onDismiss: () -> Unit, add: (String, String, S
             }
             Text(if (existing) "После полного обхода материалы попадут в очередь. Скачивание — кнопкой Start." else "Текущий набор станет точкой отсчёта. При следующих ручных проверках появятся новые материалы.", style = MaterialTheme.typography.bodySmall)
         } },
-        confirmButton = { TextButton(onClick = { add(url, feed, name, existing) }, enabled = url.isNotBlank()) { Text("Добавить и проверить") } },
+        confirmButton = {
+            TextButton(enabled = !locked && !searching && url.isNotBlank() && (profiles.isEmpty() || profile != null),
+                onClick = {
+                    if (watchUrl == null || profile != null) {
+                        add(profile ?: url, feed, name, existing)
+                    } else {
+                        searching = true
+                        error = ""
+                        scope.launch {
+                            try {
+                                profiles = findProfiles(watchUrl)
+                                profile = profiles.singleOrNull()
+                            } catch (cancel: CancellationException) {
+                                throw cancel
+                            } catch (failure: Exception) {
+                                error = failure.message ?: "Не удалось найти профиль модели Pornhub."
+                            } finally {
+                                searching = false
+                            }
+                        }
+                    }
+                }) {
+                Text(when {
+                    searching -> "Поиск модели…"
+                    watchUrl != null && profiles.isEmpty() -> "Найти модель"
+                    else -> "Добавить и проверить"
+                })
+            }
+        },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена") } })
 }
 

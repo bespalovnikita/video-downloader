@@ -23,6 +23,10 @@ preview_spec = importlib.util.spec_from_file_location(
     'vd_pornhub_preview_test', PLUGIN.with_name('vd_pornhub_preview.py'))
 preview_module = importlib.util.module_from_spec(preview_spec)
 preview_spec.loader.exec_module(preview_module)
+profiles_spec = importlib.util.spec_from_file_location(
+    'vd_pornhub_profiles_test', PLUGIN.with_name('vd_pornhub_profiles.py'))
+profiles_module = importlib.util.module_from_spec(profiles_spec)
+profiles_spec.loader.exec_module(profiles_module)
 SOURCE = 'https://rt.pornhub.com/model/fixture-model'
 LISTING = SOURCE + '/videos/upload'
 VIDEO = 'https://www.pornhub.com/view_video.php?viewkey=6a0a221dc5b27'
@@ -61,6 +65,63 @@ class BuiltinVideo(OfflineVideoTransport, PornHubIE):
 
 class PreviewVideo(OfflineVideoTransport, preview_module.VideoDownloaderPornHubPreviewIE):
     pass
+
+
+class ProfilesVideo(OfflineVideoTransport, profiles_module.VideoDownloaderPornHubProfilesIE):
+    pass
+
+
+class ProfileExtractorTests(unittest.TestCase):
+    def test_credits_precede_uploader_and_ignore_unrelated_links(self):
+        html = video_page(body="""
+            <script>var MODEL_PROFILE = {"modelProfileLink":"/model/uploader"};</script>
+            <div class="recommendedVideos"><a data-label="pornstar" href="/model/unrelated">Unrelated</a></div>
+            <a data-label="pornstar" href="/pornstar/credited">Credited</a>
+            <div class="pornstarsWrapper">
+              <a href="//rt.pornhub.com/pornstar/credited/videos/upload">Same profile</a>
+              <a href="/model/another">Another</a>
+              <a href="https://www.pornhub.com.example/model/foreign">Foreign</a>
+              <a href="https://[broken">Malformed</a>
+            </div>""")
+        extractor = ProfilesVideo(html)
+        result = extractor.extract(VIDEO)
+        self.assertEqual(result['id'], VIDEO.rsplit('=', 1)[1])
+        self.assertEqual(result['entries'], [])
+        self.assertEqual(result['vd_ph_profiles'], [
+            'https://www.pornhub.com/pornstar/credited', 'https://www.pornhub.com/model/another'])
+        self.assertEqual([request[0] for request in extractor.requests], [VIDEO])
+
+    def test_model_profile_and_uploader_anchor_can_resolve_without_media_formats(self):
+        for body in (
+            '<script>var MODEL_PROFILE = {"modelProfileLink":"/model/creator"};</script>',
+            '<div class="usernameWrap">From:&nbsp;<a href="/model/creator">Creator</a></div>',
+        ):
+            extractor = ProfilesVideo(f'<html><body>{body}</body></html>')
+            downloader = extractor._downloader
+            downloader.add_info_extractor(extractor)
+            result = downloader.extract_info(VIDEO, download=False, ie_key=extractor.ie_key())
+            self.assertEqual(result['vd_ph_profiles'], ['https://www.pornhub.com/model/creator'])
+            self.assertEqual(len(extractor.requests), 1)
+
+    def test_removed_redirected_or_uncredited_video_has_no_profile(self):
+        for html, response_url in (
+            ('<div class="removed">Unavailable</div><div class="usernameWrap"><a href="/model/a">A</a></div>', VIDEO),
+            ('<div class="usernameWrap"><a href="/channels/studio">Studio</a></div>', VIDEO),
+            ('<a href="/pornstar/recommendation">Recommendation</a>', VIDEO),
+            ('<div class="usernameWrap"><a href="/model/a">A</a></div>', VIDEO + '0'),
+            ('<div class="usernameWrap"><a href="/model/a">A</a></div>', VIDEO.replace('pornhub.com', 'example.com')),
+        ):
+            with self.subTest(response=response_url, html=html), self.assertRaises(ExtractorError):
+                ProfilesVideo(html, response_url).extract(VIDEO)
+
+    def test_profile_plugin_is_selected_by_yt_dlp(self):
+        command = [sys.executable, '-m', 'yt_dlp', '--ignore-config', '--no-plugin-dirs', '--plugin-dirs',
+                   str(ROOT / 'collection-plugins'), '--use-extractors', 'videodownloader:pornhub:profiles',
+                   '--verbose', '--skip-download', 'vdph-test:invalid']
+        result = subprocess.run(command, capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('VideoDownloaderPornHubProfilesIE', result.stderr)
+        self.assertIn('No suitable extractor found', result.stderr)
 
 
 class PreviewExtractorTests(unittest.TestCase):

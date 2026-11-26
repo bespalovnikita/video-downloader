@@ -122,20 +122,25 @@
         <Border Background="{DynamicResource PanelBrush}" CornerRadius="8" Padding="12" Margin="0,5,0,0">
             <Grid>
                 <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-                <TextBlock Text="Канал или плейлист — любой сайт, поддерживаемый yt-dlp" Margin="0,0,10,5" TextWrapping="Wrap"/>
+                <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                <TextBlock Text="URL канала или плейлиста, имя файла или ID видео Pornhub" Margin="0,0,10,5" TextWrapping="Wrap"/>
                 <TextBlock Grid.Column="1" Text="RSS / Atom (необязательно)" Margin="0,0,10,5"/>
                 <TextBox Grid.Row="1" x:Name="SubscriptionUrlBox" Margin="0,0,10,0"
-                         ToolTip="Полный HTTP(S) URL канала или плейлиста, включая модель или канал Pornhub. Каждый ролик добавляется отдельным заданием."/>
+                         AutomationProperties.Name="URL канала, имя файла или ID видео Pornhub"
+                         ToolTip="Чтобы найти модель Pornhub, вставьте ссылку на видео, его ID или имя скачанного файла с ID в квадратных скобках."/>
                 <TextBox Grid.Row="1" Grid.Column="1" x:Name="SubscriptionFeedBox" Margin="0,0,10,0"
                          ToolTip="Лента дополняет полную проверку через yt-dlp. Для YouTube лента может определиться автоматически."/>
                 <Button Grid.Row="1" Grid.Column="2" x:Name="AddSubscriptionButton" Content="Добавить и проверить" Tag="Primary" Margin="0"/>
-                <StackPanel Grid.Row="2" Grid.ColumnSpan="3" Orientation="Horizontal" Margin="0,8,0,0">
+                <StackPanel x:Name="PornHubProfilesPanel" Grid.Row="2" Grid.ColumnSpan="3" Visibility="Collapsed" Margin="0,8,0,0">
+                    <TextBlock Text="Профиль модели Pornhub" Margin="0,0,0,5"/>
+                    <ComboBox x:Name="PornHubProfilesCombo" AutomationProperties.Name="Профиль модели Pornhub"/>
+                </StackPanel>
+                <StackPanel Grid.Row="3" Grid.ColumnSpan="3" Orientation="Horizontal" Margin="0,8,0,0">
                     <TextBlock Text="Краткое имя / папка (необязательно)" VerticalAlignment="Center" Margin="0,0,10,0"/>
                     <TextBox x:Name="NewSubscriptionNameBox" Width="300" MaxLength="160"
                              ToolTip="Оставьте пустым, чтобы взять имя канала или плейлиста при первой проверке. Можно задать своё, например 123."/>
                 </StackPanel>
-                <ComboBox Grid.Row="3" Grid.ColumnSpan="3" x:Name="SubscriptionInitialActionCombo" SelectedIndex="1" Margin="0,8,0,5"
+                <ComboBox Grid.Row="4" Grid.ColumnSpan="3" x:Name="SubscriptionInitialActionCombo" SelectedIndex="1" Margin="0,8,0,5"
                           AutomationProperties.Name="Действие с существующими материалами"
                           ToolTip="Действие применяется к материалам первой успешной полной проверки. Последующие новинки появятся со статусом «Новое».">
                     <ComboBox.Resources>
@@ -145,7 +150,7 @@
                     <ComboBoxItem Tag="Skip" Content="Добавить все материалы в подписку без скачивания в статусе &quot;пропущено&quot;" ContentTemplate="{StaticResource InitialActionTemplate}"/>
                     <ComboBoxItem Tag="ManualDone" Content="Добавить все материалы в подписку без скачивания в статусе &quot;готово&quot;" ContentTemplate="{StaticResource InitialActionTemplate}"/>
                 </ComboBox>
-                <TextBlock Grid.Row="4" Grid.ColumnSpan="3" Foreground="{DynamicResource SecondaryTextBrush}" TextWrapping="Wrap"
+                <TextBlock Grid.Row="5" Grid.ColumnSpan="3" Foreground="{DynamicResource SecondaryTextBrush}" TextWrapping="Wrap"
                            Text="Первая полная проверка начнётся сразу. «Пропущено» и ручная отметка «Готово» сохраняют список без скачивания; «Готово» не означает наличие файла. При добавлении в очередь повтор уже скачанных URL потребует подтверждения. Скачивание запускается отдельно кнопкой «Скачать всю очередь»."/>
             </Grid>
         </Border>

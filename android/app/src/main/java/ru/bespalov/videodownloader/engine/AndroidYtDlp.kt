@@ -9,6 +9,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
@@ -19,6 +20,7 @@ import kotlinx.coroutines.withTimeout
 import org.json.JSONObject
 import ru.bespalov.video.core.DownloadTask
 import ru.bespalov.video.core.FullScan
+import ru.bespalov.video.core.PornHubVideo
 import ru.bespalov.video.core.ScanMetadata
 import ru.bespalov.video.core.SubscriptionScanCoordinator
 import ru.bespalov.video.core.SubscriptionScanLimits
@@ -64,10 +66,12 @@ class AndroidYtDlp internal constructor(context: Context, private val runtimeUpd
                 }
                 YoutubeDL.init(app)
                 FFmpeg.init(app)
-                val relative = "videodownloader/yt_dlp_plugins/extractor/vd_pornhub.py"
-                val target = File(pluginRoot, relative)
-                target.parentFile!!.mkdirs()
-                app.assets.open(relative).use { input -> target.outputStream().use(input::copyTo) }
+                for (name in listOf("vd_pornhub.py", "vd_pornhub_profiles.py")) {
+                    val relative = "videodownloader/yt_dlp_plugins/extractor/$name"
+                    val target = File(pluginRoot, relative)
+                    target.parentFile!!.mkdirs()
+                    app.assets.open(relative).use { input -> target.outputStream().use(input::copyTo) }
+                }
                 initialized = true
             }
         }
@@ -120,6 +124,22 @@ class AndroidYtDlp internal constructor(context: Context, private val runtimeUpd
                     }, onProgress = onProgress)
             }
         }
+
+    suspend fun findPornHubProfiles(watchUrl: String, cookies: File?): List<String> = withContext(Dispatchers.IO) {
+        require(PornHubVideo.watchUrl(watchUrl) == watchUrl) { "Укажите ссылку на ролик Pornhub." }
+        initialize()
+        val arguments = listOf("--ignore-config", "--dump-single-json", "--skip-download", "--abort-on-error",
+            "--no-color", "--no-progress", "--encoding", "utf-8", "--socket-timeout", "15",
+            "--no-plugin-dirs", "--plugin-dirs", pluginRoot.path, "--use-extractors", "videodownloader:pornhub:profiles")
+        try {
+            val response = execute("profiles-${UUID.randomUUID()}", request(watchUrl, arguments, cookies), 30_000,
+                outputLimit = 128 * 1024)
+            PornHubVideo.parseProfiles(response.out, watchUrl)
+        } catch (_: TimeoutCancellationException) {
+            currentCoroutineContext().ensureActive()
+            throw IOException("Pornhub не ответил за 30 секунд.")
+        }
+    }
 
     suspend fun download(requestId: String, task: DownloadTask, settings: Settings, stage: File,
                          transferCounters: EngineTransferCounters = EngineTransferCounters(),
