@@ -48,6 +48,7 @@ internal static class ErrorMessages
     // mistaken for HTTP codes or an extractor's diagnostic text.
     private static readonly Rule[] BeforeHttp =
     [
+        RuleFor(@"^The server's copy has expired\.", "Срок хранения файла на сервере истёк. Запустите скачивание повторно."),
         RuleFor(@"^The retained download data is no longer available\.", "Временные данные пропущенной загрузки недоступны. Сбросьте элемент, чтобы скачать его заново."),
         RuleFor(@"^The retained download belongs to a different format or fragment\.", "Сохранённые данные относятся к другому формату или фрагменту. Сначала сбросьте загрузку, затем измените параметры."),
         RuleFor(@"^The previous owner of this retained download is still running\.", "Прежний процесс ещё владеет временными данными. Дождитесь его завершения и повторите продолжение."),

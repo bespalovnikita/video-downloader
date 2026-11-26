@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.IO;
 using System.Net;
 using System.Net.Http;
@@ -309,8 +310,19 @@ internal static class RemoteDownloadClientTests
         }
         catch (IOException error)
         {
-            Require(error.Message == ErrorMessages.Text("Срок хранения файла на сервере истёк. Запустите скачивание повторно.",
-                "The server's copy has expired. Start the download again."), "Expiry must report a specific error.");
+            Require(error.Message == "The server's copy has expired. Start the download again.",
+                "Expiry must report a stable diagnostic.");
+            var originalCulture = CultureInfo.CurrentUICulture;
+            try
+            {
+                CultureInfo.CurrentUICulture = CultureInfo.GetCultureInfo("ru-RU");
+                Require(ErrorMessages.ForDisplay(error.Message) == "Срок хранения файла на сервере истёк. Запустите скачивание повторно.",
+                    "The Russian UI should explain how to retry an expired result.");
+                CultureInfo.CurrentUICulture = CultureInfo.GetCultureInfo("en-US");
+                Require(ErrorMessages.ForDisplay(error.Message) == error.Message,
+                    "The English UI should display the expiry diagnostic.");
+            }
+            finally { CultureInfo.CurrentUICulture = originalCulture; }
         }
         Require(!client.OwnsAssignment(row) && retryJob is null && AssignmentPaths(persistence).Length == 0,
             "Expiry must clear the stale assignment without an automatic resubmission.");

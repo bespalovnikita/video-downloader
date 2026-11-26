@@ -216,9 +216,7 @@ internal sealed class RemoteDownloadClient : IRemoteDownloadClient
         }
     }
 
-    private static IOException ExpiredResult() => new(ErrorMessages.Text(
-        "Срок хранения файла на сервере истёк. Запустите скачивание повторно.",
-        "The server's copy has expired. Start the download again."));
+    private static IOException ExpiredResult() => new("The server's copy has expired. Start the download again.");
 
     public async Task AcknowledgeAsync(RemoteDownloadArtifact artifact, string publishedPath, CancellationToken token)
     {
