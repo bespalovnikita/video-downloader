@@ -878,6 +878,8 @@
                             </StackPanel>
                           </Expander.Header>
                           <StackPanel Margin="8">
+                            <TextBlock Text="Параметры скачивания с сайта на ПК. Для своих заданий VPS использует собственные настройки и стандартные имена файлов."
+                                       Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,0,0,8"/>
                             <Button x:Name="ResetQueueAdvancedOptionsButton" Content="Сбросить дополнительные параметры"
                                     HorizontalAlignment="Left" Visibility="Collapsed" Margin="0,0,0,8"
                                     ToolTip="Снять лимит скорости, вернуть 4 параллельные загрузки, автоматические фрагменты и стандартный шаблон имени, отключить блоки HTTP и aria2c."/>

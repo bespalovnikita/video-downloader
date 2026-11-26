@@ -21,7 +21,8 @@ internal interface IRemoteDownloadClient : IDisposable
 
 internal enum RemoteDownloadStage { Waiting, Downloading, Receiving }
 
-internal sealed record RemoteDownloadProgress(RemoteDownloadStage Stage, double Percent, long BytesReceived, long TotalBytes);
+internal sealed record RemoteDownloadProgress(RemoteDownloadStage Stage, double Percent, long BytesReceived, long TotalBytes,
+    double BytesPerSecond = 0);
 internal sealed record RemoteDownloadArtifact(string JobId, string MediaPath, string Title, long Size);
 internal sealed class RemoteDownloadUnsupportedException() : IOException("Сервер передал коллекцию в локальную очередь.");
 
@@ -41,9 +42,7 @@ internal sealed record RemoteDownloadRequest(string Url, string Quality, string 
     {
         if (row.Selection is not null || row.ResumeState is not null || options.AudioOnly ||
             options.AudioTrack != "Default" || options.Cookies.Length > 0 || options.WriteSubs || options.AutoSubs ||
-            options.EmbedSubs || options.EmbedThumbnail || options.Sponsor || options.UseHttpChunks ||
-            options.PreferAria2c || options.RateLimit != "Unlimited" || options.Fragments != "Auto" ||
-            options.FilenameTemplate != "%(title)s [%(id)s].%(ext)s")
+            options.EmbedSubs || options.EmbedThumbnail || options.Sponsor)
             return null;
 
         string container = options.Container.Equals("webm", StringComparison.OrdinalIgnoreCase) ? "WebM" : options.Container;
@@ -65,19 +64,22 @@ internal sealed class RemoteDownloadClient : IRemoteDownloadClient
     private static readonly JsonSerializerOptions WireJson = new(JsonSerializerDefaults.Web);
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(12);
     private static readonly TimeSpan ReadTimeout = TimeSpan.FromSeconds(30);
+    private const double TransferSampleSeconds = 0.2;
     private const int MaxResponseBytes = 32 * 1024;
     private readonly HttpClient _http;
     private readonly RemoteDownloadJournal _journal;
     private readonly Action<string> _log;
+    private readonly TimeProvider _clock;
     public bool IsAvailable { get; private set; }
     public int MaxConcurrent { get; private set; } = 4;
 
     internal RemoteDownloadClient(RemoteDownloadConnection connection, AppPersistence persistence, Action<string> log,
-        HttpMessageHandler? handler = null)
+        HttpMessageHandler? handler = null, TimeProvider? clock = null)
     {
         _log = log;
         _journal = new RemoteDownloadJournal(persistence, connection, log);
         _http = CreateHttpClient(connection, handler);
+        _clock = clock ?? TimeProvider.System;
     }
 
     private static HttpClient CreateHttpClient(RemoteDownloadConnection connection, HttpMessageHandler? handler)
@@ -316,6 +318,7 @@ internal sealed class RemoteDownloadClient : IRemoteDownloadClient
         using (var file = new FileStream(partial, FileMode.CreateNew, FileAccess.Write, FileShare.None, 128 * 1024,
             FileOptions.Asynchronous | FileOptions.SequentialScan))
         {
+            progress(ReceivingProgress(0, size));
             for (int attempt = 0; ; attempt++)
             {
                 try
@@ -344,7 +347,10 @@ internal sealed class RemoteDownloadClient : IRemoteDownloadClient
                     break;
                 }
                 catch (Exception error) when (!token.IsCancellationRequested && attempt < 3 && IsTransient(error))
-                { await Task.Delay(300 << attempt, token).ConfigureAwait(false); }
+                {
+                    progress(ReceivingProgress(file.Position, size));
+                    await Task.Delay(300 << attempt, token).ConfigureAwait(false);
+                }
             }
         }
         token.ThrowIfCancellationRequested();
@@ -363,14 +369,24 @@ internal sealed class RemoteDownloadClient : IRemoteDownloadClient
         catch { response.Dispose(); throw; }
     }
 
-    private static async Task CopyFileAsync(Stream input, FileStream output, long size,
+    private async Task CopyFileAsync(Stream input, FileStream output, long size,
         Func<CancellationToken, Task> waitForResume, Action<RemoteDownloadProgress> progress, CancellationToken token)
     {
         byte[] buffer = new byte[128 * 1024];
-        long lastUpdate = 0;
+        long sampleBytes = 0;
+        double sampleSeconds = 0;
+        double speed = 0;
+        bool reportedBytes = false;
         while (output.Position < size)
         {
-            await waitForResume(token).ConfigureAwait(false);
+            var resume = waitForResume(token);
+            if (!resume.IsCompleted && speed > 0)
+            {
+                speed = 0;
+                progress(ReceivingProgress(output.Position, size));
+            }
+            await resume.ConfigureAwait(false);
+            long started = _clock.GetTimestamp();
             using var deadline = Deadline(token, ReadTimeout);
             int count;
             try
@@ -382,14 +398,25 @@ internal sealed class RemoteDownloadClient : IRemoteDownloadClient
             { throw new TimeoutException("Прервалась передача файла с сервера."); }
             if (count == 0) throw new EndOfStreamException("Передача файла завершилась раньше ожидаемого размера.");
             await output.WriteAsync(buffer.AsMemory(0, count), token).ConfigureAwait(false);
-            long now = Environment.TickCount64;
-            if (lastUpdate == 0 || now - lastUpdate >= 200 || output.Position == size)
+            sampleBytes += count;
+            sampleSeconds += _clock.GetElapsedTime(started).TotalSeconds;
+            bool sampled = sampleSeconds >= TransferSampleSeconds;
+            if (sampled)
             {
-                progress(new RemoteDownloadProgress(RemoteDownloadStage.Receiving, output.Position * 100d / size, output.Position, size));
-                lastUpdate = now;
+                speed = sampleBytes / sampleSeconds;
+                sampleBytes = 0;
+                sampleSeconds = 0;
+            }
+            if (sampled || !reportedBytes || output.Position == size)
+            {
+                progress(ReceivingProgress(output.Position, size, speed));
+                reportedBytes = true;
             }
         }
     }
+
+    private static RemoteDownloadProgress ReceivingProgress(long received, long size, double bytesPerSecond = 0) =>
+        new(RemoteDownloadStage.Receiving, received * 100d / size, received, size, bytesPerSecond);
 
     private static string SafeFileName(string filename)
     {

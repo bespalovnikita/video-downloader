@@ -185,6 +185,8 @@ public sealed partial class DownloadCoordinator
             _=>80+percent*.19
         };
         item.Progress=Math.Max(item.Progress,overall);
+        item.Speed=progress.Stage==RemoteDownloadStage.Receiving && progress.BytesPerSecond>0
+            ? DownloadFormat.TransferSpeed(progress.BytesPerSecond) : "";
         if(progress.Stage==RemoteDownloadStage.Receiving)
         {
             item.TransferredBytes=Math.Max(item.TransferredBytes,progress.BytesReceived);

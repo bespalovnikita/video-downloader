@@ -261,6 +261,13 @@ public static class DownloadFormat
         if (bytes >= 1L<<20) return $"{bytes/(1L<<20):0.#} MB/s";
         return $"{bytes/1024:0.#} KB/s";
     }
+    internal static string TransferSpeed(double bytes)
+    {
+        if (bytes >= 1L<<30) return FormattableString.Invariant($"{bytes/(1L<<30):0.##} GiB/s");
+        if (bytes >= 1L<<20) return FormattableString.Invariant($"{bytes/(1L<<20):0.##} MiB/s");
+        if (bytes >= 1L<<10) return FormattableString.Invariant($"{bytes/(1L<<10):0.##} KiB/s");
+        return FormattableString.Invariant($"{bytes:0.##} B/s");
+    }
     public static string Tray(int ok,int left,int errors,double speed,bool running,bool paused)
     {
         string s=ErrorMessages.Text($"VD | Готово {ok} Осталось {left} Ошибок {errors}",$"VD | OK {ok} Left {left} Err {errors}");
