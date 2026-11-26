@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.IO;
 using System.Net;
 using System.Net.Http;
@@ -28,7 +29,11 @@ internal static class RemoteDownloadClientTests
             await TransferAndReplayReceiptAsync(new AppPersistence(Path.Combine(root, "transfer")), deadline.Token);
             await RefuseChangedTransferAsync(new AppPersistence(Path.Combine(root, "invalid-range")), deadline.Token);
             await ReuseLostSubmissionAsync(new AppPersistence(Path.Combine(root, "restart")), deadline.Token);
-            Console.WriteLine("PASS: authenticated server connection, independent local settings, transfer speed, verified ranges, durable receipts and assignment recovery");
+            await RetryExpiredAssignmentAsync(new AppPersistence(Path.Combine(root, "expiry-on-reopen")),
+                expireOnReopen: true, deadline.Token);
+            await RetryExpiredAssignmentAsync(new AppPersistence(Path.Combine(root, "expiry-during-transfer")),
+                expireOnReopen: false, deadline.Token);
+            Console.WriteLine("PASS: authenticated server connection, independent local settings, transfer speed, verified ranges, durable receipts assignment recovery and expiry retries");
         }
         finally { Directory.Delete(root, recursive: true); }
     }
@@ -268,6 +273,89 @@ internal static class RemoteDownloadClientTests
         var result = await reopened.DownloadAsync(row, new DownloadOptions { Quality = "2160" }, MakeStage(persistence), Resume, _ => { }, token);
         Require(job == Jobs + result.JobId && File.ReadAllBytes(result.MediaPath).SequenceEqual(Media),
             "Recovery must reuse the created assignment and complete its transfer.");
+    }
+
+    private static async Task RetryExpiredAssignmentAsync(AppPersistence persistence, bool expireOnReopen, CancellationToken token)
+    {
+        var row = new DownloadItem { Url = Source };
+        var options = new DownloadOptions();
+        string? expiredJob = null;
+        string? retryJob = null;
+        bool expired = false;
+        if (expireOnReopen)
+        {
+            // Store an existing assignment as if the earlier session ended after its PUT.
+            using var previous = Client(persistence, (request, _) =>
+            {
+                Require(request.Method == HttpMethod.Put, "The initial session should submit an assignment.");
+                expiredJob ??= PathOf(request);
+                throw new HttpRequestException("The response to the earlier submission was lost.");
+            });
+            await RefusesAsync<HttpRequestException>(() => previous.DownloadAsync(row, options,
+                MakeStage(persistence), Resume, _ => { }, token), "The earlier assignment should stay recoverable.");
+            Require(previous.OwnsAssignment(row), "The first session must leave an assignment on disk.");
+        }
+        using var client = Client(persistence, (request, _) =>
+        {
+            string path = PathOf(request);
+            if (path == Capabilities) return Task.FromResult(Json(new { version = 1, maxConcurrent = 4 }));
+            if (request.Method == HttpMethod.Put)
+            {
+                if (!expired)
+                {
+                    expiredJob ??= path;
+                    Require(path == expiredJob, "The existing job must be checked using its original ID.");
+                    if (expireOnReopen)
+                    {
+                        expired = true;
+                        return Task.FromResult(Json(new { state = "failed", expired = true }));
+                    }
+                    return Task.FromResult(Completed());
+                }
+                Require(path != expiredJob && retryJob is null, "An explicit retry must submit a fresh ID exactly once.");
+                retryJob = path;
+                return Task.FromResult(Completed());
+            }
+            if (!expired)
+            {
+                Require(path == expiredJob + "/file", "The first result should expire at the file endpoint.");
+                expired = true;
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.Gone));
+            }
+            Require(path == retryJob + "/file" && retryJob is not null, "The expired result must never be read or acknowledged again.");
+            return Task.FromResult(FileResponse(Media, HttpStatusCode.OK, Media.Length));
+        });
+        if (expireOnReopen)
+        {
+            await client.PrepareAsync(token);
+            Require(client.OwnsAssignment(row), "The reopened client must restore the previous assignment.");
+        }
+        try
+        {
+            await client.DownloadAsync(row, options, MakeStage(persistence), Resume, _ => { }, token);
+            throw new InvalidOperationException("The expired result should produce a retryable error.");
+        }
+        catch (IOException error)
+        {
+            Require(error.Message == "The server's copy has expired. Start the download again.",
+                "Expiry must report a stable diagnostic.");
+            var originalCulture = CultureInfo.CurrentUICulture;
+            try
+            {
+                CultureInfo.CurrentUICulture = CultureInfo.GetCultureInfo("ru-RU");
+                Require(ErrorMessages.ForDisplay(error.Message) == "Срок хранения файла на сервере истёк. Запустите скачивание повторно.",
+                    "The Russian UI should explain how to retry an expired result.");
+                CultureInfo.CurrentUICulture = CultureInfo.GetCultureInfo("en-US");
+                Require(ErrorMessages.ForDisplay(error.Message) == error.Message,
+                    "The English UI should display the expiry diagnostic.");
+            }
+            finally { CultureInfo.CurrentUICulture = originalCulture; }
+        }
+        Require(!client.OwnsAssignment(row) && retryJob is null && AssignmentPaths(persistence).Length == 0,
+            "Expiry must clear the stale assignment without an automatic resubmission.");
+        var result = await client.DownloadAsync(row, options, MakeStage(persistence), Resume, _ => { }, token);
+        Require(retryJob == Jobs + result.JobId && File.ReadAllBytes(result.MediaPath).SequenceEqual(Media),
+            "The explicit retry should transfer a new result.");
     }
 
     private static RemoteDownloadClient Client(AppPersistence persistence,

@@ -176,7 +176,8 @@ internal sealed class RemoteDownloadClient : IRemoteDownloadClient
         try
         {
             var status = await PutAsync(assignment, token).ConfigureAwait(false);
-            if (reopening && !status.Unsupported && status.State is "cancelled" or "interrupted" or "failed")
+            if (reopening && !status.Unsupported && !status.Expired &&
+                status.State is ("cancelled" or "interrupted" or "failed"))
             {
                 _journal.Remove(assignment);
                 assignment = Register(request);
@@ -193,12 +194,18 @@ internal sealed class RemoteDownloadClient : IRemoteDownloadClient
             if (status.State != "completed")
             {
                 _journal.Remove(assignment);
+                if (status.Expired) throw ExpiredResult();
                 if (status.State == "failed" && status.Unsupported) throw new RemoteDownloadUnsupportedException();
                 string error = status.Error is { Length: > 0 } detail ? detail[..Math.Min(detail.Length, 500)] : "Сервер не подготовил файл.";
                 throw new IOException(error);
             }
             string path = await ReceiveAsync(assignment, status, stage, waitForResume, progress, token).ConfigureAwait(false);
             return new RemoteDownloadArtifact(assignment.JobId, path, status.Title ?? Path.GetFileNameWithoutExtension(path), status.Size!.Value);
+        }
+        catch (HttpRequestException error) when (error.StatusCode == HttpStatusCode.Gone)
+        {
+            _journal.Remove(assignment);
+            throw ExpiredResult();
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
@@ -211,6 +218,8 @@ internal sealed class RemoteDownloadClient : IRemoteDownloadClient
             throw;
         }
     }
+
+    private static IOException ExpiredResult() => new("The server's copy has expired. Start the download again.");
 
     public async Task AcknowledgeAsync(RemoteDownloadArtifact artifact, string publishedPath, CancellationToken token)
     {
@@ -261,6 +270,7 @@ internal sealed class RemoteDownloadClient : IRemoteDownloadClient
         {
             var result = await ReadJsonAsync<RemoteJobStatus>(_http, request, deadline.Token).ConfigureAwait(false);
             if (result is null || result.State is not ("queued" or "downloading" or "completed" or "failed" or "interrupted" or "received" or "cancelled") ||
+                (result.Expired && result.State != "failed") ||
                 result.Progress is < 0 or > 100 || (result.State == "completed" && (result.Size is null or <= 0 || string.IsNullOrWhiteSpace(result.Filename))))
                 throw new InvalidDataException("Сервер вернул неверные данные о задании.");
             return result;
@@ -510,5 +520,5 @@ internal sealed class RemoteDownloadClient : IRemoteDownloadClient
 
     internal sealed record RemoteCapabilities(int Version, int MaxConcurrent, long? FreeDiskBytes = null);
     private sealed record RemoteJobStatus(string State, int? Progress, string? Filename, long? Size, string? Error, string? Title,
-        bool Unsupported);
+        bool Unsupported, bool Expired);
 }
