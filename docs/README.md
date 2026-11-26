@@ -11,7 +11,7 @@
 
 ## Быстрые ссылки
 
-- **Первый запуск:** [Windows](user/windows.md) · [Android](user/android.md).
+- **Первый запуск:** [Windows](user/windows.md) · [Android](user/android.md) · [Linux-сервер с веб-интерфейсом](user/server.md).
 - **Четыре основных сценария Windows:** [YouTube-видео](user/windows.md#youtube-video), [плейлист](user/windows.md#youtube-playlist), [подписка](user/windows.md#subscriptions), [RSS](user/windows.md#rss).
 - **Перенос и доступ к сайтам:** [очередь между устройствами](user/queue-transfer.md) · [cookies из браузера](user/cookies.md).
 - **Резервная копия профиля:** [Windows `.vdbackup`](user/windows-backup.md) · [Android](user/troubleshooting.md#android-backup).
