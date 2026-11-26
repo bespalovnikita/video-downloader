@@ -6,12 +6,14 @@ import os
 import re
 import signal
 import stat
+from contextlib import contextmanager
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import quote, urlsplit
 
 from queue_worker import JobStore, MIB, RemoteOptions
+from update_bridge import UpdateBridge
 
 
 STATIC_ROOT = Path(__file__).resolve().parent / "static"
@@ -146,6 +148,52 @@ class DownloadHandler(BaseHTTPRequestHandler):
     def dispatch(self):
         path = self.path.split("?", 1)[0]
         method = self.command
+        if path == "/api/update" or path.startswith("/api/update/"):
+            self.dispatch_update(method, path)
+            return
+        if method in {"POST", "PUT", "DELETE"}:
+            with self.queue_work():
+                self.dispatch_queue(method, path)
+        else:
+            self.dispatch_queue(method, path)
+
+    @contextmanager
+    def queue_work(self):
+        with self.server.store.work_gate.shared() as granted:
+            if not granted:
+                raise RequestError(HTTPStatus.SERVICE_UNAVAILABLE,
+                                   "Очередь временно недоступна во время обновления сервера.")
+            yield
+
+    def dispatch_update(self, method, path):
+        if method in {"GET", "HEAD"} and path == "/api/update/version":
+            self.send_json(HTTPStatus.OK, {"version": self.server.version})
+            return
+        if method in {"GET", "HEAD"} and path == "/api/update":
+            action = "status"
+        elif method == "POST" and path in {"/api/update/check", "/api/update/install"}:
+            action = path.rsplit("/", 1)[1]
+        else:
+            raise RequestError(HTTPStatus.NOT_FOUND, "Страница не найдена.")
+        updater = self.server.updater
+        if not updater.supported:
+            if action == "status":
+                self.send_json(HTTPStatus.OK, {"supported": False})
+                return
+            raise RequestError(HTTPStatus.SERVICE_UNAVAILABLE, "Обновление через браузер не настроено.")
+        try:
+            snapshot = updater.request(action)
+        except (OSError, ValueError, RecursionError):
+            raise RequestError(HTTPStatus.SERVICE_UNAVAILABLE, "Служба обновлений сейчас недоступна.") from None
+        if action == "status":
+            status = HTTPStatus.OK
+        elif snapshot.get("state") == "busy":
+            status = HTTPStatus.CONFLICT
+        else:
+            status = HTTPStatus.ACCEPTED
+        self.send_json(status, {**snapshot, "supported": True})
+
+    def dispatch_queue(self, method, path):
         store = self.server.store
         if path == "/api/remote/capabilities" and method in {"GET", "HEAD"}:
             self.send_json(HTTPStatus.OK, store.remote_capabilities())
@@ -298,6 +346,10 @@ class DownloadHandler(BaseHTTPRequestHandler):
             self.wfile.write(data)
 
     def send_file(self, job_id):
+        with self.queue_work():
+            self._send_file(job_id)
+
+    def _send_file(self, job_id):
         result = self.server.store.get_file(job_id)
         if result is None:
             raise RequestError(HTTPStatus.NOT_FOUND, "Готовый файл не найден.")
@@ -343,9 +395,11 @@ class DownloadHandler(BaseHTTPRequestHandler):
 
 
 class DownloadServer(ThreadingHTTPServer):
-    def __init__(self, address, store, credentials):
+    def __init__(self, address, store, credentials, *, updater=None, version=""):
         self.store = store
         self.credentials = credentials
+        self.updater = updater if updater is not None else UpdateBridge(None)
+        self.version = version
         super().__init__(address, DownloadHandler)
 
 
@@ -374,9 +428,13 @@ def main():
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     signal.signal(signal.SIGTERM, stop_server)
     os.umask(0o077)
-    store = JobStore(data_dir, max_concurrent=max_concurrent, disk_reserve=disk_reserve * MIB)
+    updater_dir = os.environ.get("VD_UPDATER_DIR")
+    updater = UpdateBridge(Path(updater_dir) if updater_dir else None)
+    store = JobStore(data_dir, max_concurrent=max_concurrent, disk_reserve=disk_reserve * MIB,
+                     work_gate=updater.work_gate)
     try:
-        with DownloadServer((host, port), store, credentials) as server:
+        with DownloadServer((host, port), store, credentials, updater=updater,
+                            version=os.environ.get("VD_SERVER_VERSION", "")) as server:
             logging.info("Video Downloader listening on %s:%d", *server.server_address)
             server.serve_forever()
     except KeyboardInterrupt:

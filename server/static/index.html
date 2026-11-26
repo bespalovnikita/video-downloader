@@ -25,6 +25,21 @@
       <p>Очередь общая для всех устройств. Сервер продолжает скачивать видео при закрытой вкладке.</p>
     </div>
 
+    <details class="server-update" id="server-update">
+      <summary>Обновление сервера</summary>
+      <div class="server-update-content">
+        <dl class="server-versions" id="server-versions" hidden>
+          <div><dt>Установлена</dt><dd id="server-current-version"></dd></div>
+          <div id="server-latest-version-row" hidden><dt>Доступна</dt><dd id="server-latest-version"></dd></div>
+        </dl>
+        <p class="notice" id="server-update-message" role="status" aria-atomic="true">Получаем состояние обновлений…</p>
+        <div class="server-update-actions">
+          <button class="button button-secondary" id="server-update-check" type="button" disabled>Проверить обновления</button>
+          <button class="button button-primary" id="server-update-install" type="button" hidden disabled>Установить обновление</button>
+        </div>
+      </div>
+    </details>
+
     <form class="composer" id="add-form">
       <label for="urls">Ссылки на видео</label>
       <textarea id="urls" name="urls" rows="3" spellcheck="false" autocomplete="off" autocapitalize="off"

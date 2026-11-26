@@ -1,0 +1,1 @@
+yt-dlp[default,pin-curl-cffi]==2026.11.23

@@ -1,0 +1,23 @@
+[Unit]
+Description=Video Downloader stable server updater
+Wants=network-online.target
+Requires=docker.service
+After=network-online.target docker.service systemd-tmpfiles-setup.service
+ConditionPathExists=/etc/video-downloader-updater.json
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 -I -B /usr/local/libexec/video-downloader-updater/host_updater.py --config /etc/video-downloader-updater.json
+Restart=on-failure
+RestartSec=3s
+StateDirectory=video-downloader-updater
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/run/video-downloader-updater
+
+[Install]
+WantedBy=multi-user.target

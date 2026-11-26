@@ -26,6 +26,14 @@ const emptyTitle = document.querySelector("#empty-title");
 const emptyHelp = document.querySelector("#empty-help");
 const jobList = document.querySelector("#jobs");
 const jobTemplate = document.querySelector("#job-template");
+const updatePanel = document.querySelector("#server-update");
+const updateVersions = document.querySelector("#server-versions");
+const currentVersion = document.querySelector("#server-current-version");
+const latestVersionRow = document.querySelector("#server-latest-version-row");
+const latestVersion = document.querySelector("#server-latest-version");
+const updateMessage = document.querySelector("#server-update-message");
+const checkUpdateButton = document.querySelector("#server-update-check");
+const installUpdateButton = document.querySelector("#server-update-install");
 const number = new Intl.NumberFormat("ru", { maximumFractionDigits: 1 });
 const plurals = new Intl.PluralRules("ru");
 const jobForms = { one: "задание", few: "задания", many: "заданий" };
@@ -35,6 +43,26 @@ let online = false;
 let currentFilter = "all";
 let actionPending = false;
 let refreshController = null;
+
+const updateLabels = {
+  idle: "Проверьте, доступна ли новая версия.",
+  checking: "Проверяем обновления…",
+  current: "Установлена актуальная версия.",
+  available: "Доступно стабильное обновление.",
+  installing: "Устанавливаем обновление. Сервер временно перезапустится.",
+  busy: "Сервер занят. Дождитесь завершения текущих заданий и повторите проверку.",
+  error: "Не удалось обновить сервер. Повторите проверку.",
+};
+const updateAttemptKey = "video-downloader-server-update";
+const reconnectLimit = 15 * 60 * 1000;
+let updateSnapshot = null;
+let updateAttempt = restoreUpdateAttempt();
+let updateRequestError = null;
+let updateFeedback = null;
+let updateSending = false;
+let updateRefreshing = false;
+let updateTimer = null;
+let reconnectFailures = 0;
 
 function setText(element, text) {
   if (element.textContent !== text) {
@@ -76,7 +104,10 @@ async function request(path, { method = "GET", body, controller = new AbortContr
     if (!response.ok) {
       const data = await response.json().catch(() => null);
       const message = response.status === 401 ? "Войдите снова, обновив страницу." : `Ошибка сервера (${response.status}).`;
-      throw new Error(typeof data?.detail === "string" ? data.detail : message);
+      const error = new Error(typeof data?.detail === "string" ? data.detail : message);
+      error.status = response.status;
+      error.data = data;
+      throw error;
     }
     return response.status === 204 ? null : await response.json().catch(() => {
       throw new Error("Сервер вернул ответ в неожиданном формате.");
@@ -87,7 +118,7 @@ async function request(path, { method = "GET", body, controller = new AbortContr
 }
 
 function updateControls() {
-  const locked = !online || actionPending;
+  const locked = !online || actionPending || updateAttempt?.action === "install";
   addButton.disabled = locked || input.value.trim() === "";
   startButton.disabled = locked || snapshot.running || !snapshot.jobs.some(({ status }) => status === "queued");
   setText(startButton, snapshot?.running ? "Очередь запущена" : "Запустить очередь");
@@ -217,10 +248,14 @@ async function refresh() {
     if (!Array.isArray(data?.jobs) || typeof data.running !== "boolean") {
       throw new Error("Сервер вернул некорректную очередь.");
     }
+    const reconnected = !online && connection.dataset.state === "offline";
     snapshot = data;
     online = true;
     connection.dataset.state = "online";
     setText(connection, "Сервер на связи");
+    if (reconnected && (updatePanel.open || updateAttempt)) {
+      void refreshUpdate();
+    }
   } catch {
     if (refreshController !== controller) {
       return;
@@ -238,7 +273,7 @@ async function refresh() {
 }
 
 async function changeQueue(path, options, message, success) {
-  if (!online || actionPending) {
+  if (!online || actionPending || updateAttempt?.action === "install") {
     return;
   }
 
@@ -259,6 +294,184 @@ async function changeQueue(path, options, message, success) {
     await refresh();
   }
 }
+
+function restoreUpdateAttempt() {
+  try {
+    const attempt = JSON.parse(sessionStorage.getItem(updateAttemptKey));
+    const age = Date.now() - attempt?.started;
+    if ((attempt?.action === "check" || attempt?.action === "install") &&
+      Number.isFinite(attempt.started) && age >= 0 && age < reconnectLimit) {
+      return { action: attempt.action, version: versionOf(attempt.version), started: attempt.started };
+    }
+  } catch {
+    // Availability and completion can still be read from the server.
+  }
+  return null;
+}
+
+function rememberUpdate(attempt) {
+  updateAttempt = attempt;
+  try {
+    if (attempt) {
+      sessionStorage.setItem(updateAttemptKey, JSON.stringify(attempt));
+    } else {
+      sessionStorage.removeItem(updateAttemptKey);
+    }
+  } catch {
+    // Some browsers block storage in this context.
+  }
+}
+
+function versionOf(value) {
+  return typeof value === "string" && value.length <= 48 && /^v?\d+\.\d+\.\d+$/.test(value) ? value.replace(/^v/, "") : "";
+}
+
+function acceptUpdate(data) {
+  if (data?.supported !== false && (data?.supported !== true || !Object.hasOwn(updateLabels, data.state))) {
+    throw new Error("Сервер вернул некорректное состояние обновления.");
+  }
+  updateSnapshot = data;
+  updateRequestError = null;
+  reconnectFailures = 0;
+  if (data.supported && (data.state === "checking" || data.state === "installing")) {
+    const action = data.state === "installing" ? "install" : "check";
+    const version = versionOf(data.latestVersion);
+    const now = Date.now();
+    if (updateAttempt?.action !== action || now - updateAttempt.started >= reconnectLimit) {
+      rememberUpdate({ action, version, started: now });
+    } else if (version && version !== updateAttempt.version) {
+      rememberUpdate({ ...updateAttempt, version });
+    }
+    updateFeedback = null;
+    return;
+  }
+  if (updateAttempt?.action === "install" && data.supported && data.state !== "error" &&
+    updateAttempt.version && versionOf(data.currentVersion) === updateAttempt.version) {
+    updateFeedback = { text: `Сервер обновлён до версии ${updateAttempt.version}.`, error: false };
+  } else if (updateFeedback?.uncertain) {
+    updateFeedback = data.state === "error" || data.state === "busy" ? null : {
+      text: "Сервер снова на связи. Проверьте показанное состояние перед повтором команды.",
+      error: false,
+    };
+  }
+  rememberUpdate(null);
+}
+
+function renderUpdate() {
+  const data = updateSnapshot;
+  const unsupported = data?.supported === false;
+  const version = versionOf(data?.currentVersion);
+  const available = versionOf(data?.latestVersion);
+  const error = updateRequestError;
+  const busy = updateSending || updateRefreshing || Boolean(updateAttempt);
+  updateVersions.hidden = data?.supported !== true;
+  setText(currentVersion, version || "Не определена");
+  latestVersionRow.hidden = !available || available === version;
+  setText(latestVersion, available);
+  checkUpdateButton.hidden = unsupported;
+  installUpdateButton.hidden = data?.state !== "available" || !available || available === version;
+  checkUpdateButton.disabled = unsupported || busy;
+  installUpdateButton.disabled = busy || Boolean(error) || installUpdateButton.hidden;
+  setText(checkUpdateButton, error ? "Повторить подключение" : "Проверить обновления");
+
+  const message = unsupported
+    ? "Чтобы обновлять сервер из браузера, подключите службу обновлений на VPS."
+    : error && updateAttempt && error.status !== 401 && error.status !== 403
+      ? "Нет связи с сервером. Ждём восстановления подключения."
+      : error?.message || updateFeedback?.text || (typeof data?.message === "string" && data.message) ||
+        updateLabels[data?.state] || (updateAttempt ? updateLabels[updateAttempt.action === "install" ? "installing" : "checking"]
+          : "Получаем состояние обновлений…");
+  setNotice(updateMessage, message, !unsupported && (Boolean(error) || Boolean(updateFeedback?.error) || data?.state === "error"));
+  updateControls();
+}
+
+function scheduleUpdateRefresh() {
+  clearTimeout(updateTimer);
+  if (updateAttempt && document.visibilityState === "visible" &&
+    updateRequestError?.status !== 401 && updateRequestError?.status !== 403) {
+    const delay = Math.min(2000 * 2 ** Math.min(reconnectFailures, 3), 12000);
+    updateTimer = setTimeout(() => void refreshUpdate(), delay);
+  }
+}
+
+async function refreshUpdate() {
+  if (updateSending || updateRefreshing) {
+    return;
+  }
+  clearTimeout(updateTimer);
+  updateRefreshing = true;
+  renderUpdate();
+  try {
+    acceptUpdate(await request("/api/update"));
+  } catch (error) {
+    if (error.status === 404) {
+      acceptUpdate({ supported: false });
+    } else {
+      updateRequestError = error;
+      reconnectFailures += 1;
+      if (updateAttempt && (Date.now() - updateAttempt.started >= reconnectLimit ||
+        error.status === 401 || error.status === 403)) {
+        rememberUpdate(null);
+      }
+    }
+  } finally {
+    updateRefreshing = false;
+    renderUpdate();
+    scheduleUpdateRefresh();
+  }
+}
+
+async function changeUpdate(action) {
+  if (updateSending || updateRefreshing || updateAttempt || updateSnapshot?.supported !== true || updateRequestError) {
+    return;
+  }
+  const version = versionOf(updateSnapshot.latestVersion);
+  if (action === "install" && (updateSnapshot.state !== "available" || !version ||
+    version === versionOf(updateSnapshot.currentVersion) ||
+    !window.confirm("Установить доступное стабильное обновление? Сервер временно перезапустится."))) {
+    return;
+  }
+
+  updateSending = true;
+  updateFeedback = { text: updateLabels[action === "install" ? "installing" : "checking"], error: false };
+  rememberUpdate({ action, version, started: Date.now() });
+  renderUpdate();
+  try {
+    const data = await request(`/api/update/${action}`, { method: "POST" });
+    updateFeedback = null;
+    acceptUpdate(data);
+    if (data.state === "error") {
+      updateFeedback = { text: data.message || updateLabels.error, error: true };
+    }
+  } catch (error) {
+    if (error.status === 409 && error.data?.supported === true && error.data.state === "busy") {
+      acceptUpdate(error.data);
+      updateFeedback = { text: error.data.message || updateLabels.busy, error: false };
+    } else if (error.status && error.status < 500) {
+      rememberUpdate(null);
+      updateFeedback = { text: error.message, error: true };
+    } else {
+      updateFeedback = { text: "Подтверждение команды не получено. Проверяем состояние сервера…", error: false, uncertain: true };
+    }
+  } finally {
+    updateSending = false;
+    await refreshUpdate();
+  }
+}
+
+checkUpdateButton.addEventListener("click", () => {
+  if (updateRequestError || !updateSnapshot) {
+    void refreshUpdate();
+  } else {
+    void changeUpdate("check");
+  }
+});
+installUpdateButton.addEventListener("click", () => void changeUpdate("install"));
+updatePanel.addEventListener("toggle", () => {
+  if (updatePanel.open) {
+    void refreshUpdate();
+  }
+});
 
 input.addEventListener("input", updateControls);
 
@@ -314,8 +527,22 @@ jobList.addEventListener("click", (event) => {
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") {
     void refresh();
+    if (updatePanel.open || updateAttempt) {
+      void refreshUpdate();
+    }
+  } else {
+    clearTimeout(updateTimer);
   }
 });
-window.addEventListener("online", () => void refresh());
+window.addEventListener("online", () => {
+  void refresh();
+  if (updatePanel.open || updateAttempt) {
+    void refreshUpdate();
+  }
+});
 setInterval(() => void refresh(), 2000);
+if (updateAttempt) {
+  updatePanel.open = true;
+}
 void refresh();
+void refreshUpdate();

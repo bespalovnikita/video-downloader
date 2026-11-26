@@ -10,9 +10,11 @@ import stat
 import subprocess
 import threading
 from collections import deque
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
+
+from update_bridge import WorkGate
 
 
 LOGGER = logging.getLogger(__name__)
@@ -101,7 +103,7 @@ def download_title(value: object) -> str:
 
 class JobStore:
     def __init__(self, data_dir: Path, *, yt_dlp: str = "yt-dlp", ffprobe: str = "ffprobe",
-                 max_concurrent: int = 4, disk_reserve: int = 512 * MIB):
+                 max_concurrent: int = 4, disk_reserve: int = 512 * MIB, work_gate: WorkGate | None = None):
         root = data_dir.resolve()
         self._root = root
         self._staging = root / "staging"
@@ -110,6 +112,7 @@ class JobStore:
         self._ffprobe = ffprobe
         self._max_concurrent = max_concurrent
         self._disk_reserve = disk_reserve
+        self.work_gate = work_gate if work_gate is not None else WorkGate(None)
         self._lock = threading.Condition()
         self._browser_batch = deque()
         self._active: set[int | str] = set()
@@ -389,23 +392,22 @@ class JobStore:
                 if changed:
                     self._lock.notify_all()
 
-    def _claim(self) -> sqlite3.Row | None:
+    def _next_job(self) -> sqlite3.Row | None:
         if self._disk_free < self._disk_reserve + STORAGE_HEADROOM * (len(self._active) + 1):
             return None
         if not any(isinstance(job_id, int) for job_id in self._active):
             while self._browser_batch:
-                job = self._browser_batch.popleft()
-                if self._mark_downloading(job["id"]):
+                job = self._browser_batch[0]
+                row = self._read_job(job["id"])
+                if row is not None and row["status"] == "queued":
                     return job
+                self._browser_batch.popleft()
         outstanding = self._db.execute("""
             SELECT count(*) FROM remote_jobs WHERE status IN ('downloading', 'completed')
         """).fetchone()[0]
         if outstanding >= self._max_concurrent:
             return None
-        job = self._db.execute("SELECT * FROM remote_jobs WHERE status = 'queued' ORDER BY rowid LIMIT 1").fetchone()
-        if job is not None and self._mark_downloading(job["id"]):
-            return job
-        return None
+        return self._db.execute("SELECT * FROM remote_jobs WHERE status = 'queued' ORDER BY rowid LIMIT 1").fetchone()
 
     def _mark_downloading(self, job_id: int | str) -> bool:
         with self._db:
@@ -419,26 +421,42 @@ class JobStore:
     def _work(self) -> None:
         while not self._stopped.is_set():
             try:
-                with self._lock:
-                    job = None
-                    while not self._stopping and job is None:
-                        job = self._claim()
-                        if job is None:
-                            self._lock.wait()
+                with ExitStack() as active_work:
+                    job = self._wait_for_job(active_work)
                     if job is None:
                         return
-                job_id = job["id"]
-                try:
-                    self._run_job(job_id, job["url"],
-                                  RemoteOptions(**json.loads(job["options"])) if isinstance(job_id, str) else None)
-                finally:
-                    with self._lock:
-                        self._active.remove(job_id)
-                        self._disk_failures.discard(job_id)
-                        self._lock.notify_all()
+                    job_id = job["id"]
+                    try:
+                        self._run_job(job_id, job["url"],
+                                      RemoteOptions(**json.loads(job["options"])) if isinstance(job_id, str) else None)
+                    finally:
+                        with self._lock:
+                            self._active.remove(job_id)
+                            self._disk_failures.discard(job_id)
+                            self._lock.notify_all()
             except (OSError, sqlite3.Error):
                 LOGGER.exception("Could not update or access the download queue")
                 self._stopped.wait(1)
+
+    def _wait_for_job(self, active_work: ExitStack) -> sqlite3.Row | None:
+        with self._lock:
+            while not self._stopping:
+                job = self._next_job()
+                if job is None:
+                    self._lock.wait()
+                    continue
+                with ExitStack() as candidate_work:
+                    if candidate_work.enter_context(self.work_gate.shared()):
+                        if isinstance(job["id"], int):
+                            self._browser_batch.popleft()
+                        if self._mark_downloading(job["id"]):
+                            # Transfer lease ownership to the running job.
+                            active_work.enter_context(candidate_work.pop_all())
+                            return job
+                        continue
+                # The host may release its lock without contacting this process.
+                self._lock.wait(timeout=0.5)
+        return None
 
     def _run_job(self, job_id: int | str, url: str, options: RemoteOptions | None) -> None:
         stage = self._staging / str(job_id)

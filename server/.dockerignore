@@ -1,6 +1,8 @@
 **
 !server.py
 !queue_worker.py
+!update_bridge.py
+!requirements.runtime.txt
 !egress.nft
 !entrypoint.sh
 !Caddyfile
