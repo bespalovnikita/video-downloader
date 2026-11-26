@@ -1,0 +1,34 @@
+name: video-downloader
+
+services:
+  downloader:
+    build: .
+    restart: unless-stopped
+    stop_grace_period: 20s
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777,noexec,nosuid,nodev
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_ADMIN
+      - SETGID
+      - SETPCAP
+      - SETUID
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      VD_SERVER_USER: ${VD_SERVER_USER:-downloader}
+      VD_SERVER_PASSWORD: ${VD_SERVER_PASSWORD:?Set VD_SERVER_PASSWORD in server/.env}
+    ports:
+      - "127.0.0.1:${VD_LOCAL_PORT:-8080}:8080"
+    volumes:
+      - downloader-data:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  downloader-data:

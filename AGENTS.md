@@ -15,6 +15,7 @@
 | --- | --- |
 | `src/VideoDownloader/`, `tests/VideoDownloader.Tests/`, `tests/VideoDownloader.UiTests/`, `scripts/`, Windows CI/пакет | [WINDOWS.md](docs/agents/WINDOWS.md) |
 | `android/`, `.github/workflows/android.yml`, APK, Android runtime/service/данные | [ANDROID.md](docs/agents/ANDROID.md) |
+| `server/`, серверная очередь и Docker | [Руководство по серверному режиму](docs/user/server.md) |
 | `collection-plugins/`, `tests/fixtures/portable-queue/`, перенос данных, изменения обеих платформ | [WINDOWS.md](docs/agents/WINDOWS.md) и [ANDROID.md](docs/agents/ANDROID.md) |
 | Любые Markdown-правки или изменение пользовательского поведения | [DOCUMENTATION.md](docs/agents/DOCUMENTATION.md) |
 
@@ -26,6 +27,7 @@ Video Downloader имеет два пользовательских прилож
 
 - Windows: [`src/VideoDownloader/VideoDownloader.csproj`](src/VideoDownloader/VideoDownloader.csproj); UI — `UI/Views/`, владельцы UI-состояния — `UI/Controllers/`, доменная логика — `Downloads/`, `Preview/`, `Subscriptions/`, `Persistence/`, `Compatibility/`.
 - Android: [`android/`](android/), `:core` — JVM-модели и правила, `:app` — Compose, runtime, служба и публикация.
+- Серверный режим: [`server/`](server/), веб-интерфейс и фоновая очередь с отдельным хранилищем SQLite. Доступ к очереди и файлам требует авторизации.
 - Формат обмена очередью: [`tests/fixtures/portable-queue/README.md`](tests/fixtures/portable-queue/README.md). Это не формат backup и не перенос локального владения файлами.
 - Архитектура и жизненные циклы: [руководство разработчика](docs/developer/architecture.md).
 
@@ -50,6 +52,7 @@ Video Downloader имеет два пользовательских прилож
 | Windows-код, тесты, скрипты или сборка | `pwsh -NoProfile -File scripts/build.ps1 -Task Test`; зелёный Windows CI |
 | Windows packaging | Дополнительно `pwsh -NoProfile -File scripts/build.ps1 -Task Publish` |
 | Android | Из `android/`: `./gradlew :core:test :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleDebugAndroidTest`; device-сценарии по [ANDROID.md](docs/agents/ANDROID.md), зелёный Android CI |
+| Серверный режим | `python3 -m unittest discover -s server/tests -v` на Linux с `yt-dlp`, `ffmpeg` и `ffprobe` в PATH. При изменении контейнера проверь запуск и сетевую изоляцию через Docker Compose. |
 | Общий коллектор или portable queue | Обе платформы; фикстуры и реальные UI-сценарии по контракту |
 | Только Markdown | Локальные ссылки, якоря, Mermaid, соответствие исходникам; runtime-тесты не требуются |
 

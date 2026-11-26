@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#111423">
+  <title>Очередь загрузок · Video Downloader</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script type="module" src="/static/app.js"></script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="shell header-content">
+      <a class="brand" href="/">
+        <span class="brand-icon" aria-hidden="true">↓</span>
+        Video Downloader
+      </a>
+      <p class="connection" id="connection" data-state="connecting" role="status">Подключение…</p>
+    </div>
+  </header>
+
+  <main class="shell">
+    <div class="page-heading">
+      <h1>Очередь загрузок</h1>
+      <p>Очередь общая для всех устройств. Сервер продолжает скачивать видео при закрытой вкладке.</p>
+    </div>
+
+    <form class="composer" id="add-form">
+      <label for="urls">Ссылки на видео</label>
+      <textarea id="urls" name="urls" rows="3" spellcheck="false" autocomplete="off" autocapitalize="off"
+        aria-describedby="url-help" placeholder="https://…" required></textarea>
+      <div class="composer-footer">
+        <p id="url-help">По одной ссылке в строке</p>
+        <button class="button button-primary" id="add-button" type="submit" disabled>Добавить в очередь</button>
+      </div>
+      <p class="notice" id="add-message" role="status" aria-atomic="true"></p>
+    </form>
+
+    <section class="queue" aria-labelledby="queue-title">
+      <div class="queue-heading">
+        <h2 id="queue-title">Задания</h2>
+        <button class="button button-primary" id="start-button" type="button" disabled>Запустить очередь</button>
+      </div>
+      <div class="filters" role="group" aria-label="Фильтр заданий">
+        <button class="filter" data-filter="all" type="button" aria-pressed="true">Все <span></span></button>
+        <button class="filter" data-filter="active" type="button" aria-pressed="false">Активные <span></span></button>
+        <button class="filter" data-filter="completed" type="button" aria-pressed="false">Готовые <span></span></button>
+        <button class="filter" data-filter="issues" type="button" aria-pressed="false">Требуют внимания <span></span></button>
+      </div>
+      <p class="notice" id="queue-message" role="status" aria-atomic="true"></p>
+      <div class="empty" id="empty">
+        <p id="empty-title">Загружаем очередь…</p>
+        <p id="empty-help"></p>
+      </div>
+      <ul class="jobs" id="jobs" role="list" aria-label="Задания" hidden></ul>
+    </section>
+
+    <noscript><p class="notice" data-kind="error">Включите JavaScript, чтобы управлять очередью.</p></noscript>
+  </main>
+
+  <template id="job-template">
+    <li class="job">
+      <div class="job-info">
+        <h3 class="job-title"></h3>
+        <p class="job-source"></p>
+        <p class="job-file" hidden></p>
+        <p class="job-error" hidden></p>
+      </div>
+      <div class="job-state">
+        <p class="job-status"></p>
+        <progress class="job-progress" max="100" hidden></progress>
+      </div>
+      <div class="job-actions">
+        <a class="button button-download" download hidden>Скачать файл</a>
+        <button class="button button-secondary" type="button" data-action="retry" hidden>В очередь</button>
+        <button class="button button-secondary" type="button" data-action="delete" hidden>Удалить</button>
+      </div>
+    </li>
+  </template>
+</body>
+</html>

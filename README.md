@@ -3,11 +3,11 @@
 [![Сборка Windows](https://github.com/bespalovnikita/video-downloader/actions/workflows/native-windows.yml/badge.svg)](https://github.com/bespalovnikita/video-downloader/actions/workflows/native-windows.yml)
 [![Сборка Android](https://github.com/bespalovnikita/video-downloader/actions/workflows/android.yml/badge.svg)](https://github.com/bespalovnikita/video-downloader/actions/workflows/android.yml)
 
-Приложение для скачивания видео и аудио с очередью, историей, превью и подписками. Доступны два клиента: **Windows 10/11 x64** на C# / .NET 8 / WPF и **Android 8.0+** на Kotlin / Jetpack Compose. Оба используют yt-dlp; набор возможностей различается.
+Video Downloader скачивает видео и аудио через yt-dlp. В приложениях для **Windows 10/11 x64** и **Android 8.0+** доступны локальная очередь, история, превью и подписки. Серверный режим на **Linux с Docker Compose** даёт общую очередь и скачивание готовых файлов через браузер.
 
 В Windows прямая коллекция остаётся одной задачей, а показ и копирование её ссылки следуют за текущим видео. [Подробности отображения](docs/user/windows-reference.md#добавление-и-отображение).
 
-**[Скачать Windows и Android](https://github.com/bespalovnikita/video-downloader/releases/latest)** · **[Установить Android](docs/user/android.md)** · **[Вся документация на русском](docs/README.md)**
+**[Скачать Windows и Android](https://github.com/bespalovnikita/video-downloader/releases/latest)** · **[Установить Android](docs/user/android.md)** · **[Развернуть сервер](docs/user/server.md)** · **[Вся документация на русском](docs/README.md)**
 
 <a id="документация"></a>
 
@@ -39,6 +39,10 @@
 
 Скачай `VideoDownloader-Android.apk` из [последнего релиза](https://github.com/bespalovnikita/video-downloader/releases/latest) и открой файл на телефоне. APK содержит сборку для arm64-v8a и x86_64. [Порядок установки и обновления](docs/user/android.md#установка-apk-и-обновление) учитывает переход с прежних отладочных APK; для разработки можно [собрать APK локально](docs/developer/android-build.md). После **Start** загрузкой управляет foreground service с уведомлением; переход на главный экран её не останавливает. [Ограничения Android и работа с файлами](docs/user/android.md) описаны отдельно.
 
+### Сервер с веб-интерфейсом
+
+Запусти сервис на Linux-сервере с помощью Docker Compose и открой веб-интерфейс на ПК через SSH-туннель. Видео скачиваются на сервер после запуска очереди. Готовые файлы можно забрать через браузер. [Установка и работа с серверной очередью](docs/user/server.md).
+
 <a id="руководство-по-сценариям"></a>
 <a id="кнопки-быстрого-доступа"></a>
 
@@ -46,6 +50,7 @@
 
 | Задача | Инструкция |
 | --- | --- |
+| Скачать видео на сервер и забрать файл на ПК | [Веб-интерфейс и серверная очередь](docs/user/server.md) |
 | Скачать видео YouTube | [Добавить URL и запустить загрузку](docs/user/windows.md#youtube-video) |
 | Выбрать фрагмент или точные форматы в Windows | [Параметры отдельного URL](docs/user/windows-reference.md#формат-и-фрагмент-отдельного-видео) |
 | Скачать плейлист YouTube | [Одна задача или отдельная задача на каждый ролик](docs/user/windows.md#youtube-playlist) |

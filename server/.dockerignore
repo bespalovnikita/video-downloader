@@ -1,0 +1,7 @@
+**
+!server.py
+!queue_worker.py
+!egress.nft
+!entrypoint.sh
+!static/
+!static/**
