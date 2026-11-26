@@ -45,6 +45,10 @@ internal static class RemoteDownloadClientTests
         using var incompatible = Client(persistence, (_, _) => Task.FromResult(Json(new { version = 2, maxConcurrent = 4 })));
         await incompatible.PrepareAsync(token);
         Require(!incompatible.IsAvailable, "Only the supported version can receive new assignments.");
+
+        using var constrained = Client(persistence, (_, _) => Task.FromResult(Json(new { version = 1, maxConcurrent = 2 })));
+        await constrained.PrepareAsync(token);
+        Require(constrained.IsAvailable && constrained.MaxConcurrent == 2, "The Windows client must respect the server slot limit.");
     }
 
     private static async Task TransferAndReplayReceiptAsync(AppPersistence persistence, CancellationToken token)

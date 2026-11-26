@@ -9,6 +9,7 @@ namespace VideoDownloader.Native;
 internal interface IRemoteDownloadClient : IDisposable
 {
     bool IsAvailable => true;
+    int MaxConcurrent => 4;
     Task PrepareAsync(CancellationToken token);
     bool Supports(DownloadItem row, DownloadOptions options);
     bool OwnsAssignment(DownloadItem row);
@@ -68,6 +69,7 @@ internal sealed class RemoteDownloadClient : IRemoteDownloadClient
     private readonly RemoteDownloadJournal _journal;
     private readonly Action<string> _log;
     public bool IsAvailable { get; private set; }
+    public int MaxConcurrent { get; private set; } = 4;
 
     internal RemoteDownloadClient(RemoteDownloadConnection connection, AppPersistence persistence, Action<string> log,
         HttpMessageHandler? handler = null)
@@ -99,6 +101,7 @@ internal sealed class RemoteDownloadClient : IRemoteDownloadClient
             var capability = await ReadJsonAsync<RemoteCapabilities>(request, deadline.Token).ConfigureAwait(false);
             if (capability is not { Version: 1, MaxConcurrent: >= 1 and <= 4 })
                 throw new InvalidDataException("Сервер использует несовместимую версию протокола.");
+            MaxConcurrent = capability.MaxConcurrent;
             IsAvailable = true;
         }
         catch (Exception error) when (!token.IsCancellationRequested && IsRemoteFailure(error))

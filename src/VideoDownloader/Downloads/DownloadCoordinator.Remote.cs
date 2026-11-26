@@ -95,7 +95,8 @@ public sealed partial class DownloadCoordinator
     }
 
     private IEnumerable<Task> StartRemoteWorkers()=>_remoteReady && _remoteQueue is {} queue
-        ?Enumerable.Range(1,RemoteParallel).Select(slot=>Task.Run(()=>WorkerAsync(queue.Reader,"VPS "+slot,useRemote:true)))
+        ?Enumerable.Range(1,Math.Clamp(_remote!.MaxConcurrent,1,RemoteParallel))
+            .Select(slot=>Task.Run(()=>WorkerAsync(queue.Reader,"VPS "+slot,useRemote:true)))
         :Array.Empty<Task>();
 
     private void CompleteQueues()

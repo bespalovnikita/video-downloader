@@ -71,7 +71,7 @@ internal sealed class RemoteDownloadJournal
         string key = Hash(assignment.Request.Url);
         string path = Path.Combine(_directory, key + ".json");
         OwnedFiles.RegularOrAbsent(path);
-        AppPersistence.AtomicWrite(path, JsonSerializer.Serialize(assignment, AppPersistence.Json));
+        AppPersistence.AtomicWrite(path, JsonSerializer.Serialize(assignment, AppPersistence.Json), flushToDisk: true);
         _active[key] = assignment;
     }
 

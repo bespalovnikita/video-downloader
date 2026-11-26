@@ -110,13 +110,20 @@ public sealed class AppPersistence
         public override void Write(ReadOnlySpan<byte> buffer){Check(buffer.Length);base.Write(buffer);}
         public override void WriteByte(byte value){Check(1);base.WriteByte(value);}
     }
-    public static void AtomicWrite(string path,string contents)
+    public static void AtomicWrite(string path,string contents)=>AtomicWrite(path,contents,flushToDisk:false);
+
+    internal static void AtomicWrite(string path,string contents,bool flushToDisk)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
         string temp=path+"."+Guid.NewGuid().ToString("N")+".tmp";
         try
         {
-            File.WriteAllText(temp,contents,new UTF8Encoding(false));
+            if(flushToDisk)
+            {
+                using var output=new FileStream(temp,FileMode.CreateNew,FileAccess.Write,FileShare.None,4096,FileOptions.WriteThrough);
+                output.Write(Encoding.UTF8.GetBytes(contents));output.Flush(true);
+            }
+            else File.WriteAllText(temp,contents,new UTF8Encoding(false));
             MoveAtomically(temp,path);
         }
         finally { if(File.Exists(temp)) File.Delete(temp); }
