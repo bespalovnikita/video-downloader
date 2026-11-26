@@ -33,7 +33,7 @@ internal static class RemoteDownloadClientTests
                 expireOnReopen: true, deadline.Token);
             await RetryExpiredAssignmentAsync(new AppPersistence(Path.Combine(root, "expiry-during-transfer")),
                 expireOnReopen: false, deadline.Token);
-            Console.WriteLine("PASS: authenticated server connection checks, protocol availability, verified ranges, durable receipts and assignment recovery");
+            Console.WriteLine("PASS: authenticated server connection, independent local settings, transfer speed, verified ranges, durable receipts assignment recovery and expiry retries");
         }
         finally { Directory.Delete(root, recursive: true); }
     }
@@ -41,7 +41,7 @@ internal static class RemoteDownloadClientTests
     private static async Task CheckConnectionProbeAsync(CancellationToken token)
     {
         int requests = 0;
-        int slots = await RemoteDownloadClient.CheckConnectionAsync(Connection, token, new Handler((request, _) =>
+        var status = await RemoteDownloadClient.CheckConnectionAsync(Connection, token, new Handler((request, _) =>
         {
             requests++;
             string basic = Convert.ToBase64String(Encoding.UTF8.GetBytes("fixture-user:fixture-password"));
@@ -49,9 +49,15 @@ internal static class RemoteDownloadClientTests
                 PathOf(request) == Capabilities && request.Content is null && request.Headers.Authorization?.Scheme == "Basic" &&
                 request.Headers.Authorization.Parameter == basic,
                 "The probe must use one authenticated GET at the configured HTTPS base address, without a request body.");
-            return Task.FromResult(Json(new { version = 1, maxConcurrent = 3 }));
+            return Task.FromResult(Json(new { version = 1, maxConcurrent = 3, freeDiskBytes = 6L * 1024 * 1024 * 1024 }));
         }));
-        Require(requests == 1 && slots == 3, "The explicit connection probe must return the server slot limit.");
+        Require(requests == 1 && status is { MaxConcurrent: 3, FreeDiskBytes: 6L * 1024 * 1024 * 1024 },
+            "The explicit connection probe must return the server slot limit and real free disk space.");
+
+        var compatible = await RemoteDownloadClient.CheckConnectionAsync(Connection, token,
+            new Handler((_, _) => Task.FromResult(Json(new { version = 1, maxConcurrent = 2 }))));
+        Require(compatible is { MaxConcurrent: 2, FreeDiskBytes: null },
+            "A version 1 server without disk telemetry must remain compatible.");
 
         async Task ExpectFailure(Func<HttpResponseMessage> respond, string expected)
         {
@@ -106,6 +112,12 @@ internal static class RemoteDownloadClientTests
         int fileRequests = 0;
         int receipts = 0;
         bool delivered = false;
+        var clock = new TransferClock();
+        var options = new DownloadOptions
+        {
+            Threads = "6", Fragments = "8", UseHttpChunks = true, PreferAria2c = true, RateLimit = "5M",
+            FilenameTemplate = "%(id)s.%(ext)s", Quality = "720"
+        };
         using (var client = Client(persistence, async (request, ct) =>
         {
             string path = PathOf(request);
@@ -118,7 +130,11 @@ internal static class RemoteDownloadClientTests
                 Require(request.Content.Headers.ContentLength == Encoding.UTF8.GetByteCount(body) &&
                     request.Headers.TransferEncodingChunked != true, "The server requires a bounded JSON body with an explicit length.");
                 using var payload = JsonDocument.Parse(body);
-                Require(payload.RootElement.GetProperty("url").GetString() == Source, "A submitted URL must preserve case and query.");
+                Require(payload.RootElement.GetProperty("url").GetString() == Source &&
+                    payload.RootElement.GetProperty("quality").GetString() == options.Quality &&
+                    payload.RootElement.EnumerateObject().Select(property => property.Name).ToHashSet().SetEquals(
+                        ["url", "quality", "container", "videoCodec", "embedMetadata", "embedChapters"]),
+                    "The VPS must receive the exact URL and media requirements without the local downloader settings.");
                 Require(!ReadAssignment(persistence).GetProperty("ReceivedLocally").GetBoolean(), "Windows must save the assignment before submitting.");
                 return Completed();
             }
@@ -128,11 +144,11 @@ internal static class RemoteDownloadClientTests
                 if (++fileRequests == 1)
                 {
                     Require(request.Headers.Range is null, "The initial transfer starts from byte zero.");
-                    return FileResponse(Media[..37], HttpStatusCode.OK, Media.Length);
+                    return FileResponse(Media[..37], HttpStatusCode.OK, Media.Length, clock: clock);
                 }
                 Require(request.Headers.Range?.ToString() == $"bytes=37-{Media.Length - 1}" &&
                     request.Headers.IfRange?.EntityTag?.Tag == Tag, "A retry must bind its exact offset to the first result's strong ETag.");
-                return FileResponse(Media[37..], HttpStatusCode.PartialContent, Media.Length - 37, 37);
+                return FileResponse(Media[37..], HttpStatusCode.PartialContent, Media.Length - 37, 37, clock: clock);
             }
             Require(request.Method == HttpMethod.Post && path == job + "/received", "An acknowledgement must refer to the received assignment.");
             Require(File.Exists(output) && ReadAssignment(persistence).GetProperty("ReceivedLocally").GetBoolean(),
@@ -140,16 +156,27 @@ internal static class RemoteDownloadClientTests
             receipts++;
             delivered = true;
             throw new HttpRequestException("The response was lost after the server processed the receipt.");
-        }))
+        }, clock))
         {
             await client.PrepareAsync(token);
             Require(client.IsAvailable, "The client must recognise the current protocol.");
+            Require(client.Supports(row, options), "Additional local settings must not disqualify a supported single video from the VPS.");
             var progress = new List<RemoteDownloadProgress>();
-            var artifact = await client.DownloadAsync(row, new DownloadOptions(), stage, Resume, progress.Add, token);
+            var artifact = await client.DownloadAsync(row, options, stage, ct =>
+            {
+                clock.Advance(5000);
+                return Resume(ct);
+            }, progress.Add, token);
             Require(fileRequests == 2 && receipts == 0 && File.ReadAllBytes(artifact.MediaPath).SequenceEqual(Media),
                 "An interrupted transfer must restore the original bytes without acknowledging staging.");
             Require(progress.Any(value => value is { Stage: RemoteDownloadStage.Receiving, Percent: 100 } &&
                 value.BytesReceived == Media.Length && value.TotalBytes == Media.Length), "The final transfer update must report the received bytes.");
+            Require(progress.Where(value => value.BytesPerSecond > 0).Select(value => value.BytesPerSecond)
+                .SequenceEqual([37 * 4d, (Media.Length - 37) * 4d]),
+                "The speed must exclude pause time and count only bytes received after the current request's offset.");
+            var firstSample = progress.FindIndex(value => value.BytesPerSecond > 0);
+            Require(progress[firstSample + 1] is { Stage: RemoteDownloadStage.Receiving, BytesReceived: 37, BytesPerSecond: 0 },
+                "The old rate must clear during the transfer retry.");
             Require(artifact.Title == "Fixture media" && client.OwnsAssignment(row), "The downloaded result remains assigned until publication.");
             await RefusesAsync<IOException>(() => client.AcknowledgeAsync(artifact, output, token),
                 "A missing published file must not authorize a receipt.");
@@ -332,8 +359,8 @@ internal static class RemoteDownloadClientTests
     }
 
     private static RemoteDownloadClient Client(AppPersistence persistence,
-        Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> respond) =>
-        new(Connection, persistence, _ => { }, new Handler(respond));
+        Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> respond, TimeProvider? clock = null) =>
+        new(Connection, persistence, _ => { }, new Handler(respond), clock);
 
     private static Task Resume(CancellationToken token)
     {
@@ -364,9 +391,12 @@ internal static class RemoteDownloadClientTests
     };
 
     private static HttpResponseMessage FileResponse(byte[] bytes, HttpStatusCode status, long length, long? offset = null,
-        string tag = Tag)
+        string tag = Tag, TransferClock? clock = null)
     {
-        var response = new HttpResponseMessage(status) { Content = new ByteArrayContent(bytes) };
+        var response = new HttpResponseMessage(status)
+        {
+            Content = clock is null ? new ByteArrayContent(bytes) : new StreamContent(new TimedMediaStream(bytes, clock))
+        };
         response.Headers.ETag = new EntityTagHeaderValue(tag);
         response.Content.Headers.ContentLength = length;
         if (offset.HasValue) response.Content.Headers.ContentRange = new ContentRangeHeaderValue(offset.Value, Media.Length - 1, Media.Length);
@@ -388,6 +418,23 @@ internal static class RemoteDownloadClientTests
     private static void Require(bool condition, string message)
     {
         if (!condition) throw new InvalidOperationException(message);
+    }
+
+    private sealed class TransferClock : TimeProvider
+    {
+        private long _milliseconds;
+        public override long TimestampFrequency => 1000;
+        public override long GetTimestamp() => _milliseconds;
+        internal void Advance(int milliseconds) => _milliseconds += milliseconds;
+    }
+
+    private sealed class TimedMediaStream(byte[] bytes, TransferClock clock) : MemoryStream(bytes)
+    {
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken token = default)
+        {
+            clock.Advance(250);
+            return base.ReadAsync(buffer, token);
+        }
     }
 
     private sealed class Handler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> respond) : HttpMessageHandler

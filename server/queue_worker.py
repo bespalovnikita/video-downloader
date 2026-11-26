@@ -241,7 +241,8 @@ class JobStore:
     def list_jobs(self) -> dict:
         with self._lock:
             rows = self._db.execute("SELECT * FROM jobs ORDER BY id").fetchall()
-            return {"jobs": [dict(row) for row in rows], "running": self._browser_running()}
+            return {"jobs": [dict(row) for row in rows], "running": self._browser_running(),
+                    "freeDiskBytes": self._disk_free}
 
     def add(self, urls: list[str]) -> int:
         with self._lock, self._db:
@@ -305,7 +306,8 @@ class JobStore:
         return summary
 
     def remote_capabilities(self) -> dict:
-        return {"version": 1, "maxConcurrent": self._max_concurrent}
+        with self._lock:
+            return {"version": 1, "maxConcurrent": self._max_concurrent, "freeDiskBytes": self._disk_free}
 
     def put_remote(self, job_id: str, url: str, options: RemoteOptions) -> dict | None:
         encoded = json.dumps(asdict(options), sort_keys=True)
@@ -468,11 +470,11 @@ class JobStore:
             try:
                 free = shutil.disk_usage(self._root).free
             except OSError:
-                free = 0
+                free = None
             with self._lock:
                 changed = self._disk_free != free
                 self._disk_free = free
-                if free < self._disk_reserve:
+                if free is None or free < self._disk_reserve:
                     self._disk_failures.update(self._active)
                     for process in self._processes.values():
                         self._signal_process(process, signal.SIGKILL)
@@ -480,7 +482,7 @@ class JobStore:
                     self._lock.notify_all()
 
     def _next_job(self) -> sqlite3.Row | None:
-        if self._disk_free < self._disk_reserve + STORAGE_HEADROOM * (len(self._active) + 1):
+        if self._disk_free is None or self._disk_free < self._disk_reserve + STORAGE_HEADROOM * (len(self._active) + 1):
             return None
         if not any(isinstance(job_id, int) for job_id in self._active):
             while self._browser_batch:
