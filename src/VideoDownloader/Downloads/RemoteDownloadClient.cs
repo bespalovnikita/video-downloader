@@ -174,10 +174,10 @@ internal sealed class RemoteDownloadClient : IRemoteDownloadClient
         try
         {
             var status = await PutAsync(assignment, token).ConfigureAwait(false);
-            if (reopening && !status.Unsupported && !status.Expired && status.State is "cancelled" or "interrupted" or "failed")
+            if (reopening && !status.Unsupported && !status.Expired &&
+                status.State is ("cancelled" or "interrupted" or "failed"))
             {
                 _journal.Remove(assignment);
-                if (status.Expired) throw ExpiredResult();
                 assignment = Register(request);
                 status = await PutAsync(assignment, token).ConfigureAwait(false);
             }
@@ -192,6 +192,7 @@ internal sealed class RemoteDownloadClient : IRemoteDownloadClient
             if (status.State != "completed")
             {
                 _journal.Remove(assignment);
+                if (status.Expired) throw ExpiredResult();
                 if (status.State == "failed" && status.Unsupported) throw new RemoteDownloadUnsupportedException();
                 string error = status.Error is { Length: > 0 } detail ? detail[..Math.Min(detail.Length, 500)] : "Сервер не подготовил файл.";
                 throw new IOException(error);
@@ -267,6 +268,7 @@ internal sealed class RemoteDownloadClient : IRemoteDownloadClient
         {
             var result = await ReadJsonAsync<RemoteJobStatus>(_http, request, deadline.Token).ConfigureAwait(false);
             if (result is null || result.State is not ("queued" or "downloading" or "completed" or "failed" or "interrupted" or "received" or "cancelled") ||
+                (result.Expired && result.State != "failed") ||
                 result.Progress is < 0 or > 100 || (result.State == "completed" && (result.Size is null or <= 0 || string.IsNullOrWhiteSpace(result.Filename))))
                 throw new InvalidDataException("Сервер вернул неверные данные о задании.");
             return result;
