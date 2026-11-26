@@ -100,11 +100,11 @@ internal sealed class RemoteDownloadClient : IRemoteDownloadClient
         return client;
     }
 
-    internal static async Task<int> CheckConnectionAsync(RemoteDownloadConnection connection, CancellationToken token,
+    internal static async Task<RemoteCapabilities> CheckConnectionAsync(RemoteDownloadConnection connection, CancellationToken token,
         HttpMessageHandler? handler = null)
     {
         using var client = CreateHttpClient(connection, handler);
-        return (await ReadCapabilitiesAsync(client, token).ConfigureAwait(false)).MaxConcurrent;
+        return await ReadCapabilitiesAsync(client, token).ConfigureAwait(false);
     }
 
     private static async Task<RemoteCapabilities> ReadCapabilitiesAsync(HttpClient client, CancellationToken token)
@@ -508,7 +508,7 @@ internal sealed class RemoteDownloadClient : IRemoteDownloadClient
 
     public void Dispose() => _http.Dispose();
 
-    private sealed record RemoteCapabilities(int Version, int MaxConcurrent);
+    internal sealed record RemoteCapabilities(int Version, int MaxConcurrent, long? FreeDiskBytes = null);
     private sealed record RemoteJobStatus(string State, int? Progress, string? Filename, long? Size, string? Error, string? Title,
         bool Unsupported);
 }

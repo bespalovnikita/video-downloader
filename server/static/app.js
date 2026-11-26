@@ -14,6 +14,7 @@ const filters = {
 };
 
 const connection = document.querySelector("#connection");
+const serverStorage = document.querySelector("#server-storage");
 const form = document.querySelector("#add-form");
 const input = document.querySelector("#urls");
 const addButton = document.querySelector("#add-button");
@@ -266,6 +267,8 @@ async function refresh() {
   } finally {
     if (refreshController === controller) {
       refreshController = null;
+      const freeDisk = online ? formatSize(snapshot.freeDiskBytes) : "";
+      setText(serverStorage, `Свободно на VPS — ${freeDisk || "нет данных"}`);
       renderQueue();
       updateControls();
     }

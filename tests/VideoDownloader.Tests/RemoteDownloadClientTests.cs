@@ -36,7 +36,7 @@ internal static class RemoteDownloadClientTests
     private static async Task CheckConnectionProbeAsync(CancellationToken token)
     {
         int requests = 0;
-        int slots = await RemoteDownloadClient.CheckConnectionAsync(Connection, token, new Handler((request, _) =>
+        var status = await RemoteDownloadClient.CheckConnectionAsync(Connection, token, new Handler((request, _) =>
         {
             requests++;
             string basic = Convert.ToBase64String(Encoding.UTF8.GetBytes("fixture-user:fixture-password"));
@@ -44,9 +44,15 @@ internal static class RemoteDownloadClientTests
                 PathOf(request) == Capabilities && request.Content is null && request.Headers.Authorization?.Scheme == "Basic" &&
                 request.Headers.Authorization.Parameter == basic,
                 "The probe must use one authenticated GET at the configured HTTPS base address, without a request body.");
-            return Task.FromResult(Json(new { version = 1, maxConcurrent = 3 }));
+            return Task.FromResult(Json(new { version = 1, maxConcurrent = 3, freeDiskBytes = 6L * 1024 * 1024 * 1024 }));
         }));
-        Require(requests == 1 && slots == 3, "The explicit connection probe must return the server slot limit.");
+        Require(requests == 1 && status is { MaxConcurrent: 3, FreeDiskBytes: 6L * 1024 * 1024 * 1024 },
+            "The explicit connection probe must return the server slot limit and real free disk space.");
+
+        var compatible = await RemoteDownloadClient.CheckConnectionAsync(Connection, token,
+            new Handler((_, _) => Task.FromResult(Json(new { version = 1, maxConcurrent = 2 }))));
+        Require(compatible is { MaxConcurrent: 2, FreeDiskBytes: null },
+            "A version 1 server without disk telemetry must remain compatible.");
 
         async Task ExpectFailure(Func<HttpResponseMessage> respond, string expected)
         {

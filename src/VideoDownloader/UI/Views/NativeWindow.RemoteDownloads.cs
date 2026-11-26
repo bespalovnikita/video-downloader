@@ -83,10 +83,18 @@ public sealed partial class NativeWindow
         _remoteDownloadConnectionCheckTask=probe;
         try
         {
-            int slots=await probe;
+            var capabilities=await probe;
             if(!_disposed && !_closing && !cancellation.IsCancellationRequested)
+            {
+                int slots=capabilities.MaxConcurrent;
                 status.Text=ErrorMessages.Text($"Подключение подтверждено. Предел параллельных заданий — {slots}.",
                     $"Connection verified. Concurrent job limit is {slots}.");
+                if(capabilities.FreeDiskBytes is long freeBytes && freeBytes>=0)
+                {
+                    string free=DisplayValueConverter.Bytes(freeBytes);
+                    status.Text+=Environment.NewLine+ErrorMessages.Text($"Свободно на VPS — {free}.", $"Free space on the VPS — {free}.");
+                }
+            }
         }
         catch(Exception error) when(RemoteDownloadClient.IsRemoteFailure(error))
         {

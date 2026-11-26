@@ -79,7 +79,8 @@ internal sealed partial class UiScenario
                 using(var deadline=new CancellationTokenSource(TimeSpan.FromSeconds(10)))
                 {
                     server.Start();
-                    var response=ReplyToCapabilityProbeAsync(server,username,password,deadline.Token);
+                    var response=ReplyToCapabilityProbeAsync(server,username,password,deadline.Token,
+                        "{\"version\":1,\"maxConcurrent\":3,\"freeDiskBytes\":6442450944}");
                     endpoint.Text=$"http://127.0.0.1:{((IPEndPoint)server.LocalEndpoint).Port}/bridge/";
                     login.Text=username;
                     secret.Password=password;
@@ -87,9 +88,11 @@ internal sealed partial class UiScenario
                     WaitForButton(check);
                     response.GetAwaiter().GetResult();
                     Require(status.Text.Contains(ErrorMessages.Text("Предел параллельных заданий — 3","Concurrent job limit is 3"),
-                        StringComparison.Ordinal) && option.IsChecked==false && controller.SessionState.Queue.Count==0 &&
+                        StringComparison.Ordinal) && status.Text.Contains(ErrorMessages.Text("Свободно на VPS","Free space on the VPS"),
+                        StringComparison.Ordinal) && status.Text.Contains(DisplayValueConverter.Bytes(6442450944),StringComparison.Ordinal) &&
+                        option.IsChecked==false && controller.SessionState.Queue.Count==0 &&
                         controller.SessionState.Coordinator is null && !File.Exists(settingsFile) && !Directory.Exists(Path.Combine(directory,"remote-jobs")),
-                        "The explicit connection check must display the three slots without opting in, saving settings or starting a queue.");
+                        "The explicit check must show the slot limit and free space without changing settings or starting a queue.");
                     Click(save);
                     WaitForButton(save);
                     Require(secret.Password.Length==0 && File.Exists(settingsFile),"Saving the connection must clear the editable password field.");
@@ -99,8 +102,9 @@ internal sealed partial class UiScenario
                     WaitForButton(check);
                     response.GetAwaiter().GetResult();
                     Require(status.Text.Contains(ErrorMessages.Text("Предел параллельных заданий — 3","Concurrent job limit is 3"),
+                        StringComparison.Ordinal) && !status.Text.Contains(ErrorMessages.Text("Свободно на VPS","Free space on the VPS"),
                         StringComparison.Ordinal) && File.ReadAllText(settingsFile)==saved,
-                        "A fresh probe at the exact saved address and login must reuse saved credentials without rewriting settings.");
+                        "A probe of an older server must reuse the saved credentials and display the slot limit without stale free space.");
                 }
                 string settingsBeforeInvalidAddress=File.ReadAllText(settingsFile);
                 option.IsChecked=true;
@@ -153,7 +157,8 @@ internal sealed partial class UiScenario
         finally{reopened.Dispose();restored.Close();}
     }
 
-    private static async Task ReplyToCapabilityProbeAsync(TcpListener server,string username,string password,CancellationToken token)
+    private static async Task ReplyToCapabilityProbeAsync(TcpListener server,string username,string password,CancellationToken token,
+        string body="{\"version\":1,\"maxConcurrent\":3}")
     {
         using var client=await server.AcceptTcpClientAsync(token).ConfigureAwait(false);
         using var stream=client.GetStream();
@@ -169,7 +174,6 @@ internal sealed partial class UiScenario
                 header["Authorization: Basic ".Length..]==expected;
         }
         if(!authenticated)throw new InvalidDataException("The capability probe must use the current form's credentials.");
-        const string body="{\"version\":1,\"maxConcurrent\":3}";
         byte[] response=Encoding.ASCII.GetBytes($"HTTP/1.1 200 OK\r\nContent-Length: {body.Length}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{body}");
         await stream.WriteAsync(response,token).ConfigureAwait(false);
     }
