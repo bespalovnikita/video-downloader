@@ -1,0 +1,12 @@
+services:
+  downloader:
+    environment:
+      VD_UPDATER_DIR: /run/vd-updater
+      VD_SERVER_VERSION: ${VD_SERVER_VERSION:-}
+    volumes:
+      - type: bind
+        source: /run/video-downloader-updater
+        target: /run/vd-updater
+        read_only: true
+        bind:
+          create_host_path: false

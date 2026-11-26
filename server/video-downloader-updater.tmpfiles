@@ -1,0 +1,2 @@
+d /run/video-downloader-updater 0750 root 10001 -
+f /run/video-downloader-updater/work.lock 0640 root 10001 -

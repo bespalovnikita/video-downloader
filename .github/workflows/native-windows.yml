@@ -5,6 +5,7 @@ on:
     paths:
       - 'src/**'
       - 'android/**'
+      - 'server/**'
       - 'tests/**'
       - 'collection-plugins/**'
       - 'scripts/**'
@@ -24,6 +25,48 @@ permissions:
 jobs:
   android:
     uses: ./.github/workflows/android.yml
+
+  server:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Test the server and update service
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          if ! command -v ffmpeg || ! command -v ffprobe; then
+            sudo apt-get update
+            sudo apt-get install -y ffmpeg
+          fi
+          python -m pip install -r server/requirements.runtime.txt
+          python -m unittest discover -s server/tests -v
+          node --check server/static/app.js
+          bash -n server/install-updater.sh
+      - name: Validate the Compose configurations
+        env:
+          VD_SERVER_PASSWORD: docker-ci-fixture-password
+          VD_PUBLIC_ADDRESS: downloads.example.test
+          VD_SERVER_VERSION: v3.0.0
+        run: |
+          docker compose -f server/compose.yaml config --quiet
+          docker compose -f server/compose.yaml -f server/compose.updater.yaml config --quiet
+          docker compose -f server/compose.yaml -f server/compose.https.yaml -f server/compose.updater.yaml config --quiet
+      - name: Start the server container and check its web interface
+        env:
+          VD_SERVER_PASSWORD: docker-ci-fixture-password
+          VD_LOCAL_PORT: '18081'
+        run: |
+          compose=(docker compose -p video-downloader-ci -f server/compose.yaml)
+          trap '"${compose[@]}" down --volumes' EXIT
+          "${compose[@]}" up -d --build --wait --wait-timeout 45
+          curl --fail --silent --show-error --retry 8 --retry-connrefused --max-time 4 \
+            --user "downloader:$VD_SERVER_PASSWORD" http://127.0.0.1:18081/api/update
+          curl --fail --silent --show-error --max-time 4 --output /dev/null \
+            --user "downloader:$VD_SERVER_PASSWORD" http://127.0.0.1:18081/static/app.js
 
   native:
     runs-on: windows-latest
@@ -117,7 +160,7 @@ jobs:
   release:
     name: Publish GitHub Release from main
     if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
-    needs: [native, android]
+    needs: [native, android, server]
     runs-on: windows-latest
     timeout-minutes: 45
     permissions:

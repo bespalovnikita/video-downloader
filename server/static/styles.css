@@ -121,6 +121,64 @@ main {
   line-height: 1.55;
 }
 
+.server-update {
+  margin-top: 18px;
+  padding: 0 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.server-update summary {
+  padding: 10px 0;
+  color: var(--muted);
+  font-size: .875rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.server-update[open] summary, .server-update summary:hover {
+  color: inherit;
+}
+
+.server-update-content {
+  display: grid;
+  gap: 9px;
+  padding-bottom: 14px;
+}
+
+.server-versions, .server-update-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+}
+
+.server-versions {
+  margin: 0;
+  font-size: .875rem;
+}
+
+.server-versions div {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.server-versions dt {
+  color: var(--muted);
+}
+
+.server-versions dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.server-update .notice:not([data-kind="error"]) {
+  color: var(--muted);
+}
+
 .composer {
   margin-top: 27px;
   padding: 21px;
@@ -199,7 +257,7 @@ main {
   border-color: #414863;
 }
 
-.button-secondary:hover:not([aria-disabled="true"]) {
+.button-secondary:hover:not(:disabled):not([aria-disabled="true"]) {
   background: #303750;
   border-color: #666e90;
 }

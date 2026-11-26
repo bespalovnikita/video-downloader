@@ -171,6 +171,8 @@ public sealed class DownloadOptions : IJsonOnDeserialized
     public bool UseHttpChunks { get; set; }
     [JsonIgnore(Condition=JsonIgnoreCondition.WhenWritingDefault)]
     public bool PreferAria2c { get; set; }
+    [JsonIgnore] internal RemoteDownloadConnection? RemoteConnection { get; set; }
+    [JsonIgnore] internal bool AllowFreshRemoteDownloads { get; set; } = true;
     public string FilenameTemplate { get; set; } = "%(title)s [%(id)s].%(ext)s";
     public string Output { get; set; } = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads", "downloaded-video");
     public string Cookies { get; set; } = "";

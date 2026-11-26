@@ -1,0 +1,19 @@
+{
+	admin off
+	# An HTTPS client connecting by IP can omit the server name.
+	default_sni {$VD_PUBLIC_ADDRESS}
+	servers {
+		protocols h1 h2
+	}
+}
+
+https://{$VD_PUBLIC_ADDRESS} {
+	tls {
+		issuer acme {
+			dir https://acme-v02.api.letsencrypt.org/directory
+			profile shortlived
+		}
+	}
+
+	reverse_proxy downloader:8080
+}

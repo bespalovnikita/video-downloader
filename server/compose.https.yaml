@@ -1,0 +1,33 @@
+services:
+  https:
+    build:
+      context: .
+      dockerfile: Dockerfile.https
+    restart: unless-stopped
+    depends_on:
+      - downloader
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      VD_PUBLIC_ADDRESS: ${VD_PUBLIC_ADDRESS:?Set VD_PUBLIC_ADDRESS in server/.env}
+      NO_PROXY: downloader
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - https-data:/data
+      - https-config:/config
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  https-data:
+  https-config:

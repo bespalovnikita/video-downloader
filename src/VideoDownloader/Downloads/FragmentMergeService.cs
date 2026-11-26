@@ -175,7 +175,7 @@ internal sealed partial class FragmentMergeService
         var result=await BoundedProcessOutput.ReadAsync(child,stdout,stderr,token).ConfigureAwait(false);
         return new(child.Process.ExitCode,result.StandardOutput,result.StandardError);
     }
-    private sealed class ActiveBudget:IAsyncDisposable
+    internal sealed class ActiveBudget:IAsyncDisposable
     {
         private readonly CancellationTokenSource _stop;
         private readonly Task _watch;

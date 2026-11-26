@@ -52,6 +52,12 @@ public sealed partial class DownloadCoordinator : IAsyncDisposable
 
     public DownloadCoordinator(string ytDlp,AppPersistence data,DownloadOptions options,
         Action<DownloadItem> changed,Action<string> log,Action<JournalRecord>? trace=null)
+        :this(ytDlp,data,options,changed,log,trace,null)
+    {
+    }
+
+    internal DownloadCoordinator(string ytDlp,AppPersistence data,DownloadOptions options,
+        Action<DownloadItem> changed,Action<string> log,Action<JournalRecord>? trace,IRemoteDownloadClient? remoteClient)
     {
         AudioTrackSelection.Validate(options);
         _ytDlp=ytDlp;_data=data;_options=options.Snapshot();_changed=changed;_log=log;_trace=trace;
@@ -59,6 +65,12 @@ public sealed partial class DownloadCoordinator : IAsyncDisposable
         _options.PinOutputDirectory();
         OwnedFiles.NoReparseAncestors(Path.Combine(_options.OutputDirectory,"__check__"));
         Directory.CreateDirectory(_stageRoot);
+        _remote=remoteClient??(options.RemoteConnection is {} connection?new RemoteDownloadClient(connection,data,log):null);
+        if(_remote is not null)
+        {
+            _remoteQueue=Channel.CreateUnbounded<DownloadAttempt>(new UnboundedChannelOptions{SingleReader=false,SingleWriter=false});
+            _unroutedRemote=[];
+        }
     }
     public bool Add(DownloadItem item)=>Admit(item,false);
     private bool Admit(DownloadItem item,bool resume,bool enqueue=true,string? preparedOutputRoot=null)
@@ -102,7 +114,7 @@ public sealed partial class DownloadCoordinator : IAsyncDisposable
             // invocation; it must not inherit the previous attempt's key.
             _diagnosticAttempts.TryRemove(item.Url,out _);
             Trace(item,JournalLevel.Information,resume?"job_resumed":"job_queued",$"url={DownloadProgressTrace.Quoted(item.Url)} outstanding={Outstanding}",worker:"");
-            if(enqueue && !_queue.Writer.TryWrite(attempt))
+            if(enqueue && !EnqueueAttempt(attempt,options))
             {
                 _attempts.TryRemove(item.Url,out _);_queued.TryRemove(item.Url,out _);
                 _outputRoots.TryRemove(item.Url,out _);_selections.TryRemove(item.Url,out _);
@@ -160,7 +172,7 @@ public sealed partial class DownloadCoordinator : IAsyncDisposable
     }
     public void Stop()
     {
-        lock(_completionGate){_acceptingWork=false;_queue.Writer.TryComplete();}
+        lock(_completionGate){_acceptingWork=false;CompleteQueues();}
         if(IsRunning && !_stop.IsCancellationRequested)Trace(null,JournalLevel.Information,"stop_requested",$"outstanding={Outstanding}");
         if (_pause.IsPaused) Pause(false);
         _stop.Cancel();
@@ -169,10 +181,12 @@ public sealed partial class DownloadCoordinator : IAsyncDisposable
     public Task RunAsync() => _runTask ??= RunCoreAsync();
     private async Task RunCoreAsync()
     {
+        await PrepareRemoteAsync().ConfigureAwait(false);
         lock(_completionGate)_runStarted=true;
         Trace(null,JournalLevel.Information,"session_start",$"parallel={_options.Parallel} fragments={_options.FragmentCount} quality={DownloadProgressTrace.Quoted(_options.Quality)}");
         var workers=Enumerable.Range(1,_options.Parallel)
-            .Select(i=>Task.Run(()=>WorkerAsync(i),CancellationToken.None)).ToArray();
+            .Select(i=>Task.Run(()=>WorkerAsync(_queue.Reader,"T"+i),CancellationToken.None))
+            .Concat(StartRemoteWorkers()).ToArray();
         try
         {
             // Allow live additions while jobs run, but end after a short idle grace
@@ -201,7 +215,7 @@ public sealed partial class DownloadCoordinator : IAsyncDisposable
             Task[] outOfOrder;
             lock(_completionGate)
             {
-                _acceptingWork=false;_queue.Writer.TryComplete();
+                _acceptingWork=false;CompleteQueues();
                 outOfOrder=_outOfOrderTasks.ToArray();
             }
             await Task.WhenAll(workers.Concat(outOfOrder)).ConfigureAwait(false);
@@ -223,19 +237,22 @@ public sealed partial class DownloadCoordinator : IAsyncDisposable
             attempt.Started=true;return true;
         }
     }
-    private async Task WorkerAsync(int slot)
+    private async Task WorkerAsync(ChannelReader<DownloadAttempt> queue,string worker,bool useRemote=false)
     {
-        await foreach(var attempt in _queue.Reader.ReadAllAsync())
+        await foreach(var attempt in queue.ReadAllAsync())
         {
+            if(useRemote && !_remote!.IsAvailable && !_remote.OwnsAssignment(attempt.Row))continue;
+            if(!useRemote && RedirectOwnedAssignment(attempt))continue;
             if(!TryClaimAttempt(attempt))continue;
-            await ExecuteAttemptAsync(attempt,"T"+slot).ConfigureAwait(false);
+            await ExecuteAttemptAsync(attempt,worker,useRemote).ConfigureAwait(false);
         }
     }
     // Regular workers and temporary slots have exactly one result/cleanup owner.
-    private async Task ExecuteAttemptAsync(DownloadAttempt attempt,string worker)
+    private async Task ExecuteAttemptAsync(DownloadAttempt attempt,string worker,bool useRemote=false)
     {
         var item=attempt.Row;
         var linked=attempt.Stop;
+        bool returnedToLocal=false;
         _itemCancels[item.Url]=linked;
         try
         {
@@ -248,9 +265,21 @@ public sealed partial class DownloadCoordinator : IAsyncDisposable
                 item.Slot=worker;item.Status="Running";item.State="Starting";_changed(item);
                 Trace(item,JournalLevel.Information,"job_start",$"url={DownloadProgressTrace.Quoted(item.Url)}");
                 if(_cancelled.ContainsKey(item.Url))linked.Cancel();
-                result=await DownloadAsync(item,attempt).ConfigureAwait(false);
+                try
+                {
+                    result=useRemote
+                        ?await DownloadRemoteAsync(item,attempt).ConfigureAwait(false)
+                        :await DownloadAsync(item,attempt).ConfigureAwait(false);
+                }
+                catch(RemoteDownloadUnsupportedException error) when(useRemote)
+                {
+                    returnedToLocal=TryReturnToLocal(attempt);
+                    if(returnedToLocal)return;
+                    result=new(false,linked.IsCancellationRequested,"",[],error.Message,item.TransferredBytes);
+                }
             }
             bool cancelled=result.Cancelled || linked.IsCancellationRequested || _cancelled.ContainsKey(item.Url);
+            bool acknowledge=false;
             while(true)
             {
                 bool clean=false;
@@ -273,11 +302,13 @@ public sealed partial class DownloadCoordinator : IAsyncDisposable
                     else if(result.Success && item.CleanupError.Length==0 && !item.PendingRemoval)
                     {
                         item.Path=result.Path;item.OwnedPaths=result.OwnedPaths.ToList();item.CleanupPaths=[];
-                        item.OutputRoot=_outputRoots[item.Url];item.CompletedSelection=_selections.GetValueOrDefault(item.Url);
+                        item.OutputRoot=_outputRoots[item.Url];
+                        item.CompletedSelection=attempt.RemoteArtifact is null?_selections.GetValueOrDefault(item.Url):null;
                         item.Status="Completed";item.State="Done";item.Progress=100;item.Speed="";item.ETA="";
                         try{if(!item.IsPartialResult)_data.AppendSuccess(item);}
                         catch(Exception e){_log($"WARNING: Could not append successful URL to history: {e.Message}");}
                         Interlocked.Increment(ref _completed);WriteResult("success",$"{item.Url} | {item.Path}");
+                        acknowledge=attempt.RemoteArtifact is not null;
                         break;
                     }
                     else
@@ -295,6 +326,7 @@ public sealed partial class DownloadCoordinator : IAsyncDisposable
                 // other rows' Skip/Cancel must not wait on a shared FS lock.
                 if(clean)DownloadCleanup.Retry(item);
             }
+            if(acknowledge)await AcknowledgeRemoteAsync(item,attempt.RemoteArtifact!).ConfigureAwait(false);
         }
         catch(OperationCanceledException)
         {
@@ -309,7 +341,7 @@ public sealed partial class DownloadCoordinator : IAsyncDisposable
         }
         finally
         {
-            lock(_completionGate)
+            if(!returnedToLocal)lock(_completionGate)
             {
                 if(item.CleanupError.Length>0)DownloadCleanup.Failed(item,item.CleanupError);
                 item.AttemptFinished=true;item.Speed="";item.ETA="";
@@ -817,6 +849,6 @@ public sealed partial class DownloadCoordinator : IAsyncDisposable
                 IsRunning=false;
             }
         }
-        finally { _stop.Dispose(); }
+        finally { _remote?.Dispose();_stop.Dispose(); }
     }
 }

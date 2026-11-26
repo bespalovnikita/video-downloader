@@ -68,6 +68,7 @@ public sealed partial class NativeWindow : IDisposable
         _window=window;
         _theme=new WindowThemeController(window);
         _storage=persistence??new AppPersistence();
+        _remoteDownloadSettingsStore=new RemoteDownloadSettingsStore(Path.GetDirectoryName(_storage.SessionPath)!);
         _ytDlp=ytDlpExecutable;
         _journal=new DiagnosticJournal(Path.Combine(Path.GetDirectoryName(_storage.SessionPath)!,"logs"));
         Q.ItemsSource=SessionState.Queue;
@@ -113,6 +114,7 @@ public sealed partial class NativeWindow : IDisposable
             new(D,F<DataGridColumn>("DownloadSubscriptionColumn"))];
         InitializeInputFeedback();
         InitializeAdvancedOptions();
+        InitializeRemoteDownloadSettings();
         InitializeQueueItemActions();
         InitializeResetQueueItemActions();
         InitializeHistoryControls();
@@ -641,14 +643,21 @@ public sealed partial class NativeWindow : IDisposable
     }
     private void PollClipboard()=>_ingress.PollClipboard();
     private Task StartAsync(IEnumerable<DownloadItem>? custom=null)=>StartWithConfirmationAsync(custom,null);
-    private async Task StartWithConfirmationAsync(IEnumerable<DownloadItem>? custom,IReadOnlySet<DownloadItem>? duplicateConsents,DownloadOptions? preparedOptions=null)
+    private async Task StartWithConfirmationAsync(IEnumerable<DownloadItem>? custom,IReadOnlySet<DownloadItem>? duplicateConsents,
+        DownloadOptions? preparedOptions=null,bool allowRemoteDownloads=true)
     {
         if(_closing || _disposed || _speedDebugWindow is not null || _restoringSession || _startingSession || _queueItemActionBusy || _dependencyOperationRunning || _appUpdateHandoff || _checkpointReadOnly || _profileBackupReplaying || RejectProfileBackupMutation())return;
+        if(_remoteDownloadSettingsWrite is not null)
+        {
+            T("ClipboardHint").Text=ErrorMessages.Text("Дождитесь сохранения настроек сервера.","Wait for the server settings to finish saving.");
+            return;
+        }
         _startingSession=true;
-        try { await StartSessionCoreAsync(custom,duplicateConsents,preparedOptions); }
+        try { await StartSessionCoreAsync(custom,duplicateConsents,preparedOptions,allowRemoteDownloads); }
         finally { _startingSession=false;UpdateState();_preview.BackfillLocalPosters(); }
     }
-    private async Task StartSessionCoreAsync(IEnumerable<DownloadItem>? custom,IReadOnlySet<DownloadItem>? duplicateConsents=null,DownloadOptions? preparedOptions=null)
+    private async Task StartSessionCoreAsync(IEnumerable<DownloadItem>? custom,IReadOnlySet<DownloadItem>? duplicateConsents,
+        DownloadOptions? preparedOptions,bool allowRemoteDownloads)
     {
         if (_closing || _disposed || _restoringSession || _checkpointReadOnly || _dependencyOperationRunning || RejectProfileBackupMutation()) return;
         if (_legacyEngineBlocked)
@@ -675,6 +684,10 @@ public sealed partial class NativeWindow : IDisposable
         }
         try
         {
+            var remoteSettings=allowRemoteDownloads?CaptureRemoteDownloadSettings(forStart:true):null;
+            var activeRemoteSettings=remoteSettings??_savedRemoteDownloadSettings;
+            options.RemoteConnection=activeRemoteSettings.Enabled?activeRemoteSettings.Connection:null;
+            options.AllowFreshRemoteDownloads=allowRemoteDownloads;
             AudioTrackSelection.Validate(options);
             foreach(var row in pending)row.Selection?.Validate(row.Url,row.ResumeState?.Plan.ToOptions()??options);
             DependencyCenter.ValidateDownloadTools(_ytDlp);
@@ -715,6 +728,10 @@ public sealed partial class NativeWindow : IDisposable
             await _preview.CancelLocalPostersAsync(approved);
             if(_closing || _disposed || _appUpdateHandoff || _checkpointReadOnly || RejectProfileBackupMutation())return;
             RequireCurrentPlan(approved);
+            if(remoteSettings is not null)await PersistRemoteDownloadSettingsAsync(remoteSettings);
+            if(_closing || _disposed || _appUpdateHandoff || _checkpointReadOnly || RejectProfileBackupMutation())return;
+            RequireCurrentPlan(approved);
+            if(remoteSettings is {Enabled:true,Connection:{ } savedConnection})ClearSavedRemoteDownloadPassword(savedConnection);
             Directory.CreateDirectory(options.OutputDirectory);
             SessionState.SetOptions(options);
             // Validate retained staging before resetting any attempt or ownership.
@@ -768,6 +785,7 @@ public sealed partial class NativeWindow : IDisposable
         catch(Exception e)
         {
             Log("Cannot start download: "+e.Message);
+            if(_closing || _disposed)return;
             MessageBox.Show(_window,DisplayError(e),ErrorMessages.Text("Не удалось начать скачивание","Start failed"),MessageBoxButton.OK,MessageBoxImage.Error);
         }
     }

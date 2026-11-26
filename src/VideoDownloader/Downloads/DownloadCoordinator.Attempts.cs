@@ -12,6 +12,9 @@ public sealed partial class DownloadCoordinator
         internal bool Started;
         internal bool Publishing;
         internal bool Finalizing;
+        internal bool RemoteQueued;
+        internal bool LocalOnly;
+        internal RemoteDownloadArtifact? RemoteArtifact;
     }
 
     private void FinishQueuedAttempt(DownloadAttempt attempt,bool skipped)

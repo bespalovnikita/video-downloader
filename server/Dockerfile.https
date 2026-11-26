@@ -1,0 +1,2 @@
+FROM caddy:2.11.9-alpine
+COPY --chmod=0444 Caddyfile /etc/caddy/Caddyfile

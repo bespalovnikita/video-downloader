@@ -352,6 +352,7 @@ public sealed partial class NativeWindow
         // only after the final ownership/status checkpoint has been written.
         e.Cancel=true;
         _closing=true;
+        Task remoteConnectionStopped=StopRemoteDownloadConnectionCheckAsync();
         await StopDependencyOperationAsync();
         Task previewsStopped=_preview.StopAsync();
         Task diagnosticsStopped=StopJobDiagnosticsAsync();
@@ -372,9 +373,15 @@ public sealed partial class NativeWindow
             if (_queueClearTask!=null) await _queueClearTask;
         }
         catch(Exception error) { Log("Shutdown cleanup failed: "+error.Message); }
+        if(_remoteDownloadSettingsWrite is { } settingsWrite)
+        {
+            try{await settingsWrite;}
+            catch(Exception error){Log("Server settings save did not finish ("+error.GetType().Name+").");}
+        }
         await diagnosticsStopped;
         await speedDebugStopped;
         await previewsStopped;
+        await remoteConnectionStopped;
         SaveCheckpoint();
         _journalCloseRequested=true;
         try { await _journal.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(2)); }
@@ -393,6 +400,7 @@ public sealed partial class NativeWindow
     public void Dispose()
     {
         if(_disposed)return;
+        _remoteDownloadConnectionCheck?.Cancel();
         DisposeDependencyControls();
         DisposeJobDiagnostics();
         _speedDebugWindow?.CancelRun();

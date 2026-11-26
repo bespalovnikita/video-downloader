@@ -20,6 +20,8 @@ services:
     environment:
       VD_SERVER_USER: ${VD_SERVER_USER:-downloader}
       VD_SERVER_PASSWORD: ${VD_SERVER_PASSWORD:?Set VD_SERVER_PASSWORD in server/.env}
+      VD_SERVER_MAX_CONCURRENT: ${VD_SERVER_MAX_CONCURRENT:-4}
+      VD_SERVER_FREE_RESERVE_MIB: ${VD_SERVER_FREE_RESERVE_MIB:-512}
     ports:
       - "127.0.0.1:${VD_LOCAL_PORT:-8080}:8080"
     volumes:

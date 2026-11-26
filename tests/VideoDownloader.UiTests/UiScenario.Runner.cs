@@ -72,6 +72,8 @@ internal sealed partial class UiScenario
             UiScenario.TestFilenameTemplateHelp(root);
             Stage("testing audio-track controls and saved settings");
             UiScenario.TestAudioTrackSettings(root);
+            Stage("testing opt-in server downloads and user-protected local settings");
+            UiScenario.TestRemoteDownloadSettings(root);
             Stage("testing actual per-URL formats, fragments and restored selections");
             UiScenario.TestMediaSelection(root);
             Stage("testing multiple fragment drafts, ordering and whole-batch selection persistence");
