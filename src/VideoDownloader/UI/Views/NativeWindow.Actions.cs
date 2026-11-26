@@ -372,6 +372,11 @@ public sealed partial class NativeWindow
             if (_queueClearTask!=null) await _queueClearTask;
         }
         catch(Exception error) { Log("Shutdown cleanup failed: "+error.Message); }
+        if(_remoteDownloadSettingsWrite is { } settingsWrite)
+        {
+            try{await settingsWrite;}
+            catch(Exception error){Log("Server settings save did not finish ("+error.GetType().Name+").");}
+        }
         await diagnosticsStopped;
         await speedDebugStopped;
         await previewsStopped;

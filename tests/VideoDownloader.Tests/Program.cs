@@ -3,6 +3,7 @@ using System.Text.Json;
 using VideoDownloader.Native;
 
 if (OutOfOrderDownloadTests.TryRunFixture(args)) return;
+if (RemoteCoordinatorTests.TryRunFixture(args)) return;
 if (SpeedDebugBenchmarkTests.TryRunFixture(args)) return;
 if (SubtitleTimelineTests.TryRunFixture(args)) return;
 if (ProfileBackupTests.TryRunFixture(args)) return;
@@ -28,6 +29,7 @@ await QueueSessionControllerTests.RunAsync();
 SubscriptionRequeueTests.Run();
 await QueueSkipResumeTests.RunAsync();
 await OutOfOrderDownloadTests.RunAsync();
+await RemoteCoordinatorTests.RunAsync();
 await DiskSpaceTests.RunAsync();
 var applicationAssembly=typeof(NativeWindow).Assembly;
 if(applicationAssembly.GetTypes().Any(type=>type.Name.Contains("SelfTest",StringComparison.Ordinal) || type.Name=="UiScenario") ||
@@ -55,6 +57,7 @@ await MediaClipServiceTests.RunAsync();
 await MediaWaveformServiceTests.RunAsync();
 await AppUpdateInstallerTests.RunAsync();
 await AppUpdateClientTests.RunAsync();
+await RemoteDownloadClientTests.RunAsync();
 await PreviewSchedulingTests.RunAsync();
 await PreviewResetTests.RunAsync();
 await PreviewGalleryTests.RunAsync();

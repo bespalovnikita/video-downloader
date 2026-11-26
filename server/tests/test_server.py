@@ -13,6 +13,8 @@ import unittest
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 from urllib.parse import urlsplit
 
 
@@ -65,6 +67,8 @@ class VideoSource:
     def __init__(self, data):
         self.transfer_requested = threading.Event()
         self.release_transfer = threading.Event()
+        self.paused_transfers = set()
+        self.transfers = threading.Condition()
         self.client_hints = {}
         source = self
 
@@ -97,9 +101,21 @@ class VideoSource:
                     self.end_headers()
                     self.wfile.write(html)
                     return
+                if path == "/collection":
+                    html = ('<html><title>Fixture collection</title>'
+                            '<video src="/first.mp4"></video><video src="/second.mp4"></video></html>').encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html")
+                    self.send_header("Content-Length", str(len(html)))
+                    self.end_headers()
+                    self.wfile.write(html)
+                    return
                 self.do_HEAD()
-                if path == "/slow.mp4":
+                if path.startswith("/slow"):
                     source.transfer_requested.set()
+                    with source.transfers:
+                        source.paused_transfers.add(path)
+                        source.transfers.notify_all()
                     if not source.release_transfer.wait(15):
                         return
                 try:
@@ -131,7 +147,7 @@ class ServerIntegrationTests(unittest.TestCase):
         self.directory = Path(directory.name)
         self.server_log = self.directory / "server.log"
 
-    def start_service(self):
+    def start_service(self, **settings):
         with socket.socket() as listener:
             listener.bind(("127.0.0.1", 0))
             port = listener.getsockname()[1]
@@ -145,6 +161,7 @@ class ServerIntegrationTests(unittest.TestCase):
             NO_PROXY="127.0.0.1,localhost",
             no_proxy="127.0.0.1,localhost",
         )
+        env.update(settings)
         with self.server_log.open("ab") as output:
             process = subprocess.Popen(
                 [sys.executable, "-u", str(SERVICE)],
@@ -208,6 +225,24 @@ class ServerIntegrationTests(unittest.TestCase):
             time.sleep(0.1)
         self.fail(f"Queue did not reach expected state: {queue!r}\n{self.server_log.read_text(errors='replace')}")
 
+    @staticmethod
+    def remote_body(url, **options):
+        return dict({"url": url, "quality": "Best", "container": "Auto", "videoCodec": "Auto",
+                     "embedMetadata": False, "embedChapters": False}, **options)
+
+    def wait_for_remote(self, browser, path, state, timeout=20):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            response = browser.request("GET", path)
+            self.assertEqual(response.status, 200, response.body)
+            job = response.json()
+            if job["state"] == state:
+                return job
+            if job["state"] in {"failed", "interrupted", "received", "cancelled"}:
+                break
+            time.sleep(0.05)
+        self.fail(f"Remote job did not reach {state}: {job!r}\n{self.server_log.read_text(errors='replace')}")
+
     def test_browser_queue_is_shared_persistent_and_explicit(self):
         process, pc = self.start_service()
         second_browser = Browser(pc.port)
@@ -250,6 +285,162 @@ class ServerIntegrationTests(unittest.TestCase):
         removed = reopened.request("DELETE", f"/api/jobs/{original['jobs'][0]['id']}")
         self.assertLess(removed.status, 300, removed.body)
         self.assertEqual(self.queue(reopened)["jobs"], original["jobs"][1:])
+
+    def test_remote_auth_idempotency_and_real_free_space_gate(self):
+        # Set a reserve larger than any real test volume without filling the host disk.
+        process, client = self.start_service(VD_SERVER_MAX_CONCURRENT="2", VD_SERVER_FREE_RESERVE_MIB="1000000000")
+        capabilities = "/api/remote/capabilities"
+        self.assertEqual(client.request("GET", capabilities, authenticated=False).status, 401)
+        self.assertEqual(client.request("GET", capabilities).json(), {"version": 1, "maxConcurrent": 2})
+        path = "/api/remote/jobs/" + "a" * 32
+        url = "https://example.invalid/video.mp4"
+        body = self.remote_body(url, container="WEBM")
+        self.assertEqual(client.request("PUT", path, body=body, authenticated=False).status, 401)
+        self.assertEqual(client.request("PUT", path, body=body, headers={"X-Video-Downloader": "0"}).status, 403)
+        self.assertEqual(client.request("PUT", "/api/remote/jobs/" + "A" * 32, body=body).status, 404)
+        self.assertEqual(client.request("PUT", path, body=self.remote_body(url, quality=["720"])).status, 400)
+        self.assertEqual(client.request("PUT", path, body=self.remote_body(url, embedChapters=1)).status, 400)
+        self.assertEqual(client.request("PUT", path, body=body).json()["state"], "queued")
+        self.assertEqual(client.request("PUT", path, body=dict(body, container="WebM")).json()["state"], "queued")
+        self.assertEqual(client.request("PUT", path, body=dict(body, url=url + "?different=1")).status, 409)
+        self.assertEqual(client.request("POST", path + "/received").status, 409)
+        self.assertEqual(self.queue(client), {"jobs": [], "running": False})
+
+        second = "/api/remote/jobs/" + "b" * 32
+        self.assertEqual(client.request("PUT", second, body=body).json()["state"], "queued")
+        self.assertEqual(client.request("DELETE", second).status, 204)
+        self.assertEqual(client.request("DELETE", second).status, 204)
+        tombstone = "/api/remote/jobs/" + "c" * 32
+        self.assertEqual(client.request("DELETE", tombstone).status, 204)
+        self.assertEqual(client.request("PUT", tombstone, body=body).json()["state"], "cancelled")
+
+        self.stop_service(process)
+        _, reopened = self.start_service(VD_SERVER_MAX_CONCURRENT="2", VD_SERVER_FREE_RESERVE_MIB="1000000000")
+        self.assertEqual(reopened.request("GET", path).json()["state"], "queued")
+        self.assertEqual(reopened.request("GET", second).json()["state"], "cancelled")
+
+    @unittest.skipUnless(HAS_MEDIA_TOOLS, "requires yt-dlp, ffmpeg and ffprobe on PATH")
+    def test_four_delegated_transfers_and_receipt_backpressure(self):
+        source = self.make_video_source()
+        process, client = self.start_service()
+        assignments = [f"/api/remote/jobs/{index:032x}" for index in range(1, 6)]
+        urls = [source.url(f"slow-{index}.mp4") for index in range(1, 6)]
+        self.assertEqual(client.request("POST", "/api/jobs", body={"urls": [urls[0]]}).json()["added"], 1)
+        for assignment, url in zip(assignments, urls):
+            response = client.request("PUT", assignment, body=self.remote_body(url))
+            self.assertEqual(response.status, 200, response.body)
+        with source.transfers:
+            self.assertTrue(source.transfers.wait_for(lambda: len(source.paused_transfers) >= 4, timeout=12),
+                            f"Four real downloads did not reach their source: {source.paused_transfers}")
+            self.assertEqual(len(source.paused_transfers), 4)
+        self.assertEqual(client.request("GET", assignments[-1]).json()["state"], "queued")
+        self.assertFalse(self.queue(client)["running"])
+
+        source.release_transfer.set()
+        for assignment in assignments[:4]:
+            self.wait_for_remote(client, assignment, "completed")
+        self.assertEqual(client.request("GET", assignments[-1]).json()["state"], "queued")
+        first = assignments[0]
+        result = client.request("GET", first).json()
+        self.assertTrue(result["filename"].endswith(" [slow-1].mp4"), result)
+        self.assertEqual(client.request("DELETE", first).status, 204)
+        self.assertEqual(client.request("GET", first).json()["state"], "completed")
+        initial = client.request("GET", first + "/file", headers={"Range": "bytes=0-15"})
+        self.assertEqual(initial.status, 206, initial.body)
+        remaining = client.request("GET", first + "/file", headers={"Range": "bytes=16-", "If-Range": initial.headers["etag"]})
+        self.assertEqual(remaining.status, 206, remaining.body)
+        content = initial.body + remaining.body
+        self.assertEqual(len(content), result["size"])
+        result_path = self.directory / "data" / "files" / first.rsplit("/", 1)[1]
+        self.assertTrue(result_path.exists())
+        self.assertEqual(client.request("POST", first + "/received", authenticated=False).status, 401)
+        self.assertEqual(client.request("POST", first + "/received", headers={"X-Video-Downloader": "0"}).status, 403)
+        self.assertEqual(client.request("POST", first + "/received").status, 204)
+        self.assertFalse(result_path.exists())
+        self.assertEqual(client.request("GET", first + "/file").status, 404)
+        self.assertEqual(client.request("POST", first + "/received").status, 204)
+        self.assertEqual(client.request("PUT", first, body=self.remote_body(urls[0])).json()["state"], "received")
+        self.wait_for_remote(client, assignments[-1], "completed")
+        self.assertEqual(self.queue(client)["jobs"][0]["status"], "queued")
+
+        # Model a crash after the receipt commit and before its physical cleanup.
+        self.stop_service(process)
+        result_path.write_bytes(content)
+        _, reopened = self.start_service()
+        self.assertEqual(reopened.request("GET", first).json()["state"], "received")
+        self.assertFalse(result_path.exists())
+        self.assertEqual(reopened.request("POST", first + "/received").status, 204)
+
+    @unittest.skipUnless(HAS_MEDIA_TOOLS, "requires yt-dlp, ffmpeg and ffprobe on PATH")
+    def test_storage_guard_covers_shared_slots_without_removing_ready_files(self):
+        with mock.patch.object(sys, "path", [str(SERVICE.parent), *sys.path]):
+            from queue_worker import DISK_ERROR, MIB, JobStore, RemoteOptions
+
+        source = self.make_video_source()
+        disk = SimpleNamespace(free=1024 * MIB)
+        with mock.patch("queue_worker.shutil.disk_usage", return_value=disk):
+            store = JobStore(self.directory / "data", max_concurrent=2, disk_reserve=64 * MIB)
+            try:
+                options = RemoteOptions("Best", "MP4", "H264", True, True)
+                ready, active, pending = ("b" * 32, "c" * 32, "d" * 32)
+
+                def wait_for(job_id, state):
+                    deadline = time.monotonic() + 12
+                    while time.monotonic() < deadline:
+                        job = store.get_remote(job_id)
+                        if job["state"] == state:
+                            return job
+                        time.sleep(0.05)
+                    self.fail(f"Expected {state}, got {job!r}")
+
+                store.put_remote(ready, source.url("direct.mp4"), options)
+                wait_for(ready, "completed")
+                store.add([source.url("slow-browser.mp4")])
+                self.assertTrue(store.start())
+                store.put_remote(active, source.url("slow-remote.mp4"), options)
+                store.put_remote(pending, source.url("slow-pending.mp4"), options)
+                with source.transfers:
+                    self.assertTrue(source.transfers.wait_for(lambda: len(source.paused_transfers) >= 2, timeout=12))
+                    self.assertEqual(source.paused_transfers, {"/slow-browser.mp4", "/slow-remote.mp4"})
+                self.assertEqual(store.get_remote(pending)["state"], "queued")
+
+                disk.free = 32 * MIB
+                self.assertEqual(wait_for(active, "failed")["error"], DISK_ERROR)
+                self.assertEqual(store.get_remote(pending)["state"], "queued")
+                self.assertIsNotNone(store.get_file(ready))
+                source.release_transfer.set()
+                disk.free = 1024 * MIB
+                wait_for(pending, "completed")
+                self.assertEqual(store.list_jobs()["jobs"][0]["error"], DISK_ERROR)
+            finally:
+                store.close()
+
+    @unittest.skipUnless(HAS_MEDIA_TOOLS, "requires yt-dlp, ffmpeg and ffprobe on PATH")
+    def test_remote_collection_fails_without_publishing_its_first_video(self):
+        source = self.make_video_source()
+        _, client = self.start_service()
+        path = "/api/remote/jobs/" + "d" * 32
+        response = client.request("PUT", path, body=self.remote_body(source.url("collection")))
+        self.assertEqual(response.status, 200, response.body)
+        job = self.wait_for_remote(client, path, "failed")
+        self.assertIs(job.get("unsupported"), True, job)
+        self.assertEqual(client.request("GET", path + "/file").status, 404)
+
+    @unittest.skipUnless(HAS_MEDIA_TOOLS, "requires yt-dlp, ffmpeg and ffprobe on PATH")
+    def test_cancelling_remote_child_keeps_other_workers_alive(self):
+        source = self.make_video_source()
+        _, client = self.start_service()
+        first, second = [f"/api/remote/jobs/{index:032x}" for index in (6, 7)]
+        for path, name in ((first, "slow-6.mp4"), (second, "slow-7.mp4")):
+            self.assertEqual(client.request("PUT", path, body=self.remote_body(source.url(name))).status, 200)
+        with source.transfers:
+            self.assertTrue(source.transfers.wait_for(lambda: len(source.paused_transfers) == 2, timeout=12))
+        self.assertEqual(client.request("DELETE", first).status, 204)
+        self.assertEqual(client.request("GET", first).json()["state"], "cancelled")
+        self.assertEqual(client.request("GET", second).json()["state"], "downloading")
+        source.release_transfer.set()
+        self.wait_for_remote(client, second, "completed")
+        self.assertEqual(client.request("GET", first + "/file").status, 404)
 
     @unittest.skipUnless(HAS_MEDIA_TOOLS, "requires yt-dlp, ffmpeg and ffprobe on PATH")
     def test_background_download_is_retrievable_and_supports_resume(self):

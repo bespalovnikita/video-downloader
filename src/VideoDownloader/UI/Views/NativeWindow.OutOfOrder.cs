@@ -47,7 +47,7 @@ public sealed partial class NativeWindow
             // This is an explicit selected start, including the ordinary tools,
             // history, disk-space and profile-maintenance checks. Other queued
             // rows are not admitted implicitly.
-            await StartAsync([row]);
+            await StartWithConfirmationAsync([row],null,allowRemoteDownloads:false);
             return;
         }
         if(!expected.CanStartOutOfOrder(row))return;

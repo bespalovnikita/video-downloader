@@ -11,7 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import quote, urlsplit
 
-from queue_worker import JobStore
+from queue_worker import JobStore, MIB, RemoteOptions
 
 
 STATIC_ROOT = Path(__file__).resolve().parent / "static"
@@ -21,6 +21,7 @@ STATIC_FILES = {
     "/static/styles.css": ("styles.css", "text/css; charset=utf-8"),
 }
 JOB_PATH = re.compile(r"/api/jobs/([1-9][0-9]{0,18})(/retry|/file)?")
+REMOTE_JOB_PATH = re.compile(r"/api/remote/jobs/([0-9a-f]{32})(/file|/received)?")
 BYTE_RANGE = re.compile(r"bytes=([0-9]{0,19})-([0-9]{0,19})", re.IGNORECASE)
 MAX_REQUEST_BYTES = 2 * 1024 * 1024
 MAX_URLS = 100
@@ -108,6 +109,9 @@ class DownloadHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         self.handle_request()
 
+    def do_PUT(self):
+        self.handle_request()
+
     def do_DELETE(self):
         self.handle_request()
 
@@ -121,7 +125,7 @@ class DownloadHandler(BaseHTTPRequestHandler):
                 )
                 return
             try:
-                if self.command in {"POST", "DELETE"} and self.headers.get("X-Video-Downloader") != "1":
+                if self.command in {"POST", "PUT", "DELETE"} and self.headers.get("X-Video-Downloader") != "1":
                     raise RequestError(HTTPStatus.FORBIDDEN, "Запрос на изменение отклонён.")
                 self.dispatch()
             except RequestError as error:
@@ -143,6 +147,13 @@ class DownloadHandler(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         method = self.command
         store = self.server.store
+        if path == "/api/remote/capabilities" and method in {"GET", "HEAD"}:
+            self.send_json(HTTPStatus.OK, store.remote_capabilities())
+            return
+        remote = REMOTE_JOB_PATH.fullmatch(path)
+        if remote is not None:
+            self.dispatch_remote_job(method, remote[1], remote[2])
+            return
         if method in {"GET", "HEAD"}:
             if path in STATIC_FILES:
                 filename, content_type = STATIC_FILES[path]
@@ -168,6 +179,39 @@ class DownloadHandler(BaseHTTPRequestHandler):
                 return
         raise RequestError(HTTPStatus.NOT_FOUND, "Страница не найдена.")
 
+    def dispatch_remote_job(self, method, job_id, suffix):
+        store = self.server.store
+        if method in {"GET", "HEAD"} and suffix == "/file":
+            self.send_file(job_id)
+            return
+        if method in {"GET", "HEAD"} and suffix is None:
+            job = store.get_remote(job_id)
+            if job is None:
+                raise RequestError(HTTPStatus.NOT_FOUND, "Задание сервера не найдено.")
+            self.send_json(HTTPStatus.OK, job)
+            return
+        if method == "PUT" and suffix is None:
+            url, options = self.read_remote_options()
+            job = store.put_remote(job_id, url, options)
+            if job is None:
+                raise RequestError(HTTPStatus.CONFLICT, "Этот идентификатор уже принадлежит другому заданию.")
+            self.send_json(HTTPStatus.OK, job)
+            return
+        if method == "DELETE" and suffix is None:
+            store.cancel_remote(job_id)
+            self.send_empty(HTTPStatus.NO_CONTENT)
+            return
+        if method == "POST" and suffix == "/received":
+            try:
+                if not store.receive_remote(job_id):
+                    raise RequestError(HTTPStatus.CONFLICT, "Для этого задания ещё нет готового файла.")
+            except OSError:
+                logging.exception("Could not remove acknowledged result for job %s", job_id)
+                raise RequestError(HTTPStatus.INTERNAL_SERVER_ERROR, "Не удалось удалить подтверждённый файл.") from None
+            self.send_empty(HTTPStatus.NO_CONTENT)
+            return
+        raise RequestError(HTTPStatus.NOT_FOUND, "Страница не найдена.")
+
     def dispatch_job(self, method, job_id, suffix):
         store = self.server.store
         if method in {"GET", "HEAD"} and suffix == "/file":
@@ -185,7 +229,7 @@ class DownloadHandler(BaseHTTPRequestHandler):
             return
         raise RequestError(HTTPStatus.NOT_FOUND, "Страница не найдена.")
 
-    def read_urls(self):
+    def read_json(self):
         if self.headers.get_content_type() != "application/json":
             raise RequestError(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "Ожидается запрос в формате JSON.")
         lengths = self.headers.get_all("Content-Length") or []
@@ -201,15 +245,43 @@ class DownloadHandler(BaseHTTPRequestHandler):
         if len(body) != length:
             raise RequestError(HTTPStatus.BAD_REQUEST, "Запрос получен не полностью.")
         try:
-            data = json.loads(body.decode("utf-8"))
+            return json.loads(body.decode("utf-8"))
         except (ValueError, RecursionError):
             raise RequestError(HTTPStatus.BAD_REQUEST, "Некорректный JSON.") from None
+
+    def read_urls(self):
+        data = self.read_json()
         urls = data.get("urls") if isinstance(data, dict) else None
         if not isinstance(urls, list) or not 1 <= len(urls) <= MAX_URLS:
             raise RequestError(HTTPStatus.BAD_REQUEST, f"Добавьте от 1 до {MAX_URLS} ссылок.")
         if not all(valid_url(url) for url in urls):
             raise RequestError(HTTPStatus.BAD_REQUEST, "Нужны ссылки HTTP или HTTPS без логина и пароля в адресе.")
         return urls
+
+    def read_remote_options(self):
+        data = self.read_json()
+        if not isinstance(data, dict) or not valid_url(data.get("url")):
+            raise RequestError(HTTPStatus.BAD_REQUEST, "Нужна ссылка HTTP или HTTPS без логина и пароля в адресе.")
+
+        def choice(name, supported):
+            value = data.get(name)
+            if isinstance(value, str):
+                for option in supported:
+                    if value.casefold() == option.casefold():
+                        return option
+            raise RequestError(HTTPStatus.BAD_REQUEST, "Параметры задания сервером не поддерживаются.")
+
+        metadata, chapters = data.get("embedMetadata"), data.get("embedChapters")
+        if not isinstance(metadata, bool) or not isinstance(chapters, bool):
+            raise RequestError(HTTPStatus.BAD_REQUEST, "Параметры задания сервером не поддерживаются.")
+        return data["url"], RemoteOptions(choice("quality", ("Best", "2160", "1440", "1080", "720")),
+                                          choice("container", ("Auto", "MP4", "MKV", "WebM")),
+                                          choice("videoCodec", ("Auto", "H264", "VP9", "AV1")),
+                                          metadata, chapters)
+
+    def send_empty(self, status):
+        self.send_response(status)
+        self.end_headers()
 
     def send_json(self, status, data, headers=None):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
@@ -292,10 +364,17 @@ def main():
     data_dir = Path(os.environ.get("VD_DATA_DIR", "data")).resolve()
     host = os.environ.get("VD_SERVER_HOST", "127.0.0.1")
     port = int(os.environ.get("VD_SERVER_PORT", "8080"))
+    try:
+        max_concurrent = int(os.environ.get("VD_SERVER_MAX_CONCURRENT", "4"))
+        disk_reserve = int(os.environ.get("VD_SERVER_FREE_RESERVE_MIB", "512"))
+    except ValueError:
+        raise SystemExit("Лимит загрузок и резерв диска должны быть целыми числами.") from None
+    if not 1 <= max_concurrent <= 4 or disk_reserve < 64:
+        raise SystemExit("Укажите от 1 до 4 загрузок и не менее 64 МиБ резерва диска.")
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     signal.signal(signal.SIGTERM, stop_server)
     os.umask(0o077)
-    store = JobStore(data_dir)
+    store = JobStore(data_dir, max_concurrent=max_concurrent, disk_reserve=disk_reserve * MIB)
     try:
         with DownloadServer((host, port), store, credentials) as server:
             logging.info("Video Downloader listening on %s:%d", *server.server_address)

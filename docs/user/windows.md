@@ -6,6 +6,7 @@
 - [Плейлист YouTube по отдельным роликам](#youtube-playlist).
 - [Новые материалы из подписки](#subscriptions).
 - [Подписка с RSS / Atom](#rss).
+- [Разделить закачку с сервером](windows-reference.md#shared-server-downloads).
 - [Перенос готовой очереди между Windows и Android](queue-transfer.md).
 
 ## Установка и обновление
