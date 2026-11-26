@@ -52,7 +52,7 @@ Video Downloader имеет два пользовательских прилож
 | Windows-код, тесты, скрипты или сборка | `pwsh -NoProfile -File scripts/build.ps1 -Task Test`; зелёный Windows CI |
 | Windows packaging | Дополнительно `pwsh -NoProfile -File scripts/build.ps1 -Task Publish` |
 | Android | Из `android/`: `./gradlew :core:test :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleDebugAndroidTest`; device-сценарии по [ANDROID.md](docs/agents/ANDROID.md), зелёный Android CI |
-| Серверный режим | `python3 -m unittest discover -s server/tests -v` на Linux с `yt-dlp`, `ffmpeg` и `ffprobe` в PATH. При изменении контейнера проверь запуск и сетевую изоляцию через Docker Compose. |
+| Серверный режим | `python3 -m unittest discover -s server/tests -v` на Linux с `yt-dlp` с поддержкой профиля Chrome (`curl_cffi`), `ffmpeg` и `ffprobe` в PATH. При изменении контейнера проверь запуск и сетевую изоляцию через Docker Compose. |
 | Общий коллектор или portable queue | Обе платформы; фикстуры и реальные UI-сценарии по контракту |
 | Только Markdown | Локальные ссылки, якоря, Mermaid, соответствие исходникам; runtime-тесты не требуются |
 

@@ -15,6 +15,8 @@ from pathlib import Path
 
 LOGGER = logging.getLogger(__name__)
 PROGRESS_MARKER = "__VD_PROGRESS__:"
+# yt-dlp interprets a bare identifier as a field name in --print.
+TRANSFER_MARKER = "[__VD_TRANSFER__]"
 FILE_MARKER = "__VD_FILE__:"
 MEDIA_FORMATS = (
     "mov,mp4,m4a,3gp,3g2,mj2,matroska,webm,mpegts,avi,flv,asf,mp3,wav,ogg,"
@@ -35,12 +37,15 @@ class DownloadError(Exception):
     pass
 
 
-def engine_error(line: str) -> str:
+def engine_error(line: str, transfer_started: bool) -> str:
     line = line.casefold()
     if "no space left on device" in line:
         return "На сервере закончилось место."
     if "http error 403" in line:
-        return "Источник отклонил запрос (HTTP 403)."
+        target = "медиафайла" if transfer_started else "данных о видео"
+        return f"Источник отклонил запрос {target} (HTTP 403)."
+    if 'impersonate target "chrome" is not available' in line:
+        return "В сборке yt-dlp недоступен сетевой профиль Chrome."
     if "http error 429" in line:
         return "Источник ограничил частоту запросов (HTTP 429)."
     if "unsupported url" in line:
@@ -257,15 +262,18 @@ class JobStore:
     def _download(self, job_id: int, url: str, stage: Path) -> tuple[Path, str]:
         command = [
             self._yt_dlp, "--ignore-config", "--no-plugin-dirs", "--no-cache-dir",
+            "--impersonate", "chrome",
             "--no-playlist", "--playlist-items", "1", "--no-overwrites", "--no-simulate",
             "--socket-timeout", "20", "--retries", "3", "--fragment-retries", "3",
             "--encoding", "utf-8", "--no-colors", "--newline", "--progress", "--progress-delta", "0.5",
             "--progress-template", f"download:{PROGRESS_MARKER}%(progress._percent_str)s",
+            "--print", f"before_dl:{TRANSFER_MARKER}",
             "--print", f"after_move:{FILE_MARKER}%(.{{filepath,title}})j",
             "--output", str(stage / "media.%(ext)s"), "--", url,
         ]
         outputs = []
         progress = None
+        transfer_started = False
         last_error = ""
         with self._child(command) as process:
             for line in iter(lambda: process.stdout.readline(64 * 1024), ""):
@@ -277,6 +285,8 @@ class JobStore:
                             with self._lock, self._db:
                                 self._db.execute("UPDATE jobs SET progress = ? WHERE id = ?", (current, job_id))
                             progress = current
+                elif line.rstrip("\r\n") == TRANSFER_MARKER:
+                    transfer_started = True
                 elif line.startswith(FILE_MARKER):
                     if outputs:
                         raise DownloadError("Движок вернул больше одного файла для этой ссылки.")
@@ -284,10 +294,10 @@ class JobStore:
                         outputs.append(json.loads(line[len(FILE_MARKER):]))
                     except ValueError:
                         raise DownloadError("Движок вернул неверное имя файла.") from None
-                elif line.startswith("ERROR:"):
+                elif line.startswith(("ERROR:", "yt_dlp.utils.YoutubeDLError:")):
                     last_error = line
             if process.wait() != 0:
-                raise DownloadError(engine_error(last_error))
+                raise DownloadError(engine_error(last_error, transfer_started))
 
         output = outputs[0] if outputs else None
         if not isinstance(output, dict) or not isinstance(output.get("filepath"), str):
