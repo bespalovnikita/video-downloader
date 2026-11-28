@@ -726,7 +726,7 @@ public sealed partial class NativeWindow : IDisposable
             options.PinOutputDirectory();
             await Task.Run(()=>
             {
-                foreach(var row in approved.Where(row=>row.ResumeState is not null))DownloadResumeStore.Validate(row);
+                foreach(var row in approved.Where(row=>row.ResumeState is not null))DownloadResumeStore.ValidateForContinuation(row);
             });
             if(_closing || _disposed || _appUpdateHandoff || _checkpointReadOnly || RejectProfileBackupMutation())return;
             RequireCurrentPlan(approved);

@@ -153,6 +153,8 @@ public sealed class DownloadItem : INotifyPropertyChanged
         }
     }
     [JsonIgnore(Condition=JsonIgnoreCondition.WhenWritingNull)] public DownloadResumeState? ResumeState { get; set; }
+    [JsonIgnore] public bool CanContinueFailedDownload=>Status=="Failed" && AttemptFinished &&
+        Progress>10 && CanResume && ResumeState?.RetainedAfterFailure==true;
     [JsonIgnore] public bool CanResumeRetained=>ResumeState is not null && !PendingRemoval && CleanupError.Length==0;
     [JsonIgnore] public bool CanResume => !PendingRemoval && CleanupError.Length == 0;
     public long TransferredBytes { get; set; }

@@ -19,6 +19,8 @@ public sealed partial class NativeWindow
     private bool CanContinueQueueItem(DownloadItem row)=>SessionState.Queue.Contains(row) && row.CanResume &&
         row.Status=="Skipped" && row.AttemptFinished;
 
+    private bool CanResumeFailedQueueItem(DownloadItem row)=>SessionState.Queue.Contains(row) && row.CanContinueFailedDownload;
+
     private void InitializeQueueItemActions()
     {
         F<Button>("SkipQueueItemsButton").Content=ErrorMessages.Text("Пропустить выбранные","Skip selected");
@@ -105,10 +107,11 @@ public sealed partial class NativeWindow
         });
     }
 
-    private async Task ResumeRowsAsync(IEnumerable<DownloadItem> rows)
+    private async Task ResumeRowsAsync(IEnumerable<DownloadItem> rows,bool failed=false)
     {
         if(QueueItemActionsBlocked())return;
-        var selected=rows.Distinct().Where(CanContinueQueueItem).OrderBy(row=>row.Order).ToArray();
+        bool CanContinue(DownloadItem row)=>failed?CanResumeFailedQueueItem(row):CanContinueQueueItem(row);
+        var selected=rows.Distinct().Where(CanContinue).OrderBy(row=>row.Order).ToArray();
         if(selected.Length==0)return;
         var expected=SessionState.Coordinator;
         bool active=expected?.IsRunning==true;
@@ -119,7 +122,7 @@ public sealed partial class NativeWindow
             SessionState.StopVersion==stopVersion && (active
                 ?!SessionState.Stopping && ReferenceEquals(expected,SessionState.Coordinator) && expected!.IsRunning
                 :SessionState.Coordinator?.IsRunning!=true);
-        bool CurrentRows(IEnumerable<DownloadItem> plan)=>plan.All(row=>CanContinueQueueItem(row) &&
+        bool CurrentRows(IEnumerable<DownloadItem> plan)=>plan.All(row=>CanContinue(row) &&
             captured.TryGetValue(row,out var original) && row.Url==original.Url && row.Selection==original.Selection &&
             row.ResumeState==original.ResumeState && row.StageDir==original.StageDir && row.RunDir==original.RunDir &&
             row.SubscriptionName==original.SubscriptionName && row.RequeueRequested==original.RequeueRequested &&
@@ -140,7 +143,7 @@ public sealed partial class NativeWindow
             if(!CurrentOwner(true) || !CurrentRows(selected))return;
             await Task.Run(()=>
             {
-                foreach(var row in selected.Where(row=>row.ResumeState is not null))DownloadResumeStore.Validate(row);
+                foreach(var row in selected.Where(row=>row.ResumeState is not null))DownloadResumeStore.ValidateForContinuation(row);
             });
             if(!CurrentOwner(true) || !CurrentRows(selected))return;
             var fresh=selected.Where(row=>!expected!.OwnsFinishedSkippedAttempt(row)).ToList();

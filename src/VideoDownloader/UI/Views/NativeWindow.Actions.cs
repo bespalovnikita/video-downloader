@@ -244,6 +244,7 @@ public sealed partial class NativeWindow
         skipSelected.Click+=async(_,_)=>await SkipRowsAsync(SelectedVisibleQueueRows());queueMenu.Items.Add(skipSelected);
         var resumeSelected=new MenuItem{Header=ErrorMessages.Text("Продолжить выбранные строки","Resume selected rows")};
         resumeSelected.Click+=async(_,_)=>await ResumeRowsAsync(SelectedVisibleQueueRows());queueMenu.Items.Add(resumeSelected);
+        var resumeFailed=AddFailedResumeAction(queueMenu,SelectedVisibleQueueRows);
         var forgetSelected=new MenuItem{Header=ErrorMessages.Text("Убрать записи из очереди","Remove queue entries")};
         forgetSelected.Click+=async(_,_)=>await ForgetRowsAsync(SelectedVisibleQueueRows());queueMenu.Items.Add(forgetSelected);
         var removeSelected=new MenuItem{Header=ErrorMessages.Text("Удалить загрузки и файлы…","Delete downloads and files…")};
@@ -255,6 +256,7 @@ public sealed partial class NativeWindow
             downloadOnServer.IsEnabled=downloadSelected.IsEnabled && !_startingSession;
             skipSelected.IsEnabled=!QueueItemActionsBlocked() && SelectedVisibleQueueRows().Any(CanSkipQueueItem);
             resumeSelected.IsEnabled=!QueueItemActionsBlocked() && SelectedVisibleQueueRows().Any(CanContinueQueueItem);
+            resumeFailed.IsEnabled=!QueueItemActionsBlocked() && SelectedVisibleQueueRows().Any(CanResumeFailedQueueItem);
             removeSelected.IsEnabled=selected;
             forgetSelected.IsEnabled=!QueueRecordMutationBlocked() && SelectedVisibleQueueRows().Any(CanForgetQueueRecord);
         };
@@ -296,6 +298,7 @@ public sealed partial class NativeWindow
         skipDownloads.Click+=async(_,_)=>await SkipRowsAsync(SelectedDownloadRows());downloadMenu.Items.Add(skipDownloads);
         var resumeDownloads=new MenuItem{Header=ErrorMessages.Text("Продолжить выбранные загрузки","Resume selected downloads")};
         resumeDownloads.Click+=async(_,_)=>await ResumeRowsAsync(SelectedDownloadRows());downloadMenu.Items.Add(resumeDownloads);
+        var resumeFailedDownloads=AddFailedResumeAction(downloadMenu,SelectedDownloadRows);
         downloadMenu.Opened+=(_,_)=>
         {
             var selected=SelectedDownloadRows();
@@ -305,6 +308,7 @@ public sealed partial class NativeWindow
                 ErrorMessages.Text("Среди выбранных загрузок нет подходящих заданий.","None of the selected downloads are eligible for this action.");
             SetMenuAvailability(skipDownloads,!QueueItemActionsBlocked() && selected.Any(CanSkipQueueItem),reason);
             SetMenuAvailability(resumeDownloads,!QueueItemActionsBlocked() && selected.Any(CanContinueQueueItem),reason);
+            SetMenuAvailability(resumeFailedDownloads,!QueueItemActionsBlocked() && selected.Any(CanResumeFailedQueueItem),reason);
         };
         DownloadAction(ErrorMessages.Text("Показать ошибку","Show error"),row=>MessageBox.Show(_window,row.ErrorMessage,
             ErrorMessages.Text("Ошибка скачивания","Download error")),row=>row.ErrorMessage.Length>0?null:
@@ -314,6 +318,14 @@ public sealed partial class NativeWindow
             ErrorMessages.Text("У этой загрузки нет исходного сообщения об ошибке.","This download has no original error message."));
         D.ContextMenu=downloadMenu;
     }
+    private MenuItem AddFailedResumeAction(ContextMenu menu,Func<DownloadItem[]> getRows)
+    {
+        var action=new MenuItem{Header=ErrorMessages.Text("Докачать после ошибки","Resume after error")};
+        action.Click+=async(_,_)=>await ResumeRowsAsync(getRows(),failed:true);
+        menu.Items.Add(action);
+        return action;
+    }
+
     private static void OpenUrl(string url)
     {
         if(AppPersistence.ValidUrl(url))Process.Start(new ProcessStartInfo(url){UseShellExecute=true});
