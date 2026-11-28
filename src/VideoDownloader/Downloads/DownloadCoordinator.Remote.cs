@@ -15,6 +15,9 @@ public sealed partial class DownloadCoordinator
 
     private bool RequiresServer(DownloadItem row)=>_options.ServerOnlyRows?.Contains(row)==true;
 
+    private static bool RequiresLocalContinuation(DownloadAttempt attempt)=>
+        attempt.Row.ResumeState?.RetainedAfterFailure==true;
+
     // Both queues carry the same attempt. The common claim under
     // _completionGate makes a second token inert once either side starts it.
     private bool EnqueueAttempt(DownloadAttempt attempt,DownloadOptions options)
@@ -29,6 +32,7 @@ public sealed partial class DownloadCoordinator
             return EnqueueRemote(attempt);
         }
         if(!_queue.Writer.TryWrite(attempt))return false;
+        if(RequiresLocalContinuation(attempt))return true;
         if(_unroutedRemote is {} pending)pending.Add(attempt);
         else if(_remoteReady &&
             (_remote!.OwnsAssignment(attempt.Row) || _options.AllowFreshRemoteDownloads && _remote.Supports(attempt.Row,options)))
@@ -47,7 +51,7 @@ public sealed partial class DownloadCoordinator
     // The initial Admit can run before the client has loaded its journal.
     private bool RedirectOwnedAssignment(DownloadAttempt attempt)
     {
-        if(!_remoteReady)return false;
+        if(!_remoteReady || RequiresLocalContinuation(attempt))return false;
         lock(_completionGate)
         {
             return _acceptingWork && !attempt.Started && !attempt.LocalOnly && !attempt.Finished.Task.IsCompleted &&

@@ -65,10 +65,10 @@ public sealed record DownloadResumeState
     public string Identity { get; init; }="";
     public DownloadResumePlan Plan { get; init; }=new();
     public DownloadSelection? Selection { get; init; }
-    // Hashes of component IDs, never extractor values or URLs. Immutable
-    // replacement keeps checkpoint serialization independent from pipe reads.
     [JsonIgnore(Condition=JsonIgnoreCondition.WhenWritingDefault)]
     public bool RetainedAfterFailure { get; init; }
+    // Hashes of component IDs, never extractor values or URLs. Immutable
+    // replacement keeps checkpoint serialization independent from pipe reads.
     public IReadOnlyDictionary<string,long> ComponentBytes { get; init; }=new Dictionary<string,long>();
 }
 
