@@ -303,6 +303,9 @@ public sealed partial class NativeWindow : IDisposable
             _preview.ScheduleLocalPoster(item);
             if (SessionState.RecordRowChanged(item))
             {
+                if (item.Status=="Completed" && item.Slot.StartsWith("VPS ",StringComparison.Ordinal) && !_closing)
+                    _lifecycle.NotifyInformation("Video Downloader",ErrorMessages.Text(
+                        $"Сохранено на ПК: {Path.GetFileName(item.Path)}",$"Saved on Windows: {Path.GetFileName(item.Path)}"));
                 Log($"{item.Status}: {item.Url}"+(item.RawError.Length>0?" | "+item.RawError:""));
                 SaveCheckpoint();
                 if (item.CleanupError.Length>0 && !_resettingQueueItems.Contains(item))
@@ -385,6 +388,7 @@ public sealed partial class NativeWindow : IDisposable
             K(name).IsChecked=value;
         RefreshAdvancedOptionsSummary();
         TryReconnectServerDownloads();
+        PollServerNotices();
     }
     private void TryRestore()
     {

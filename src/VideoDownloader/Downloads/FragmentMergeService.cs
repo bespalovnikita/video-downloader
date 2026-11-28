@@ -169,7 +169,7 @@ internal sealed partial class FragmentMergeService
     private static void Add(ProcessStartInfo start,params string[] arguments)
     {foreach(string argument in arguments)start.ArgumentList.Add(argument);}
     private static string Number(double value)=>value.ToString("0.#########",CultureInfo.InvariantCulture);
-    private static async Task<FragmentMergeToolOutput> RunOwnedAsync(ProcessStartInfo start,int stdout,int stderr,CancellationToken token)
+    internal static async Task<FragmentMergeToolOutput> RunOwnedAsync(ProcessStartInfo start,int stdout,int stderr,CancellationToken token)
     {
         using var child=ManagedChildProcess.Start(start);
         var result=await BoundedProcessOutput.ReadAsync(child,stdout,stderr,token).ConfigureAwait(false);

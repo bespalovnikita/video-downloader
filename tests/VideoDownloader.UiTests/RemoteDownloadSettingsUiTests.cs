@@ -108,7 +108,17 @@ internal sealed partial class UiScenario
                             .FirstOrDefault(window=>window.Title==ErrorMessages.Text("Файловый менеджер серверной очереди","Server queue file manager"));
                         if(dialog?.Content is DockPanel panel && panel.Children.OfType<DataGrid>().SingleOrDefault() is {} grid)
                         {
-                            foundFile=grid.Items.Count==1;
+                            if(grid.Items.Count==1)
+                            {
+                                grid.SelectedIndex=0;
+                                var toolbar=panel.Children.OfType<WrapPanel>().Single();
+                                foundFile=toolbar.Children.OfType<Button>().Any(button=>button.IsEnabled &&
+                                    Equals(button.Content,ErrorMessages.Text("Забрать сейчас","Get now"))) &&
+                                    toolbar.Children.OfType<CheckBox>().Any(filter=>Equals(filter.Content,
+                                        ErrorMessages.Text("Уже получено на ПК","Already received on Windows"))) &&
+                                    toolbar.Children.OfType<Button>().Any(button=>!button.IsEnabled &&
+                                        Equals(button.Content,ErrorMessages.Text("Удалить файл…","Delete file…")));
+                            }
                             if(foundFile || DateTime.UtcNow>=openUntil)
                             {
                                 managerTimer.Stop();

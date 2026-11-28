@@ -178,6 +178,8 @@ class JobStore:
             with self._db:
                 if not any(column["name"] == "expires_at" for column in self._db.execute("PRAGMA table_info(remote_jobs)")):
                     self._db.execute("ALTER TABLE remote_jobs ADD COLUMN expires_at REAL")
+                if not any(column["name"] == "priority" for column in self._db.execute("PRAGMA table_info(remote_jobs)")):
+                    self._db.execute("ALTER TABLE remote_jobs ADD COLUMN priority INTEGER NOT NULL DEFAULT 0")
                 if self._db.execute("PRAGMA user_version").fetchone()[0] == 0:
                     self._db.execute("""
                         UPDATE remote_jobs SET expires_at = expires_at + ?
@@ -305,10 +307,11 @@ class JobStore:
             row["status"] == "completed" and row["expires_at"] is not None and row["expires_at"] <= time.time()
         )
 
-    @staticmethod
-    def _remote_summary(row: sqlite3.Row) -> dict:
+    def _remote_summary(self, row: sqlite3.Row) -> dict:
         summary = {"state": row["status"], **{field: row[field] for field in
                    ("progress", "title", "filename", "size", "error")}}
+        if row["status"] == "queued":
+            summary["waitingReason"] = self._remote_wait_reason()
         if row["error"] == REMOTE_RESULT_REMOVED:
             summary["removed"] = True
         if row["status"] == "downloading" and row["progress"] == 100:
@@ -338,20 +341,23 @@ class JobStore:
             self._lock.notify_all()
             return self._remote_summary(self._read_job(job_id))
 
-    def list_remote(self, after: str) -> dict:
+    def list_remote(self, after: str, received_only: bool = False) -> dict:
         page_size = 25
         with self._lock:
             now = time.time()
             rows = self._db.execute("""
-                SELECT id, url, status, title, filename, size, progress, expires_at
+                SELECT id, url, status, title, filename, size, progress, expires_at, priority
                 FROM remote_jobs
-                WHERE id > ? AND (status IN ('queued', 'downloading')
+                WHERE id > ? AND (NOT ? OR status = 'received') AND (status IN ('queued', 'downloading')
                     OR (status IN ('completed', 'received') AND expires_at > ?))
                 ORDER BY id LIMIT ?
-            """, (after, now, page_size + 1)).fetchall()
+            """, (after, received_only, now, page_size + 1)).fetchall()
+            waiting = self._remote_wait_reason()
             jobs = [
                 {"id": row["id"], "state": row["status"], "size": row["size"],
                  "progress": row["progress"], "expiresAt": row["expires_at"],
+                 "prioritized": row["priority"] > 0,
+                 "waitingReason": waiting if row["status"] == "queued" else None,
                  "deleteAfter": (row["expires_at"] - REMOTE_RESULT_TTL + REMOTE_MIN_RETENTION
                                  if row["expires_at"] is not None else None),
                  "name": (row["filename"] or row["title"] or "")[:240],
@@ -361,6 +367,27 @@ class JobStore:
             return {"jobs": jobs, "next": rows[page_size - 1]["id"] if len(rows) > page_size else None,
                     "freeDiskBytes": self._disk_free, "unclaimedBytes": self._unclaimed_bytes(),
                     "unclaimedLimitBytes": REMOTE_RESULT_LIMIT}
+
+    def remote_notices(self) -> dict:
+        with self._lock:
+            now = time.time()
+            rows = self._db.execute("""
+                SELECT id FROM remote_jobs WHERE status = 'completed' AND expires_at > ? AND expires_at <= ?
+                ORDER BY expires_at LIMIT ?
+            """, (now, now + 3600, self._max_concurrent)).fetchall()
+            return {"expiring": [row["id"] for row in rows], "waitingReason": self._remote_wait_reason()
+                    if self._db.execute("SELECT 1 FROM remote_jobs WHERE status = 'queued' OR "
+                                        "(status = 'downloading' AND progress = 100) LIMIT 1").fetchone() else None}
+
+    def prioritize_remote(self, job_id: str) -> bool:
+        with self._lock, self._db:
+            cursor = self._db.execute("""
+                UPDATE remote_jobs SET priority = (
+                    SELECT coalesce(max(priority), 0) + 1 FROM remote_jobs WHERE status = 'queued'
+                ) WHERE id = ? AND status = 'queued'
+            """, (job_id,))
+            self._lock.notify_all()
+            return cursor.rowcount == 1
 
     def remove_remote_result(self, job_id: str) -> bool:
         with self._lock:
@@ -547,8 +574,27 @@ class JobStore:
             SELECT coalesce(sum(size), 0) FROM remote_jobs WHERE status = 'completed'
         """).fetchone()[0]
 
+    def _disk_has_headroom(self) -> bool:
+        return self._disk_free is not None and self._disk_free >= (
+            self._disk_reserve + STORAGE_HEADROOM * (len(self._active) + 1)
+        )
+
+    def _remote_wait_reason(self) -> str | None:
+        if not self._disk_has_headroom():
+            return "disk"
+        if self._unclaimed_bytes() >= REMOTE_RESULT_LIMIT or self._db.execute("""
+            SELECT 1 FROM remote_jobs WHERE status = 'downloading' AND progress = 100 LIMIT 1
+        """).fetchone():
+            return "quota"
+        outstanding = self._db.execute("""
+            SELECT count(*) FROM remote_jobs WHERE status IN ('downloading', 'completed')
+        """).fetchone()[0]
+        if outstanding >= self._max_concurrent or len(self._active) >= self._max_concurrent:
+            return "slots"
+        return None
+
     def _next_job(self) -> sqlite3.Row | None:
-        if self._disk_free is None or self._disk_free < self._disk_reserve + STORAGE_HEADROOM * (len(self._active) + 1):
+        if not self._disk_has_headroom():
             return None
         if not any(isinstance(job_id, int) for job_id in self._active):
             while self._browser_batch:
@@ -557,12 +603,11 @@ class JobStore:
                 if row is not None and row["status"] == "queued":
                     return job
                 self._browser_batch.popleft()
-        outstanding = self._db.execute("""
-            SELECT count(*) FROM remote_jobs WHERE status IN ('downloading', 'completed')
-        """).fetchone()[0]
-        if outstanding >= self._max_concurrent or self._unclaimed_bytes() >= REMOTE_RESULT_LIMIT:
+        if self._remote_wait_reason() is not None:
             return None
-        return self._db.execute("SELECT * FROM remote_jobs WHERE status = 'queued' ORDER BY rowid LIMIT 1").fetchone()
+        return self._db.execute("""
+            SELECT * FROM remote_jobs WHERE status = 'queued' ORDER BY priority DESC, rowid LIMIT 1
+        """).fetchone()
 
     def _mark_downloading(self, job_id: int | str) -> bool:
         with self._db:

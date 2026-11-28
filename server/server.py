@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import quote, urlsplit
+from urllib.parse import parse_qs, quote, urlsplit
 
 from queue_worker import JobStore, MIB, REMOTE_RESULT_EXPIRED, RemoteOptions, RemoteResultExpired
 from update_bridge import UpdateBridge
@@ -23,7 +23,7 @@ STATIC_FILES = {
     "/static/styles.css": ("styles.css", "text/css; charset=utf-8"),
 }
 JOB_PATH = re.compile(r"/api/jobs/([1-9][0-9]{0,18})(/retry|/file)?")
-REMOTE_JOB_PATH = re.compile(r"/api/remote/jobs/([0-9a-f]{32})(/file|/received)?")
+REMOTE_JOB_PATH = re.compile(r"/api/remote/jobs/([0-9a-f]{32})(/file|/received|/priority)?")
 BYTE_RANGE = re.compile(r"bytes=([0-9]{0,19})-([0-9]{0,19})", re.IGNORECASE)
 MAX_REQUEST_BYTES = 2 * 1024 * 1024
 MAX_URLS = 100
@@ -198,12 +198,19 @@ class DownloadHandler(BaseHTTPRequestHandler):
         if path == "/api/remote/capabilities" and method in {"GET", "HEAD"}:
             self.send_json(HTTPStatus.OK, store.remote_capabilities())
             return
+        if path == "/api/remote/notices" and method in {"GET", "HEAD"}:
+            self.send_json(HTTPStatus.OK, store.remote_notices())
+            return
         if path == "/api/remote/jobs" and method in {"GET", "HEAD"}:
             _, _, query = self.path.partition("?")
-            cursor = re.fullmatch(r"after=([0-9a-f]{32})", query)
-            if query and cursor is None:
+            params = parse_qs(query, keep_blank_values=True)
+            after = params.get("after", [""])
+            received = params.get("received", [])
+            if (params.keys() - {"after", "received"} or len(after) != 1 or
+                (("after" in params) and not re.fullmatch(r"[0-9a-f]{32}", after[0])) or
+                ("received" in params and received != ["1"])):
                 raise RequestError(HTTPStatus.BAD_REQUEST, "Неверная страница серверной очереди.")
-            self.send_json(HTTPStatus.OK, store.list_remote(cursor[1] if cursor else ""))
+            self.send_json(HTTPStatus.OK, store.list_remote(after[0], bool(received)))
             return
         remote = REMOTE_JOB_PATH.fullmatch(path)
         if remote is not None:
@@ -263,6 +270,11 @@ class DownloadHandler(BaseHTTPRequestHandler):
             return
         if method == "DELETE" and suffix is None:
             store.cancel_remote(job_id)
+            self.send_empty(HTTPStatus.NO_CONTENT)
+            return
+        if method == "POST" and suffix == "/priority":
+            if not store.prioritize_remote(job_id):
+                raise RequestError(HTTPStatus.CONFLICT, "Приоритет можно менять для ожидающего задания.")
             self.send_empty(HTTPStatus.NO_CONTENT)
             return
         if method == "POST" and suffix == "/received":

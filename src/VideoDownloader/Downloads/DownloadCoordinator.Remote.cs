@@ -189,7 +189,7 @@ public sealed partial class DownloadCoordinator
         item.State="Downloading";
         item.ProgressDetail=progress.Stage switch
         {
-            RemoteDownloadStage.Waiting=>ErrorMessages.Text("Ожидание загрузки на сервере","Waiting for the server"),
+            RemoteDownloadStage.Waiting=>RemoteQueueStatus.Waiting(progress.WaitingReason),
             RemoteDownloadStage.WaitingForSpace=>ErrorMessages.Text("Ожидание места в серверной очереди","Waiting for space in the server queue"),
             RemoteDownloadStage.Downloading=>ErrorMessages.Text("Загрузка на сервере","Downloading on the server"),
             _=>ErrorMessages.Text("Получение файла с сервера","Receiving the file from the server")
@@ -215,9 +215,14 @@ public sealed partial class DownloadCoordinator
         _changed(item);
     }
 
-    private async Task VerifyRemoteMediaAsync(DownloadItem item,string mediaPath,CancellationToken token)
+    private Task VerifyRemoteMediaAsync(DownloadItem item,string mediaPath,CancellationToken token) =>
+        VerifyRemoteMediaAsync(mediaPath,()=>_pause.IsPaused,
+            (start,stdout,stderr,ct)=>RunProcessingToolAsync(item,start,stdout,stderr,ct),token);
+
+    internal static async Task VerifyRemoteMediaAsync(string mediaPath,Func<bool> paused,
+        Func<ProcessStartInfo,int,int,CancellationToken,Task<FragmentMergeToolOutput>> run,CancellationToken token)
     {
-        await using var budget=new FragmentMergeService.ActiveBudget(token,TimeSpan.FromSeconds(30),()=>_pause.IsPaused);
+        await using var budget=new FragmentMergeService.ActiveBudget(token,TimeSpan.FromSeconds(30),paused);
         var start=new ProcessStartInfo(DependencyCenter.Executable(OperatingSystem.IsWindows()?"ffprobe.exe":"ffprobe"))
         {
             UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true
@@ -227,7 +232,7 @@ public sealed partial class DownloadCoordinator
             "stream=index,codec_type:stream_disposition=attached_pic:packet=stream_index","-of","json","-i",mediaPath})
             start.ArgumentList.Add(arg);
         FragmentMergeToolOutput probe;
-        try{probe=await RunProcessingToolAsync(item,start,64*1024,8*1024,budget.Token).ConfigureAwait(false);}
+        try{probe=await run(start,64*1024,8*1024,budget.Token).ConfigureAwait(false);}
         catch(OperationCanceledException) when(budget.Expired && !token.IsCancellationRequested)
         {throw new TimeoutException("Проверка файла с сервера не завершилась за 30 секунд.");}
         if(probe.ExitCode==0 && HasPlayablePacket(probe.StandardOutput))return;

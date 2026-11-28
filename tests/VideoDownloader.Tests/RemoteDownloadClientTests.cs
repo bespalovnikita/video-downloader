@@ -278,21 +278,32 @@ internal static class RemoteDownloadClientTests
 
     private static async Task ReconnectAfterExitAsync(AppPersistence persistence, CancellationToken token)
     {
+        const int saved = 43;
         var row = new DownloadItem { Url = Source, ServerDownloadConnectionKey = RemoteDownloadJournal.ConnectionKey(Connection) };
         string? job = null;
         using var exiting = CancellationTokenSource.CreateLinkedTokenSource(token);
         using (var client = Client(persistence, (request, _) =>
         {
-            if (PathOf(request) == Capabilities) return Task.FromResult(Json(new { version = 1, maxConcurrent = 1 }));
-            Require(request.Method == HttpMethod.Put && PathOfAssignment(request), "Exiting must never send DELETE for an explicit job.");
-            job = PathOf(request);
-            return Task.FromResult(Json(new { state = "downloading", progress = 50 }));
+            string path = PathOf(request);
+            if (path == Capabilities) return Task.FromResult(Json(new { version = 1, maxConcurrent = 1 }));
+            if (request.Method == HttpMethod.Put && PathOfAssignment(request))
+            {
+                job = path;
+                return Task.FromResult(Completed());
+            }
+            Require(request.Method == HttpMethod.Get && path == job + "/file",
+                "Exiting must never send DELETE for an explicit job.");
+            return Task.FromResult(FileResponse(Media[..saved], HttpStatusCode.OK, Media.Length));
         }))
         {
             await client.PrepareAsync(token);
-            await RefusesAsync<OperationCanceledException>(()=>client.DownloadAsync(row, new DownloadOptions(), MakeStage(persistence),
-                Resume, _ => { client.PreserveAssignmentsOnStop(); exiting.Cancel(); }, exiting.Token),
-                "Closing must interrupt the Windows worker.");
+            await RefusesAsync<OperationCanceledException>(() => client.DownloadAsync(row, new DownloadOptions(), MakeStage(persistence),
+                Resume, progress =>
+                {
+                    if (progress.BytesReceived < saved) return;
+                    client.PreserveAssignmentsOnStop();
+                    exiting.Cancel();
+                }, exiting.Token), "Closing must interrupt the Windows worker.");
             Require(client.OwnsAssignment(row), "An explicit job must retain its original server assignment on close.");
         }
 
@@ -301,8 +312,10 @@ internal static class RemoteDownloadClientTests
             if (PathOf(request) == Capabilities) return Task.FromResult(Json(new { version = 1, maxConcurrent = 1 }));
             Require(request.Method == HttpMethod.Get, "Automatic reconnection must never submit a replacement job.");
             if (job is not null && PathOf(request) == job) return Task.FromResult(Completed());
-            Require(PathOf(request) == job + "/file", "Windows must receive the original server result.");
-            return Task.FromResult(FileResponse(Media, HttpStatusCode.OK, Media.Length));
+            Require(PathOf(request) == job + "/file" &&
+                request.Headers.Range?.ToString() == $"bytes={saved}-{Media.Length-1}" &&
+                request.Headers.IfRange?.EntityTag?.Tag == Tag, "The reopened client must request only the missing bytes with the stored ETag.");
+            return Task.FromResult(FileResponse(Media[saved..], HttpStatusCode.PartialContent, Media.Length - saved, saved));
         });
         await reopened.PrepareAsync(token);
         var result = await reopened.DownloadAsync(row, new DownloadOptions { ReconnectServerOnly = true }, MakeStage(persistence),
