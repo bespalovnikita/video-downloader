@@ -29,6 +29,7 @@ internal static class RemoteDownloadClientTests
             await TransferAndReplayReceiptAsync(new AppPersistence(Path.Combine(root, "transfer")), deadline.Token);
             await RefuseChangedTransferAsync(new AppPersistence(Path.Combine(root, "invalid-range")), deadline.Token);
             await ReuseLostSubmissionAsync(new AppPersistence(Path.Combine(root, "restart")), deadline.Token);
+            await ReconnectAfterExitAsync(new AppPersistence(Path.Combine(root, "exit")), deadline.Token);
             await RetryExpiredAssignmentAsync(new AppPersistence(Path.Combine(root, "expiry-on-reopen")),
                 expireOnReopen: true, deadline.Token);
             await RetryExpiredAssignmentAsync(new AppPersistence(Path.Combine(root, "expiry-during-transfer")),
@@ -273,6 +274,40 @@ internal static class RemoteDownloadClientTests
         var result = await reopened.DownloadAsync(row, new DownloadOptions { Quality = "2160" }, MakeStage(persistence), Resume, _ => { }, token);
         Require(job == Jobs + result.JobId && File.ReadAllBytes(result.MediaPath).SequenceEqual(Media),
             "Recovery must reuse the created assignment and complete its transfer.");
+    }
+
+    private static async Task ReconnectAfterExitAsync(AppPersistence persistence, CancellationToken token)
+    {
+        var row = new DownloadItem { Url = Source, ServerDownloadConnectionKey = RemoteDownloadJournal.ConnectionKey(Connection) };
+        string? job = null;
+        using var exiting = CancellationTokenSource.CreateLinkedTokenSource(token);
+        using (var client = Client(persistence, (request, _) =>
+        {
+            if (PathOf(request) == Capabilities) return Task.FromResult(Json(new { version = 1, maxConcurrent = 1 }));
+            Require(request.Method == HttpMethod.Put && PathOfAssignment(request), "Exiting must never send DELETE for an explicit job.");
+            job = PathOf(request);
+            return Task.FromResult(Json(new { state = "downloading", progress = 50 }));
+        }))
+        {
+            await client.PrepareAsync(token);
+            await RefusesAsync<OperationCanceledException>(()=>client.DownloadAsync(row, new DownloadOptions(), MakeStage(persistence),
+                Resume, _ => { client.PreserveAssignmentsOnStop(); exiting.Cancel(); }, exiting.Token),
+                "Closing must interrupt the Windows worker.");
+            Require(client.OwnsAssignment(row), "An explicit job must retain its original server assignment on close.");
+        }
+
+        using var reopened = Client(persistence, (request, _) =>
+        {
+            if (PathOf(request) == Capabilities) return Task.FromResult(Json(new { version = 1, maxConcurrent = 1 }));
+            Require(request.Method == HttpMethod.Get, "Automatic reconnection must never submit a replacement job.");
+            if (job is not null && PathOf(request) == job) return Task.FromResult(Completed());
+            Require(PathOf(request) == job + "/file", "Windows must receive the original server result.");
+            return Task.FromResult(FileResponse(Media, HttpStatusCode.OK, Media.Length));
+        });
+        await reopened.PrepareAsync(token);
+        var result = await reopened.DownloadAsync(row, new DownloadOptions { ReconnectServerOnly = true }, MakeStage(persistence),
+            Resume, _ => { }, token);
+        Require(File.ReadAllBytes(result.MediaPath).SequenceEqual(Media), "The retained job must deliver its complete result.");
     }
 
     private static async Task RetryExpiredAssignmentAsync(AppPersistence persistence, bool expireOnReopen, CancellationToken token)

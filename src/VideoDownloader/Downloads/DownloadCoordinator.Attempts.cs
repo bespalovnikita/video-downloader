@@ -23,6 +23,7 @@ public sealed partial class DownloadCoordinator
         // The old channel entry remains an inert generation token; resuming
         // this URL creates a different object.
         var row=attempt.Row;
+        row.ServerDownloadConnectionKey=null;
         if(row.CleanupError.Length>0)DownloadCleanup.Failed(row,row.CleanupError);
         else{row.Status=skipped?"Skipped":"Interrupted";row.State=skipped?"Skipped":"Cancelled";}
         row.Speed="";row.ETA="";row.Slot="";row.AttemptFinished=true;
@@ -41,6 +42,7 @@ public sealed partial class DownloadCoordinator
             // started. A late click cannot turn a completed result into Skip.
             if(attempt.Publishing || attempt.Reason==AttemptStopReason.Cancel || attempt.Finalizing && attempt.Reason!=AttemptStopReason.Skip)return false;
             attempt.Reason=AttemptStopReason.Skip;
+            item.ServerDownloadConnectionKey=null;
             joined=attempt.Finished.Task;
             attempt.Stop.Cancel();
             if(!attempt.Started)FinishQueuedAttempt(attempt,true);

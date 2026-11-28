@@ -182,6 +182,7 @@ public sealed partial class NativeWindow : IDisposable
             }
         };
         TryRestore();
+        RememberServerDownloadsToReconnect();
         SessionState.SetOptions(ReadOptions());
         // Recovery callbacks run with the restore barrier down. Valid rows
         // retain their cold prefetch; protected capacity recovery has none.
@@ -383,6 +384,7 @@ public sealed partial class NativeWindow : IDisposable
             ("ShowVideoTitlesCheck",o.ShowVideoTitles)})
             K(name).IsChecked=value;
         RefreshAdvancedOptionsSummary();
+        TryReconnectServerDownloads();
     }
     private void TryRestore()
     {
@@ -407,7 +409,7 @@ public sealed partial class NativeWindow : IDisposable
             // or the user chooses not to restore its rows.
             ApplyOptions(previous.Settings);
             if (previous.Queue.Count==0) return;
-            if (MessageBox.Show(_window,ErrorMessages.Text($"Восстановить предыдущую очередь ({previous.Queue.Count} ссылок)?\nЗавершённые загрузки не будут запущены повторно.",$"Restore previous queue ({previous.Queue.Count} URLs)?\nCompleted downloads will not restart automatically."),
+            if (MessageBox.Show(_window,ErrorMessages.Text($"Восстановить предыдущую очередь ({previous.Queue.Count} ссылок)?\nЗавершённые загрузки не будут запущены повторно. Незавершённые задания «Качнуть через сервер» могут продолжиться автоматически.",$"Restore previous queue ({previous.Queue.Count} URLs)?\nCompleted downloads will not restart. Pending explicit server jobs may reconnect automatically."),
                     ErrorMessages.Text("Восстановить предыдущую сессию","Restore previous session"),MessageBoxButton.YesNo,MessageBoxImage.Question)!=MessageBoxResult.Yes) return;
             RestoreSubscriptionQueueTitles(previous.Queue);
             string? capacityError=null;
@@ -428,7 +430,7 @@ public sealed partial class NativeWindow : IDisposable
                     ErrorMessages.Text("Восстановленная очередь требует сокращения","Recovered queue requires reduction"),MessageBoxButton.OK,MessageBoxImage.Warning);
                 return;
             }
-            Log($"Restored {SessionState.Queue.Count} URLs. Downloads will not restart automatically.");
+            Log($"Restored {SessionState.Queue.Count} URLs.");
         }
         catch(Exception e)
         {
@@ -644,7 +646,7 @@ public sealed partial class NativeWindow : IDisposable
     private void PollClipboard()=>_ingress.PollClipboard();
     private Task StartAsync(IEnumerable<DownloadItem>? custom=null)=>StartWithConfirmationAsync(custom,null);
     private async Task StartWithConfirmationAsync(IEnumerable<DownloadItem>? custom,IReadOnlySet<DownloadItem>? duplicateConsents,
-        DownloadOptions? preparedOptions=null,bool allowRemoteDownloads=true)
+        DownloadOptions? preparedOptions=null,bool allowRemoteDownloads=true,bool serverOnly=false,RemoteDownloadConnection? reconnect=null)
     {
         if(_closing || _disposed || _speedDebugWindow is not null || _restoringSession || _startingSession || _queueItemActionBusy || _dependencyOperationRunning || _appUpdateHandoff || _checkpointReadOnly || _profileBackupReplaying || RejectProfileBackupMutation())return;
         if(_remoteDownloadSettingsWrite is not null)
@@ -653,11 +655,11 @@ public sealed partial class NativeWindow : IDisposable
             return;
         }
         _startingSession=true;
-        try { await StartSessionCoreAsync(custom,duplicateConsents,preparedOptions,allowRemoteDownloads); }
+        try { await StartSessionCoreAsync(custom,duplicateConsents,preparedOptions,allowRemoteDownloads,serverOnly,reconnect); }
         finally { _startingSession=false;UpdateState();_preview.BackfillLocalPosters(); }
     }
     private async Task StartSessionCoreAsync(IEnumerable<DownloadItem>? custom,IReadOnlySet<DownloadItem>? duplicateConsents,
-        DownloadOptions? preparedOptions,bool allowRemoteDownloads)
+        DownloadOptions? preparedOptions,bool allowRemoteDownloads,bool serverOnly,RemoteDownloadConnection? reconnect)
     {
         if (_closing || _disposed || _restoringSession || _checkpointReadOnly || _dependencyOperationRunning || RejectProfileBackupMutation()) return;
         if (_legacyEngineBlocked)
@@ -684,10 +686,18 @@ public sealed partial class NativeWindow : IDisposable
         }
         try
         {
-            var remoteSettings=allowRemoteDownloads?CaptureRemoteDownloadSettings(forStart:true):null;
+            var remoteSettings=reconnect is not null?null:serverOnly
+                ?new RemoteDownloadSettings(Check(K("RemoteDownloadsEnabledCheck")),
+                    CaptureRemoteDownloadConnection(F<PasswordBox>("RemoteDownloadPasswordBox").Password))
+                :allowRemoteDownloads?CaptureRemoteDownloadSettings(forStart:true):null;
             var activeRemoteSettings=remoteSettings??_savedRemoteDownloadSettings;
-            options.RemoteConnection=activeRemoteSettings.Enabled?activeRemoteSettings.Connection:null;
-            options.AllowFreshRemoteDownloads=allowRemoteDownloads;
+            options.RemoteConnection=reconnect??(serverOnly || activeRemoteSettings.Enabled?activeRemoteSettings.Connection:null);
+            options.AllowFreshRemoteDownloads=allowRemoteDownloads && !serverOnly;
+            options.ReconnectServerOnly=reconnect is not null;
+            if(serverOnly && reconnect is null && pending.Any(row=>RemoteDownloadRequest.For(row,options) is null))
+                throw new InvalidOperationException(ErrorMessages.Text(
+                    "Сервер поддерживает отдельные видео со стандартными параметрами. Проверьте формат, фрагмент и дополнительные настройки.",
+                    "The server supports individual videos with standard options. Check the format, fragment and advanced settings."));
             AudioTrackSelection.Validate(options);
             foreach(var row in pending)row.Selection?.Validate(row.Url,row.ResumeState?.Plan.ToOptions()??options);
             DependencyCenter.ValidateDownloadTools(_ytDlp);
@@ -731,7 +741,7 @@ public sealed partial class NativeWindow : IDisposable
             if(remoteSettings is not null)await PersistRemoteDownloadSettingsAsync(remoteSettings);
             if(_closing || _disposed || _appUpdateHandoff || _checkpointReadOnly || RejectProfileBackupMutation())return;
             RequireCurrentPlan(approved);
-            if(remoteSettings is {Enabled:true,Connection:{ } savedConnection})ClearSavedRemoteDownloadPassword(savedConnection);
+            if(remoteSettings is {Connection:{ } savedConnection} && (serverOnly || remoteSettings.Enabled))ClearSavedRemoteDownloadPassword(savedConnection);
             Directory.CreateDirectory(options.OutputDirectory);
             SessionState.SetOptions(options);
             // Validate retained staging before resetting any attempt or ownership.
@@ -740,8 +750,11 @@ public sealed partial class NativeWindow : IDisposable
                 try { OwnedFiles.DeleteStage(row.StageDir,row.RunDir);row.StageDir=""; }
                 catch(Exception e) {DownloadCleanup.Failed(row,e.Message);SaveCheckpoint();throw;}
             }
+            if(serverOnly)options.ServerOnlyRows=approved.ToHashSet();
+            string? serverKey=serverOnly?RemoteDownloadJournal.ConnectionKey(options.RemoteConnection!):null;
             foreach(var row in approved)
             {
+                row.ServerDownloadConnectionKey=serverKey;
                 row.RequeueRequested=false;
                 if(row.ResumeState is not null)
                 {

@@ -10,6 +10,7 @@ namespace VideoDownloader.Native;
 internal interface IRemoteDownloadClient : IDisposable
 {
     bool IsAvailable => true;
+    void PreserveAssignmentsOnStop() { }
     int MaxConcurrent => 4;
     Task PrepareAsync(CancellationToken token);
     bool Supports(DownloadItem row, DownloadOptions options);
@@ -19,7 +20,7 @@ internal interface IRemoteDownloadClient : IDisposable
     Task AcknowledgeAsync(RemoteDownloadArtifact artifact, string publishedPath, CancellationToken token);
 }
 
-internal enum RemoteDownloadStage { Waiting, Downloading, Receiving }
+internal enum RemoteDownloadStage { Waiting, WaitingForSpace, Downloading, Receiving }
 
 internal sealed record RemoteDownloadProgress(RemoteDownloadStage Stage, double Percent, long BytesReceived, long TotalBytes,
     double BytesPerSecond = 0);
@@ -70,6 +71,8 @@ internal sealed class RemoteDownloadClient : IRemoteDownloadClient
     private readonly RemoteDownloadJournal _journal;
     private readonly Action<string> _log;
     private readonly TimeProvider _clock;
+    private volatile bool _preserveAssignmentsOnStop;
+    public void PreserveAssignmentsOnStop()=>_preserveAssignmentsOnStop=true;
     public bool IsAvailable { get; private set; }
     public int MaxConcurrent { get; private set; } = 4;
 
@@ -124,6 +127,33 @@ internal sealed class RemoteDownloadClient : IRemoteDownloadClient
         }
     }
 
+    internal static async Task<RemoteQueuePage> ListQueueAsync(RemoteDownloadConnection connection, string? after,
+        CancellationToken token)
+    {
+        using var client = CreateHttpClient(connection, null);
+        using var deadline = Deadline(token, RequestTimeout);
+        string path = after is null ? "api/remote/jobs" : "api/remote/jobs?after=" + Uri.EscapeDataString(after);
+        using var request = new HttpRequestMessage(HttpMethod.Get, path);
+        var page = await ReadJsonAsync<RemoteQueuePage>(client, request, deadline.Token,
+            maxResponseBytes: 128 * 1024).ConfigureAwait(false);
+        if (page?.Jobs is not { Length: <= 25 } || page.Jobs.Any(job => job is null || !IsQueueId(job.Id) ||
+            job.State is not ("queued" or "downloading" or "completed" or "received")) ||
+            page.Next is not null && !IsQueueId(page.Next))
+            throw new InvalidDataException("Некорректный список серверной очереди.");
+        return page;
+    }
+
+    private static bool IsQueueId(string? id) =>
+        id is { Length: 32 } && id.All(c => c is >= '0' and <= '9' or >= 'a' and <= 'f');
+
+    internal static async Task RemoveQueueItemAsync(RemoteDownloadConnection connection, RemoteQueueItem item,
+        CancellationToken token)
+    {
+        using var client = CreateHttpClient(connection, null);
+        string path = "api/remote/jobs/" + item.Id + (item.State is "completed" or "received" ? "/file" : "");
+        await SendEmptyAsync(client, HttpMethod.Delete, path, token).ConfigureAwait(false);
+    }
+
     public async Task PrepareAsync(CancellationToken token)
     {
         var received = await Task.Run(_journal.Load, token).ConfigureAwait(false);
@@ -168,28 +198,35 @@ internal sealed class RemoteDownloadClient : IRemoteDownloadClient
             assignment = null;
         }
 
+        if (options.ReconnectServerOnly && assignment is null)
+            throw new IOException(ErrorMessages.Text("Исходное серверное задание уже недоступно.",
+                "The original server job is no longer available."));
         var request = assignment?.Request ?? RemoteDownloadRequest.For(row, options)
             ?? throw new InvalidOperationException("Настройки задания не поддерживаются серверной очередью.");
         await waitForResume(token).ConfigureAwait(false);
         bool reopening = assignment is not null;
+        bool waitForConnection = row.ServerDownloadRequested;
         assignment ??= Register(request);
         try
         {
-            var status = await PutAsync(assignment, token).ConfigureAwait(false);
-            if (reopening && !status.Unsupported && !status.Expired &&
+            var status = options.ReconnectServerOnly
+                ? await RepeatAsync(ct => ReadStatusAsync(HttpMethod.Get, assignment, null, ct), token, waitForConnection).ConfigureAwait(false)
+                : await PutAsync(assignment, token, waitForConnection).ConfigureAwait(false);
+            if (reopening && !options.ReconnectServerOnly && !status.Unsupported && !status.Expired && !status.Removed &&
                 status.State is ("cancelled" or "interrupted" or "failed"))
             {
                 _journal.Remove(assignment);
                 assignment = Register(request);
-                status = await PutAsync(assignment, token).ConfigureAwait(false);
+                status = await PutAsync(assignment, token, waitForConnection).ConfigureAwait(false);
             }
             while (status.State is "queued" or "downloading")
             {
-                var phase = status.State == "queued" ? RemoteDownloadStage.Waiting : RemoteDownloadStage.Downloading;
+                var phase = status.WaitingForSpace ? RemoteDownloadStage.WaitingForSpace :
+                    status.State == "queued" ? RemoteDownloadStage.Waiting : RemoteDownloadStage.Downloading;
                 progress(new RemoteDownloadProgress(phase, status.Progress ?? 0, 0, status.Size ?? 0));
                 await Task.Delay(TimeSpan.FromSeconds(1), token).ConfigureAwait(false);
                 await waitForResume(token).ConfigureAwait(false);
-                status = await RepeatAsync(ct => ReadStatusAsync(HttpMethod.Get, assignment, null, ct), token).ConfigureAwait(false);
+                status = await RepeatAsync(ct => ReadStatusAsync(HttpMethod.Get, assignment, null, ct), token, waitForConnection).ConfigureAwait(false);
             }
             if (status.State != "completed")
             {
@@ -199,8 +236,24 @@ internal sealed class RemoteDownloadClient : IRemoteDownloadClient
                 string error = status.Error is { Length: > 0 } detail ? detail[..Math.Min(detail.Length, 500)] : "Сервер не подготовил файл.";
                 throw new IOException(error);
             }
-            string path = await ReceiveAsync(assignment, status, stage, waitForResume, progress, token).ConfigureAwait(false);
+            string path;
+            try
+            {
+                path = await ReceiveAsync(assignment, status, stage, waitForResume, progress, token, waitForConnection).ConfigureAwait(false);
+            }
+            catch (HttpRequestException error) when (error.StatusCode == HttpStatusCode.NotFound)
+            {
+                _journal.Remove(assignment);
+                throw new IOException(ErrorMessages.Text("Серверная копия больше недоступна. Запустите скачивание повторно.",
+                    "The server copy is no longer available. Start the download again."), error);
+            }
             return new RemoteDownloadArtifact(assignment.JobId, path, status.Title ?? Path.GetFileNameWithoutExtension(path), status.Size!.Value);
+        }
+        catch (HttpRequestException error) when (options.ReconnectServerOnly && error.StatusCode == HttpStatusCode.NotFound)
+        {
+            _journal.Remove(assignment);
+            throw new IOException(ErrorMessages.Text("Исходное серверное задание уже недоступно.",
+                "The original server job is no longer available."), error);
         }
         catch (HttpRequestException error) when (error.StatusCode == HttpStatusCode.Gone)
         {
@@ -209,6 +262,7 @@ internal sealed class RemoteDownloadClient : IRemoteDownloadClient
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
+            if(_preserveAssignmentsOnStop && row.ServerDownloadRequested)throw;
             // A timed-out PUT may have reached the server. Cancellation of an
             // unknown ID leaves a tombstone there, preventing late submission.
             using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(4));
@@ -253,8 +307,8 @@ internal sealed class RemoteDownloadClient : IRemoteDownloadClient
         _journal.Remove(assignment);
     }
 
-    private Task<RemoteJobStatus> PutAsync(RemoteDownloadAssignment assignment, CancellationToken token) =>
-        RepeatAsync(ct => ReadStatusAsync(HttpMethod.Put, assignment, assignment.Request, ct), token);
+    private Task<RemoteJobStatus> PutAsync(RemoteDownloadAssignment assignment, CancellationToken token, bool waitForConnection) =>
+        RepeatAsync(ct => ReadStatusAsync(HttpMethod.Put, assignment, assignment.Request, ct), token, waitForConnection);
 
     private async Task<RemoteJobStatus> ReadStatusAsync(HttpMethod method, RemoteDownloadAssignment assignment,
         RemoteDownloadRequest? payload, CancellationToken token)
@@ -279,31 +333,35 @@ internal sealed class RemoteDownloadClient : IRemoteDownloadClient
         { throw new TimeoutException("Сервер очереди не ответил вовремя."); }
     }
 
-    private static async Task<T?> ReadJsonAsync<T>(HttpClient client, HttpRequestMessage request, CancellationToken token)
+    private static async Task<T?> ReadJsonAsync<T>(HttpClient client, HttpRequestMessage request, CancellationToken token,
+        int maxResponseBytes = MaxResponseBytes)
     {
         using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token).ConfigureAwait(false);
         RequireSuccess(response);
-        if (response.Content.Headers.ContentLength > MaxResponseBytes)
+        if (response.Content.Headers.ContentLength > maxResponseBytes)
             throw new InvalidDataException("Ответ сервера превышает допустимый размер.");
         using var stream = await response.Content.ReadAsStreamAsync(token).ConfigureAwait(false);
         using var bytes = new MemoryStream();
         byte[] buffer = new byte[4096];
         for (int count; (count = await stream.ReadAsync(buffer, token).ConfigureAwait(false)) > 0;)
         {
-            if (bytes.Length + count > MaxResponseBytes)
+            if (bytes.Length + count > maxResponseBytes)
                 throw new InvalidDataException("Ответ сервера превышает допустимый размер.");
             bytes.Write(buffer, 0, count);
         }
         return JsonSerializer.Deserialize<T>(bytes.GetBuffer().AsSpan(0, (int)bytes.Length), WireJson);
     }
 
-    private async Task SendEmptyAsync(HttpMethod method, string path, CancellationToken token)
+    private Task SendEmptyAsync(HttpMethod method, string path, CancellationToken token) =>
+        SendEmptyAsync(_http, method, path, token);
+
+    private static async Task SendEmptyAsync(HttpClient client, HttpMethod method, string path, CancellationToken token)
     {
         using var deadline = Deadline(token, RequestTimeout);
         using var request = new HttpRequestMessage(method, path);
         try
         {
-            using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, deadline.Token).ConfigureAwait(false);
+            using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, deadline.Token).ConfigureAwait(false);
             RequireSuccess(response);
             if (response.StatusCode != HttpStatusCode.NoContent)
                 throw new InvalidDataException("Сервер не подтвердил операцию.");
@@ -313,7 +371,7 @@ internal sealed class RemoteDownloadClient : IRemoteDownloadClient
     }
 
     private async Task<string> ReceiveAsync(RemoteDownloadAssignment assignment, RemoteJobStatus status, string stage,
-        Func<CancellationToken, Task> waitForResume, Action<RemoteDownloadProgress> progress, CancellationToken token)
+        Func<CancellationToken, Task> waitForResume, Action<RemoteDownloadProgress> progress, CancellationToken token, bool waitForConnection)
     {
         long size = status.Size!.Value;
         string result = Path.Combine(stage, SafeFileName(status.Filename!));
@@ -356,10 +414,10 @@ internal sealed class RemoteDownloadClient : IRemoteDownloadClient
                     file.Flush(flushToDisk: true);
                     break;
                 }
-                catch (Exception error) when (!token.IsCancellationRequested && attempt < 3 && IsTransient(error))
+                catch (Exception error) when (!token.IsCancellationRequested && (attempt < 3 || waitForConnection) && IsTransient(error))
                 {
                     progress(ReceivingProgress(file.Position, size));
-                    await Task.Delay(300 << attempt, token).ConfigureAwait(false);
+                    await Task.Delay(300 << Math.Min(attempt, 5), token).ConfigureAwait(false);
                 }
             }
         }
@@ -494,16 +552,16 @@ internal sealed class RemoteDownloadClient : IRemoteDownloadClient
 
     private static bool IsTransient(Exception error) =>
         error is TimeoutException or EndOfStreamException or HttpIOException ||
-        error is HttpRequestException http && (http.StatusCode is null or HttpStatusCode.RequestTimeout or HttpStatusCode.TooManyRequests ||
+        error is HttpRequestException { HttpRequestError: not HttpRequestError.SecureConnectionError } http && (http.StatusCode is null or HttpStatusCode.RequestTimeout or HttpStatusCode.TooManyRequests ||
             (int?)http.StatusCode >= 500);
 
-    private static async Task<T> RepeatAsync<T>(Func<CancellationToken, Task<T>> action, CancellationToken token)
+    private static async Task<T> RepeatAsync<T>(Func<CancellationToken, Task<T>> action, CancellationToken token, bool waitForConnection = false)
     {
         for (int attempt = 0; ; attempt++)
         {
             try { return await action(token).ConfigureAwait(false); }
-            catch (Exception error) when (!token.IsCancellationRequested && attempt < 2 && IsTransient(error))
-            { await Task.Delay(300 << attempt, token).ConfigureAwait(false); }
+            catch (Exception error) when (!token.IsCancellationRequested && (attempt < 2 || waitForConnection) && IsTransient(error))
+            { await Task.Delay(300 << Math.Min(attempt, 5), token).ConfigureAwait(false); }
         }
     }
 
@@ -520,5 +578,8 @@ internal sealed class RemoteDownloadClient : IRemoteDownloadClient
 
     internal sealed record RemoteCapabilities(int Version, int MaxConcurrent, long? FreeDiskBytes = null);
     private sealed record RemoteJobStatus(string State, int? Progress, string? Filename, long? Size, string? Error, string? Title,
-        bool Unsupported, bool Expired);
+        bool Unsupported, bool Expired, bool WaitingForSpace, bool Removed);
 }
+
+internal sealed record RemoteQueuePage(RemoteQueueItem[] Jobs, string? Next, long? FreeDiskBytes, long? UnclaimedBytes, long? UnclaimedLimitBytes);
+internal sealed record RemoteQueueItem(string Id, string State, string? Name, string? Source, long? Size, double? Progress, double? ExpiresAt, double? DeleteAfter);

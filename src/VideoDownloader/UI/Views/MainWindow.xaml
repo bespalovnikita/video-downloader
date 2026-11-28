@@ -864,6 +864,8 @@
                                     <Button x:Name="CheckRemoteDownloadConnectionButton" Content="Проверить подключение" Margin="0,0,6,4"/>
                                     <Button x:Name="SaveRemoteDownloadSettingsButton" Content="Сохранить настройки сервера" Margin="0,0,0,4"/>
                                 </WrapPanel>
+                                <Button x:Name="OpenRemoteQueueButton" Content="Файловый менеджер серверной очереди…"
+                                        HorizontalAlignment="Left" Margin="0,0,0,4"/>
                                 <TextBlock x:Name="RemoteDownloadSettingsStatus" Style="{StaticResource MutedText}"
                                            TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" Margin="0,4,0,0"/>
                             </StackPanel>

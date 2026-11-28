@@ -15,6 +15,7 @@ from contextlib import ExitStack, contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import BinaryIO
+from urllib.parse import urlsplit
 
 from update_bridge import WorkGate
 
@@ -31,7 +32,11 @@ STORAGE_HEADROOM = 64 * MIB
 DISK_ERROR = "На сервере осталось мало свободного места."
 COLLECTION_ERROR = "Сервер принимает только ссылки на отдельные видео."
 REMOTE_RESULT_EXPIRED = "Срок хранения файла на сервере истёк. Запустите скачивание повторно."
-REMOTE_RESULT_TTL = 60 * 60
+REMOTE_RESULT_REMOVED = "Файл удалён из файлового менеджера серверной очереди."
+REMOTE_MIN_RETENTION = 60 * 60
+REMOTE_RESULT_TTL = 24 * REMOTE_MIN_RETENTION
+REMOTE_RESULT_LIMIT = 15_000_000_000
+REMOTE_RESULT_TOO_LARGE = "Видео превышает лимит серверной очереди в 15 ГБ."
 REMOTE_STEM_UTF16_BYTES = 320
 MEDIA_FORMATS = (
     "mov,mp4,m4a,3gp,3g2,mj2,matroska,webm,mpegts,avi,flv,asf,mp3,wav,ogg,"
@@ -173,6 +178,12 @@ class JobStore:
             with self._db:
                 if not any(column["name"] == "expires_at" for column in self._db.execute("PRAGMA table_info(remote_jobs)")):
                     self._db.execute("ALTER TABLE remote_jobs ADD COLUMN expires_at REAL")
+                if self._db.execute("PRAGMA user_version").fetchone()[0] == 0:
+                    self._db.execute("""
+                        UPDATE remote_jobs SET expires_at = expires_at + ?
+                        WHERE status = 'completed' AND expires_at IS NOT NULL
+                    """, (REMOTE_RESULT_TTL - REMOTE_MIN_RETENTION,))
+                    self._db.execute("PRAGMA user_version = 1")
                 self._db.execute("""
                     CREATE INDEX IF NOT EXISTS remote_jobs_expiry ON remote_jobs(expires_at) WHERE expires_at IS NOT NULL
                 """)
@@ -204,7 +215,7 @@ class JobStore:
             for row in active_jobs:
                 # The file can exist if the previous process stopped after linking it but before commit.
                 self._file_path(row["id"]).unlink(missing_ok=True)
-        for row in self._db.execute("SELECT id, size FROM remote_jobs WHERE status = 'received'"):
+        for row in self._db.execute("SELECT id, size FROM remote_jobs WHERE status = 'received' AND expires_at IS NULL"):
             try:
                 self._remove_remote_file(row["id"], row["size"])
             except OSError:
@@ -298,6 +309,10 @@ class JobStore:
     def _remote_summary(row: sqlite3.Row) -> dict:
         summary = {"state": row["status"], **{field: row[field] for field in
                    ("progress", "title", "filename", "size", "error")}}
+        if row["error"] == REMOTE_RESULT_REMOVED:
+            summary["removed"] = True
+        if row["status"] == "downloading" and row["progress"] == 100:
+            summary["waitingForSpace"] = True
         if row["status"] == "failed" and row["error"] == COLLECTION_ERROR:
             summary["unsupported"] = True
         if JobStore._remote_expired(row):
@@ -323,6 +338,52 @@ class JobStore:
             self._lock.notify_all()
             return self._remote_summary(self._read_job(job_id))
 
+    def list_remote(self, after: str) -> dict:
+        page_size = 25
+        with self._lock:
+            now = time.time()
+            rows = self._db.execute("""
+                SELECT id, url, status, title, filename, size, progress, expires_at
+                FROM remote_jobs
+                WHERE id > ? AND (status IN ('queued', 'downloading')
+                    OR (status IN ('completed', 'received') AND expires_at > ?))
+                ORDER BY id LIMIT ?
+            """, (after, now, page_size + 1)).fetchall()
+            jobs = [
+                {"id": row["id"], "state": row["status"], "size": row["size"],
+                 "progress": row["progress"], "expiresAt": row["expires_at"],
+                 "deleteAfter": (row["expires_at"] - REMOTE_RESULT_TTL + REMOTE_MIN_RETENTION
+                                 if row["expires_at"] is not None else None),
+                 "name": (row["filename"] or row["title"] or "")[:240],
+                 "source": (urlsplit(row["url"]).hostname or "")[:253]}
+                for row in rows[:page_size]
+            ]
+            return {"jobs": jobs, "next": rows[page_size - 1]["id"] if len(rows) > page_size else None,
+                    "freeDiskBytes": self._disk_free, "unclaimedBytes": self._unclaimed_bytes(),
+                    "unclaimedLimitBytes": REMOTE_RESULT_LIMIT}
+
+    def remove_remote_result(self, job_id: str) -> bool:
+        with self._lock:
+            row = self._read_job(job_id)
+            if row is None:
+                return False
+            if row["status"] in {"completed", "received"} and row["expires_at"] is not None and row["error"] != REMOTE_RESULT_REMOVED:
+                now = time.time()
+                if not row["expires_at"] - REMOTE_RESULT_TTL + REMOTE_MIN_RETENTION <= now < row["expires_at"]:
+                    return False
+                # Keep a receipt terminal even when the already collected file is deleted.
+                status = "received" if row["status"] == "received" else "failed"
+                with self._db:
+                    self._db.execute("""
+                        UPDATE remote_jobs SET status = ?, progress = NULL, error = ?, expires_at = ?
+                        WHERE id = ?
+                    """, (status, REMOTE_RESULT_REMOVED, now, job_id))
+                self._lock.notify_all()
+            elif row["status"] not in {"failed", "received"} or row["error"] != REMOTE_RESULT_REMOVED:
+                return False
+            self._cleanup_remote_result(job_id, row["size"])
+            return True
+
     def get_remote(self, job_id: str) -> dict | None:
         with self._lock:
             row = self._read_job(job_id)
@@ -347,21 +408,16 @@ class JobStore:
             row = self._read_job(job_id)
             if row is None:
                 return False
-            if row["status"] == "failed" and self._remote_expired(row):
-                # The client may have finished receiving before the deadline and
-                # published locally afterwards. The expiry stays terminal.
+            if row["status"] == "failed" and row["error"] in {REMOTE_RESULT_EXPIRED, REMOTE_RESULT_REMOVED}:
+                # An already open transfer can finish even after its server copy is removed.
+                # Keep the terminal state while accepting the late receipt.
                 return True
             if row["status"] not in {"completed", "received"}:
                 return False
             if row["status"] == "completed":
-                # Keep the receipt durable even if cleanup is interrupted. Retrying the
-                # same assignment can never start a new download or discard a new result.
                 with self._db:
-                    self._db.execute("""
-                        UPDATE remote_jobs SET status = 'received', expires_at = NULL WHERE id = ?
-                    """, (job_id,))
-            self._remove_remote_file(job_id, row["size"])
-            self._lock.notify_all()
+                    self._db.execute("UPDATE remote_jobs SET status = 'received' WHERE id = ?", (job_id,))
+                self._lock.notify_all()
             return True
 
     def _remove_remote_file(self, job_id: str, size: int) -> None:
@@ -386,7 +442,10 @@ class JobStore:
             row = self._read_job(job_id)
             if isinstance(job_id, str) and row is not None and self._remote_expired(row):
                 raise RemoteResultExpired
-            if row is None or row["status"] != "completed":
+            if row is None or (row["status"] != "completed" and not (
+                isinstance(job_id, str) and row["status"] == "received" and row["expires_at"] is not None
+                and row["expires_at"] > time.time() and row["error"] != REMOTE_RESULT_REMOVED
+            )):
                 return None
             # Pin the result before releasing the lock so expiry or a receipt
             # can unlink it without interrupting an already open transfer.
@@ -405,6 +464,11 @@ class JobStore:
                 if descriptor is not None:
                     os.close(descriptor)
 
+    def _cleanup_remote_result(self, job_id: str, size: int) -> None:
+        self._remove_remote_file(job_id, size)
+        with self._db:
+            self._db.execute("UPDATE remote_jobs SET expires_at = NULL WHERE id = ?", (job_id,))
+
     def _expire_remote_files(self) -> None:
         with self.work_gate.shared() as granted:
             if not granted:
@@ -412,8 +476,8 @@ class JobStore:
             with self._lock:
                 rows = self._db.execute("""
                     SELECT id, size, status FROM remote_jobs
-                    WHERE expires_at <= ? AND (status = 'completed' OR (status = 'failed' AND error = ?))
-                """, (time.time(), REMOTE_RESULT_EXPIRED)).fetchall()
+                    WHERE expires_at <= ? AND (status IN ('completed', 'received') OR (status = 'failed' AND error IN (?, ?)))
+                """, (time.time(), REMOTE_RESULT_EXPIRED, REMOTE_RESULT_REMOVED)).fetchall()
                 for row in rows:
                     if row["status"] == "completed":
                         # Commit before unlinking so a crash never leaves a live
@@ -424,12 +488,9 @@ class JobStore:
                             """, (REMOTE_RESULT_EXPIRED, row["id"]))
                         self._lock.notify_all()
                     try:
-                        self._remove_remote_file(row["id"], row["size"])
+                        self._cleanup_remote_result(row["id"], row["size"])
                     except OSError:
-                        LOGGER.exception("Could not remove expired result for job %s", row["id"])
-                        continue
-                    with self._db:
-                        self._db.execute("UPDATE remote_jobs SET expires_at = NULL WHERE id = ?", (row["id"],))
+                        LOGGER.exception("Could not remove expired or deleted result for job %s", row["id"])
 
     def _stop_threads(self) -> bool:
         with self._lock:
@@ -478,8 +539,13 @@ class JobStore:
                     self._disk_failures.update(self._active)
                     for process in self._processes.values():
                         self._signal_process(process, signal.SIGKILL)
-                if changed:
+                if changed or self._disk_failures:
                     self._lock.notify_all()
+
+    def _unclaimed_bytes(self) -> int:
+        return self._db.execute("""
+            SELECT coalesce(sum(size), 0) FROM remote_jobs WHERE status = 'completed'
+        """).fetchone()[0]
 
     def _next_job(self) -> sqlite3.Row | None:
         if self._disk_free is None or self._disk_free < self._disk_reserve + STORAGE_HEADROOM * (len(self._active) + 1):
@@ -494,7 +560,7 @@ class JobStore:
         outstanding = self._db.execute("""
             SELECT count(*) FROM remote_jobs WHERE status IN ('downloading', 'completed')
         """).fetchone()[0]
-        if outstanding >= self._max_concurrent:
+        if outstanding >= self._max_concurrent or self._unclaimed_bytes() >= REMOTE_RESULT_LIMIT:
             return None
         return self._db.execute("SELECT * FROM remote_jobs WHERE status = 'queued' ORDER BY rowid LIMIT 1").fetchone()
 
@@ -714,6 +780,18 @@ class JobStore:
         destination = self._file_path(job_id)
         with self._lock:
             self._ensure_running(job_id)
+            if isinstance(job_id, str):
+                if size > REMOTE_RESULT_LIMIT:
+                    raise DownloadError(REMOTE_RESULT_TOO_LARGE)
+                # Sizes are authoritative after remux. Keep the result in private
+                # staging while full and reserve its exact size under this lock
+                # by publishing and committing before another worker can enter.
+                if self._unclaimed_bytes() + size > REMOTE_RESULT_LIMIT:
+                    with self._db:
+                        self._db.execute("UPDATE remote_jobs SET progress = 100 WHERE id = ?", (job_id,))
+                while self._unclaimed_bytes() + size > REMOTE_RESULT_LIMIT:
+                    self._lock.wait()
+                    self._ensure_running(job_id)
             # A hard link publishes without replacing an existing file. The queue row gates access.
             os.link(source, destination, follow_symlinks=False)
             try:

@@ -11,6 +11,63 @@ public sealed partial class NativeWindow
     private Task? _remoteDownloadSettingsWrite;
     private CancellationTokenSource? _remoteDownloadConnectionCheck;
     private Task? _remoteDownloadConnectionCheckTask;
+    private RemoteDownloadConnection? _serverReconnectConnection;
+    private DownloadItem[] _serverReconnectRows=[];
+    private CancellationTokenSource? _serverReconnectProbe;
+    private DateTime _serverReconnectAfter;
+
+    private void RememberServerDownloadsToReconnect()
+    {
+        if(_savedRemoteDownloadSettings.Connection is not {} connection)return;
+        _serverReconnectConnection=connection;
+        string key=RemoteDownloadJournal.ConnectionKey(connection);
+        _serverReconnectRows=SessionState.Queue
+            .Where(row=>row.ServerDownloadConnectionKey==key && IsPendingServerReconnect(row)).ToArray();
+    }
+
+    private static bool IsPendingServerReconnect(DownloadItem row)=>
+        row.ServerDownloadRequested && row.CanResume && row.Status is ("Queued" or "Interrupted");
+
+    private bool CanReconnectServerDownloads()=>
+        !_startingSession && !_closing && !_disposed && !_restoringSession && !_checkpointReadOnly &&
+        !_dependencyOperationRunning && !_queueItemActionBusy && !_appUpdateHandoff && _speedDebugWindow is null &&
+        !_profileBackupBusy && !_profileBackupRecoveryRequired && !_profileBackupReplaying &&
+        _remoteDownloadSettingsWrite is null && SessionState.Coordinator?.IsRunning!=true;
+
+    private void TryReconnectServerDownloads()
+    {
+        if(_serverReconnectConnection is not {} connection || _serverReconnectRows.Length==0 ||
+            _serverReconnectProbe is not null || DateTime.UtcNow<_serverReconnectAfter || !CanReconnectServerDownloads())return;
+        _=ReconnectServerDownloadsAsync(connection);
+    }
+
+    private async Task ReconnectServerDownloadsAsync(RemoteDownloadConnection connection)
+    {
+        _serverReconnectRows=_serverReconnectRows.Where(row=>SessionState.Queue.Contains(row) && IsPendingServerReconnect(row)).ToArray();
+        if(_serverReconnectRows.Length==0)return;
+        using var probe=new CancellationTokenSource();
+        _serverReconnectProbe=probe;
+        _serverReconnectAfter=DateTime.UtcNow.AddSeconds(20);
+        try
+        {
+            var journal=new RemoteDownloadJournal(_storage,connection,Log);
+            await Task.Run(()=>journal.Load(),probe.Token);
+            if(probe.IsCancellationRequested || !CanReconnectServerDownloads() ||
+                _savedRemoteDownloadSettings.Connection!=connection)return;
+            _serverReconnectRows=_serverReconnectRows.Where(row=>journal.OwnsAssignment(row.Url)).ToArray();
+            if(_serverReconnectRows.Length==0)return;
+            await RemoteDownloadClient.CheckConnectionAsync(connection,probe.Token);
+            if(probe.IsCancellationRequested || !CanReconnectServerDownloads() ||
+                _savedRemoteDownloadSettings.Connection!=connection)return;
+            var rows=_serverReconnectRows.Where(row=>SessionState.Queue.Contains(row) && IsPendingServerReconnect(row)).ToArray();
+            _serverReconnectRows=[];
+            // The original click granted consent. Server assignment IDs and
+            // request parameters come from the original connection's journal.
+            await StartWithConfirmationAsync(rows,rows.ToHashSet(),serverOnly:true,reconnect:connection);
+        }
+        catch(Exception error) when(RemoteDownloadClient.IsRemoteFailure(error)) { }
+        finally { _serverReconnectProbe=null; }
+    }
 
     private void InitializeRemoteDownloadSettings()
     {
@@ -40,6 +97,7 @@ public sealed partial class NativeWindow
         };
         F<Button>("SaveRemoteDownloadSettingsButton").Click+=async(_,_)=>await SaveRemoteDownloadSettingsFromControlsAsync();
         F<Button>("CheckRemoteDownloadConnectionButton").Click+=async(_,_)=>await CheckRemoteDownloadConnectionFromControlsAsync();
+        F<Button>("OpenRemoteQueueButton").Click+=(_,_)=>OpenRemoteQueueManager();
         void ClearConnectionStatus()=>T("RemoteDownloadSettingsStatus").Text="";
         B("RemoteDownloadAddressBox").TextChanged+=(_,_)=>ClearConnectionStatus();
         B("RemoteDownloadUsernameBox").TextChanged+=(_,_)=>ClearConnectionStatus();

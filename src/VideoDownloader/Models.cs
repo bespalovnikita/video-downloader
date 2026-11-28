@@ -137,6 +137,9 @@ public sealed class DownloadItem : INotifyPropertyChanged
     public bool PendingRemoval { get; set; }
     public bool AttemptFinished { get; set; }
     public bool DeferredToNextStart { get; set; }
+    [JsonIgnore(Condition=JsonIgnoreCondition.WhenWritingDefault)]
+    public string? ServerDownloadConnectionKey { get; set; }
+    [JsonIgnore] internal bool ServerDownloadRequested => ServerDownloadConnectionKey is not null;
     // An explicit subscription action can prepare a future attempt while the
     // old completed result or retained skipped attempt keeps its ownership.
     [JsonIgnore(Condition=JsonIgnoreCondition.WhenWritingDefault)]
@@ -173,6 +176,8 @@ public sealed class DownloadOptions : IJsonOnDeserialized
     public bool PreferAria2c { get; set; }
     [JsonIgnore] internal RemoteDownloadConnection? RemoteConnection { get; set; }
     [JsonIgnore] internal bool AllowFreshRemoteDownloads { get; set; } = true;
+    [JsonIgnore] internal IReadOnlySet<DownloadItem>? ServerOnlyRows { get; set; }
+    [JsonIgnore] internal bool ReconnectServerOnly { get; set; }
     public string FilenameTemplate { get; set; } = "%(title)s [%(id)s].%(ext)s";
     public string Output { get; set; } = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads", "downloaded-video");
     public string Cookies { get; set; } = "";
