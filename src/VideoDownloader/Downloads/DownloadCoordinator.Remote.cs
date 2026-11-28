@@ -11,11 +11,23 @@ public sealed partial class DownloadCoordinator
     private readonly Channel<DownloadAttempt>? _remoteQueue;
     private List<DownloadAttempt>? _unroutedRemote;
     private volatile bool _remoteReady;
+    private bool _preservingRemoteAssignments;
+
+    private bool RequiresServer(DownloadItem row)=>_options.ServerOnlyRows?.Contains(row)==true;
 
     // Both queues carry the same attempt. The common claim under
     // _completionGate makes a second token inert once either side starts it.
     private bool EnqueueAttempt(DownloadAttempt attempt,DownloadOptions options)
     {
+        if(RequiresServer(attempt.Row))
+        {
+            if(_unroutedRemote is {} pendingServer)
+            {
+                pendingServer.Add(attempt);
+                return true;
+            }
+            return EnqueueRemote(attempt);
+        }
         if(!_queue.Writer.TryWrite(attempt))return false;
         if(_unroutedRemote is {} pending)pending.Add(attempt);
         else if(_remoteReady &&
@@ -81,8 +93,11 @@ public sealed partial class DownloadCoordinator
         {
             var pending=_unroutedRemote!;
             _unroutedRemote=null;
-            if(!prepared || !_acceptingWork)return;
-            _remoteReady=true;
+            if(!_acceptingWork)return;
+            foreach(var attempt in pending)
+                if(RequiresServer(attempt.Row) && !attempt.Finished.Task.IsCompleted)EnqueueRemote(attempt);
+            _remoteReady=prepared || pending.Any(attempt=>RequiresServer(attempt.Row));
+            if(!prepared)return;
             // Reclaim existing server results before submitting fresh work:
             // those results can occupy all available space on the server.
             foreach(var attempt in pending)
@@ -119,6 +134,9 @@ public sealed partial class DownloadCoordinator
         item.OutputRoot=outputRoot;
         try
         {
+            if(RequiresServer(item) && !_remote!.IsAvailable && !_remote.OwnsAssignment(item))
+                throw new IOException(ErrorMessages.Text("Сервер загрузок недоступен. Проверьте подключение.",
+                    "The download server is unavailable. Check the connection."));
             ReportRemoteProgress(item,new(RemoteDownloadStage.Waiting,0,0,0));
             await _pause.WaitForResumeAsync(token).ConfigureAwait(false);
             var artifact=await _remote!.DownloadAsync(item,_options,stage,_pause.WaitForResumeAsync,
@@ -172,6 +190,7 @@ public sealed partial class DownloadCoordinator
         item.ProgressDetail=progress.Stage switch
         {
             RemoteDownloadStage.Waiting=>ErrorMessages.Text("Ожидание загрузки на сервере","Waiting for the server"),
+            RemoteDownloadStage.WaitingForSpace=>ErrorMessages.Text("Ожидание места в серверной очереди","Waiting for space in the server queue"),
             RemoteDownloadStage.Downloading=>ErrorMessages.Text("Загрузка на сервере","Downloading on the server"),
             _=>ErrorMessages.Text("Получение файла с сервера","Receiving the file from the server")
         };
@@ -181,6 +200,7 @@ public sealed partial class DownloadCoordinator
         double overall=progress.Stage switch
         {
             RemoteDownloadStage.Waiting=>0,
+            RemoteDownloadStage.WaitingForSpace=>80,
             RemoteDownloadStage.Downloading=>percent*.8,
             _=>80+percent*.19
         };
@@ -237,8 +257,8 @@ public sealed partial class DownloadCoordinator
         try{await _remote!.AcknowledgeAsync(artifact,item.Path,deadline.Token).ConfigureAwait(false);}
         catch(Exception error)
         {
-            _log(ErrorMessages.Text("Не удалось подтвердить получение файла. Серверную копию можно освободить повторным запросом: ",
-                "Could not confirm receipt. Retrying can release the server copy: ")+error.Message);
+            _log(ErrorMessages.Text("Не удалось подтвердить получение файла. Подтверждение будет повторено: ",
+                "Could not confirm receipt. The acknowledgement will be retried: ")+error.Message);
         }
     }
 }

@@ -138,6 +138,7 @@ public sealed partial class DownloadCoordinator : IAsyncDisposable
             if(_attempts.TryGetValue(item.Url,out var attempt) && ReferenceEquals(attempt.Row,item) && !attempt.Finished.Task.IsCompleted)
             {
                 attempt.Reason=AttemptStopReason.Cancel;
+                item.ServerDownloadConnectionKey=null;
                 try{attempt.Stop.Cancel();}catch(ObjectDisposedException){}
                 if(!attempt.Started)
                 {
@@ -170,9 +171,23 @@ public sealed partial class DownloadCoordinator : IAsyncDisposable
         _pause.SetPaused(pause);
         if(changed)Trace(null,JournalLevel.Information,pause?"session_paused":"session_resumed",$"outstanding={Outstanding}");
     }
-    public void Stop()
+    public void Stop()=>Stop(preserveRemoteAssignments:false);
+
+    internal void Stop(bool preserveRemoteAssignments)
     {
-        lock(_completionGate){_acceptingWork=false;CompleteQueues();}
+        lock(_completionGate)
+        {
+            if(preserveRemoteAssignments && !_stop.IsCancellationRequested)
+            {
+                _preservingRemoteAssignments=true;
+                _remote?.PreserveAssignmentsOnStop();
+            }
+            if(!_preservingRemoteAssignments)
+                foreach(var attempt in _attempts.Values)
+                    if(!attempt.Started)attempt.Row.ServerDownloadConnectionKey=null;
+            _acceptingWork=false;
+            CompleteQueues();
+        }
         if(IsRunning && !_stop.IsCancellationRequested)Trace(null,JournalLevel.Information,"stop_requested",$"outstanding={Outstanding}");
         if (_pause.IsPaused) Pause(false);
         _stop.Cancel();
@@ -241,7 +256,7 @@ public sealed partial class DownloadCoordinator : IAsyncDisposable
     {
         await foreach(var attempt in queue.ReadAllAsync())
         {
-            if(useRemote && !_remote!.IsAvailable && !_remote.OwnsAssignment(attempt.Row))continue;
+            if(useRemote && !RequiresServer(attempt.Row) && !_remote!.IsAvailable && !_remote.OwnsAssignment(attempt.Row))continue;
             if(!useRemote && RedirectOwnedAssignment(attempt))continue;
             if(!TryClaimAttempt(attempt))continue;
             await ExecuteAttemptAsync(attempt,worker,useRemote).ConfigureAwait(false);
@@ -273,7 +288,7 @@ public sealed partial class DownloadCoordinator : IAsyncDisposable
                 }
                 catch(RemoteDownloadUnsupportedException error) when(useRemote)
                 {
-                    returnedToLocal=TryReturnToLocal(attempt);
+                    returnedToLocal=!RequiresServer(item) && TryReturnToLocal(attempt);
                     if(returnedToLocal)return;
                     result=new(false,linked.IsCancellationRequested,"",[],error.Message,item.TransferredBytes);
                 }
@@ -344,6 +359,8 @@ public sealed partial class DownloadCoordinator : IAsyncDisposable
             if(!returnedToLocal)lock(_completionGate)
             {
                 if(item.CleanupError.Length>0)DownloadCleanup.Failed(item,item.CleanupError);
+                if(!_preservingRemoteAssignments || attempt.Reason!=AttemptStopReason.None || item.Status=="Completed")
+                    item.ServerDownloadConnectionKey=null;
                 item.AttemptFinished=true;item.Speed="";item.ETA="";
                 Trace(item,item.Status=="Failed" || item.CleanupError.Length>0?JournalLevel.Error:JournalLevel.Information,
                     "job_finished",$"status={item.Status} state={DownloadProgressTrace.Quoted(item.State)} shown_pct={DownloadProgressTrace.Number(item.Progress)} transferred={item.TransferredBytes}"+

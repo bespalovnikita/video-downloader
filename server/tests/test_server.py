@@ -379,6 +379,9 @@ class ServerIntegrationTests(unittest.TestCase):
         self.assertEqual(client.request("DELETE", path + "/file", headers={"X-Video-Downloader": "0"}).status, 403)
         self.assertEqual(client.request("DELETE", path).status, 204)  # Cancelling a stale active row cannot delete a file.
         self.assertTrue(result.is_file())
+        self.assertEqual(client.request("DELETE", path + "/file").status, 409)
+        with sqlite3.connect(self.directory / "data" / "queue.sqlite3") as db:
+            db.execute("UPDATE remote_jobs SET expires_at = ? WHERE id = ?", (time.time() + 22 * 3600, job_id))
         for _ in range(2):
             self.assertEqual(client.request("DELETE", path + "/file").status, 204)
         self.assertFalse(result.exists())
@@ -424,20 +427,66 @@ class ServerIntegrationTests(unittest.TestCase):
         self.assertEqual(client.request("POST", first + "/received", authenticated=False).status, 401)
         self.assertEqual(client.request("POST", first + "/received", headers={"X-Video-Downloader": "0"}).status, 403)
         self.assertEqual(client.request("POST", first + "/received").status, 204)
-        self.assertFalse(result_path.exists())
-        self.assertEqual(client.request("GET", first + "/file").status, 404)
+        self.assertTrue(result_path.exists())
+        self.assertEqual(client.request("GET", first + "/file").body, content)
+        self.assertEqual(client.request("DELETE", first + "/file").status, 409)
         self.assertEqual(client.request("POST", first + "/received").status, 204)
         self.assertEqual(client.request("PUT", first, body=self.remote_body(urls[0])).json()["state"], "received")
         self.wait_for_remote(client, assignments[-1], "completed")
         self.assertEqual(self.queue(client)["jobs"][0]["status"], "queued")
 
-        # Model a crash after the receipt commit and before its physical cleanup.
+        # A receipt survives restart while the copy is retained until its original deadline.
         self.stop_service(process)
-        result_path.write_bytes(content)
         _, reopened = self.start_service()
         self.assertEqual(reopened.request("GET", first).json()["state"], "received")
-        self.assertFalse(result_path.exists())
+        self.assertTrue(result_path.exists())
         self.assertEqual(reopened.request("POST", first + "/received").status, 204)
+        with sqlite3.connect(self.directory / "data" / "queue.sqlite3") as db:
+            db.execute("UPDATE remote_jobs SET expires_at = ? WHERE id = ?", (time.time() - 1, first.rsplit("/", 1)[1]))
+        deadline = time.monotonic() + 5
+        while result_path.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertFalse(result_path.exists())
+        self.assertEqual(reopened.request("GET", first + "/file").status, 404)
+        self.assertEqual(reopened.request("POST", first + "/received").status, 204)
+
+    @unittest.skipUnless(HAS_MEDIA_TOOLS, "requires yt-dlp, ffmpeg and ffprobe on PATH")
+    def test_remote_result_quota_serializes_publication_and_rejects_oversized_video(self):
+        with mock.patch.object(sys, "path", [str(SERVICE.parent), *sys.path]):
+            from queue_worker import MIB, JobStore, RemoteOptions, REMOTE_RESULT_LIMIT, REMOTE_RESULT_TOO_LARGE
+
+        source = self.make_video_source()
+        size = (self.directory / "fixture.mp4").stat().st_size
+        self.assertEqual(REMOTE_RESULT_LIMIT, 15_000_000_000)
+        options = RemoteOptions("Best", "Auto", "Auto", False, False)
+        first, second, oversized = ("a" * 32, "b" * 32, "c" * 32)
+        with mock.patch("queue_worker.REMOTE_RESULT_LIMIT", 2 * size - 1):
+            store = JobStore(self.directory / "data", max_concurrent=2, disk_reserve=64 * MIB)
+            try:
+                store.put_remote(first, source.url("first.mp4"), options)
+                store.put_remote(second, source.url("second.mp4"), options)
+                deadline = time.monotonic() + 12
+                while not any(store.get_remote(job).get("waitingForSpace") for job in (first, second)):
+                    self.assertLess(time.monotonic(), deadline, (store.get_remote(first), store.get_remote(second)))
+                    time.sleep(0.05)
+                jobs = {job: store.get_remote(job) for job in (first, second)}
+                ready, = (job for job, value in jobs.items() if value["state"] == "completed")
+                waiting = second if ready == first else first
+                self.assertEqual(store.list_remote("")["unclaimedBytes"], size)
+                self.assertTrue(store.receive_remote(ready))
+                while store.get_remote(waiting)["state"] != "completed":
+                    self.assertLess(time.monotonic(), deadline, store.get_remote(waiting))
+                    time.sleep(0.05)
+                self.assertTrue(store.receive_remote(waiting))
+                self.assertEqual(store.list_remote("")["unclaimedBytes"], 0)
+                with mock.patch("queue_worker.REMOTE_RESULT_LIMIT", size - 1):
+                    store.put_remote(oversized, source.url("oversized.mp4"), options)
+                    while store.get_remote(oversized)["state"] != "failed":
+                        self.assertLess(time.monotonic(), deadline, store.get_remote(oversized))
+                        time.sleep(0.05)
+                    self.assertEqual(store.get_remote(oversized)["error"], REMOTE_RESULT_TOO_LARGE)
+            finally:
+                store.close()
 
     @unittest.skipUnless(HAS_MEDIA_TOOLS, "requires yt-dlp, ffmpeg and ffprobe on PATH")
     def test_storage_guard_covers_shared_slots_without_removing_ready_files(self):
@@ -506,7 +555,7 @@ class ServerIntegrationTests(unittest.TestCase):
         self.wait_for_remote(client, first, "completed")
         with sqlite3.connect(database) as db:
             expires_at, = db.execute("SELECT expires_at FROM remote_jobs WHERE id = ?", (first_id,)).fetchone()
-        self.assertAlmostEqual(expires_at - time.time(), 3600, delta=5)
+        self.assertAlmostEqual(expires_at - time.time(), 24 * 3600, delta=5)
 
         # An upgrade uses the local publication time for results from older databases.
         self.stop_service(process)

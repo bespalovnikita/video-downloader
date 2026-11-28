@@ -93,6 +93,35 @@ internal sealed partial class UiScenario
                         option.IsChecked==false && controller.SessionState.Queue.Count==0 &&
                         controller.SessionState.Coordinator is null && !File.Exists(settingsFile) && !Directory.Exists(Path.Combine(directory,"remote-jobs")),
                         "The explicit check must show the slot limit and free space without changing settings or starting a queue.");
+                    var queue=Control<DataGrid>(initial,"QueueGrid");
+                    Require(queue.ContextMenu.Items.OfType<MenuItem>().Any(item=>Equals(item.Header,
+                        ErrorMessages.Text("Качнуть через сервер","Download through server"))),
+                        "Windows must offer the explicit server command in the queue context menu.");
+                    const string page="{\"jobs\":[{\"id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"state\":\"received\",\"name\":\"fixture.mp4\",\"size\":1024,\"expiresAt\":2140000000,\"deleteAfter\":2140000000}],\"freeDiskBytes\":90000,\"unclaimedBytes\":0,\"unclaimedLimitBytes\":15000000000}";
+                    var queueResponse=ReplyToCapabilityProbeAsync(server,username,password,deadline.Token,page,"/bridge/api/remote/jobs");
+                    bool foundFile=false;
+                    var openUntil=DateTime.UtcNow.AddSeconds(5);
+                    var managerTimer=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(20)};
+                    managerTimer.Tick+=(_,_)=>
+                    {
+                        var dialog=initial.OwnedWindows.OfType<Window>()
+                            .FirstOrDefault(window=>window.Title==ErrorMessages.Text("Файловый менеджер серверной очереди","Server queue file manager"));
+                        if(dialog?.Content is DockPanel panel && panel.Children.OfType<DataGrid>().SingleOrDefault() is {} grid)
+                        {
+                            foundFile=grid.Items.Count==1;
+                            if(foundFile || DateTime.UtcNow>=openUntil)
+                            {
+                                managerTimer.Stop();
+                                dialog.Close();
+                            }
+                        }
+                    };
+                    managerTimer.Start();
+                    try{Click(Control<Button>(initial,"OpenRemoteQueueButton"));}
+                    finally{managerTimer.Stop();}
+                    queueResponse.GetAwaiter().GetResult();
+                    Require(foundFile && controller.SessionState.Queue.Count==0,
+                        "The actual WPF manager must show retained remote files without touching the Windows queue.");
                     Click(save);
                     WaitForButton(save);
                     Require(secret.Password.Length==0 && File.Exists(settingsFile),"Saving the connection must clear the editable password field.");
@@ -158,12 +187,12 @@ internal sealed partial class UiScenario
     }
 
     private static async Task ReplyToCapabilityProbeAsync(TcpListener server,string username,string password,CancellationToken token,
-        string body="{\"version\":1,\"maxConcurrent\":3}")
+        string body="{\"version\":1,\"maxConcurrent\":3}",string requestPath="/bridge/api/remote/capabilities")
     {
         using var client=await server.AcceptTcpClientAsync(token).ConfigureAwait(false);
         using var stream=client.GetStream();
         using var reader=new StreamReader(stream,Encoding.ASCII,leaveOpen:true);
-        if(await reader.ReadLineAsync(token).ConfigureAwait(false)!="GET /bridge/api/remote/capabilities HTTP/1.1")
+        if(await reader.ReadLineAsync(token).ConfigureAwait(false)!=$"GET {requestPath} HTTP/1.1")
             throw new InvalidDataException("The server connection check must use a GET at the configured subpath.");
         bool authenticated=false;
         string expected=Convert.ToBase64String(Encoding.UTF8.GetBytes(username+":"+password));

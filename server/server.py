@@ -255,7 +255,7 @@ class DownloadHandler(BaseHTTPRequestHandler):
         if method == "DELETE" and suffix == "/file":
             try:
                 if not store.remove_remote_result(job_id):
-                    raise RequestError(HTTPStatus.CONFLICT, "Готовый файл больше недоступен.")
+                    raise RequestError(HTTPStatus.CONFLICT, "Файл недоступен или ещё не истёк первый час хранения.")
             except OSError:
                 logging.exception("Could not remove remote result for job %s", job_id)
                 raise RequestError(HTTPStatus.INTERNAL_SERVER_ERROR, "Не удалось удалить файл.") from None
@@ -271,7 +271,7 @@ class DownloadHandler(BaseHTTPRequestHandler):
                     raise RequestError(HTTPStatus.CONFLICT, "Для этого задания ещё нет готового файла.")
             except OSError:
                 logging.exception("Could not remove acknowledged result for job %s", job_id)
-                raise RequestError(HTTPStatus.INTERNAL_SERVER_ERROR, "Не удалось удалить подтверждённый файл.") from None
+                raise RequestError(HTTPStatus.INTERNAL_SERVER_ERROR, "Не удалось подтвердить получение файла.") from None
             self.send_empty(HTTPStatus.NO_CONTENT)
             return
         raise RequestError(HTTPStatus.NOT_FOUND, "Страница не найдена.")

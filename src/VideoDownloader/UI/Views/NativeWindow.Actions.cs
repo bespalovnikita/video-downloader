@@ -236,6 +236,9 @@ public sealed partial class NativeWindow
         var downloadSelected=new MenuItem{Header=ErrorMessages.Text("Скачать выбранные строки","Download selected rows")};
         downloadSelected.Click+=(_,_)=>{var rows=SelectedVisibleQueueRows();if(rows.Length>0)_ = StartAsync(rows);};
         queueMenu.Items.Add(downloadSelected);
+        var downloadOnServer=new MenuItem{Header=ErrorMessages.Text("Качнуть через сервер","Download through server")};
+        downloadOnServer.Click+=(_,_)=>_ = StartWithConfirmationAsync(SelectedVisibleQueueRows(),null,serverOnly:true);
+        queueMenu.Items.Add(downloadOnServer);
         ConfigureOutOfOrderAction(queueMenu);
         var skipSelected=new MenuItem{Header=ErrorMessages.Text("Пропустить выбранные строки","Skip selected rows")};
         skipSelected.Click+=async(_,_)=>await SkipRowsAsync(SelectedVisibleQueueRows());queueMenu.Items.Add(skipSelected);
@@ -249,6 +252,7 @@ public sealed partial class NativeWindow
         {
             bool selected=HasVisibleQueueSelection;
             downloadSelected.IsEnabled=selected && SessionState.Coordinator?.IsRunning!=true;
+            downloadOnServer.IsEnabled=downloadSelected.IsEnabled && !_startingSession;
             skipSelected.IsEnabled=!QueueItemActionsBlocked() && SelectedVisibleQueueRows().Any(CanSkipQueueItem);
             resumeSelected.IsEnabled=!QueueItemActionsBlocked() && SelectedVisibleQueueRows().Any(CanContinueQueueItem);
             removeSelected.IsEnabled=selected;
@@ -341,7 +345,7 @@ public sealed partial class NativeWindow
             var active=SessionState.Coordinator?.IsRunning==true;
             var answer=MessageBox.Show(_window,
                 active
-                    ? ErrorMessages.Text("Загрузка ещё выполняется.\nДа: свернуть в трей и продолжить скачивание\nНет: остановить скачивание и выйти\nОтмена: остаться в приложении","A download is still running.\nYes: minimize to tray (downloads continue)\nNo: stop downloads and exit\nCancel: stay in the app")
+                    ? ErrorMessages.Text("Загрузка ещё выполняется.\nДа: свернуть в трей и продолжить скачивание\nНет: выйти (задания «Качнуть через сервер» продолжатся на сервере)\nОтмена: остаться в приложении","A download is still running.\nYes: minimize to tray (downloads continue)\nNo: exit (explicit server jobs continue on the server)\nCancel: stay in the app")
                     : ErrorMessages.Text("Закрыть Video Downloader?\nДа: свернуть в трей\nНет: выйти\nОтмена: остаться в приложении","Close Video Downloader?\nYes: minimize to tray\nNo: exit\nCancel: stay in the app"),
                 "Video Downloader",MessageBoxButton.YesNoCancel,MessageBoxImage.Question);
             if(answer==MessageBoxResult.Yes){e.Cancel=true;_lifecycle.Hide();return;}
@@ -352,6 +356,7 @@ public sealed partial class NativeWindow
         // only after the final ownership/status checkpoint has been written.
         e.Cancel=true;
         _closing=true;
+        _serverReconnectProbe?.Cancel();
         Task remoteConnectionStopped=StopRemoteDownloadConnectionCheckAsync();
         await StopDependencyOperationAsync();
         Task previewsStopped=_preview.StopAsync();
@@ -367,7 +372,7 @@ public sealed partial class NativeWindow
         DisposeSubscriptions();
         try
         {
-            SessionState.Coordinator?.Stop();
+            SessionState.Coordinator?.Stop(preserveRemoteAssignments:true);
             if (SessionState.RunningTask!=null) await SessionState.RunningTask;
             if (_queueItemActionTask!=null) await _queueItemActionTask;
             if (_queueClearTask!=null) await _queueClearTask;
@@ -401,6 +406,7 @@ public sealed partial class NativeWindow
     {
         if(_disposed)return;
         _remoteDownloadConnectionCheck?.Cancel();
+        _serverReconnectProbe?.Cancel();
         DisposeDependencyControls();
         DisposeJobDiagnostics();
         _speedDebugWindow?.CancelRun();

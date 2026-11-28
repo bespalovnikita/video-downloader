@@ -30,7 +30,7 @@ public sealed partial class DownloadCoordinator
     {
         if(!_runStarted || !_acceptingWork || !IsRunning || _stop.IsCancellationRequested ||
             item.Status!="Queued" || !item.CanResume || item.CleanupPaths.Count>0 || _cancelled.ContainsKey(item.Url))return false;
-        if(_remoteReady && _remote!.OwnsAssignment(item))return false;
+        if(RequiresServer(item) || _remoteReady && _remote!.OwnsAssignment(item))return false;
         if(_attempts.TryGetValue(item.Url,out var current))
             return ReferenceEquals(current.Row,item) && !current.Started && !current.Finished.Task.IsCompleted;
         // A retained generation already admitted through Resume has its own

@@ -36,7 +36,11 @@ internal static class RemoteCoordinatorTests
         Directory.CreateDirectory(root);
         string? previous=Environment.GetEnvironmentVariable(ControlVariable);
         Environment.SetEnvironmentVariable(ControlVariable,root);
-        try { await SharesQueueAsync(root); }
+        try
+        {
+            await SharesQueueAsync(root);
+            await KeepsExplicitJobOnServerAsync(root);
+        }
         finally
         {
             Environment.SetEnvironmentVariable(ControlVariable,previous);
@@ -128,6 +132,25 @@ internal static class RemoteCoordinatorTests
             }
             await run.WaitAsync(TimeSpan.FromSeconds(25));
         }
+    }
+
+    private static async Task KeepsExplicitJobOnServerAsync(string root)
+    {
+        var row=Row("explicit-declined");
+        var data=new AppPersistence(Path.Combine(root,"explicit-profile"));
+        var options=new DownloadOptions
+        {
+            Output=Path.Combine(root,"explicit-output"),Threads="1",
+            AllowFreshRemoteDownloads=false,ServerOnlyRows=new HashSet<DownloadItem>{row}
+        };
+        var remote=new FixtureClient(data,root,Row("unused-recovered"),row,Row("unused-invalid"));
+        await using var engine=new DownloadCoordinator("must-not-start.exe",data,options,_=>{},_=>{},null,remote);
+        Require(engine.Add(row),"The explicit job must be admitted with automatic splitting disabled.");
+        remote.Release(row);
+        await engine.RunAsync().WaitAsync(TimeSpan.FromSeconds(10));
+        Require(row.Status=="Failed" && remote.Starts(row)==1 && LocalStarts(root,row)==0 &&
+            row.RawError.Contains("коллекцию",StringComparison.Ordinal) && engine.Outstanding==0,
+            "A rejected explicit server job must report the rejection and never start a local worker.");
     }
 
     private sealed class FixtureClient(AppPersistence data,string root,DownloadItem recovered,DownloadItem collection,DownloadItem invalid)

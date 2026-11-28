@@ -18,7 +18,7 @@ internal sealed class RemoteDownloadJournal
     internal RemoteDownloadJournal(AppPersistence persistence, RemoteDownloadConnection connection, Action<string> log)
     {
         _directory = Path.Combine(Path.GetDirectoryName(persistence.SessionPath)!, "remote-jobs",
-            Hash(connection.Address.AbsoluteUri + "\n" + connection.Username));
+            ConnectionKey(connection));
         _log = log;
     }
 
@@ -84,6 +84,9 @@ internal sealed class RemoteDownloadJournal
         File.Delete(path);
         _active.TryRemove(key, out _);
     }
+
+    internal static string ConnectionKey(RemoteDownloadConnection connection) =>
+        Hash(connection.Address.AbsoluteUri + "\n" + connection.Username);
 
     private static bool IsJobId(string? value) =>
         Guid.TryParseExact(value, "N", out var guid) && value == guid.ToString("N");

@@ -74,10 +74,13 @@ public sealed partial class NativeWindow
         void UpdateButtons()
         {
             var selected = grid.SelectedItem as RemoteQueueRow;
-            remove.Content = selected?.Item.State == "completed"
+            remove.Content = selected?.HasFile == true
                 ? ErrorMessages.Text("Удалить файл…", "Delete file…")
                 : ErrorMessages.Text("Отменить задание…", "Cancel job…");
-            remove.IsEnabled = !busy && selected is not null;
+            remove.IsEnabled = !busy && selected is not null && selected.CanRemove;
+            remove.ToolTip = selected is { HasFile: true, CanRemove: false }
+                ? ErrorMessages.Text("Первый час хранения файл защищён от удаления.", "The file is protected during its first hour.") : null;
+            ToolTipService.SetShowOnDisabled(remove, true);
             refresh.IsEnabled = !busy;
             first.IsEnabled = !busy && current is not null;
             next.IsEnabled = !busy && following is not null;
@@ -110,8 +113,14 @@ public sealed partial class NativeWindow
                 grid.SelectedItem = rows.FirstOrDefault(row => row.Item.Id == selectedId);
                 current = cursor;
                 following = page.Next;
-                status.Text = changed ? ErrorMessages.Text("Файл больше недоступен.", "The file is no longer available.") :
+                status.Text = changed ? ErrorMessages.Text("Файл недоступен или ещё защищён от удаления.", "The file is unavailable or still protected from deletion.") :
                     rows.Length == 0 ? ErrorMessages.Text("Серверная очередь пуста.", "The server queue is empty.") : "";
+                if(page.UnclaimedBytes is >= 0 && page.UnclaimedLimitBytes is > 0)
+                {
+                    if(status.Text.Length>0)status.Text+=Environment.NewLine;
+                    string used=(page.UnclaimedBytes.Value/1_000_000_000m).ToString("0.###");
+                    status.Text+=ErrorMessages.Text($"Не получено на ПК — {used} из 15 ГБ.", $"Unclaimed on Windows — {used} of 15 GB.");
+                }
                 if (page.FreeDiskBytes is >= 0)
                 {
                     string free = DisplayValueConverter.Bytes(page.FreeDiskBytes.Value);
@@ -136,8 +145,8 @@ public sealed partial class NativeWindow
         next.Click += async (_, _) => await LoadAsync(following);
         remove.Click += async (_, _) =>
         {
-            if (busy || grid.SelectedItem is not RemoteQueueRow row) return;
-            string question = row.Item.State == "completed"
+            if (busy || grid.SelectedItem is not RemoteQueueRow { CanRemove: true } row) return;
+            string question = row.HasFile
                 ? ErrorMessages.Text("Удалить готовую копию с сервера?", "Delete the completed copy from the server?")
                 : ErrorMessages.Text("Отменить скачивание на сервере?", "Cancel the download on the server?");
             if (MessageBox.Show(dialog, $"{question}\n\n{row.Name}", dialog.Title,
@@ -157,13 +166,18 @@ public sealed partial class NativeWindow
     private sealed class RemoteQueueRow(RemoteQueueItem item)
     {
         public RemoteQueueItem Item { get; } = item;
+        public bool HasFile => Item.State is "completed" or "received";
+        public bool CanRemove => !HasFile || Item.DeleteAfter is not double threshold ||
+            threshold <= DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         public string Name => Item.Name is { Length: > 0 } name ? name : $"{Item.Source} [{Item.Id[..8]}]";
         public string Size => Item.Size is > 0 ? DisplayValueConverter.Bytes(Item.Size.Value) : "";
         public string Expires => Item.ExpiresAt is >= 0 and < 253402213200
             ? DateTimeOffset.FromUnixTimeSeconds((long)Item.ExpiresAt.Value).ToLocalTime().ToString("g") : "";
         public string Status => Item.State switch
         {
-            "completed" => ErrorMessages.Text("Готово", "Ready"),
+            "completed" => ErrorMessages.Text("Готово к получению", "Ready to receive"),
+            "received" => ErrorMessages.Text("Получено на ПК", "Received on Windows"),
+            "downloading" when Item.Progress == 100 => ErrorMessages.Text("Ожидание места", "Waiting for space"),
             "downloading" => ErrorMessages.Text("Скачивается", "Downloading") +
                 (Item.Progress is >= 0 and <= 100 ? $" {Item.Progress.Value:0}%" : ""),
             _ => ErrorMessages.Text("В очереди", "Queued")
