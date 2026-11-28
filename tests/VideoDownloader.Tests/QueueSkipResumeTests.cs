@@ -21,6 +21,7 @@ internal static class QueueSkipResumeTests
         try
         {
             await RunningSkipFreesSlotAndResumes(root);
+            await FailedTransferRetainsBytes(root);
             await RetainedAttemptSurvivesCheckpointAndRejectsForeignPaths(root);
             await RetainedStageLossRecovery(root);
             await QueuedSkipAndDestructiveCancellation(root);
@@ -84,6 +85,38 @@ internal static class QueueSkipResumeTests
             data.ReadHistory().ContainsKey(first.Url),"A late skip must not turn an already published success into a skipped task");
         Require(next.Status=="Completed" && File.ReadAllBytes(next.Path).SequenceEqual(origin.NextBytes),
             "Resuming the earlier URL must not change the next URL's publication");
+    }
+
+    private static async Task FailedTransferRetainsBytes(string root)
+    {
+        await using var origin=new RangeOrigin();
+        const string name="failed-transfer.mp4";
+        origin.BreakTransfer(name);
+        var data=new AppPersistence(Path.Combine(root,"failed-transfer-profile"));
+        var options=Options(Path.Combine(root,"failed-transfer-output"));
+        var row=new DownloadItem{Url=origin.Url(name)};
+        await using(var failed=Engine(data,options))
+        {
+            Require(failed.Add(row),"The failure fixture must be admitted");
+            await failed.RunAsync().WaitAsync(TimeSpan.FromSeconds(45));
+            Require(row.CanContinueFailedDownload && Partial(row) is {} partial && new FileInfo(partial).Length>0 &&
+                !data.ReadHistory().ContainsKey(row.Url),"The failed transfer must retain real bytes without recording success: "+
+                Describe(row)+" progress="+row.Progress+" "+origin.Diagnostics());
+            data.Save([row],options);
+        }
+        row=data.Restore()!.Queue.Single();
+        Require(row.CanContinueFailedDownload,"The error and the option to resume must survive checkpoint restore");
+        var atThreshold=Clone(row);
+        atThreshold.Progress=10;
+        Require(!atThreshold.CanContinueFailedDownload,"Exactly ten percent must not enable the failed-resume action");
+        int before=origin.Requests.Count;
+        origin.RepairTransfer(name);
+        await using var retry=Engine(data,options);
+        Require(retry.Resume(row),"The explicit resume must admit a failed row");
+        await retry.RunAsync().WaitAsync(TimeSpan.FromSeconds(30));
+        Require(row.Status=="Completed" && File.ReadAllBytes(row.Path).SequenceEqual(origin.PrimaryBytes) &&
+            origin.Requests.Skip(before).Any(request=>request.Path==name && request.Method=="GET" && request.First>0) &&
+            row.ResumeState is null,"The retry must resume at a positive offset, publish the exact payload and clear its proof: "+Describe(row));
     }
 
     private static async Task RetainedAttemptSurvivesCheckpointAndRejectsForeignPaths(string root)
@@ -479,6 +512,7 @@ internal static class QueueSkipResumeTests
         private readonly ConcurrentDictionary<TcpClient,byte> _clients=[];
         private readonly ConcurrentBag<Task> _handlers=[];
         private readonly ConcurrentDictionary<string,TaskCompletionSource> _holds=new(StringComparer.Ordinal);
+        private readonly ConcurrentDictionary<string,byte> _brokenTransfers=new(StringComparer.Ordinal);
         private readonly ConcurrentDictionary<string,int> _getCounts=new(StringComparer.Ordinal);
         private readonly Task _accept;
         private readonly Stopwatch _clock=Stopwatch.StartNew();
@@ -491,6 +525,8 @@ internal static class QueueSkipResumeTests
         internal RangeOrigin()
         {_listener.Start();Address=new("http://127.0.0.1:"+((IPEndPoint)_listener.LocalEndpoint).Port+"/");_accept=Accept();}
         internal string Url(string path)=>new Uri(Address,path).AbsoluteUri;
+        internal void BreakTransfer(string path)=>_brokenTransfers[path]=0;
+        internal void RepairTransfer(string path)=>_brokenTransfers.TryRemove(path,out _);
         internal void Hold(string path)
         {_holds[path]=new(TaskCreationOptions.RunContinuationsAsynchronously);Observe("hold-created "+path);}
         internal void Release(string path)
@@ -548,6 +584,12 @@ internal static class QueueSkipResumeTests
                 context="c"+connection+" "+first[0]+" "+path+" getOrdinal="+getOrdinal+" phase="+phase+
                     " rangeHeader="+(header is null?"absent":header[(header.IndexOf(':')+1)..].Trim())+
                     " served="+begin+"-"+end;Observe(context+" parsed");
+                bool broken=_brokenTransfers.ContainsKey(path) && getOrdinal>1;
+                if(broken && getOrdinal>2)
+                {
+                    await Write(stream,"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                    return;
+                }
                 if(begin>=body.Length){await Write(stream,"HTTP/1.1 416 Range Not Satisfiable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");return;}
                 await Write(stream,"HTTP/1.1 "+(ranged?"206 Partial Content":"200 OK")+"\r\nContent-Type: video/mp4\r\nAccept-Ranges: bytes\r\nContent-Length: "+(end-begin+1)+
                     (ranged?"\r\nContent-Range: bytes "+begin+"-"+end+"/"+body.Length:"")+"\r\nConnection: close\r\n\r\n");
@@ -557,6 +599,14 @@ internal static class QueueSkipResumeTests
                 // The generic extractor opens the URL for metadata before its downloader.
                 // Finish that first GET: holding it can block curl_cffi response disposal
                 // before a real .part exists. Only the later transfer is held for skip.
+                if(broken)
+                {
+                    int initial=Math.Min(count,body.Length*9/10);
+                    await stream.WriteAsync(body.AsMemory((int)begin,initial),_stop.Token);
+                    await stream.FlushAsync(_stop.Token);
+                    await Task.Delay(350,_stop.Token);
+                    return;
+                }
                 if(getOrdinal>1 && _holds.TryGetValue(path,out var hold) && !hold.Task.IsCompleted)
                 {
                     int initial=Math.Min(count,256*1024);await stream.WriteAsync(body.AsMemory((int)begin,initial),_stop.Token);await stream.FlushAsync(_stop.Token);

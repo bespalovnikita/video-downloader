@@ -65,6 +65,8 @@ public sealed record DownloadResumeState
     public string Identity { get; init; }="";
     public DownloadResumePlan Plan { get; init; }=new();
     public DownloadSelection? Selection { get; init; }
+    [JsonIgnore(Condition=JsonIgnoreCondition.WhenWritingDefault)]
+    public bool RetainedAfterFailure { get; init; }
     // Hashes of component IDs, never extractor values or URLs. Immutable
     // replacement keeps checkpoint serialization independent from pipe reads.
     public IReadOnlyDictionary<string,long> ComponentBytes { get; init; }=new Dictionary<string,long>();
@@ -189,6 +191,21 @@ internal static class DownloadResumeStore
     {
         using var current=Process.GetCurrentProcess();
         return new(1,state.Token,state.Identity,Hash(state),Environment.ProcessId,current.StartTime.ToUniversalTime(),quality,row.RunDir,row.StageDir);
+    }
+
+    internal static void ValidateForContinuation(DownloadItem row)
+    {
+        if(row.ResumeState?.RetainedAfterFailure!=true){Validate(row);return;}
+        if(!HasPartialMedia(row))throw new IOException(ErrorMessages.Text(
+            "Частичный файл больше недоступен. Сбросьте задание, чтобы скачать заново.",
+            "The partial file is no longer available. Reset the job to start again."));
+    }
+
+    internal static bool HasPartialMedia(DownloadItem row)
+    {
+        Validate(row);
+        return Directory.EnumerateFiles(row.StageDir,"*",SearchOption.TopDirectoryOnly)
+            .Any(path=>path.EndsWith(".part",StringComparison.OrdinalIgnoreCase) && new FileInfo(path).Length>0);
     }
 
     // This helper deliberately does not touch any published media.

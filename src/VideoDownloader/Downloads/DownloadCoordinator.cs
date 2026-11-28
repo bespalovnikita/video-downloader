@@ -89,7 +89,7 @@ public sealed partial class DownloadCoordinator : IAsyncDisposable
             if(!resume && !_queued.TryAdd(item.Url,0))return false;
             if(resume)
             {
-                if(item.Status!="Skipped" || !item.AttemptFinished || _cancelled.ContainsKey(item.Url))return false;
+                if((item.Status!="Skipped" && !item.CanContinueFailedDownload) || !item.AttemptFinished || _cancelled.ContainsKey(item.Url))return false;
                 _queued[item.Url]=0;
             }
             var attempt=new DownloadAttempt(item,_stop.Token);
@@ -422,6 +422,9 @@ public sealed partial class DownloadCoordinator : IAsyncDisposable
         bool retained=item.ResumeState is not null;
         if(!retained)item.ResetCurrentVideo();
         DownloadResumeStore.Validated? validated=retained?DownloadResumeStore.Validate(item,requireMatchingSelection:false):null;
+        if(validated?.State.RetainedAfterFailure==true && !DownloadResumeStore.HasPartialMedia(item))
+            throw new IOException(ErrorMessages.Text("Частичный файл больше недоступен. Сбросьте задание, чтобы скачать заново.",
+                "The partial file is no longer available. Reset the job to start again."));
         var options=validated?.State.Plan.ToOptions()??_options;
         var selection=_selections.GetValueOrDefault(item.Url);
         var arguments=new YtDlpArguments(options);
@@ -449,6 +452,9 @@ public sealed partial class DownloadCoordinator : IAsyncDisposable
         var fragmentPlans=new Dictionary<int,DownloadProgressPlan>();
         var fragmentPercent=new Dictionary<int,double>();
         int launch=0;
+        string? invocationQuality=null;
+        double bestTransferProgress=validated?.State.RetainedAfterFailure==true?item.Progress:0;
+        bool terminalTransferFailure=false;
         int selectedFragments=selection?.EffectiveSections.Count??0;
         int FragmentIndex(double? start,double? end)
         {
@@ -466,7 +472,8 @@ public sealed partial class DownloadCoordinator : IAsyncDisposable
         if(validated is not null)
         {
             int from=Array.IndexOf(qualities,validated.Quality);
-            if(from>=0)qualities=qualities[from..];
+            if(validated.State.RetainedAfterFailure)qualities=[validated.Quality];
+            else if(from>=0)qualities=qualities[from..];
         }
         try
         {
@@ -489,6 +496,8 @@ public sealed partial class DownloadCoordinator : IAsyncDisposable
                         if(item.ResumeState is {} resume)
                             item.ResumeState=resume with{ComponentBytes=new Dictionary<string,long>()};
                     }
+                    if(launch>0 && invocationQuality!=q)bestTransferProgress=0;
+                    invocationQuality=q;
                     DownloadResumeStore.UpdateQuality(item,q);
                     launch++;
                     double previousShown=item.Progress;
@@ -578,6 +587,7 @@ public sealed partial class DownloadCoordinator : IAsyncDisposable
                                         selectedFragments>1?fragmentPercent.GetValueOrDefault(fragment):item.Progress);
                                     if(selectedFragments>1)fragmentPercent[fragment]=display.Percent;
                                     item.Progress=selectedFragments>1?Math.Min(99,(fragment+display.Percent/100)*100/selectedFragments):display.Percent;
+                                    if(double.IsFinite(item.Progress))bestTransferProgress=Math.Max(bestTransferProgress,item.Progress);
                                     item.ProgressDetail=(selectedFragments>1?$"Фрагмент {fragment+1}/{selectedFragments} · ":"")+display.Detail;
                                     item.Speed=progress.Speed;
                                     item.Downloaded=DownloadFormat.Bytes(bytes)+(progress.TotalBytes>0 ? " / "+DownloadFormat.Bytes(progress.TotalBytes) : "");
@@ -739,6 +749,7 @@ public sealed partial class DownloadCoordinator : IAsyncDisposable
                         await Task.Delay(TimeSpan.FromSeconds(delay),ct).ConfigureAwait(false);
                         continue;
                     }
+                    terminalTransferFailure=true;
                     return new DownloadResult(false,false,"",[] ,err,transferred);
                 }
             }
@@ -747,16 +758,24 @@ public sealed partial class DownloadCoordinator : IAsyncDisposable
         catch(OperationCanceledException) { return new DownloadResult(false,true,"",[],"",transferred); }
         finally
         {
-            // Skip retains exactly this attempt's own partial data. Cancel,
-            // Stop, failure and success keep their original cleanup semantics.
             bool keep;
+            bool retainFailedTransfer;
             lock(_completionGate)
             {
                 owner.Finalizing=true;
-                keep=owner.Reason==AttemptStopReason.Skip && item.CleanupError.Length==0 && !item.PendingRemoval && item.ResumeState is not null;
+                bool eligible=item.CleanupError.Length==0 && !item.PendingRemoval && item.ResumeState is not null;
+                keep=eligible && owner.Reason==AttemptStopReason.Skip;
+                retainFailedTransfer=eligible && owner.Reason==AttemptStopReason.None && !ct.IsCancellationRequested &&
+                    terminalTransferFailure && bestTransferProgress>10 && selection?.IsPartial!=true && !options.PreferAria2c;
             }
             try
             {
+                if(retainFailedTransfer && DownloadResumeStore.HasPartialMedia(item))
+                {
+                    item.Progress=bestTransferProgress;
+                    item.ResumeState=item.ResumeState! with{RetainedAfterFailure=true};
+                    keep=true;
+                }
                 if(!keep)
                 {
                     if(item.ResumeState is not null)DownloadResumeStore.DeleteRetained(item);
