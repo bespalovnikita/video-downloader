@@ -113,6 +113,31 @@ public sealed partial class DownloadCoordinator
         }
     }
 
+    internal bool TryStartRemotePickup(DownloadItem item,string jobId,RemoteDownloadConnection connection)
+    {
+        lock(_completionGate)
+        {
+            if(!_runStarted || !_acceptingWork || !IsRunning || _stop.IsCancellationRequested ||
+                _options.RemoteConnection!=connection || _remote?.OwnsAssignment(item,jobId)!=true ||
+                !item.CanResume || item.ResumeState is not null || item.StageDir.Length>0 || item.Path.Length>0 ||
+                item.OwnedPaths.Count>0 || item.CleanupPaths.Count>0 || _cancelled.ContainsKey(item.Url))return false;
+            if(!_attempts.TryGetValue(item.Url,out var attempt) || attempt.Finished.Task.IsCompleted)
+            {
+                if(item.Status is not ("Failed" or "Interrupted") ||
+                    !Admit(item,resume:true,enqueue:false,remotePickupJobId:jobId))return false;
+                attempt=_attempts[item.Url];
+            }
+            if(!ReferenceEquals(attempt.Row,item) || !TryClaimAttempt(attempt))return false;
+            attempt.RemotePickupJobId=jobId;
+            item.RawError="";
+            // Ready files already consume VPS slots. Receive one here even
+            // if every regular remote worker is waiting for a server slot.
+            _outOfOrderTasks.Add(Task.Run(()=>ExecuteAttemptAsync(attempt,"VPS "+ErrorMessages.Text("получение","pickup"),
+                useRemote:true),CancellationToken.None));
+            return true;
+        }
+    }
+
     private IEnumerable<Task> StartRemoteWorkers()=>_remoteReady && _remoteQueue is {} queue
         ?Enumerable.Range(1,Math.Clamp(_remote!.MaxConcurrent,1,RemoteParallel))
             .Select(slot=>Task.Run(()=>WorkerAsync(queue.Reader,"VPS "+slot,useRemote:true)))
@@ -143,7 +168,14 @@ public sealed partial class DownloadCoordinator
                     "The download server is unavailable. Check the connection."));
             ReportRemoteProgress(item,new(RemoteDownloadStage.Waiting,0,0,0));
             await _pause.WaitForResumeAsync(token).ConfigureAwait(false);
-            var artifact=await _remote!.DownloadAsync(item,_options,stage,_pause.WaitForResumeAsync,
+            var options=_options;
+            if(owner.RemotePickupJobId is { } pickupJobId)
+            {
+                options=_options.Snapshot();
+                options.ReconnectServerOnly=true;
+                options.RemotePickupJobId=pickupJobId;
+            }
+            var artifact=await _remote!.DownloadAsync(item,options,stage,_pause.WaitForResumeAsync,
                 progress=>{if(!token.IsCancellationRequested)ReportRemoteProgress(item,progress);},token).ConfigureAwait(false);
             token.ThrowIfCancellationRequested();
             string mediaPath=Path.GetFullPath(artifact.MediaPath);

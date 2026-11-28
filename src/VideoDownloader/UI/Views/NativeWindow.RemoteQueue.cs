@@ -69,6 +69,7 @@ public sealed partial class NativeWindow
         string? following = null;
         bool busy = false;
         DownloadItem? pickupQueueRow = null;
+        string? pickupQueueJobId = null;
 
         void AddColumn(string russian, string english, string property, DataGridLength width)
         {
@@ -78,6 +79,8 @@ public sealed partial class NativeWindow
                 Width = width, MinWidth = 90
             });
         }
+
+        bool PickupAvailable()=>!_startingSession || SessionState.Coordinator?.IsRunning==true;
 
         void UpdateButtons()
         {
@@ -92,7 +95,7 @@ public sealed partial class NativeWindow
                 ? ErrorMessages.Text("Первый час хранения файл защищён от удаления.", "The file is protected during its first hour.") : null;
             ToolTipService.SetShowOnDisabled(remove, true);
             prioritize.IsEnabled = !busy && selected?.Item.State == "queued";
-            pickup.IsEnabled = !busy && selected?.HasFile == true && SessionState.Coordinator?.IsRunning != true && !_startingSession;
+            pickup.IsEnabled = !busy && selected?.HasFile == true && PickupAvailable();
             receivedOnly.IsEnabled = !busy;
             refresh.IsEnabled = !busy;
             first.IsEnabled = !busy && current is not null;
@@ -168,7 +171,7 @@ public sealed partial class NativeWindow
         pickup.Click += async (_, _) =>
         {
             if (busy || grid.SelectedItems.Count != 1 || grid.SelectedItem is not RemoteQueueRow { HasFile: true } row ||
-                SessionState.Coordinator?.IsRunning == true || _startingSession) return;
+                !PickupAvailable()) return;
             await LoadAsync(current, async () =>
             {
                 if (row.Item.State == "completed")
@@ -179,10 +182,22 @@ public sealed partial class NativeWindow
                     var assignment = journal.FindById(row.Item.Id);
                     if (assignment is { ReceivedLocally: false })
                     {
-                        pickupQueueRow = SessionState.Queue.FirstOrDefault(item => item.Url == assignment.Request.Url &&
-                            item.CanResume && item.ResumeState is null && item.Status != "Completed");
-                        if (pickupQueueRow is not null)
+                        var localRow = SessionState.Queue.FirstOrDefault(item => item.Url == assignment.Request.Url);
+                        if (localRow is not null && SessionState.Coordinator is { IsRunning: true } coordinator)
                         {
+                            if (SessionState.TryStartRemotePickup(localRow,row.Item.Id,connection))
+                            {
+                                dialog.Close();
+                                return "";
+                            }
+                            if (coordinator.IsPending(localRow))
+                                return ErrorMessages.Text("Windows уже обрабатывает это задание.",
+                                    "Windows is already working on this job.");
+                        }
+                        else if (localRow is { CanResume: true, ResumeState: null } && localRow.Status!="Completed")
+                        {
+                            pickupQueueRow=localRow;
+                            pickupQueueJobId=row.Item.Id;
                             dialog.Close();
                             return "";
                         }
@@ -258,8 +273,12 @@ public sealed partial class NativeWindow
         try { dialog.ShowDialog(); }
         finally { _remoteQueueManagerOpen = false; }
         if (pickupQueueRow is not null && !_closing && !_disposed)
+        {
+            var options=ReadOptions();
+            options.RemotePickupJobId=pickupQueueJobId;
             _ = StartWithConfirmationAsync([pickupQueueRow], new HashSet<DownloadItem> { pickupQueueRow },
-                serverOnly: true, reconnect: connection);
+                preparedOptions: options, serverOnly: true, reconnect: connection);
+        }
     }
 
     private sealed class RemoteQueueRow(RemoteQueueItem item)

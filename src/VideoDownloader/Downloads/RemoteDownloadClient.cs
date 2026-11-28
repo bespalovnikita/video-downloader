@@ -15,6 +15,7 @@ internal interface IRemoteDownloadClient : IDisposable
     Task PrepareAsync(CancellationToken token);
     bool Supports(DownloadItem row, DownloadOptions options);
     bool OwnsAssignment(DownloadItem row);
+    bool OwnsAssignment(DownloadItem row,string jobId) => false;
     Task<RemoteDownloadArtifact> DownloadAsync(DownloadItem row, DownloadOptions options, string stage,
         Func<CancellationToken, Task> waitForResume, Action<RemoteDownloadProgress> progress, CancellationToken token);
     Task AcknowledgeAsync(RemoteDownloadArtifact artifact, string publishedPath, CancellationToken token);
@@ -206,6 +207,8 @@ internal sealed class RemoteDownloadClient : IRemoteDownloadClient
 
     public bool Supports(DownloadItem row, DownloadOptions options) => RemoteDownloadRequest.For(row, options) is not null;
     public bool OwnsAssignment(DownloadItem row) => _journal.OwnsAssignment(row.Url);
+    public bool OwnsAssignment(DownloadItem row,string jobId) =>
+        _journal.FindById(jobId) is { ReceivedLocally: false } assignment && assignment.Request.Url==row.Url;
 
     public async Task<RemoteDownloadArtifact> DownloadAsync(DownloadItem row, DownloadOptions options, string stage,
         Func<CancellationToken, Task> waitForResume, Action<RemoteDownloadProgress> progress, CancellationToken token)
@@ -217,7 +220,8 @@ internal sealed class RemoteDownloadClient : IRemoteDownloadClient
             assignment = null;
         }
 
-        if (options.ReconnectServerOnly && assignment is null)
+        if (options.ReconnectServerOnly && (assignment is null ||
+            options.RemotePickupJobId is { } expectedId && assignment.JobId!=expectedId))
             throw new IOException(ErrorMessages.Text("Исходное серверное задание уже недоступно.",
                 "The original server job is no longer available."));
         var request = assignment?.Request ?? RemoteDownloadRequest.For(row, options)
@@ -437,7 +441,8 @@ internal sealed class RemoteDownloadClient : IRemoteDownloadClient
                         request.Headers.IfRange = new RangeConditionHeaderValue(etag!);
                     }
                     using var response = await GetFileResponseAsync(request, token).ConfigureAwait(false);
-                    if (restored && offset > 0 && response.StatusCode == HttpStatusCode.OK)
+                    if (offset > 0 && response.StatusCode == HttpStatusCode.OK &&
+                        (restored || Equals(response.Headers.ETag, etag)))
                     {
                         file.SetLength(0);
                         file.Position = 0;

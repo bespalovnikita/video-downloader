@@ -73,7 +73,7 @@ public sealed partial class DownloadCoordinator : IAsyncDisposable
         }
     }
     public bool Add(DownloadItem item)=>Admit(item,false);
-    private bool Admit(DownloadItem item,bool resume,bool enqueue=true,string? preparedOutputRoot=null)
+    private bool Admit(DownloadItem item,bool resume,bool enqueue=true,string? preparedOutputRoot=null,string? remotePickupJobId=null)
     {
         lock(_completionGate)
         {
@@ -89,10 +89,11 @@ public sealed partial class DownloadCoordinator : IAsyncDisposable
             if(!resume && !_queued.TryAdd(item.Url,0))return false;
             if(resume)
             {
-                if((item.Status!="Skipped" && !item.CanContinueFailedDownload) || !item.AttemptFinished || _cancelled.ContainsKey(item.Url))return false;
+                if((remotePickupJobId is null && item.Status!="Skipped" && !item.CanContinueFailedDownload) ||
+                    !item.AttemptFinished || _cancelled.ContainsKey(item.Url))return false;
                 _queued[item.Url]=0;
             }
-            var attempt=new DownloadAttempt(item,_stop.Token);
+            var attempt=new DownloadAttempt(item,_stop.Token){RemotePickupJobId=remotePickupJobId};
             _attempts[item.Url]=attempt;
             Interlocked.Increment(ref _outstanding);
             item.AttemptFinished=false;item.OutputRoot=outputRoot;
@@ -288,7 +289,7 @@ public sealed partial class DownloadCoordinator : IAsyncDisposable
                 }
                 catch(RemoteDownloadUnsupportedException error) when(useRemote)
                 {
-                    returnedToLocal=!RequiresServer(item) && TryReturnToLocal(attempt);
+                    returnedToLocal=attempt.RemotePickupJobId is null && !RequiresServer(item) && TryReturnToLocal(attempt);
                     if(returnedToLocal)return;
                     result=new(false,linked.IsCancellationRequested,"",[],error.Message,item.TransferredBytes);
                 }

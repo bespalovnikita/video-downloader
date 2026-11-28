@@ -180,6 +180,7 @@ public sealed class DownloadOptions : IJsonOnDeserialized
     [JsonIgnore] internal bool AllowFreshRemoteDownloads { get; set; } = true;
     [JsonIgnore] internal IReadOnlySet<DownloadItem>? ServerOnlyRows { get; set; }
     [JsonIgnore] internal bool ReconnectServerOnly { get; set; }
+    [JsonIgnore] internal string? RemotePickupJobId { get; set; }
     public string FilenameTemplate { get; set; } = "%(title)s [%(id)s].%(ext)s";
     public string Output { get; set; } = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads", "downloaded-video");
     public string Cookies { get; set; } = "";

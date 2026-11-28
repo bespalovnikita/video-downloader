@@ -13,6 +13,7 @@ public sealed partial class DownloadCoordinator
         internal bool Publishing;
         internal bool Finalizing;
         internal bool RemoteQueued;
+        internal string? RemotePickupJobId;
         internal bool LocalOnly;
         internal RemoteDownloadArtifact? RemoteArtifact;
     }
