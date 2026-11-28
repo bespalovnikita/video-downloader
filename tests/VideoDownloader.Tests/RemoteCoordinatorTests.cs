@@ -164,13 +164,16 @@ internal static class RemoteCoordinatorTests
         options.ServerOnlyRows=new HashSet<DownloadItem>{waiting};
         var remote=new FixtureClient(data,root,failed,Row("unused-collection"),Row("unused-invalid"),failFirstRecovery:true);
         await using var engine=new DownloadCoordinator("must-not-start.exe",data,options,_=>{},_=>{},null,remote);
-        Require(engine.Add(failed) && engine.Add(waiting),"The original remote attempts must be admitted.");
+        Require(engine.Add(failed),"The original remote attempt must be admitted.");
         remote.Release(failed);
         var run=engine.RunAsync();
         try
         {
-            await UntilAsync(()=>failed.Status=="Failed" && failed.AttemptFinished && remote.Starts(waiting)==1,
-                "The only regular worker must be occupied after receiving fails.");
+            await UntilAsync(()=>failed.Status=="Failed" && failed.AttemptFinished,
+                "The original pickup must fail before the next job starts.");
+            Require(engine.Add(waiting),"The active session must admit the waiting job.");
+            await UntilAsync(()=>remote.Starts(waiting)==1,
+                "The only regular worker must be occupied before recovery starts.");
             Require(!engine.TryStartRemotePickup(failed,new string('b',32),connection),"A different server result must not be claimed.");
             Require(engine.TryStartRemotePickup(failed,FixtureClient.RecoveryId,connection),
                 "Manual pickup must bypass the occupied remote worker.");
