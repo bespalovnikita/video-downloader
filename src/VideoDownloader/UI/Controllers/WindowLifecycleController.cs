@@ -75,10 +75,12 @@ internal sealed class WindowLifecycleController : IDisposable
         }
         catch(InvalidOperationException){}
     }
-    internal void NotifyWarning(string title,string message)
+    internal void NotifyWarning(string title,string message)=>Notify(title,message,Forms.ToolTipIcon.Warning);
+    internal void NotifyInformation(string title,string message)=>Notify(title,message,Forms.ToolTipIcon.Info);
+    private void Notify(string title,string message,Forms.ToolTipIcon icon)
     {
         if(_disposed)return;
-        try {_tray.ShowBalloonTip(4000,title,message,Forms.ToolTipIcon.Warning);}
+        try {_tray.ShowBalloonTip(4000,title,message,icon);}
         catch(Exception error) when(error is InvalidOperationException or System.ComponentModel.Win32Exception){}
     }
     private void OnTrayDoubleClick(object? sender,EventArgs args)=>Restore();

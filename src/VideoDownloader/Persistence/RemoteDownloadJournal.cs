@@ -22,10 +22,68 @@ internal sealed class RemoteDownloadJournal
         _log = log;
     }
 
+    internal string PartialPath(string jobId)
+    {
+        if (!IsJobId(jobId)) throw new InvalidDataException("Invalid remote assignment ID.");
+        string dir = Path.Combine(_directory, "transfers");
+        string path = Path.Combine(dir, jobId + ".part");
+        OwnedFiles.NoReparseAncestors(path);
+        Directory.CreateDirectory(dir);
+        return path;
+    }
+
+    internal void RemovePartial(string jobId)
+    {
+        string path = PartialPath(jobId);
+        OwnedFiles.RegularOrAbsent(path);
+        OwnedFiles.RegularOrAbsent(path + ".etag");
+        File.Delete(path);
+        File.Delete(path + ".etag");
+    }
+
+    internal string PickupReceiptPath(string jobId)
+    {
+        string path = Path.ChangeExtension(PartialPath(jobId), ".receipt");
+        OwnedFiles.RegularOrAbsent(path);
+        return path;
+    }
+
+    internal IEnumerable<string> PendingPickupReceipts()
+    {
+        string transfers = Path.Combine(_directory, "transfers");
+        OwnedFiles.NoReparseAncestors(Path.Combine(transfers, "check"));
+        if (!Directory.Exists(transfers)) yield break;
+        foreach (string path in Directory.EnumerateFiles(transfers, "*.receipt"))
+        {
+            string id = Path.GetFileNameWithoutExtension(path);
+            if (!IsJobId(id)) continue;
+            OwnedFiles.RegularOrAbsent(path);
+            yield return id;
+        }
+    }
+
     internal RemoteDownloadAssignment[] Load()
     {
         OwnedFiles.NoReparseAncestors(Path.Combine(_directory, "check"));
         if (!Directory.Exists(_directory)) return [];
+        string transfers = Path.Combine(_directory, "transfers");
+        OwnedFiles.NoReparseAncestors(Path.Combine(transfers, "check"));
+        if (Directory.Exists(transfers))
+        {
+            var cutoff = DateTime.UtcNow.AddDays(-2);
+            foreach (string path in Directory.EnumerateFiles(transfers, "*.part*"))
+            {
+                string name = Path.GetFileName(path);
+                if (name.Length <= 32 || !IsJobId(name[..32]) || name[32..] is not (".part" or ".part.etag"))
+                    continue;
+                try
+                {
+                    OwnedFiles.RegularOrAbsent(path);
+                    if (File.GetLastWriteTimeUtc(path) < cutoff) File.Delete(path);
+                }
+                catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
+            }
+        }
         foreach (string path in Directory.EnumerateFiles(_directory, "*.json"))
         {
             string key = Path.GetFileNameWithoutExtension(path);

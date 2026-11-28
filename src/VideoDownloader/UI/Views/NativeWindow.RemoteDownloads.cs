@@ -16,6 +16,50 @@ public sealed partial class NativeWindow
     private CancellationTokenSource? _serverReconnectProbe;
     private DateTime _serverReconnectAfter;
 
+    private DateTime _nextServerNoticePoll=DateTime.UtcNow.AddMinutes(1);
+    private bool _serverNoticePollRunning;
+    private string? _serverNoticeConnection;
+    private readonly HashSet<string> _notifiedExpiringJobs=new(StringComparer.Ordinal);
+    private string? _lastServerWaitReason;
+
+    private async void PollServerNotices()
+    {
+        if(_closing || _disposed || _appUpdateHandoff || _serverNoticePollRunning ||
+            DateTime.UtcNow<_nextServerNoticePoll || _savedRemoteDownloadSettings.Connection is not {} connection)return;
+        _nextServerNoticePoll=DateTime.UtcNow.AddMinutes(1);
+        _serverNoticePollRunning=true;
+        try
+        {
+            var notices=await RemoteDownloadClient.ReadNoticesAsync(connection,CancellationToken.None);
+            if(_closing || _disposed || _savedRemoteDownloadSettings.Connection!=connection)return;
+            string key=RemoteDownloadJournal.ConnectionKey(connection);
+            if(_serverNoticeConnection!=key)
+            {
+                _serverNoticeConnection=key;
+                _notifiedExpiringJobs.Clear();
+                _lastServerWaitReason=null;
+            }
+            _notifiedExpiringJobs.IntersectWith(notices.Expiring);
+            int expiring=notices.Expiring.Distinct().Count(_notifiedExpiringJobs.Add);
+            string? waitReason=notices.WaitingReason is "quota" or "disk" ? notices.WaitingReason : null;
+            bool changed=waitReason is not null && waitReason!=_lastServerWaitReason;
+            _lastServerWaitReason=waitReason;
+            if(expiring>0 || changed)
+            {
+                string expiry=expiring>0 ? ErrorMessages.Text(
+                    $"Срок хранения неполученных файлов истекает в течение часа: {expiring}.",
+                    $"Unclaimed files expiring within an hour: {expiring}.") : "";
+                string space=changed ? RemoteQueueStatus.Waiting(waitReason) : "";
+                _lifecycle.NotifyWarning("Video Downloader",string.Join(" ",new[]{expiry,space}.Where(text=>text.Length>0)));
+            }
+            using var client=new RemoteDownloadClient(connection,_storage,Log);
+            using var deadline=new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            await Task.Run(()=>client.ReplayPickupReceiptsAsync(deadline.Token),deadline.Token);
+        }
+        catch(Exception error) when(RemoteDownloadClient.IsRemoteFailure(error) || error is UnauthorizedAccessException) { }
+        finally { _serverNoticePollRunning=false; }
+    }
+
     private void RememberServerDownloadsToReconnect()
     {
         if(_savedRemoteDownloadSettings.Connection is not {} connection)return;
@@ -29,7 +73,7 @@ public sealed partial class NativeWindow
         row.ServerDownloadRequested && row.CanResume && row.Status is ("Queued" or "Interrupted");
 
     private bool CanReconnectServerDownloads()=>
-        !_startingSession && !_closing && !_disposed && !_restoringSession && !_checkpointReadOnly &&
+        !_startingSession && !_remoteQueueManagerOpen && !_closing && !_disposed && !_restoringSession && !_checkpointReadOnly &&
         !_dependencyOperationRunning && !_queueItemActionBusy && !_appUpdateHandoff && _speedDebugWindow is null &&
         !_profileBackupBusy && !_profileBackupRecoveryRequired && !_profileBackupReplaying &&
         _remoteDownloadSettingsWrite is null && SessionState.Coordinator?.IsRunning!=true;

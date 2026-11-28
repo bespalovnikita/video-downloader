@@ -362,6 +362,35 @@ class ServerIntegrationTests(unittest.TestCase):
         self.assertIsNone(client.request("GET", queue).json()["next"])
 
     @unittest.skipUnless(HAS_MEDIA_TOOLS, "requires yt-dlp, ffmpeg and ffprobe on PATH")
+    def test_remote_priority_notices_and_received_filter(self):
+        source = self.make_video_source()
+        _, client = self.start_service(VD_SERVER_MAX_CONCURRENT="1")
+        queue = "/api/remote/jobs"
+        first, second, priority = (f"{queue}/{index:032x}" for index in range(1, 4))
+        for path, name in ((first, "slow-first.mp4"), (second, "second.mp4"), (priority, "priority.mp4")):
+            self.assertEqual(client.request("PUT", path, body=self.remote_body(source.url(name))).status, 200)
+        self.wait_for_remote(client, first, "downloading")
+        self.assertEqual(client.request("GET", second).json()["waitingReason"], "slots")
+        self.assertEqual(client.request("POST", priority + "/priority", authenticated=False).status, 401)
+        self.assertEqual(client.request("POST", first + "/priority").status, 409)
+        self.assertEqual(client.request("POST", priority + "/priority").status, 204)
+        page = client.request("GET", queue).json()["jobs"]
+        self.assertTrue(next(job for job in page if job["id"] == priority.rsplit("/", 1)[1])["prioritized"])
+        self.assertEqual(client.request("GET", queue + "?received=1").json()["jobs"], [])
+        source.release_transfer.set()
+        self.wait_for_remote(client, first, "completed")
+        first_id = first.rsplit("/", 1)[1]
+        with sqlite3.connect(self.directory / "data" / "queue.sqlite3") as db:
+            db.execute("UPDATE remote_jobs SET expires_at = ? WHERE id = ?", (time.time() + 1800, first_id))
+        self.assertEqual(client.request("GET", "/api/remote/notices").json()["expiring"], [first_id])
+        self.assertEqual(client.request("POST", first + "/received").status, 204)
+        self.wait_for_remote(client, priority, "completed")
+        self.assertEqual(client.request("GET", second).json()["state"], "queued")
+        received, = client.request("GET", queue + "?received=1").json()["jobs"]
+        self.assertEqual(received["id"], first_id)
+        self.assertEqual(client.request("GET", "/api/remote/notices").json()["expiring"], [])
+
+    @unittest.skipUnless(HAS_MEDIA_TOOLS, "requires yt-dlp, ffmpeg and ffprobe on PATH")
     def test_remote_file_manager_removes_only_the_selected_result(self):
         source = self.make_video_source()
         _, client = self.start_service(VD_SERVER_MAX_CONCURRENT="1")

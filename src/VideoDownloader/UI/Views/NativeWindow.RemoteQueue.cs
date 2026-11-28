@@ -7,6 +7,8 @@ namespace VideoDownloader.Native;
 
 public sealed partial class NativeWindow
 {
+    private bool _remoteQueueManagerOpen;
+
     private void OpenRemoteQueueManager()
     {
         if (_disposed || _closing || _appUpdateHandoff || RejectProfileBackupMutation()) return;
@@ -33,11 +35,16 @@ public sealed partial class NativeWindow
         var first = new Button { Content = ErrorMessages.Text("К началу", "First page"), IsEnabled = false };
         var next = new Button { Content = ErrorMessages.Text("Далее", "Next page"), IsEnabled = false };
         var remove = new Button { IsEnabled = false };
-        foreach (var button in new[] { refresh, first, next, remove })
+        var prioritize = new Button { Content = ErrorMessages.Text("Поднять в очереди", "Move to front") };
+        var pickup = new Button { Content = ErrorMessages.Text("Забрать сейчас", "Get now") };
+        var receivedOnly = new CheckBox { Content = ErrorMessages.Text("Уже получено на ПК", "Already received on Windows"),
+            Margin = new Thickness(6, 0, 0, 4), VerticalAlignment = VerticalAlignment.Center };
+        foreach (var button in new[] { refresh, first, next, prioritize, pickup, remove })
         {
             button.Margin = new Thickness(0, 0, 6, 4);
             toolbar.Children.Add(button);
         }
+        toolbar.Children.Add(receivedOnly);
         DockPanel.SetDock(toolbar, Dock.Top);
         panel.Children.Add(toolbar);
         var status = new TextBlock { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 10, 0, 0) };
@@ -46,7 +53,7 @@ public sealed partial class NativeWindow
         var grid = new DataGrid
         {
             AutoGenerateColumns = false, IsReadOnly = true, CanUserAddRows = false, CanUserSortColumns = false,
-            SelectionMode = DataGridSelectionMode.Single, SelectionUnit = DataGridSelectionUnit.FullRow
+            SelectionMode = DataGridSelectionMode.Extended, SelectionUnit = DataGridSelectionUnit.FullRow
         };
         AutomationProperties.SetName(grid, dialog.Title);
         AddColumn("Файл или источник", "File or source", nameof(RemoteQueueRow.Name), new DataGridLength(1, DataGridLengthUnitType.Star));
@@ -61,6 +68,7 @@ public sealed partial class NativeWindow
         string? current = null;
         string? following = null;
         bool busy = false;
+        DownloadItem? pickupQueueRow = null;
 
         void AddColumn(string russian, string english, string property, DataGridLength width)
         {
@@ -73,20 +81,25 @@ public sealed partial class NativeWindow
 
         void UpdateButtons()
         {
-            var selected = grid.SelectedItem as RemoteQueueRow;
-            remove.Content = selected?.HasFile == true
+            var rows = grid.SelectedItems.OfType<RemoteQueueRow>().ToArray();
+            var selected = rows.Length == 1 ? rows[0] : null;
+            bool files = rows.Length > 0 && rows.All(row => row.HasFile);
+            remove.Content = files && rows.Length > 1 ? ErrorMessages.Text("Удалить выбранные…", "Delete selected…") : files
                 ? ErrorMessages.Text("Удалить файл…", "Delete file…")
                 : ErrorMessages.Text("Отменить задание…", "Cancel job…");
-            remove.IsEnabled = !busy && selected is not null && selected.CanRemove;
-            remove.ToolTip = selected is { HasFile: true, CanRemove: false }
+            remove.IsEnabled = !busy && (files || selected is not null) && rows.All(row => row.CanRemove);
+            remove.ToolTip = rows.Any(row => row.HasFile && !row.CanRemove)
                 ? ErrorMessages.Text("Первый час хранения файл защищён от удаления.", "The file is protected during its first hour.") : null;
             ToolTipService.SetShowOnDisabled(remove, true);
+            prioritize.IsEnabled = !busy && selected?.Item.State == "queued";
+            pickup.IsEnabled = !busy && selected?.HasFile == true && SessionState.Coordinator?.IsRunning != true && !_startingSession;
+            receivedOnly.IsEnabled = !busy;
             refresh.IsEnabled = !busy;
             first.IsEnabled = !busy && current is not null;
             next.IsEnabled = !busy && following is not null;
         }
 
-        async Task LoadAsync(string? cursor, RemoteQueueItem? toRemove = null)
+        async Task LoadAsync(string? cursor, Func<Task<string>>? action = null)
         {
             if (busy || token.IsCancellationRequested) return;
             busy = true;
@@ -94,17 +107,13 @@ public sealed partial class NativeWindow
             status.Text = ErrorMessages.Text("Обращаемся к серверу…", "Contacting the server…");
             try
             {
-                bool changed = false;
-                if (toRemove is not null)
-                {
-                    try { await RemoteDownloadClient.RemoveQueueItemAsync(connection, toRemove, token); }
-                    catch (HttpRequestException error) when (error.StatusCode == HttpStatusCode.Conflict) { changed = true; }
-                }
-                var page = await RemoteDownloadClient.ListQueueAsync(connection, cursor, token);
+                string message = action is null ? "" : await action();
+                if (token.IsCancellationRequested) return;
+                var page = await RemoteDownloadClient.ListQueueAsync(connection, cursor, token, receivedOnly.IsChecked == true);
                 if (page.Jobs.Length == 0 && cursor is not null)
                 {
                     cursor = null;
-                    page = await RemoteDownloadClient.ListQueueAsync(connection, null, token);
+                    page = await RemoteDownloadClient.ListQueueAsync(connection, null, token, receivedOnly.IsChecked == true);
                 }
                 if (token.IsCancellationRequested) return;
                 string? selectedId = (grid.SelectedItem as RemoteQueueRow)?.Item.Id;
@@ -113,8 +122,8 @@ public sealed partial class NativeWindow
                 grid.SelectedItem = rows.FirstOrDefault(row => row.Item.Id == selectedId);
                 current = cursor;
                 following = page.Next;
-                status.Text = changed ? ErrorMessages.Text("Файл недоступен или ещё защищён от удаления.", "The file is unavailable or still protected from deletion.") :
-                    rows.Length == 0 ? ErrorMessages.Text("Серверная очередь пуста.", "The server queue is empty.") : "";
+                status.Text = message.Length > 0 ? message : rows.Length == 0
+                    ? ErrorMessages.Text("Нет подходящих заданий.", "No matching jobs.") : "";
                 if(page.UnclaimedBytes is >= 0 && page.UnclaimedLimitBytes is > 0)
                 {
                     if(status.Text.Length>0)status.Text+=Environment.NewLine;
@@ -128,9 +137,11 @@ public sealed partial class NativeWindow
                     status.Text += ErrorMessages.Text($"Свободно на VPS — {free}.", $"Free space on the VPS — {free}.");
                 }
             }
-            catch (Exception error) when (RemoteDownloadClient.IsRemoteFailure(error))
+            catch (Exception error) when (RemoteDownloadClient.IsRemoteFailure(error) ||
+                error is UnauthorizedAccessException or System.ComponentModel.Win32Exception or ArgumentException)
             {
-                if (!token.IsCancellationRequested) status.Text = RemoteDownloadClient.DescribeConnectionFailure(error);
+                if (!token.IsCancellationRequested) status.Text = error is HttpRequestException or TimeoutException
+                    ? RemoteDownloadClient.DescribeConnectionFailure(error) : ErrorMessages.ForException(error);
             }
             finally
             {
@@ -143,15 +154,98 @@ public sealed partial class NativeWindow
         refresh.Click += async (_, _) => await LoadAsync(current);
         first.Click += async (_, _) => await LoadAsync(null);
         next.Click += async (_, _) => await LoadAsync(following);
+        receivedOnly.Checked += async (_, _) => await LoadAsync(null);
+        receivedOnly.Unchecked += async (_, _) => await LoadAsync(null);
+        prioritize.Click += async (_, _) =>
+        {
+            if (grid.SelectedItems.Count != 1 || grid.SelectedItem is not RemoteQueueRow { Item.State: "queued" } row) return;
+            await LoadAsync(current, async () =>
+            {
+                await RemoteDownloadClient.RaiseQueuePriorityAsync(connection, row.Item, token);
+                return ErrorMessages.Text("Задание поднято в очереди.", "The job moved to the front of the queue.");
+            });
+        };
+        pickup.Click += async (_, _) =>
+        {
+            if (busy || grid.SelectedItems.Count != 1 || grid.SelectedItem is not RemoteQueueRow { HasFile: true } row ||
+                SessionState.Coordinator?.IsRunning == true || _startingSession) return;
+            await LoadAsync(current, async () =>
+            {
+                if (row.Item.State == "completed")
+                {
+                    var journal = new RemoteDownloadJournal(_storage, connection, Log);
+                    await Task.Run(() => journal.Load(), token);
+                    token.ThrowIfCancellationRequested();
+                    var assignment = journal.FindById(row.Item.Id);
+                    if (assignment is { ReceivedLocally: false })
+                    {
+                        pickupQueueRow = SessionState.Queue.FirstOrDefault(item => item.Url == assignment.Request.Url &&
+                            item.CanResume && item.ResumeState is null && item.Status != "Completed");
+                        if (pickupQueueRow is not null)
+                        {
+                            dialog.Close();
+                            return "";
+                        }
+                    }
+                }
+                var options = ReadOptions();
+                options.PinOutputDirectory();
+                using var client = new RemoteDownloadClient(connection, _storage, Log);
+                string path = await Task.Run(() => client.PickupAsync(row.Item, options.OutputDirectory,
+                    progress => _ = Dispatcher.BeginInvoke(() =>
+                    {
+                        if (busy && !token.IsCancellationRequested)
+                            status.Text = ErrorMessages.Text($"Получение файла — {progress.Percent:0}%.", $"Receiving the file — {progress.Percent:0}%.");
+                    }), token), token);
+                _lifecycle.NotifyInformation("Video Downloader", ErrorMessages.Text(
+                    $"Сохранено на ПК: {Path.GetFileName(path)}", $"Saved on Windows: {Path.GetFileName(path)}"));
+                try
+                {
+                    using var acknowledgement = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+                    await Task.Run(() => client.ConfirmPickupAsync(row.Item.Id, path, row.Item.Size!.Value,
+                        acknowledgement.Token), acknowledgement.Token);
+                }
+                catch (Exception error) when (RemoteDownloadClient.IsRemoteFailure(error) || error is UnauthorizedAccessException)
+                {
+                    return ErrorMessages.Text($"Файл сохранён: {path}. Подтверждение серверу пока не отправлено.",
+                        $"File saved: {path}. The receipt has not reached the server yet.");
+                }
+                return ErrorMessages.Text($"Файл сохранён: {path}", $"File saved: {path}");
+            });
+        };
         remove.Click += async (_, _) =>
         {
-            if (busy || grid.SelectedItem is not RemoteQueueRow { CanRemove: true } row) return;
-            string question = row.HasFile
-                ? ErrorMessages.Text("Удалить готовую копию с сервера?", "Delete the completed copy from the server?")
-                : ErrorMessages.Text("Отменить скачивание на сервере?", "Cancel the download on the server?");
-            if (MessageBox.Show(dialog, $"{question}\n\n{row.Name}", dialog.Title,
-                MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No) == MessageBoxResult.Yes)
-                await LoadAsync(current, row.Item);
+            var rows = grid.SelectedItems.OfType<RemoteQueueRow>().ToArray();
+            if (busy || rows.Length == 0 || rows.Any(row => !row.CanRemove) ||
+                rows.Length > 1 && rows.Any(row => !row.HasFile)) return;
+            string question;
+            if (rows[0].HasFile)
+            {
+                string space = DisplayValueConverter.Bytes(rows.Sum(row => Math.Clamp(row.Item.Size ?? 0, 0, 15_000_000_000L)));
+                question = ErrorMessages.Text(
+                    $"Удалить выбранные копии с сервера ({rows.Length})? Освободится до {space}.",
+                    $"Delete the selected server copies ({rows.Length})? Up to {space} will be freed.");
+            }
+            else question = ErrorMessages.Text($"Отменить скачивание на сервере?\n\n{rows[0].Name}",
+                $"Cancel the download on the server?\n\n{rows[0].Name}");
+            if (MessageBox.Show(dialog, question, dialog.Title, MessageBoxButton.YesNo,
+                MessageBoxImage.Warning, MessageBoxResult.No) != MessageBoxResult.Yes) return;
+            await LoadAsync(current, async () =>
+            {
+                int removed = 0;
+                foreach (var row in rows)
+                {
+                    try
+                    {
+                        await RemoteDownloadClient.RemoveQueueItemAsync(connection, row.Item, token);
+                        removed++;
+                    }
+                    catch (HttpRequestException error) when (error.StatusCode == HttpStatusCode.Conflict) { }
+                }
+                return removed == rows.Length ? ErrorMessages.Text($"Обработано: {removed}.", $"Processed: {removed}.") :
+                    ErrorMessages.Text($"Обработано: {removed} из {rows.Length}. Остальные файлы недоступны или защищены.",
+                        $"Processed: {removed} of {rows.Length}. The other files are unavailable or protected.");
+            });
         };
         dialog.Loaded += async (_, _) =>
         {
@@ -160,7 +254,12 @@ public sealed partial class NativeWindow
         };
         dialog.Closed += (_, _) => lifetime.Cancel();
         UpdateButtons();
-        dialog.ShowDialog();
+        _remoteQueueManagerOpen = true;
+        try { dialog.ShowDialog(); }
+        finally { _remoteQueueManagerOpen = false; }
+        if (pickupQueueRow is not null && !_closing && !_disposed)
+            _ = StartWithConfirmationAsync([pickupQueueRow], new HashSet<DownloadItem> { pickupQueueRow },
+                serverOnly: true, reconnect: connection);
     }
 
     private sealed class RemoteQueueRow(RemoteQueueItem item)
@@ -180,7 +279,8 @@ public sealed partial class NativeWindow
             "downloading" when Item.Progress == 100 => ErrorMessages.Text("Ожидание места", "Waiting for space"),
             "downloading" => ErrorMessages.Text("Скачивается", "Downloading") +
                 (Item.Progress is >= 0 and <= 100 ? $" {Item.Progress.Value:0}%" : ""),
-            _ => ErrorMessages.Text("В очереди", "Queued")
+            _ => RemoteQueueStatus.Waiting(Item.WaitingReason) +
+                (Item.Prioritized ? ErrorMessages.Text(" · Приоритет", " · Priority") : "")
         };
     }
 }
