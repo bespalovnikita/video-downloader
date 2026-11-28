@@ -124,6 +124,33 @@ internal sealed class RemoteDownloadClient : IRemoteDownloadClient
         }
     }
 
+    internal static async Task<RemoteQueuePage> ListQueueAsync(RemoteDownloadConnection connection, string? after,
+        CancellationToken token)
+    {
+        using var client = CreateHttpClient(connection, null);
+        using var deadline = Deadline(token, RequestTimeout);
+        string path = after is null ? "api/remote/jobs" : "api/remote/jobs?after=" + Uri.EscapeDataString(after);
+        using var request = new HttpRequestMessage(HttpMethod.Get, path);
+        var page = await ReadJsonAsync<RemoteQueuePage>(client, request, deadline.Token,
+            maxResponseBytes: 128 * 1024).ConfigureAwait(false);
+        if (page?.Jobs is not { Length: <= 25 } || page.Jobs.Any(job => job is null || !IsQueueId(job.Id) ||
+            job.State is not ("queued" or "downloading" or "completed")) ||
+            page.Next is not null && !IsQueueId(page.Next))
+            throw new InvalidDataException("Некорректный список серверной очереди.");
+        return page;
+    }
+
+    private static bool IsQueueId(string? id) =>
+        id is { Length: 32 } && id.All(c => c is >= '0' and <= '9' or >= 'a' and <= 'f');
+
+    internal static async Task RemoveQueueItemAsync(RemoteDownloadConnection connection, RemoteQueueItem item,
+        CancellationToken token)
+    {
+        using var client = CreateHttpClient(connection, null);
+        string path = "api/remote/jobs/" + item.Id + (item.State == "completed" ? "/file" : "");
+        await SendEmptyAsync(client, HttpMethod.Delete, path, token).ConfigureAwait(false);
+    }
+
     public async Task PrepareAsync(CancellationToken token)
     {
         var received = await Task.Run(_journal.Load, token).ConfigureAwait(false);
@@ -279,31 +306,35 @@ internal sealed class RemoteDownloadClient : IRemoteDownloadClient
         { throw new TimeoutException("Сервер очереди не ответил вовремя."); }
     }
 
-    private static async Task<T?> ReadJsonAsync<T>(HttpClient client, HttpRequestMessage request, CancellationToken token)
+    private static async Task<T?> ReadJsonAsync<T>(HttpClient client, HttpRequestMessage request, CancellationToken token,
+        int maxResponseBytes = MaxResponseBytes)
     {
         using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token).ConfigureAwait(false);
         RequireSuccess(response);
-        if (response.Content.Headers.ContentLength > MaxResponseBytes)
+        if (response.Content.Headers.ContentLength > maxResponseBytes)
             throw new InvalidDataException("Ответ сервера превышает допустимый размер.");
         using var stream = await response.Content.ReadAsStreamAsync(token).ConfigureAwait(false);
         using var bytes = new MemoryStream();
         byte[] buffer = new byte[4096];
         for (int count; (count = await stream.ReadAsync(buffer, token).ConfigureAwait(false)) > 0;)
         {
-            if (bytes.Length + count > MaxResponseBytes)
+            if (bytes.Length + count > maxResponseBytes)
                 throw new InvalidDataException("Ответ сервера превышает допустимый размер.");
             bytes.Write(buffer, 0, count);
         }
         return JsonSerializer.Deserialize<T>(bytes.GetBuffer().AsSpan(0, (int)bytes.Length), WireJson);
     }
 
-    private async Task SendEmptyAsync(HttpMethod method, string path, CancellationToken token)
+    private Task SendEmptyAsync(HttpMethod method, string path, CancellationToken token) =>
+        SendEmptyAsync(_http, method, path, token);
+
+    private static async Task SendEmptyAsync(HttpClient client, HttpMethod method, string path, CancellationToken token)
     {
         using var deadline = Deadline(token, RequestTimeout);
         using var request = new HttpRequestMessage(method, path);
         try
         {
-            using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, deadline.Token).ConfigureAwait(false);
+            using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, deadline.Token).ConfigureAwait(false);
             RequireSuccess(response);
             if (response.StatusCode != HttpStatusCode.NoContent)
                 throw new InvalidDataException("Сервер не подтвердил операцию.");
@@ -522,3 +553,6 @@ internal sealed class RemoteDownloadClient : IRemoteDownloadClient
     private sealed record RemoteJobStatus(string State, int? Progress, string? Filename, long? Size, string? Error, string? Title,
         bool Unsupported, bool Expired);
 }
+
+internal sealed record RemoteQueuePage(RemoteQueueItem[] Jobs, string? Next, long? FreeDiskBytes);
+internal sealed record RemoteQueueItem(string Id, string State, string? Name, string? Source, long? Size, double? Progress, double? ExpiresAt);

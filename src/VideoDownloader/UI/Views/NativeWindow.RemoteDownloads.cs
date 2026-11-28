@@ -40,6 +40,7 @@ public sealed partial class NativeWindow
         };
         F<Button>("SaveRemoteDownloadSettingsButton").Click+=async(_,_)=>await SaveRemoteDownloadSettingsFromControlsAsync();
         F<Button>("CheckRemoteDownloadConnectionButton").Click+=async(_,_)=>await CheckRemoteDownloadConnectionFromControlsAsync();
+        F<Button>("OpenRemoteQueueButton").Click+=(_,_)=>OpenRemoteQueueManager();
         void ClearConnectionStatus()=>T("RemoteDownloadSettingsStatus").Text="";
         B("RemoteDownloadAddressBox").TextChanged+=(_,_)=>ClearConnectionStatus();
         B("RemoteDownloadUsernameBox").TextChanged+=(_,_)=>ClearConnectionStatus();

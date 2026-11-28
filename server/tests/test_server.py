@@ -337,6 +337,56 @@ class ServerIntegrationTests(unittest.TestCase):
         self.assertEqual(reopened.request("GET", path).json()["state"], "queued")
         self.assertEqual(reopened.request("GET", second).json()["state"], "cancelled")
 
+    def test_remote_file_manager_lists_pages_and_protects_mutations(self):
+        _, client = self.start_service(VD_SERVER_FREE_RESERVE_MIB="1000000000")
+        queue = "/api/remote/jobs"
+        self.assertEqual(client.request("GET", queue, authenticated=False).status, 401)
+        self.assertEqual(client.request("GET", queue + "?after=invalid").status, 400)
+        body = self.remote_body("https://example.invalid/video.mp4?token=private")
+        ids = [f"{index:032x}" for index in range(1, 27)]
+        for job_id in ids:
+            self.assertEqual(client.request("PUT", f"{queue}/{job_id}", body=body).status, 200)
+
+        page = client.request("GET", queue).json()
+        self.assertEqual([job["id"] for job in page["jobs"]], ids[:25])
+        self.assertEqual(page["jobs"][0]["source"], "example.invalid")
+        self.assertNotIn("private", json.dumps(page))
+        self.assertGreaterEqual(page["freeDiskBytes"], 0)
+        last_page = client.request("GET", f"{queue}?after={page['next']}").json()
+        self.assertEqual([job["id"] for job in last_page["jobs"]], ids[25:])
+        self.assertIsNone(last_page["next"])
+        last = f"{queue}/{ids[-1]}"
+        self.assertEqual(client.request("DELETE", last + "/file").status, 409)
+        self.assertEqual(client.request("DELETE", last).status, 204)
+        self.assertEqual(client.request("GET", last).json()["state"], "cancelled")
+        self.assertIsNone(client.request("GET", queue).json()["next"])
+
+    @unittest.skipUnless(HAS_MEDIA_TOOLS, "requires yt-dlp, ffmpeg and ffprobe on PATH")
+    def test_remote_file_manager_removes_only_the_selected_result(self):
+        source = self.make_video_source()
+        _, client = self.start_service(VD_SERVER_MAX_CONCURRENT="1")
+        queue = "/api/remote/jobs"
+        job_id = "a" * 32
+        path = f"{queue}/{job_id}"
+        body = self.remote_body(source.url("manager.mp4"))
+        self.assertEqual(client.request("PUT", path, body=body).status, 200)
+        self.wait_for_remote(client, path, "completed")
+        result = self.directory / "data" / "files" / job_id
+        job, = client.request("GET", queue).json()["jobs"]
+        self.assertEqual(job["state"], "completed")
+        self.assertEqual(job["size"], result.stat().st_size)
+        self.assertGreater(job["expiresAt"], time.time())
+        self.assertEqual(client.request("DELETE", path + "/file", headers={"X-Video-Downloader": "0"}).status, 403)
+        self.assertEqual(client.request("DELETE", path).status, 204)  # Cancelling a stale active row cannot delete a file.
+        self.assertTrue(result.is_file())
+        for _ in range(2):
+            self.assertEqual(client.request("DELETE", path + "/file").status, 204)
+        self.assertFalse(result.exists())
+        self.assertEqual(client.request("GET", queue).json()["jobs"], [])
+        self.assertEqual(client.request("GET", path + "/file").status, 404)
+        self.assertEqual(client.request("POST", path + "/received").status, 204)
+        self.assertEqual(client.request("PUT", path, body=body).json()["state"], "failed")
+
     @unittest.skipUnless(HAS_MEDIA_TOOLS, "requires yt-dlp, ffmpeg and ffprobe on PATH")
     def test_four_delegated_transfers_and_receipt_backpressure(self):
         source = self.make_video_source()

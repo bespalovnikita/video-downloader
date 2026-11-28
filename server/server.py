@@ -198,6 +198,13 @@ class DownloadHandler(BaseHTTPRequestHandler):
         if path == "/api/remote/capabilities" and method in {"GET", "HEAD"}:
             self.send_json(HTTPStatus.OK, store.remote_capabilities())
             return
+        if path == "/api/remote/jobs" and method in {"GET", "HEAD"}:
+            _, _, query = self.path.partition("?")
+            cursor = re.fullmatch(r"after=([0-9a-f]{32})", query)
+            if query and cursor is None:
+                raise RequestError(HTTPStatus.BAD_REQUEST, "Неверная страница серверной очереди.")
+            self.send_json(HTTPStatus.OK, store.list_remote(cursor[1] if cursor else ""))
+            return
         remote = REMOTE_JOB_PATH.fullmatch(path)
         if remote is not None:
             self.dispatch_remote_job(method, remote[1], remote[2])
@@ -244,6 +251,15 @@ class DownloadHandler(BaseHTTPRequestHandler):
             if job is None:
                 raise RequestError(HTTPStatus.CONFLICT, "Этот идентификатор уже принадлежит другому заданию.")
             self.send_json(HTTPStatus.OK, job)
+            return
+        if method == "DELETE" and suffix == "/file":
+            try:
+                if not store.remove_remote_result(job_id):
+                    raise RequestError(HTTPStatus.CONFLICT, "Готовый файл больше недоступен.")
+            except OSError:
+                logging.exception("Could not remove remote result for job %s", job_id)
+                raise RequestError(HTTPStatus.INTERNAL_SERVER_ERROR, "Не удалось удалить файл.") from None
+            self.send_empty(HTTPStatus.NO_CONTENT)
             return
         if method == "DELETE" and suffix is None:
             store.cancel_remote(job_id)
