@@ -97,7 +97,7 @@ internal sealed partial class UiScenario
                     Require(queue.ContextMenu.Items.OfType<MenuItem>().Any(item=>Equals(item.Header,
                         ErrorMessages.Text("Качнуть через сервер","Download through server"))),
                         "Windows must offer the explicit server command in the queue context menu.");
-                    const string page="{\"jobs\":[{\"id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"state\":\"received\",\"name\":\"fixture.mp4\",\"size\":1024,\"expiresAt\":2140000000,\"deleteAfter\":2140000000}],\"freeDiskBytes\":90000,\"unclaimedBytes\":0,\"unclaimedLimitBytes\":15000000000}";
+                    const string page="{\"jobs\":[{\"id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"state\":\"completed\",\"name\":\"fixture.mp4\",\"size\":1024,\"expiresAt\":2140000000,\"deleteAfter\":2140000000}],\"freeDiskBytes\":90000,\"unclaimedBytes\":0,\"unclaimedLimitBytes\":15000000000}";
                     var queueResponse=ReplyToCapabilityProbeAsync(server,username,password,deadline.Token,page,"/bridge/api/remote/jobs");
                     bool foundFile=false;
                     var openUntil=DateTime.UtcNow.AddSeconds(5);
@@ -126,12 +126,20 @@ internal sealed partial class UiScenario
                             }
                         }
                     };
+                    var runningOptions=new DownloadOptions{Output=Path.Combine(directory,"active-output")};
+                    var active=new DownloadCoordinator("unused-yt-dlp.exe",persistence,runningOptions,_=>{},_=>{});
+                    controller.SessionState.Begin(active,runningOptions,[]);
                     managerTimer.Start();
                     try{Click(Control<Button>(initial,"OpenRemoteQueueButton"));}
-                    finally{managerTimer.Stop();}
+                    finally
+                    {
+                        managerTimer.Stop();
+                        controller.SessionState.End(active);
+                        active.DisposeAsync().AsTask().GetAwaiter().GetResult();
+                    }
                     queueResponse.GetAwaiter().GetResult();
                     Require(foundFile && controller.SessionState.Queue.Count==0,
-                        "The actual WPF manager must show retained remote files without touching the Windows queue.");
+                        "The WPF manager must allow picking up a retained file while a Windows session is active.");
                     Click(save);
                     WaitForButton(save);
                     Require(secret.Password.Length==0 && File.Exists(settingsFile),"Saving the connection must clear the editable password field.");

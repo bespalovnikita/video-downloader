@@ -28,6 +28,7 @@ internal static class RemoteDownloadClientTests
             await CheckAvailabilityAsync(new AppPersistence(Path.Combine(root, "old-server")), deadline.Token);
             await TransferAndReplayReceiptAsync(new AppPersistence(Path.Combine(root, "transfer")), deadline.Token);
             await RefuseChangedTransferAsync(new AppPersistence(Path.Combine(root, "invalid-range")), deadline.Token);
+            await AcceptFullRetryForSameEntityAsync(new AppPersistence(Path.Combine(root, "ignored-range")), deadline.Token);
             await ReuseLostSubmissionAsync(new AppPersistence(Path.Combine(root, "restart")), deadline.Token);
             await ReconnectAfterExitAsync(new AppPersistence(Path.Combine(root, "exit")), deadline.Token);
             await RetryExpiredAssignmentAsync(new AppPersistence(Path.Combine(root, "expiry-on-reopen")),
@@ -230,6 +231,28 @@ internal static class RemoteDownloadClientTests
         Require(transfers == 2 && client.OwnsAssignment(row) && !File.Exists(Path.Combine(stage, "fixture.mp4")) &&
             !ReadAssignment(persistence).GetProperty("ReceivedLocally").GetBoolean(),
             "A changed result must stay unpublished and unacknowledged.");
+    }
+
+    private static async Task AcceptFullRetryForSameEntityAsync(AppPersistence persistence, CancellationToken token)
+    {
+        int transfers=0;
+        using var client=Client(persistence,(request,_) =>
+        {
+            string path=PathOf(request);
+            if(path==Capabilities)return Task.FromResult(Json(new { version=1,maxConcurrent=1 }));
+            if(request.Method==HttpMethod.Put)return Task.FromResult(Completed());
+            Require(request.Method==HttpMethod.Get && path.EndsWith("/file",StringComparison.Ordinal),
+                "The retry must keep using the original ready result.");
+            if(++transfers==1)return Task.FromResult(FileResponse(Media[..37],HttpStatusCode.OK,Media.Length));
+            Require(request.Headers.Range?.ToString()==$"bytes=37-{Media.Length-1}" &&
+                request.Headers.IfRange?.EntityTag?.Tag==Tag,"A retry must try to request the missing bytes.");
+            return Task.FromResult(FileResponse(Media,HttpStatusCode.OK,Media.Length));
+        });
+        await client.PrepareAsync(token);
+        var result=await client.DownloadAsync(new DownloadItem{Url=Source},new DownloadOptions(),MakeStage(persistence),
+            Resume,_=>{},token);
+        Require(transfers==2 && File.ReadAllBytes(result.MediaPath).SequenceEqual(Media),
+            "An unchanged full response to a resume request must replace the partial, without appending a duplicate prefix.");
     }
 
     private static async Task ReuseLostSubmissionAsync(AppPersistence persistence, CancellationToken token)

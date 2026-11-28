@@ -40,6 +40,7 @@ internal static class RemoteCoordinatorTests
         {
             await SharesQueueAsync(root);
             await KeepsExplicitJobOnServerAsync(root);
+            await PicksUpFailedJobWhileRemoteWorkerWaitsAsync(root);
         }
         finally
         {
@@ -153,8 +154,46 @@ internal static class RemoteCoordinatorTests
             "A rejected explicit server job must report the rejection and never start a local worker.");
     }
 
-    private sealed class FixtureClient(AppPersistence data,string root,DownloadItem recovered,DownloadItem collection,DownloadItem invalid)
-        :IRemoteDownloadClient
+    private static async Task PicksUpFailedJobWhileRemoteWorkerWaitsAsync(string root)
+    {
+        var connection=new RemoteDownloadConnection(new Uri("https://example.invalid/"),"test","test");
+        var data=new AppPersistence(Path.Combine(root,"pickup-profile"));
+        var options=new DownloadOptions{Output=Path.Combine(root,"output"),Threads="1",RemoteConnection=connection};
+        var failed=Row("vps-pickup-failed");
+        var waiting=Row("vps-pickup-waiting");
+        options.ServerOnlyRows=new HashSet<DownloadItem>{waiting};
+        var remote=new FixtureClient(data,root,failed,Row("unused-collection"),Row("unused-invalid"),failFirstRecovery:true);
+        await using var engine=new DownloadCoordinator("must-not-start.exe",data,options,_=>{},_=>{},null,remote);
+        Require(engine.Add(failed),"The original remote attempt must be admitted.");
+        remote.Release(failed);
+        var run=engine.RunAsync();
+        try
+        {
+            await UntilAsync(()=>failed.Status=="Failed" && failed.AttemptFinished,
+                "The original pickup must fail before the next job starts.");
+            Require(engine.Add(waiting),"The active session must admit the waiting job.");
+            await UntilAsync(()=>remote.Starts(waiting)==1,
+                "The only regular worker must be occupied before recovery starts.");
+            Require(!engine.TryStartRemotePickup(failed,new string('b',32),connection),"A different server result must not be claimed.");
+            Require(engine.TryStartRemotePickup(failed,FixtureClient.RecoveryId,connection),
+                "Manual pickup must bypass the occupied remote worker.");
+            Require(!engine.TryStartRemotePickup(failed,FixtureClient.RecoveryId,connection),
+                "Another pickup must not race the claimed transfer.");
+            await UntilAsync(()=>failed.AttemptFinished && remote.Acknowledgements(failed)==1,
+                "The existing result must be verified, published and acknowledged before the waiting worker is released.");
+            Require(failed.Status=="Completed" && failed.RawError.Length==0 && File.Exists(failed.Path) &&
+                remote.Starts(failed)==2 && waiting.Status=="Running","Recovery must complete the original row while the queue remains active.");
+        }
+        finally
+        {
+            engine.Stop();
+            remote.Release(waiting);
+            await run.WaitAsync(TimeSpan.FromSeconds(20));
+        }
+    }
+
+    private sealed class FixtureClient(AppPersistence data,string root,DownloadItem recovered,DownloadItem collection,DownloadItem invalid,
+        bool failFirstRecovery=false) :IRemoteDownloadClient
     {
         private readonly ConcurrentDictionary<DownloadItem,TaskCompletionSource> _gates=new();
         private readonly ConcurrentDictionary<DownloadItem,int> _starts=new();
@@ -164,6 +203,8 @@ internal static class RemoteCoordinatorTests
         private volatile bool _prepared;
         private int _active,_peak;
 
+        internal const string RecoveryId="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        public int MaxConcurrent=>failFirstRecovery?1:4;
         internal int Active=>Volatile.Read(ref _active);
         internal int Peak=>Volatile.Read(ref _peak);
         public bool IsAvailable=>_prepared;
@@ -178,6 +219,7 @@ internal static class RemoteCoordinatorTests
         public bool Supports(DownloadItem row,DownloadOptions options)=>
             row.Url.StartsWith(Prefix+"vps-",StringComparison.Ordinal) && RemoteDownloadRequest.For(row,options) is not null;
         public bool OwnsAssignment(DownloadItem row)=>_prepared && ReferenceEquals(row,recovered);
+        public bool OwnsAssignment(DownloadItem row,string jobId)=>OwnsAssignment(row) && jobId==RecoveryId;
         internal void Release(DownloadItem row)=>Gate(row).TrySetResult();
         private TaskCompletionSource Gate(DownloadItem row)=>_gates.GetOrAdd(row,_=>new(TaskCreationOptions.RunContinuationsAsynchronously));
 
@@ -192,6 +234,12 @@ internal static class RemoteCoordinatorTests
                 progress(new(RemoteDownloadStage.Downloading,25,0,0));
                 await Gate(row).Task.WaitAsync(token);
                 await waitForResume(token);
+                if(failFirstRecovery && ReferenceEquals(row,recovered))
+                {
+                    if(Starts(row)==1)throw new IOException("Transfer was interrupted.");
+                    Require(options.ReconnectServerOnly && options.RemotePickupJobId==RecoveryId,
+                        "Manual recovery must use the exact result and never submit another source download.");
+                }
                 if(ReferenceEquals(row,collection))throw new RemoteDownloadUnsupportedException();
                 string path=Path.Combine(stage,Name(row)+".wav");
                 if(ReferenceEquals(row,invalid))File.WriteAllText(path,"RECEIVED INVALID MEDIA");

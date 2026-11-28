@@ -185,6 +185,15 @@ internal sealed class QueueSessionController
         _urls.Add(row.Url);_finalStates.Remove(row.Url);row.DeferredToNextStart=false;row.RequeueRequested=false;
         return true;
     }
+    internal bool TryStartRemotePickup(DownloadItem row,string jobId,RemoteDownloadConnection connection)
+    {
+        if(Stopping || Coordinator is not { IsRunning: true } coordinator || !Queue.Contains(row) ||
+            !coordinator.TryStartRemotePickup(row,jobId,connection))return false;
+        _urls.Add(row.Url);_finalStates.Remove(row.Url);
+        row.DeferredToNextStart=false;row.RequeueRequested=false;
+        return true;
+    }
+
     internal bool TryStartOutOfOrderActive(DownloadCoordinator expected,DownloadItem row,
         DownloadCoordinator.OutOfOrderPreparation? preparation=null)
     {
