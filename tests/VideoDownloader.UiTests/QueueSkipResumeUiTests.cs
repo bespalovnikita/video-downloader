@@ -151,6 +151,20 @@ internal sealed partial class UiScenario
             foreach(var row in subject.SessionState.Queue)subject.Preview.RequestRow(row);
             PumpUntil(()=>urls.All(url=>subject.Preview.GetCached(url) is not null),"Seed metadata must finish before isolated action assertions.");
 
+            Select(queue,first);
+            first.Status="Failed";first.AttemptFinished=true;first.Progress=90;
+            Require(!MenuAction(queue,"Докачать после ошибки").IsEnabled,
+                "An error and percentage alone must not enable resuming without retained data.");
+            first.ResumeState=new DownloadResumeState{RetainedAfterFailure=true};
+            first.Progress=10;
+            Require(!MenuAction(queue,"Докачать после ошибки").IsEnabled,
+                "The context action requires strictly more than ten percent.");
+            first.Progress=90;
+            Require(MenuAction(queue,"Докачать после ошибки").IsEnabled,
+                "The actual context menu must offer a separate action for retained failed downloads.");
+            first.ResumeState=null;first.Progress=0;first.AttemptFinished=false;first.Status="Queued";
+            queue.SelectedItems.Clear();
+
             // Disabled controls alone are insufficient: raised real events must
             // also respect restore, maintenance and failed-checkpoint barriers.
             foreach(string name in new[]{"_checkpointReadOnly","_restoringSession","_profileBackupBusy","_profileBackupRecoveryRequired",
